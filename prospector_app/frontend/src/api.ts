@@ -204,6 +204,27 @@ export interface ActivityJobs {
 }
 export interface ActivityView { local: string; window_hours: number; machines: MachineActivity[] }
 
+export type OverviewCellState = "on" | "off" | "tripped" | "ai-paused" | "stood-down" | "offline";
+export interface OverviewCell { host: string; state: OverviewCellState }
+export interface OverviewNowItem { host: string | null; pr: number | null; issue: number | null; title: string | null; step: string | null; started_at: string | null }
+export interface OverviewQueueItem { pr: number | null; issue: number | null; title: string | null; status: string; source: string | null; queued_at: string | null }
+export interface OverviewLane {
+  lane: string; label: string; cells: OverviewCell[]; now: OverviewNowItem[]; queue: OverviewQueueItem[];
+  parked: number; pool: number | null; ended_24h: number; faults_24h: number;
+}
+export interface OverviewLoop { loop: string; label: string; host: string; last_at: string | null; next_at: string | null }
+export interface OverviewMachine { host: string; local: boolean; state: "working" | "idle" | "off" | "offline"; last_beat: string | null; lanes_on: number; stood_down: boolean; stood_down_note: string | null }
+export interface OverviewNeed {
+  key: string; kind: "trip" | "offline" | "pins" | "failed-runs" | "parked"; title: string; at: string | null;
+  host: string | null; lane: string | null; detail: string | null; count: number;
+  groups: { lane: "security" | "verify"; reason: string; prs: number[] }[];
+}
+export interface OverviewTimelineItem { when: "past" | "now" | "upcoming"; at: string; lane: string; host: string | null; pr: number | null; issue: number | null; text: string; bad: boolean }
+export interface ControlOverview {
+  local: string; machines: OverviewMachine[]; lanes: OverviewLane[]; loops: OverviewLoop[];
+  needs: OverviewNeed[]; timeline: OverviewTimelineItem[]; ai_paused: { reason: string; retry_at: string | null } | null;
+}
+
 /** One usage window of an AI account: the share used (0–1) and when it resets. */
 export interface CapacityWindow {
   utilization: number;
@@ -2335,6 +2356,11 @@ export const api = {
   },
   machines: () => get<MachinesRoster>("/api/machines"),
   machinesActivity: () => get<ActivityView>("/api/machines/activity"),
+  controlOverview: () => get<ControlOverview>("/api/control/overview"),
+  standDown: (host: string, note?: string) =>
+    postJson<{ stood_down: boolean }>(`/api/machines/${encodeURIComponent(host)}/stand-down`, { note: note ?? null }),
+  standUp: (host: string) =>
+    postJson<{ cleared: boolean }>(`/api/machines/${encodeURIComponent(host)}/stand-up`, {}),
   capacity: () => get<CapacityState>("/api/capacity"),
   /** Save this machine's own AI account's policy; resolves to that account. */
   saveCapacityPolicy: (policy: CapacityPolicy) =>

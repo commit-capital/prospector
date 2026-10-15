@@ -19,7 +19,7 @@ from pipeline import gates, review_policy, reviewers, settings, storekit
 from pipeline.freshness import is_current
 from pipeline.reviewers import Reviewer
 from pipeline.storekit import now as _now
-from prospector_app.backend import data, executor, review_refresh
+from prospector_app.backend import data, executor, review_refresh, worker_loops
 
 REFRESH_SECONDS = 30 * 60
 # Mentions posted per pass, so one sweep never floods the repository.
@@ -128,6 +128,7 @@ def _loop() -> None:
             request_rereviews()
         except Exception:
             traceback.print_exc()
+        worker_loops.ran("rereview", REFRESH_SECONDS)
         _stop.wait(REFRESH_SECONDS)
 
 

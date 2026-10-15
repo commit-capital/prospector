@@ -400,6 +400,7 @@ class WorkerRegistries(TypedDict):
     issue_fix_worker: dict
     worker_health: dict
     verify_base: dict[str, wire.VerifyPin]
+    machine_modes: dict[str, dict]
 
 
 _EVIDENCE_META = ("id", "pr", "head_sha", "author", "captured_at", "complete", "data")
@@ -1333,14 +1334,15 @@ class Store:
 
     def load_worker_registries(self) -> WorkerRegistries:
         """What `load_verify_worker`, `load_fix_worker`, `load_issue_fix_worker`,
-        `load_worker_health` and `load_verify_base_hosts` return, read in one
+        `load_worker_health`, `load_verify_base_hosts` and `load_machine_modes` return, read in one
         statement over one connection."""
         from sqlalchemy import or_, select
         reg = schema.registries
         with self.engine.connect() as conn:
             rows = conn.execute(
                 select(reg.c.name, reg.c.data)
-                .where(or_(reg.c.name.in_(self._WORKER_REGISTRIES), self._is_health_row()))
+                .where(or_(reg.c.name.in_(self._WORKER_REGISTRIES), self._is_health_row(),
+                           reg.c.name.like(f"{self._MODE_PREFIX}%")))
             ).all()
         named = {name: rec for name, rec in rows if name in self._WORKER_REGISTRIES}
         return {
@@ -1348,7 +1350,9 @@ class Store:
             "fix_worker": named.get("fix_worker", {"hosts": {}}),
             "issue_fix_worker": named.get("issue_fix_worker", {"hosts": {}}),
             "worker_health": self._health_by_host(
-                (name, rec) for name, rec in rows if name not in self._WORKER_REGISTRIES),
+                (name, rec) for name, rec in rows if name.startswith(self._HEALTH_PREFIX)),
+            "machine_modes": {name[len(self._MODE_PREFIX):]: rec for name, rec in rows
+                              if name.startswith(self._MODE_PREFIX)},
             "verify_base": self._pins_by_host(named.get("verify_base", {"hosts": {}})),
         }
 
@@ -1360,6 +1364,40 @@ class Store:
 
     def clear_worker_health(self, host: str) -> bool:
         return self._delete_registry(f"{self._HEALTH_PREFIX}{host}")
+
+    _MODE_PREFIX = "machine_mode:"
+    _LOOPS_PREFIX = "worker_loops:"
+
+    def _rows_by_host(self, prefix: str) -> dict[str, dict]:
+        from sqlalchemy import select
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(schema.registries.c.name, schema.registries.c.data)
+                .where(schema.registries.c.name.like(f"{prefix}%"))).all()
+        return {name[len(prefix):]: rec for name, rec in rows}
+
+    def save_machine_mode(self, record: dict) -> None:
+        """An operator's mark on one machine, keyed by `host`: `{host,
+        stood_down, at, by, note}`."""
+        if not record.get("host"):
+            raise ValidationError("machine_mode.host: required")
+        self._save_registry(f"{self._MODE_PREFIX}{record['host']}", record)
+
+    def load_machine_modes(self) -> dict[str, dict]:
+        return self._rows_by_host(self._MODE_PREFIX)
+
+    def clear_machine_mode(self, host: str) -> bool:
+        return self._delete_registry(f"{self._MODE_PREFIX}{host}")
+
+    def save_worker_loops(self, record: dict) -> None:
+        """One machine's lanes and periodic-loop passes, keyed by `host`:
+        `{host, at, lanes: {lane: bool}, loops: {name: {last_at, every_seconds}}}`."""
+        if not record.get("host"):
+            raise ValidationError("worker_loops.host: required")
+        self._save_registry(f"{self._LOOPS_PREFIX}{record['host']}", record)
+
+    def load_worker_loops(self) -> dict[str, dict]:
+        return self._rows_by_host(self._LOOPS_PREFIX)
 
     def _delete_registry(self, name: str) -> bool:
         from sqlalchemy import delete as sa_delete

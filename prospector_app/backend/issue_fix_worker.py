@@ -43,7 +43,7 @@ from issue_triage import (
 )
 from issue_triage.issue_store import IssueStore
 from pipeline import capacity, gates, headless_agent, settings, storekit
-from prospector_app.backend import data, lane_health, verify_worker
+from prospector_app.backend import data, lane_health, verify_worker, worker_loops
 
 LANE = "issue-fix"
 POLL_SECONDS = 20.0
@@ -343,14 +343,17 @@ def _every_ten_minutes(store: IssueStore) -> None:
     """Follow up the open proposals, then refresh the in-scope issues, answer
     the replies, and bring GitHub in line with them; one step failing leaves the
     others to run, and an agent outage trips the lanes and ends the pass."""
-    for step in (_follow_up, public_loop.refresh, _answer_replies, public_loop.sync):
-        try:
-            step(store)
-        except headless_agent.AgentUnavailable as e:
-            lane_health.trip_agent_lanes(str(e))
-            return
-        except Exception:
-            traceback.print_exc()
+    try:
+        for step in (_follow_up, public_loop.refresh, _answer_replies, public_loop.sync):
+            try:
+                step(store)
+            except headless_agent.AgentUnavailable as e:
+                lane_health.trip_agent_lanes(str(e))
+                return
+            except Exception:
+                traceback.print_exc()
+    finally:
+        worker_loops.ran("issue-followup", FOLLOWUP_POLL_SECONDS)
 
 
 def _reclaim(store: IssueStore) -> None:

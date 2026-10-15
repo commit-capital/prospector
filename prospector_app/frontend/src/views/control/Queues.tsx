@@ -1,10 +1,9 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { api, type Autohunt, type FixQueue, type VerifyQueue } from "../../api";
 import { useExec } from "../../ExecContext";
 import { PRLink } from "../../components/PRLink";
 import { SandboxChecks } from "../../components/SandboxChecks";
-import { Panel } from "./Panel";
 import { ago, elapsed, fixStatusChip, fmt, queueStatusChip } from "./format";
 
 /** The parked-and-ready chip, worded by what the action actually produced. */
@@ -30,7 +29,7 @@ function RunningMeta({ host, online }: { host?: string | null; online: boolean }
   );
 }
 
-function VerifyTable({ queue, hunt }: { queue: VerifyQueue; hunt: Autohunt | null }) {
+export function VerifyTable({ queue, hunt }: { queue: VerifyQueue; hunt: Autohunt | null }) {
   return (
     <table className="grid compact queue-table">
       <thead><tr><th>Status</th><th>PR</th><th>Source</th><th>Since</th></tr></thead>
@@ -62,7 +61,7 @@ function VerifyTable({ queue, hunt }: { queue: VerifyQueue; hunt: Autohunt | nul
 // Rows the fix table shows before "show all".
 const FIX_ROWS = 10;
 
-function FixTable({ queue, onChanged }: { queue: FixQueue; onChanged: () => Promise<unknown> }) {
+export function FixTable({ queue, onChanged }: { queue: FixQueue; onChanged: () => Promise<unknown> }) {
   const { dryRun, pushToast, pushIdentity } = useExec();
   const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState<number | null>(null);
@@ -220,74 +219,5 @@ function FixTable({ queue, onChanged }: { queue: FixQueue; onChanged: () => Prom
       )}
       {error && <div className="muted small" style={{ marginTop: 6 }}>{error}</div>}
     </div>
-  );
-}
-
-function plural(n: number, one: string, many: string = `${one}s`): string {
-  return `${n} ${n === 1 ? one : many}`;
-}
-
-/** The three worker queues as cards; Verify and Fix open their tables. The
- *  Fix table opens by itself when a change is waiting for review. */
-export function Queues({ hunt, verifyQueue, fixQueue, onFixChanged }: {
-  hunt: Autohunt | null;
-  verifyQueue: VerifyQueue | null;
-  fixQueue: FixQueue | null;
-  onFixChanged: () => Promise<unknown>;
-}) {
-  const [open, setOpen] = useState<"verify" | "fix" | null>(null);
-  const opened = useRef(false);
-  const awaiting = (fixQueue?.queue ?? []).filter((e) => e.status === "awaiting-review").length;
-  useEffect(() => {
-    if (opened.current || fixQueue == null) return;
-    opened.current = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- open once, when the first fix queue read shows a parked change
-    if (awaiting > 0) setOpen("fix");
-  }, [fixQueue, awaiting]);
-
-  const vq = verifyQueue?.queue ?? [];
-  const count = (status: string) => vq.filter((e) => e.status === status).length;
-  const fq = fixQueue?.queue ?? [];
-  const fixRunning = fq.filter((e) => e.status === "running" || e.status === "pushing").length;
-  const fixQueued = fq.filter((e) => e.status === "queued").length;
-  const fixEnded = fq.filter((e) => e.finished_at != null).length;
-  const toggle = (which: "verify" | "fix") => setOpen((o) => (o === which ? null : which));
-  const join = (parts: (string | false)[]) => parts.filter(Boolean).join(" · ");
-
-  return (
-    <Panel id="queues" title="Queues">
-      <div className="queue-cards">
-        <div className="queue-card">
-          <div className="queue-card-title">Security</div>
-          <div className="queue-card-body">
-            {hunt ? `${hunt.status.security_pool.toLocaleString()} awaiting review` : "loading…"}
-          </div>
-        </div>
-        <button className={`queue-card${open === "verify" ? " open" : ""}`} aria-expanded={open === "verify"}
-          onClick={() => toggle("verify")}>
-          <div className="queue-card-title">Verify {open === "verify" ? "▴" : "▾"}</div>
-          <div className="queue-card-body">
-            {verifyQueue
-              ? join([`${count("running")} running`, `${count("queued")} queued`,
-                  count("waiting-for-base") > 0 && `${count("waiting-for-base")} waiting for base`,
-                  hunt != null && `${hunt.status.verify_pool.toLocaleString()} GREEN awaiting verify`])
-              : "loading…"}
-          </div>
-        </button>
-        <button className={`queue-card${open === "fix" ? " open" : ""}${awaiting > 0 ? " needs-you" : ""}`}
-          aria-expanded={open === "fix"} onClick={() => toggle("fix")}>
-          <div className="queue-card-title">Fix {open === "fix" ? "▴" : "▾"}</div>
-          <div className="queue-card-body">
-            {fixQueue
-              ? <>{join([`${fixRunning} running`, fixQueued > 0 && `${fixQueued} queued`,
-                  fixEnded > 0 && `${fixEnded} ended recently`])}
-                {awaiting > 0 && <> · <b>{plural(awaiting, "change")} awaiting you</b></>}</>
-              : "loading…"}
-          </div>
-        </button>
-      </div>
-      {open === "verify" && verifyQueue && <VerifyTable queue={verifyQueue} hunt={hunt} />}
-      {open === "fix" && fixQueue && <FixTable queue={fixQueue} onChanged={onFixChanged} />}
-    </Panel>
   );
 }

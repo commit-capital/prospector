@@ -106,7 +106,7 @@ def _when(raw: dict) -> datetime | None:
     return storekit.parse_ts(raw.get("finished") or raw.get("started"))
 
 
-def _outcome(lane: Lane, stats: dict) -> str:
+def outcome(lane: Lane, stats: dict) -> str:
     if lane == "security":
         return str(stats.get("verdict") or "no verdict")
     if lane == "verify":
@@ -197,7 +197,7 @@ def summarize(rows: list[tuple[str, dict]], cost: dict[str, float], roster: dict
             lane = LANE_PHASES[phase]
             stats = s if isinstance(s := raw.get("stats"), dict) else {}
             (lanes.setdefault(host, {}).setdefault(lane, {})
-             .setdefault(_outcome(lane, stats), []).append(_number(lane, raw)))
+             .setdefault(outcome(lane, stats), []).append(_number(lane, raw)))
         elif phase in BACKGROUND:
             background.setdefault(host, Counter())[BACKGROUND[phase]] += 1
         elif phase in WORKER_BACKGROUND and trigger in WORKER_TRIGGERS:

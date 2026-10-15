@@ -28,12 +28,15 @@ from prospector_app.backend import autonomous_feed
 from prospector_app.backend import escalation
 from prospector_app.backend import cluster_refresh, rereview_hunt, stale_refresh, threat_refresh
 from prospector_app.backend import worker_control
+from prospector_app.backend import worker_loops
 from prospector_app.backend import worker_readiness
 from prospector_app.backend import bulk
 from prospector_app.backend import caps
 from prospector_app.backend import chat
 from prospector_app.backend import claims
 from prospector_app.backend import machine_activity
+from prospector_app.backend import control_overview
+from prospector_app.backend import machine_mode
 from prospector_app.backend import machines
 from prospector_app.backend import merge_progress
 from prospector_app.backend import data
@@ -268,6 +271,7 @@ def _launch_worker_cadences():
     threat_refresh.start()
     pr_watch.start()
     cluster_refresh.startup()
+    worker_loops.publish()
 
 
 @app.post("/api/worker/health/resume")
@@ -319,6 +323,26 @@ def machines_activity() -> machine_activity.ActivityView:
     """What every machine did in the past day, with its status — the Control
     tab's Recent activity panel."""
     return machine_activity.activity()
+
+
+@app.post("/api/machines/{host}/stand-down")
+def machines_stand_down(host: str, body: dict = Body(default={})):
+    """Mark a machine off on purpose: its silence and trips stop reading as
+    problems until one of its workers beats again."""
+    note = body.get("note")
+    return machine_mode.stand_down(host, by=activity.operator()["name"],
+                                   note=str(note) if note else None)
+
+
+@app.post("/api/machines/{host}/stand-up")
+def machines_stand_up(host: str):
+    return {"cleared": machine_mode.stand_up(host)}
+
+
+@app.get("/api/control/overview")
+def control_overview_get() -> control_overview.Overview:
+    """Health & queues in one read: machines, lanes, loops, needs, timeline."""
+    return control_overview.gather()
 
 
 @app.get("/api/health")
@@ -685,8 +709,9 @@ def setup_flags(body: models.WorkerFlags):
         worker_control.set_flags(body.flags)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"applied": worker_control.apply(),
-            "readiness": worker_readiness.report()}
+    applied = worker_control.apply()
+    worker_loops.publish()
+    return {"applied": applied, "readiness": worker_readiness.report()}
 
 
 @app.post("/api/setup/share")

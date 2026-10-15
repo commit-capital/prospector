@@ -754,7 +754,8 @@ class TestWorkerRegistries:
         return {"verify_worker": s.load_verify_worker(), "fix_worker": s.load_fix_worker(),
                 "issue_fix_worker": s.load_issue_fix_worker(),
                 "worker_health": s.load_worker_health(),
-                "verify_base": s.load_verify_base_hosts()}
+                "verify_base": s.load_verify_base_hosts(),
+                "machine_modes": s.load_machine_modes()}
 
     def test_an_empty_store_reads_as_each_loader_does(self, store):
         assert store.load_worker_registries() == self._individually(store)
@@ -763,6 +764,7 @@ class TestWorkerRegistries:
         from sqlalchemy import event
         beat = {"last_beat": "2026-07-15T00:00:00+00:00"}
         store.save_verify_worker({"host": "mac", **beat})
+        store.save_machine_mode({"host": "lap", "stood_down": True, "at": beat["last_beat"]})
         store.save_fix_worker({"host": "linux", **beat})
         store.save_issue_fix_worker({"host": "mac", **beat})
         store.save_worker_health({"host": "mac", "lanes": {}})
