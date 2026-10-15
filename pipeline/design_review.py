@@ -97,20 +97,32 @@ class DesignReviewFailed(RuntimeError):
     judge, never a verdict on the PR."""
 
 
-def huntable(pr: Pr) -> bool:
-    """Whether the idle hunter may spend a design review on `pr`'s head: open,
-    not a draft, not stacked, threat-scanned clear at this head, not a
-    dependency bump, not routed to a close by a current analysis, and with no
-    design review of this head under the current rubric yet."""
+def reviewable(pr: Pr) -> bool:
+    """Whether `pr`'s head may take a design review at all: open, not a draft,
+    not stacked, threat-scanned clear at this head, not a dependency bump, and
+    not routed to a close by a current analysis."""
     head = pr.head_sha
     if not head or pr.state != "open" or pr.draft or pr.stacked or gates.bump_exempt(pr):
         return False
     if freshness.is_current(pr, "analysis") and str(pr.disposition or "").startswith("close-"):
         return False
-    if pr.threat_verdict != "clear" or gates.threat_blocks(pr) or not freshness.is_current(pr, "threat"):
+    return (pr.threat_verdict == "clear" and not gates.threat_blocks(pr)
+            and freshness.is_current(pr, "threat"))
+
+
+def huntable(pr: Pr) -> bool:
+    """Whether the idle hunter may spend a design review on `pr`'s head: a
+    reviewable head with no design review under the current rubric, or one
+    whose coverage this machine's fault kept from running, taken at least
+    `coverage.FAULT_RETRY_HOURS` ago."""
+    if not reviewable(pr):
         return False
     entry = pr.review_entry(reviewers.DESIGN.id) or {}
-    return entry.get("reviewed_sha") != head or reviewers.design_rubric(entry) < reviewers.DESIGN_RUBRIC
+    if entry.get("reviewed_sha") != pr.head_sha or reviewers.design_rubric(entry) < reviewers.DESIGN_RUBRIC:
+        return True
+    age = storekit.hours_since(entry.get("observed_at"))
+    return (coverage.is_fault((entry.get("extra") or {}).get("coverage"))
+            and (age is None or age >= coverage.FAULT_RETRY_HOURS))
 
 
 def _within(clone: Path, path: str) -> bool:

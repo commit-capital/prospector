@@ -3,8 +3,9 @@ job. Reviews run one at a time through `verify_worker.run_design` as an
 operator's run: Home's merge-ready PRs first, then the hunter's order, with no
 AI capacity gate and no turn-taking with the security and verify lanes. The
 batch stops after `--limit` reviews land, when the pool runs out, or after
-three failures in a row. With `--pr N` it reviews that one PR's head instead
-— the PR explorer's bulk "run design reviews", one job per PR.
+three failures in a row. With `--pr N` it reviews that one PR's head instead,
+whatever review the head already has — the PR explorer's bulk "run design
+reviews", one job per PR, and the PR page's Design review re-run.
 
   uv run python -m prospector_app.backend.design_backfill [--limit N | --pr N]
 """
@@ -57,12 +58,12 @@ def run_one(n: int) -> int:
     if not _has_base():
         return 1
     pr = data.store().load_pr(n)
-    if pr is None or not design_review.huntable(pr):
-        print(f"PR #{n}: skipped (closed, a draft, not threat-scanned clear at its head, "
-              "routed to a close, or this head already has a design review)", flush=True)
+    if pr is None or not design_review.reviewable(pr):
+        print(f"PR #{n}: skipped (closed, a draft, stacked, not threat-scanned clear at its "
+              "head, or routed to a close)", flush=True)
         return 0
     print(f"PR #{n}: reviewing", flush=True)
-    outcome = verify_worker.run_design(n, trigger=ONE_TRIGGER)
+    outcome = verify_worker.run_design(n, trigger=ONE_TRIGGER, force=True)
     if outcome is False:
         print(f"PR #{n}: failed (see the design-review:run ledger row)", flush=True)
         return 1

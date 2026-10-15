@@ -177,6 +177,8 @@ def test_record_holds_the_trailer_to_the_requested_lines():
     ({"status": "error", "reason": "docker gone"}, "coverage not measured: docker gone"),
     ({"status": "fault", "reason": "disk full"},
      "coverage could not run (worker fault, not this PR): disk full"),
+    ({"status": "error", "reason": "the coverage run exited 40: no space"},
+     "coverage could not run (worker fault, not this PR): the coverage run exited 40: no space"),
     (None, None),
 ])
 def test_summary(rec, line):

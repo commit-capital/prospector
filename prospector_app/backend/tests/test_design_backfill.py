@@ -62,22 +62,23 @@ def test_refuses_without_a_base_pin(store, monkeypatch, capsys):
 def test_one_pr_runs_as_the_bulk_trigger(store, monkeypatch):
     ran: list[tuple[int, str]] = []
     monkeypatch.setattr(verify_worker, "run_design",
-                        lambda n, trigger: ran.append((n, trigger)) or True)
+                        lambda n, trigger, force=False: ran.append((n, trigger)) or True)
     assert design_backfill.run_one(3) == 0
     assert ran == [(3, "bulk")]
 
 
-def test_one_pr_already_reviewed_at_its_head_is_skipped(store, monkeypatch, capsys):
+def test_one_pr_already_reviewed_at_its_head_is_reviewed_again(store, monkeypatch):
     store.save_design_review(1, {"kind": "review", "reviewed_sha": HEAD, "findings": [],
                                  "checks": [], "extra": {"rubric": reviewers.DESIGN_RUBRIC}}, head_sha=HEAD)
+    ran: list[tuple[int, bool]] = []
     monkeypatch.setattr(verify_worker, "run_design",
-                        lambda n, trigger: pytest.fail("must not run"))
+                        lambda n, trigger, force=False: ran.append((n, force)) or True)
     assert design_backfill.run_one(1) == 0
-    assert "skipped" in capsys.readouterr().out
+    assert ran == [(1, True)]
 
 
 def test_one_pr_failure_fails_the_job(store, monkeypatch):
-    monkeypatch.setattr(verify_worker, "run_design", lambda n, trigger: False)
+    monkeypatch.setattr(verify_worker, "run_design", lambda n, trigger, force=False: False)
     assert design_backfill.run_one(2) == 1
 
 

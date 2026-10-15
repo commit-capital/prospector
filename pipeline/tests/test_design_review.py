@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import coverage, design_review, headless_agent, profile, reviewers, settings
+from pipeline import coverage, design_review, headless_agent, profile, reviewers, settings, storekit
 from pipeline.model import Pr
 
 
@@ -239,6 +239,42 @@ def test_huntable_re_reviews_a_moved_head():
 def test_huntable_re_reviews_an_earlier_rubric():
     old = {"design": {"kind": "review", "reviewed_sha": HEAD, "findings": [], "checks": []}}
     assert design_review.huntable(_pr(reviews=old)) is True
+
+
+def _reviewed(coverage: dict | None, observed_at: str) -> dict:
+    return {"design": {"kind": "review", "reviewed_sha": HEAD, "observed_at": observed_at,
+                       "findings": [], "checks": [],
+                       "extra": {"rubric": reviewers.DESIGN_RUBRIC, "coverage": coverage}}}
+
+
+LONG_AGO = "2020-01-01T00:00:00+00:00"
+
+
+@pytest.mark.parametrize("cov", [
+    {"status": "fault", "reason": "this machine has no pinned base image x"},
+    {"status": "error", "reason": "the coverage run exited 40: fatal: unable to read blob"},
+    {"status": "error", "reason": "the coverage run exited 60: setup failed"},
+])
+def test_huntable_re_reviews_a_coverage_fault_once_it_has_rested(cov):
+    assert design_review.huntable(_pr(reviews=_reviewed(cov, LONG_AGO))) is True
+    assert design_review.huntable(_pr(reviews=_reviewed(cov, storekit.now()))) is False
+
+
+@pytest.mark.parametrize("cov", [
+    None,
+    {"status": "error", "reason": "the PR does not apply onto this machine's pinned base"},
+    {"status": "error", "reason": "the coverage run exited 1: boom"},
+    {"status": "untested", "reason": "no related tests"},
+])
+def test_huntable_leaves_a_review_whose_coverage_was_no_fault(cov):
+    assert design_review.huntable(_pr(reviews=_reviewed(cov, LONG_AGO))) is False
+
+
+def test_reviewable_ignores_the_review_the_head_has():
+    pr = _pr(reviews=_reviewed(None, storekit.now()))
+    assert design_review.huntable(pr) is False
+    assert design_review.reviewable(pr) is True
+    assert design_review.reviewable(_pr(meta={"state": "closed", "head_sha": HEAD})) is False
 
 
 def test_profile_accepts_design_as_a_fixable_gate():
