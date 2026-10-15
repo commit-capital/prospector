@@ -3,7 +3,9 @@ one commit and no other history, so nothing but the tree reaches the agent and
 `git diff HEAD` is exactly what the agent changed."""
 from __future__ import annotations
 
+import difflib
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Sequence
@@ -59,10 +61,13 @@ def apply_patch(worktree: Path, patch: str) -> None:
 
 
 def additive_test_edits(worktree: Path, paths: list[str]) -> list[str]:
-    """Those of `paths` whose tracked edit only adds lines to a test file — the
-    edits a reproduction may make. A removed line, a rename, a delete, or any
-    path outside the profile's test conventions is not additive, so a rewrite of
-    an existing test can never pass as one."""
+    """Those of `paths` whose tracked edit only adds to a test file — the edits
+    a reproduction may make. An edit adds when it only adds lines, or when the
+    only lines it removes are import statements it widens: the same statement
+    from the same module, every name it imported still there. Any other removed
+    line, a rename, a delete, a mode change, or any path outside the profile's
+    test conventions is not additive, so a rewrite of an existing test can
+    never pass as one."""
     out: list[str] = []
     for path in paths:
         if not diffpaths.is_test_path(path):
@@ -70,9 +75,119 @@ def additive_test_edits(worktree: Path, paths: list[str]) -> list[str]:
         diff = _git(worktree, "-c", "status.renames=false", "diff", "HEAD", "--", path)
         body = [ln for ln in diff.splitlines()
                 if not ln.startswith(("--- ", "+++ ", "diff --git ", "index ", "@@"))]
-        if body and all(ln.startswith(("+", " ", "\\")) for ln in body):
+        if not body or not all(ln.startswith(("+", "-", " ", "\\")) for ln in body):
+            continue
+        if (all(ln.startswith(("+", " ", "\\")) for ln in body)
+                or _only_widens_imports(worktree, path)):
             out.append(path)
     return out
+
+
+# One import or re-export statement, whitespace collapsed: JS/TS
+# `import|export [type] <clause> from "<module>"` and Python
+# `from <module> import <names>`.
+_JS_STATEMENT = re.compile(r"""(import|export)( type)? (.+?) from (["'])([^"']+)\4 ?;?""")
+_PY_STATEMENT = re.compile(r"from ([\w.]+) import (.+)")
+_JS_NAME = re.compile(r"(type )?[\w$]+( as [\w$]+)?")
+_PY_NAME = re.compile(r"\w+( as \w+)?")
+_STATEMENT_START = re.compile(r"\s*(import|export|from)\b")
+_MAX_STATEMENT_LINES = 200
+
+# ("import", what must stay the same, the names it imports) for a statement
+# this reads, ("line", (the line,), no names) for anything else.
+_Unit = tuple[str, tuple[str, ...], frozenset[str]]
+
+
+def _names(inner: str, name: re.Pattern[str]) -> frozenset[str] | None:
+    items = [i.strip() for i in inner.split(",")]
+    items = [i for i in items if i]
+    if not items or not all(name.fullmatch(i) for i in items):
+        return None
+    return frozenset(items)
+
+
+def _parse_import(text: str) -> _Unit | None:
+    """`text` as an import statement whose names a widening may add to, or None
+    when it is not one this can read (a comment in it, a side-effect import, a
+    dynamic one, anything unusual) — so an edit to it stays a rewrite."""
+    flat = " ".join(text.split())
+    if "//" in flat or "/*" in flat or "#" in flat:
+        return None
+    if m := _JS_STATEMENT.fullmatch(flat):
+        keyword, typed, clause, module = m.group(1), m.group(2) or "", m.group(3), m.group(5)
+        head, brace, inner = clause.partition("{")
+        if brace and inner.endswith("}"):
+            head = head.strip().removesuffix(",").strip()
+            if head and not re.fullmatch(r"[\w$]+", head):
+                return None
+            names = _names(inner[:-1], _JS_NAME)
+            if names is None:
+                return None
+            return ("import", ("js", keyword, typed, module, head), names)
+        # A default or namespace import names nothing to widen; it must stay as it is.
+        return ("import", ("js", keyword, typed, module, clause), frozenset())
+    if m := _PY_STATEMENT.fullmatch(flat):
+        module, rest = m.group(1), m.group(2).strip()
+        if rest.startswith("("):
+            if not rest.endswith(")"):
+                return None
+            rest = rest[1:-1]
+        if rest.strip() == "*":
+            return ("import", ("py", module, "*"), frozenset())
+        names = _names(rest, _PY_NAME)
+        return None if names is None else ("import", ("py", module, ""), names)
+    return None
+
+
+def _units(text: str) -> list[_Unit]:
+    """`text` as a sequence of units: each import statement it can read, however
+    many lines it spans, is one; every other line is its own."""
+    lines = text.splitlines()
+    units: list[_Unit] = []
+    i = 0
+    while i < len(lines):
+        if _STATEMENT_START.match(lines[i]):
+            for j in range(i, min(i + _MAX_STATEMENT_LINES, len(lines))):
+                if (parsed := _parse_import("\n".join(lines[i:j + 1]))) is not None:
+                    units.append(parsed)
+                    i = j + 1
+                    break
+            else:
+                units.append(("line", (lines[i],), frozenset()))
+                i += 1
+            continue
+        units.append(("line", (lines[i],), frozenset()))
+        i += 1
+    return units
+
+
+def _only_widens_imports(worktree: Path, path: str) -> bool:
+    """True when every unit the edit to `path` removes is an import statement
+    it replaces with one from the same module importing at least the same
+    names — so nothing the test ran on is taken away or changed."""
+    target = worktree / path
+    if target.is_symlink() or not target.is_file():
+        return False
+    try:
+        before = _git(worktree, "show", f"HEAD:{path}")
+        after = target.read_text(encoding="utf-8")
+    except (subprocess.CalledProcessError, UnicodeDecodeError):
+        return False
+    old, new = _units(before), _units(after)
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("equal", "insert"):
+            continue
+        added = list(new[j1:j2])
+        for unit in old[i1:i2]:
+            if unit[0] != "import":
+                return False
+            k = next((k for k, a in enumerate(added)
+                      if a[0] == "import" and a[1] == unit[1] and unit[2] <= a[2]), None)
+            if k is None:
+                return False
+            del added[k]
+    return True
 
 
 def authored_test_diff(worktree: Path, paths: list[str]) -> str:

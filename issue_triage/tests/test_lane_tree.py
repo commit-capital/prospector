@@ -142,3 +142,98 @@ def test_committed_texts_reads_the_commit_and_skips_a_path_it_does_not_hold(tmp_
     (repo / "src" / "y.ts").write_text("export const y = 1;\n")
     assert lane_tree.committed_texts(repo, ["src/x.ts", "src/y.ts"]) == {
         "src/x.ts": "export const x = 1;\n"}
+
+
+_TEST_FILE = (
+    'import { describe, expect, it } from "vitest";\n'
+    'import {\n'
+    '  parse,\n'
+    '  render\n'
+    '} from "../src/x";\n'
+    '\n'
+    'describe("x", () => {\n'
+    '  it("parses", () => {\n'
+    '    expect(parse("1")).toBe(1);\n'
+    '  });\n'
+    '});\n'
+)
+
+
+def _with_test_file(tmp_path):
+    base = _base(tmp_path)
+    (base / "src" / "x.test.ts").write_text(_TEST_FILE)
+    return lane_tree.materialize(base, tmp_path / "w")
+
+
+def _edit(repo, old, new):
+    path = repo / "src" / "x.test.ts"
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, new))
+    return lane_tree.additive_test_edits(repo, ["src/x.test.ts"])
+
+
+def test_additive_test_edits_accepts_lines_appended_to_a_test(tmp_path):
+    repo = _with_test_file(tmp_path)
+    assert _edit(repo, "});\n});\n", "});\n  it(\"more\", () => {});\n});\n") == ["src/x.test.ts"]
+
+
+def test_additive_test_edits_accepts_widening_a_one_line_import(tmp_path):
+    repo = _with_test_file(tmp_path)
+    assert _edit(repo, 'import { describe, expect, it } from "vitest";',
+                 'import { describe, expect, it, vi } from "vitest";') == ["src/x.test.ts"]
+
+
+def test_additive_test_edits_accepts_widening_a_multi_line_import(tmp_path):
+    repo = _with_test_file(tmp_path)
+    added = _edit(repo, "  parse,\n  render\n} from", "  parse,\n  render,\n  serialize\n} from")
+    assert added == ["src/x.test.ts"]
+
+
+def test_additive_test_edits_accepts_an_import_widening_alongside_a_new_case(tmp_path):
+    repo = _with_test_file(tmp_path)
+    _edit(repo, 'expect, it } from "vitest";', 'expect, it, vi } from "vitest";')
+    assert _edit(repo, "});\n});\n", "});\n  it(\"spies\", () => { vi.fn(); });\n});\n") \
+        == ["src/x.test.ts"]
+
+
+def test_additive_test_edits_rejects_dropping_an_imported_name(tmp_path):
+    repo = _with_test_file(tmp_path)
+    assert _edit(repo, 'import { describe, expect, it } from "vitest";',
+                 'import { describe, it, vi } from "vitest";') == []
+
+
+def test_additive_test_edits_rejects_moving_an_import_to_another_module(tmp_path):
+    repo = _with_test_file(tmp_path)
+    assert _edit(repo, 'import { describe, expect, it } from "vitest";',
+                 'import { describe, expect, it, vi } from "jest";') == []
+
+
+def test_additive_test_edits_rejects_an_edited_assertion(tmp_path):
+    repo = _with_test_file(tmp_path)
+    assert _edit(repo, 'toBe(1);', 'toBe(2);') == []
+
+
+def test_additive_test_edits_rejects_an_import_widening_with_an_edited_assertion(tmp_path):
+    repo = _with_test_file(tmp_path)
+    _edit(repo, 'expect, it } from "vitest";', 'expect, it, vi } from "vitest";')
+    assert _edit(repo, 'toBe(1);', 'toBe(2);') == []
+
+
+def test_additive_test_edits_rejects_a_deleted_test_file(tmp_path):
+    repo = _with_test_file(tmp_path)
+    (repo / "src" / "x.test.ts").unlink()
+    assert lane_tree.additive_test_edits(repo, ["src/x.test.ts"]) == []
+
+
+def test_additive_test_edits_accepts_widening_a_python_parenthesized_import(tmp_path):
+    base = _base(tmp_path)
+    (base / "test_y.py").write_text(
+        "from pkg.mod import (\n    a,\n    b\n)\n\n\ndef test_a():\n    assert a() == 1\n")
+    repo = lane_tree.materialize(base, tmp_path / "w")
+    (repo / "test_y.py").write_text(
+        "from pkg.mod import (\n    a,\n    b,\n    c,\n)\n\n\ndef test_a():\n    assert a() == 1\n")
+    assert lane_tree.additive_test_edits(repo, ["test_y.py"]) == ["test_y.py"]
+    (repo / "test_y.py").write_text(
+        "from pkg.mod import (\n    a,\n    c,\n)\n\n\ndef test_a():\n    assert a() == 1\n")
+    assert lane_tree.additive_test_edits(repo, ["test_y.py"]) == []
