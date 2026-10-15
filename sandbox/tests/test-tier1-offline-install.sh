@@ -26,7 +26,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$CTX/src"
+mkdir -p "$CTX/src" "$CTX/rust"
 cp "$FIXTURE/package.json" "$FIXTURE/pnpm-lock.yaml" "$FIXTURE/test.js" "$CTX/src/"
 
 # Prefetch through the driver's own function, the way prepare-base does it, so a

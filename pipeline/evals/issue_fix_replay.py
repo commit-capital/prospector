@@ -524,7 +524,7 @@ def validate_known_fix(base: prove.PinnedBase, pre_patch: str, instance: Instanc
                    if (leg := legs.get(key)) is not None):
                 return False, "unbound"
             return False, "green"
-    except verify_driver.ProbeFailure as e:
+    except (verify_driver.ProbeFailure, prove.SandboxFault) as e:
         legs["probe"] = {"exit": None, "exit_confirm": None, "output_tail": str(e),
                          "duration_s": 0.0}
         return False, "sandbox"
@@ -766,10 +766,18 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
                 "lane": lane, "steps": steps,
                 "agent_runs": lane_result.agent_runs, "detail": lane_result.detail}
     oracle_runs: dict[str, prove.Legs] = {}
-    scores = score(instance, lane_result, oracle_runs, base=base, pre_patch=pre_patch,
-                   label=label, r6_red=r6_legs.get("red"), judge_contract=judge_contract)
-    candidates = candidate_scores(instance, lane_result, base=base, pre_patch=pre_patch,
-                                  label=label, r6_red=r6_legs.get("red"))
+    try:
+        scores = score(instance, lane_result, oracle_runs, base=base, pre_patch=pre_patch,
+                       label=label, r6_red=r6_legs.get("red"), judge_contract=judge_contract)
+        candidates = candidate_scores(instance, lane_result, base=base, pre_patch=pre_patch,
+                                      label=label, r6_red=r6_legs.get("red"))
+    except (verify_driver.ProbeFailure, prove.SandboxFault) as e:
+        # The lane's result stands, but the oracle that scores it never ran.
+        return {"issue": instance.issue, "pr": instance.pr, "ending": "sandbox",
+                "seconds": seconds, "r6_seconds": r6_seconds,
+                "r6_contaminants": contaminants, "legs": _leg_evidence(r6_legs),
+                "lane": lane, "steps": steps,
+                "agent_runs": lane_result.agent_runs, "detail": str(e)[:_DETAIL_MAX]}
     if candidates:
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "candidates.json").write_text(json.dumps({

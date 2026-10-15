@@ -3,6 +3,7 @@ test runs name the ending. The agent and every sandbox call are mocked; the
 clone, the re-gate and the patch splitting run for real."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,18 @@ def test_the_agent_is_handed_the_base_s_contributor_docs(solo):
 def test_a_give_up_ends_by_its_kind(solo, kind, ending):
     solo["agent"] = lambda wt: {"give_up": "no", "kind": kind}
     assert solo["run"]().ending == ending
+
+
+def test_a_give_up_after_every_check_faulted_ends_sandbox(solo):
+    def gives_up(wt):
+        (solo["workdir"] / "solo.checks.jsonl").write_text(json.dumps(
+            {"kind": "typecheck", "exit": None, "error_kind": "infrastructure",
+             "error": "No space left on device"}) + "\n")
+        return {"give_up": "could not run anything", "kind": "cannot-reproduce"}
+
+    solo["agent"] = gives_up
+    res = solo["run"]()
+    assert res.ending == "sandbox" and res.fault is True
 
 
 def test_a_test_that_is_not_green_with_the_fix_ends_fix_unproven(solo):

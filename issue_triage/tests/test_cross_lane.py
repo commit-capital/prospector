@@ -5,6 +5,7 @@ a fix by a table — while the clones, the re-gate and the patch splitting run
 for real."""
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -267,6 +268,33 @@ def test_an_untrusted_candidate_drops_out_and_the_others_can_still_agree(cross):
 def test_every_candidate_giving_up_ends_by_their_kinds(cross, kinds, ending):
     cross["agents"] = [lambda wt, k=k: {"give_up": "no", "kind": k} for k in kinds]
     assert cross["run"]().ending == ending
+
+
+def _gives_up_on_a_full_disk(wt: str) -> dict:
+    cand = Path(wt).parent
+    (cand.parent / f"{cand.name}.checks.jsonl").write_text(json.dumps(
+        {"kind": "test", "exit": None, "error_kind": "infrastructure",
+         "error": _DISK_FULL["error"]}) + "\n")
+    return {"give_up": "every sandbox run failed", "kind": "cannot-reproduce"}
+
+
+def test_candidates_that_give_up_on_a_faulted_sandbox_end_the_run_sandbox(cross):
+    cross["agents"] = [_gives_up_on_a_full_disk,
+                       lambda wt: {"give_up": "no", "kind": "cannot-reproduce"},
+                       _gives_up_on_a_full_disk]
+    res = cross["run"]()
+    assert res.ending == "sandbox" and res.fault is True
+    assert "No space left on device" in res.detail
+    assert [c["ending"] for c in res.result["candidates"]] == ["sandbox", "no-fix", "sandbox"]
+
+
+def test_a_reproduction_leg_the_harness_cannot_run_ends_the_run_sandbox(cross, monkeypatch):
+    def faults(*a, **k):
+        raise prove.SandboxFault("the sandbox red leg exited 40: No space left on device")
+
+    monkeypatch.setattr(prove, "red_legs", faults)
+    res = cross["run"]()
+    assert res.ending == "sandbox" and res.fault is True
 
 
 def test_an_agent_outage_ends_the_run_agent_unavailable(cross):

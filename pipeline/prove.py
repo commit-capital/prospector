@@ -4,7 +4,8 @@ tree, and the full suite over a patched tree against the same tree's own
 failing set (`suite_regress`). Every run uses the image the verify pin names,
 so a caller never builds one. The exits are the verdict; the captured output is
 evidence. A sandbox whose isolation probe fails lands in `run_command`'s record
-as its exit and raises `ProbeFailure` out of the legs."""
+as its exit and raises `ProbeFailure` out of the legs; a leg the harness could
+not carry out raises `SandboxFault`."""
 from __future__ import annotations
 
 import hashlib
@@ -234,6 +235,17 @@ def _record_base_fault(result: dict, base: PinnedBase, cmd: str, lane: str) -> N
         result["error_kind"] = f"base-{lane}"
 
 
+class SandboxFault(RuntimeError):
+    """A sandbox run did not complete for a reason that is not the tree's: the
+    machine's condition, never a verdict on a fix."""
+
+
+# Leg exits the harness owns: the patch could not be applied for a reason
+# that is not the patch's (a full disk), or the test setup failed before any
+# test ran.
+_FAULT_EXITS = frozenset({gates.SENTINEL_PATCH_UNREADABLE, gates.SENTINEL_SETUP_FAIL})
+
+
 class Legs(TypedDict):
     exit: int | None
     exit_confirm: int | None
@@ -266,7 +278,7 @@ def _legs(base: PinnedBase, phase: Literal["red", "green"], want: int, *,
     for the caller's policy to read. `output_tail` is the first leg's; the
     confirm leg's tail is dropped. A probe failure raises: no code runs on a
     sandbox whose isolation is unproven, so such a leg refuses and emits no
-    verdict."""
+    verdict. A harness exit (`_FAULT_EXITS`) raises SandboxFault."""
     t0 = time.monotonic()
 
     def leg() -> tuple[int, str]:
@@ -276,6 +288,9 @@ def _legs(base: PinnedBase, phase: Literal["red", "green"], want: int, *,
         if exit_code == gates.SENTINEL_PROBE_FAIL:
             raise verify_driver.ProbeFailure(
                 f"sandbox isolation could not be proven ({label}, phase {phase})")
+        if exit_code in _FAULT_EXITS:
+            raise SandboxFault(f"the sandbox {phase} leg exited {exit_code} ({label}): "
+                               f"{verify_driver.error_excerpt(tail) or tail[-500:]}")
         return exit_code, tail
 
     first, tail = leg()
@@ -284,7 +299,7 @@ def _legs(base: PinnedBase, phase: Literal["red", "green"], want: int, *,
                 duration_s=round(time.monotonic() - t0, 1))
 
 
-class SuiteFault(RuntimeError):
+class SuiteFault(SandboxFault):
     """A full-suite run did not complete: a sandbox fault, a timeout, a
     pre-patch that does not apply, or a report the runner did not account for.
     The machine's condition, never a verdict on a fix."""

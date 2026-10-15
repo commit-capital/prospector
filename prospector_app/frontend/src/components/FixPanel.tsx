@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { FixAction, FixRequest, FixRunner } from "../api";
 import { useExec } from "../ExecContext";
 import { localDateTime, timeAgo } from "../timeAgo";
+import { unavailable } from "./fixAvailability";
 import { SandboxChecks } from "./SandboxChecks";
 
 /** What the composer starts with. The operator edits the goal; the bar beneath
@@ -12,29 +13,6 @@ const DEFAULT_GOAL = "Fix the outstanding review feedback on this PR.";
 const PINNED_BAR = "Always applied: succeed only if the change is safe and "
                  + "well-constructed, with no risk of introducing a bug or "
                  + "destabilizing the system. Give up rather than guess.";
-
-/** Why an action cannot be queued right now, or null when it can be.
- *  Queueing is gated on a worker being reachable, NOT on this browser's backend
- *  holding the push key — the queue is shared so an operator clicks from a
- *  laptop and the machine with the key does the work. Eligibility itself is the
- *  backend's call (gates.fix_eligibility); it reports its reason on the click
- *  rather than being second-guessed here. */
-function unavailable(runner: FixRunner | null, req: FixRequest | null,
-                     resolved: boolean): string | null {
-  if (resolved) return "This PR is already resolved.";
-  if (runner != null && !runner.can_queue) {
-    return "No autofix worker has been seen against this store, so a queued action "
-         + "would never run. Start a backend with TRIAGE_FIX_WORKER=1 on the machine "
-         + "holding the machine user's push key.";
-  }
-  const status = req?.status;
-  if (status && IN_FLIGHT.includes(status)) {
-    return `PR already has a ${status} ${req?.action} request.`;
-  }
-  return null;
-}
-
-const IN_FLIGHT = ["queued", "running", "awaiting-review", "approved", "pushing"];
 
 const LABEL: Record<FixAction, string> = {
   update: "↻ Re-test against current main",

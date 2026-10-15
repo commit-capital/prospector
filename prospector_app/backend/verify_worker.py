@@ -718,7 +718,7 @@ def _book_design(st: Store, n: int, head: str, stats: dict, trigger: str) -> Non
                    "trigger": trigger, "stats": {"head_sha": head, **stats}})
 
 
-def run_design(n: int, *, trigger: str = "autohunt") -> bool | None:
+def run_design(n: int, *, trigger: str = "autohunt", force: bool = False) -> bool | None:
     """Run the design review of PR `n`'s head under this host's claim: True
     when its verdict landed, False when the run failed, None when no review
     ran (the PR left the pool, another host holds it, or this machine has no
@@ -731,11 +731,13 @@ def run_design(n: int, *, trigger: str = "autohunt") -> bool | None:
     `design-review:run` ledger row stamped `trigger`. Any trigger but
     `autohunt` is an operator's run: its spend is not booked to the lane, and
     it claims as `<worker id>/<trigger>`, so this machine's hunter leaves the
-    PR to it."""
+    PR to it. `force` reviews a reviewable head again whatever review it
+    already has."""
     st = data.store()
     rec = st.load_pr(n)
     base = design_base(st)
-    if rec is None or base is None or not design_review.huntable(rec):
+    wanted = design_review.reviewable if force else design_review.huntable
+    if rec is None or base is None or not wanted(rec):
         return None
     head = rec.head_sha or ""
     unattended = trigger == "autohunt"
