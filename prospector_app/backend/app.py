@@ -66,6 +66,7 @@ from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
 from prospector_app.backend import suggested_actions
 from prospector_app.backend import pr_watch
+from prospector_app.backend import responses_sweep
 from prospector_app.backend import subproc
 from prospector_app.backend import system_health
 from prospector_app.backend import threat_view
@@ -265,8 +266,8 @@ def _launch_fix_worker():
 def _launch_worker_cadences():
     """Start a worker machine's cadences: the stale merge-candidate refresh,
     the re-review hunter, the threat scan of new heads, the watch that records
-    new and pushed-to PRs from GitHub, and the clustering lane. Skipped under
-    pytest."""
+    new and pushed-to PRs from GitHub, the author-responses sweep, and the
+    clustering lane. Skipped under pytest."""
     import sys
     if "pytest" in sys.modules:
         return
@@ -274,6 +275,7 @@ def _launch_worker_cadences():
     rereview_hunt.start()
     threat_refresh.start()
     pr_watch.start()
+    responses_sweep.start()
     cluster_refresh.startup()
     worker_loops.publish()
 
@@ -921,12 +923,14 @@ def live_status():
 
 @app.post("/api/responses/scan")
 def responses_scan(payload: dict = Body(default={})):
-    """Sweep the PRs we've acted on and classify how the community responded
-    since (replies, reopens, new commits). Read-only upstream (GraphQL timeline)
-    + an app-local registry write. With a `prs` list, scan just those."""
-    prs_arg = payload.get("prs")
-    targets = [int(n) for n in prs_arg if str(n).strip()] if prs_arg else None
-    return responses_mod.scan(targets)
+    """Sweep the PRs we've acted on and the issues we closed, and classify how
+    the community responded since (replies, reopens, new commits). Read-only
+    upstream (GraphQL timeline) + a store registry write. With a `prs` or
+    `issues` list, scan just those."""
+    def numbers(key: str) -> list[int] | None:
+        arg = payload.get(key)
+        return [int(n) for n in arg if str(n).strip()] if arg else None
+    return responses_mod.scan(numbers("prs"), numbers("issues"))
 
 
 @app.post("/api/responses/{n}/ack")

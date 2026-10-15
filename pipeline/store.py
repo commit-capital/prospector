@@ -984,6 +984,18 @@ class Store:
             raise ValidationError("response_acks.acks: required dict")
         self._save_registry("response_acks", registry)
 
+    def load_responses(self) -> dict:
+        """How authors responded after our latest action on each PR and issue
+        (`{pr: {"<n>": signals}, issue: {"<n>": signals}}`), rebuilt by the
+        responses sweep and read by every app."""
+        return self._load_registry("responses", {"pr": {}, "issue": {}})
+
+    def save_responses(self, registry: dict) -> None:
+        for kind in ("pr", "issue"):
+            if not isinstance(registry.get(kind), dict):
+                raise ValidationError(f"responses.{kind}: required dict")
+        self._save_registry("responses", registry)
+
     def load_claims(self) -> dict:
         """Which items an operator has claimed as theirs to work
         (`{items: {"pr:123": {by, machine, at}}}`), shared across operators —

@@ -8,8 +8,8 @@ Two signals, read from the store and the responses registry with no network:
   reopen back to ``open`` — so an ``open`` here is a reopen observed.
 - ``follow-up``: the item is still closed, and its author has since opened a
   PR or issue that links it — a ``#N`` or a URL of the item in the new one's
-  title or body, or, for a PR, the cross-reference or the author's own comment
-  on the closed PR naming it, both read by the responses sweep (``named``).
+  title or body, or a PR's cross-reference or the author's own comment on the
+  closed item naming it, both read by the responses sweep (``named``).
   That is an author answering our close (too broad, not scoped) with a
   submission that targets what we asked for.
 
@@ -90,12 +90,12 @@ def _ref(kind: Kind, number: int, item: Item) -> Ref:
 def author_returns(prs: Mapping[int, Item], issues: Mapping[int, Item],
                    events: list[dict] | None = None, *,
                    pr_bodies: Callable[[list[int]], dict[int, str | None]] | None = None,
-                   named: Mapping[int, Collection[int]] | None = None,
+                   named: Mapping[tuple[Kind, int], Collection[int]] | None = None,
                    repo: str | None = None) -> list[AuthorReturn]:
     """Every closed-by-us PR or issue its author came back to, newest
     response first. `pr_bodies` reads PR descriptions the snapshot leaves out
-    (each PR's own `body` without it); `named` maps a closed PR to the numbers
-    the responses sweep saw its author link from it."""
+    (each PR's own `body` without it); `named` maps a closed (kind, number) to
+    the numbers the responses sweep saw its author link from it."""
     events = activity.all_events() if events is None else events
     repo = repo or settings.repo()
     named = named or {}
@@ -135,7 +135,7 @@ def author_returns(prs: Mapping[int, Item], issues: Mapping[int, Item],
         else:
             signal = "follow-up"
             pattern = _mention(n, repo)
-            names = named.get(n, ()) if kind == "pr" else ()
+            names = named.get((kind, n), ())
             follow_ups = sorted(
                 (_ref(f_kind, f_n, f_item) for f_kind, f_n, f_item in later
                  if f_n in names
@@ -166,8 +166,9 @@ def current(prs: Mapping[int, Item] | None = None,
             events: list[dict] | None = None) -> list[AuthorReturn]:
     """`author_returns` over the app's snapshots and the responses registry."""
     from prospector_app.backend import data, issue_data, responses
-    named = {n: {int(x) for x in [sig.get("resubmitted_pr"), *(sig.get("mentions") or [])] if x}
-             for n, sig in responses.load().items()}
+    named: dict[tuple[Kind, int], set[int]] = {
+        (kind, n): {int(x) for x in [sig.get("resubmitted_pr"), *(sig.get("mentions") or [])] if x}
+        for kind, sigs in responses.load_all().items() for n, sig in sigs.items()}
     return author_returns(data.prs() if prs is None else prs, issue_data.issues(), events,
                           pr_bodies=data.pr_bodies, named=named)
 

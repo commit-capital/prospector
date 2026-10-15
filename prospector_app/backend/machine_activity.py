@@ -27,6 +27,7 @@ LANE_PHASES: dict[str, Lane] = {
 BACKGROUND: dict[str, tuple[str, str]] = {
     "ingest:watch": ("PR watch", "PR watches"), "threat-scan:heads": ("threat scan", "threat scans"),
     "rereview:request": ("re-review request", "re-review requests"),
+    "responses:scan": ("responses sweep", "responses sweeps"),
     "verify:pin-refresh": ("base pin refresh", "base pin refreshes"),
     "reingest": ("re-ingest", "re-ingests"),
     "threat-evidence:capture": ("evidence capture", "evidence captures")}

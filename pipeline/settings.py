@@ -431,6 +431,12 @@ def pr_watch() -> bool:
     return os.environ.get("TRIAGE_PR_WATCH", "1") == "1"
 
 
+def responses_sweep() -> bool:
+    """Whether a worker machine re-reads how authors responded to our actions
+    on a cadence (TRIAGE_RESPONSES_SWEEP, default on)."""
+    return os.environ.get("TRIAGE_RESPONSES_SWEEP", "1") == "1"
+
+
 def fix_hunt_rereview() -> bool:
     """Whether an idle fix worker asks an active reviewer for the verdict a PR's
     current head never got (TRIAGE_FIX_HUNT_REREVIEW, default on)."""
