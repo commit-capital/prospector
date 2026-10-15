@@ -84,7 +84,9 @@ sweep never fails a pin: its errors are reported and swallowed. A base image
 build that fails prunes those leftovers at once, since a build that fails on
 every retry reaches no sweep and would fill the Docker volume with them.
 
-To reclaim by hand, or to see what would go:
+Each worker reads Docker's free space every five minutes, and the app's health
+strip warns once it falls below `TRIAGE_DOCKER_MIN_FREE_GB`. To reclaim by
+hand, or to see what would go:
 
 ```
 uv run python pipeline/verify_driver.py gc --dry-run

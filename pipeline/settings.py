@@ -231,6 +231,10 @@ def verify_pin_max_age_days() -> int:
     return positive_int("TRIAGE_VERIFY_PIN_MAX_AGE_DAYS", 2)
 
 
+def docker_min_free_gb() -> int:
+    return positive_int("TRIAGE_DOCKER_MIN_FREE_GB", 20)
+
+
 def review_threshold() -> int | None:
     """Override of Greptile's pass score. None → 5, and so does a value that is
     not a positive integer."""

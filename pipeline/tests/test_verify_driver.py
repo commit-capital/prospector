@@ -2732,6 +2732,13 @@ class TestBuildStepOutput:
         assert "\x1b" not in str(info.value)
         assert "ERR_PNPM_NO_OFFLINE_META" in capsys.readouterr().out
 
+    def test_a_step_that_ran_out_of_disk_points_to_it(self, monkeypatch):
+        monkeypatch.setattr(vd.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(
+            argv, 1, stdout="write /var/lib/docker/x: No space left on device\n", stderr=""))
+        with pytest.raises(vd.BuildFailure) as info:
+            vd._run_build_step("building img", ["docker", "build"], env={})
+        assert "Docker's disk is full" in str(info.value)
+
     def test_a_passing_step_echoes_and_returns(self, monkeypatch, capsys):
         monkeypatch.setattr(vd.subprocess, "run",
                             lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="done\n", stderr=""))
@@ -3122,3 +3129,27 @@ class TestPrefetchRust:
         monkeypatch.setattr(vd, "_run_build_step", lambda what, argv, env: steps.append(argv))
         vd.prefetch_rust(tmp_path / "src", tmp_path / "rust")
         assert steps == []
+
+
+class TestDockerDisk:
+    def _fake(self, monkeypatch, rc: int, stdout: str, stderr: str = "") -> list[list[str]]:
+        calls: list[list[str]] = []
+        monkeypatch.setattr(vd, "image_exists", lambda image: True)
+
+        def run(argv, **kw):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, rc, stdout=stdout, stderr=stderr)
+        monkeypatch.setattr(vd.subprocess, "run", run)
+        return calls
+
+    def test_reads_df_inside_the_sandbox_image(self, monkeypatch):
+        calls = self._fake(monkeypatch, 0,
+                           "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+                           "overlay 154494032 71849104 75708180 49% /\n")
+        assert vd.docker_disk() == {"free_bytes": 75708180 * 1024,
+                                    "total_bytes": 154494032 * 1024}
+        assert vd.sandbox_image() in calls[0]
+
+    def test_a_container_that_cannot_start_reports_why(self, monkeypatch):
+        self._fake(monkeypatch, 125, "", "docker: write /var/lib/docker/x: no space left on device")
+        assert vd.DISK_FULL in str(vd.docker_disk())

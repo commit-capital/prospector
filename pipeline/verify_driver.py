@@ -360,6 +360,34 @@ def daemon_available() -> bool:
     return p.returncode == 0
 
 
+DISK_FULL = "no space left on device"
+
+
+def disk_hint(output: str) -> str:
+    """A pointer to the disk for a failure whose output says it is full."""
+    if DISK_FULL not in output.lower():
+        return ""
+    return (" (Docker's disk is full: `uv run python pipeline/verify_driver.py gc` reclaims "
+            "base images, `docker system df` shows what holds the space)")
+
+
+def docker_disk() -> dict[str, int] | str:
+    """The free and total bytes of the filesystem Docker stores images and
+    containers on, read by `df` inside the sandbox image, so it is the Docker
+    VM's disk under Colima or Docker Desktop alike: `{free_bytes,
+    total_bytes}`, or why it could not be read."""
+    tags = [sandbox_image()] if image_exists(sandbox_image()) else sandbox_images()
+    if not tags:
+        return "no sandbox image to measure with"
+    p = subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "df",
+                        tags[0], "-P", "-k", "/"],
+                       capture_output=True, text=True, env=launcher_env(), timeout=120)
+    fields = p.stdout.splitlines()[-1].split() if p.returncode == 0 and p.stdout.strip() else []
+    if len(fields) < 4 or not (fields[1].isdigit() and fields[3].isdigit()):
+        return (p.stderr or p.stdout).strip()[-300:] or f"df exited {p.returncode}"
+    return {"free_bytes": int(fields[3]) * 1024, "total_bytes": int(fields[1]) * 1024}
+
+
 # A large phase's memory class, and what the VM keeps for everything else
 # (the small phases, the daemon, the kernel) before it fits another one.
 LARGE_PHASE_GIB = 10
@@ -484,7 +512,8 @@ def _run_build_step(what: str, argv: list[str], *, env: dict[str, str],
         print(out.rstrip(), flush=True)
     if proc.returncode != 0:
         tail = _ANSI_RE.sub("", out).strip()[-BUILD_TAIL_CHARS:]
-        raise BuildFailure(f"{what} exited {proc.returncode}: {tail or '(no output)'}")
+        raise BuildFailure(f"{what} exited {proc.returncode}: {tail or '(no output)'}"
+                           f"{disk_hint(out)}")
 
 
 # Written into a base's build directory once its image is built, so a later
@@ -1653,7 +1682,8 @@ def run_canaries(image: str, base: str, tier: int) -> list[str]:
     for problem in problems:
         tail = next((t for head, t in tails.items() if problem.startswith(head)), "")
         excerpt = error_excerpt(tail)
-        out.append(f"{problem} [sandbox said: {excerpt}]" if excerpt else problem)
+        out.append((f"{problem} [sandbox said: {excerpt}]" if excerpt else problem)
+                   + disk_hint(tail))
     return out
 
 

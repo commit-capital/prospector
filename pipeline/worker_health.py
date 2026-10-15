@@ -15,6 +15,10 @@ one entry per lane in LANES:
      "tripped": {"at", "kind", "reason"} | None,
      "retest": {"at", "ok", "detail"} | None}
 
+and, on a machine that runs the sandbox, the latest reading of Docker's disk:
+
+    "disk": {"at", "free_bytes", "total_bytes", "min_free_bytes"} | {"at", "error"}
+
 Functions here are pure over that record; `update` is the one write path.
 """
 from __future__ import annotations
@@ -185,6 +189,14 @@ def record_retest(rec: dict, name: str, *, ok: bool, detail: str,
                   now: str | None = None) -> None:
     now = now or _now()
     lane(rec, name)["retest"] = {"at": now, "ok": ok, "detail": detail[:600]}
+    rec["updated_at"] = now
+
+
+def record_disk(rec: dict, reading: dict[str, int] | str, *, min_free_bytes: int,
+                now: str | None = None) -> None:
+    now = now or _now()
+    rec["disk"] = ({"at": now, "error": reading[:300]} if isinstance(reading, str)
+                   else {"at": now, **reading, "min_free_bytes": min_free_bytes})
     rec["updated_at"] = now
 
 

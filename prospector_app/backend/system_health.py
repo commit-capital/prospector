@@ -1,7 +1,7 @@
 """One systemwide health verdict, for the strip every page shows.
 
 Composes what the shared store already knows — every worker's tripped lanes,
-every worker's heartbeat, and each ingest's last run — into a short list of
+every worker's heartbeat and Docker disk reading, and each ingest's last run — into a short list of
 problem items with one overall severity, so an outage on any machine reaches
 the operator on whatever page they have open. `summarize` is pure over plain
 data; `status` gathers the live inputs.
@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timezone
 from typing import NotRequired, TypedDict
 
-from pipeline import storekit
+from pipeline import storekit, verify_driver, worker_health
 from prospector_app.backend import data, escalation, fix_queue, threat_view, verify_queue
 
 
@@ -80,6 +80,38 @@ def _ingest_item(label: str, last: str | None, now_ts: float) -> HealthItem | No
             "detail": f"last ran {last}"}
 
 
+def _gb(n: int) -> str:
+    return f"{n / 10**9:.0f} GB"
+
+
+def _disk_item(host: str, disk: dict | None, now_ts: float) -> HealthItem | None:
+    """The strip's item for a worker whose Docker disk is below the free space
+    its own setting asks for, or full; None for a reading that is healthy,
+    unreadable for another reason, or older than the offline cut-off."""
+    if not disk:
+        return None
+    hours = _hours_since(disk.get("at"), now_ts)
+    if hours is None or hours * 3600 >= worker_health.OFFLINE_AFTER_SECONDS:
+        return None
+    remedy = ("Reclaim space on that machine: `uv run python pipeline/verify_driver.py gc` "
+              "sweeps base images outside the retention rule and failed builds' leftovers; "
+              "`docker system df` shows what else holds the space.")
+    error = disk.get("error")
+    if error:
+        if verify_driver.DISK_FULL not in str(error).lower():
+            return None
+        return {"kind": "disk", "severity": "red", "host": host,
+                "label": f"{host}: Docker disk full", "detail": f"{error}\n{remedy}"}
+    free, total = int(disk.get("free_bytes") or 0), int(disk.get("total_bytes") or 0)
+    floor = int(disk.get("min_free_bytes") or 0)
+    if free >= floor:
+        return None
+    return {"kind": "disk", "severity": "amber", "host": host,
+            "label": f"{host}: Docker disk {_gb(free)} free of {_gb(total)}",
+            "detail": f"Below the {_gb(floor)} this worker warns at; a full disk fails "
+                      f"every sandbox run.\n{remedy}"}
+
+
 def summarize(health_hosts: list[dict], offline: list[dict],
               worker_lanes: list[tuple[str, str]],
               ingest_last: dict[str, str | None],
@@ -134,6 +166,12 @@ def summarize(health_hosts: list[dict], offline: list[dict],
                 "label": f"{host}: {', '.join(names)} paused · "
                          f"{first.get('kind') or 'unknown'}",
                 "detail": detail or None})
+
+    for h in health_hosts:
+        host = str(h["host"])
+        disk = _disk_item(host, h.get("disk"), now_ts) if host not in offline_by_host else None
+        if disk:
+            items.append(disk)
 
     for key, label in INGEST_LABELS.items():
         item = _ingest_item(label, ingest_last.get(key), now_ts)
