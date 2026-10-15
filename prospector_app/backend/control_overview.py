@@ -3,7 +3,7 @@ what runs now, what runs next, what ran, and what needs a person.
 
 `build` is pure over plain data; `gather` reads the live inputs. A lane's
 state on a machine is the first that holds of: stood down, offline, off (its
-flag), tripped, AI paused, on.
+flag), paused (lane_pause), tripped, AI paused, on.
 """
 from __future__ import annotations
 
@@ -13,11 +13,15 @@ import time
 import traceback
 from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Literal, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Literal, TypedDict, TypeVar
 
 from pipeline import capacity, gates, storekit
 from prospector_app.backend import machine_activity, worker_loops
+
+if TYPE_CHECKING:
+    from pipeline.model import Pr
 
 LANES: tuple[str, ...] = ("security", "verify", "design", "autofix", "issue-fix", "cluster")
 LABELS: dict[str, str] = {"security": "Security", "verify": "Verify", "design": "Design",
@@ -41,7 +45,7 @@ LOOP_LANES: dict[str, tuple[str, ...]] = {
 PAST_LIMIT = 60
 WINDOW = timedelta(hours=24)
 
-CellState = Literal["on", "off", "tripped", "ai-paused", "stood-down", "offline"]
+CellState = Literal["on", "off", "paused", "tripped", "ai-paused", "stood-down", "offline"]
 MachineState = Literal["working", "idle", "off", "offline"]
 NeedKind = Literal["trip", "offline", "pins", "failed-runs", "parked"]
 
@@ -67,6 +71,13 @@ class QueueItem(TypedDict):
     status: str
     source: str | None
     queued_at: str | None
+    priority: float | None
+
+
+class Pick(TypedDict):
+    pr: int
+    title: str | None
+    action: str | None
 
 
 class LaneRow(TypedDict):
@@ -75,6 +86,7 @@ class LaneRow(TypedDict):
     cells: list[Cell]
     now: list[NowItem]
     queue: list[QueueItem]
+    picks: list[Pick]
     parked: int
     pool: int | None
     ended_24h: int
@@ -152,6 +164,8 @@ class Inputs(TypedDict):
     pools: dict[str, int]                     # security / verify / design pool sizes
     failed_runs: list[dict]                   # [{lane, reason, prs}]
     rows: list[tuple[str, dict]]              # (ledger, record) in the past 24h
+    paused: dict[str, set[str]]               # lane_pause.paused_lanes(...): host → health lanes
+    picks: dict[str, list[Pick]]              # lane → the hunter's next picks
 
 
 def _beat_lanes(m: dict) -> dict[str, bool]:
@@ -168,6 +182,8 @@ def _cell(lane: str, host: str, m: dict, inp: Inputs) -> CellState:
     on = (row or {}).get("lanes") if row else _beat_lanes(m)
     if not (on or {}).get(lane):
         return "off"
+    if HEALTH_LANE[lane] in inp["paused"].get(host, set()):
+        return "paused"
     if HEALTH_LANE[lane] in inp["tripped"].get(host, {}):
         return "tripped"
     acct = (m.get("ai_account") or {}).get("key")
@@ -208,6 +224,8 @@ def _need_rows(inp: Inputs, machines: list[Machine], fq: list[dict]) -> list[Nee
         if host not in online:
             continue
         for lane, t in sorted(lanes.items()):
+            if lane in inp["paused"].get(host, set()):
+                continue
             label = next((LABELS[k] for k, v in HEALTH_LANE.items() if v == lane), lane)
             detail = "\n".join(part for part in (
                 t.get("reason"), t.get("remedy") and f"To fix: {t['remedy']}",
@@ -276,7 +294,8 @@ def build(inp: Inputs, now: datetime) -> Overview:
         return [{"pr": e.get("pr") if key == "pr" else None,
                  "issue": e.get("issue") if key == "issue" else None, "title": e.get("title"),
                  "status": str(e.get("status")), "source": e.get("source"),
-                 "queued_at": e.get("queued_at")}
+                 "queued_at": e.get("queued_at"),
+                 "priority": float(p) if (p := e.get("priority")) is not None else None}
                 for e in entries if e.get("status") in waiting]
 
     nows = {"verify": now_of(vq, ("running",), "pr"),
@@ -352,7 +371,7 @@ def build(inp: Inputs, now: datetime) -> Overview:
 
     lanes: list[LaneRow] = [{
         "lane": lane, "label": LABELS[lane], "cells": lane_cells[lane], "now": nows[lane],
-        "queue": queues.get(lane, []),
+        "queue": queues.get(lane, []), "picks": inp["picks"].get(lane, []),
         "parked": sum(1 for e in fq if e.get("status") == "awaiting-review") if lane == "autofix" else 0,
         "pool": inp["pools"].get(lane), "ended_24h": ended[lane], "faults_24h": faults[lane],
     } for lane in LANES]
@@ -401,7 +420,7 @@ def _hunter_now(roster: dict, verify_running: set[int]) -> dict[str, list[NowIte
 
 T = TypeVar("T")
 # Every open tab polls the overview, so one answer serves them all this long.
-CACHE_SECONDS = 5.0
+CACHE_SECONDS = 10.0
 _cache: tuple[float, Overview] | None = None
 _cache_lock = threading.Lock()
 
@@ -441,19 +460,43 @@ def gather() -> Overview:
 def _gather() -> Overview:
     from pipeline import design_review, settings
     from prospector_app.backend import (alert_data, autohunt_view, capacity_view, data, escalation,
-                                        fix_queue, issues, machine_mode, machines, verify_queue)
+                                        fix_queue, issues, lane_pause, machines, verify_queue)
     now = datetime.now(timezone.utc)
     st = data.store()
-    regs = st.load_worker_registries()
-    roster = machines.roster()
-    hunt = _safe(autohunt_view.status, None)
+    since = (now - WINDOW).isoformat()
+    design_on = settings.design_review_mode() != "off"
+    # Each source is its own store round trip, so they run at once.
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        def later(read: Callable[[], T], fallback: T) -> Future[T]:
+            return pool.submit(_safe, read, fallback)
+        f_regs = pool.submit(st.load_worker_registries)
+        f_roster = pool.submit(machines.roster)
+        f_hunt = later(autohunt_view.status, None)
+        f_accounts = later(capacity_view.accounts, [])
+        f_vq = later(verify_queue.queue_entries, [])
+        f_fq = later(fix_queue.queue_entries, [])
+        f_iq = later(_issue_queue, [])
+        f_loops = pool.submit(st.load_worker_loops)
+        f_pauses = later(st.load_lane_pauses, {})
+        f_picks = later(lambda: _picks(data.prs()), {})
+        f_runs = [(ledger, later(read, [])) for ledger, read in (
+            ("pr", lambda: data.runs(since=since)), ("issue", issues.cached_runs),
+            ("alert", alert_data.runs))]
+        f_design = later(lambda: sum(1 for pr in data.prs().values()
+                                     if design_on and pr.state == "open"
+                                     and design_review.huntable(pr)), 0)
+        regs, roster, hunt = f_regs.result(), f_roster.result(), f_hunt.result()
+        vq = [dict(e) for e in f_vq.result()]
+        accounts, fq, iq = f_accounts.result(), f_fq.result(), f_iq.result()
+        loops, pauses, picks, design_pool = (f_loops.result(), f_pauses.result(),
+                                             f_picks.result(), f_design.result())
+        rows = [(ledger, r.raw) for ledger, f in f_runs for r in f.result()
+                if isinstance(r, storekit.PhaseRun)]
     pins = [dict(p) for p in (hunt["base"]["hosts"] if hunt else [])
             if p["refresh_failures"] > 0 or p["stale"]]
     paused: dict[str, AiPaused] = {
         a["key"]: {"reason": a["decision"]["reason"], "retry_at": a["decision"]["retry_at"]}
-        for a in _safe(capacity_view.accounts, [])
-        if a["machines"] and not a["decision"]["allowed"]}
-    vq = [dict(e) for e in _safe(verify_queue.queue_entries, [])]
+        for a in accounts if a["machines"] and not a["decision"]["allowed"]}
     groups: dict[tuple[str, str], list[int]] = {}
     if hunt:
         for n in hunt["security_failed"]:
@@ -461,26 +504,30 @@ def _gather() -> Overview:
             groups.setdefault(("security", reason), []).append(n)
         for f in hunt["verify_failed"]:
             groups.setdefault(("verify", (f.get("error_kind") or "run failed").strip()), []).append(f["pr"])
-    since = (now - WINDOW).isoformat()
-    rows: list[tuple[str, dict]] = []
-    for ledger, read in (("pr", lambda: data.runs(since=since)), ("issue", issues.cached_runs),
-                         ("alert", alert_data.runs)):
-        rows.extend((ledger, r.raw) for r in _safe(read, []) if isinstance(r, storekit.PhaseRun))
-    design_on = settings.design_review_mode() != "off"
+    from prospector_app.backend import machine_mode
     inp: Inputs = {
         "local": settings.worker_id(), "roster": roster,
-        "stood_down": machine_mode.stood_down_in(regs),
-        "loops": st.load_worker_loops(),
+        "stood_down": machine_mode.stood_down_in(regs), "loops": loops,
         "tripped": _tripped(escalation.health_status(regs)["hosts"]),
         "pins": pins, "ai_paused": paused, "verify_queue": vq,
-        "fix_queue": [dict(e) for e in _safe(fix_queue.queue_entries, [])],
-        "issue_queue": _safe(_issue_queue, []),
+        "fix_queue": [dict(e) for e in fq], "issue_queue": iq,
         "hunter_now": _hunter_now(roster, {int(str(e["pr"])) for e in vq if e["status"] == "running"}),
         "pools": {"security": hunt["security_pool"] if hunt else 0,
-                  "verify": hunt["verify_pool"] if hunt else 0,
-                  "design": sum(1 for pr in data.prs().values()
-                                if design_on and pr.state == "open" and design_review.huntable(pr))},
+                  "verify": hunt["verify_pool"] if hunt else 0, "design": design_pool},
         "failed_runs": [{"lane": lane, "reason": reason, "prs": prs}
                         for (lane, reason), prs in sorted(groups.items(), key=lambda kv: -len(kv[1]))],
-        "rows": rows}
+        "rows": rows, "paused": lane_pause.paused_lanes(pauses), "picks": picks}
     return build(inp, now)
+
+
+def _picks(prs: dict[int, Pr]) -> dict[str, list[Pick]]:
+    from prospector_app.backend import fix_worker, verify_worker
+
+    def pick(n: int, action: str | None) -> Pick:
+        pr = prs.get(n)
+        return {"pr": n, "title": pr.title if pr else None, "action": action}
+
+    out = {lane: [pick(n, None) for n in ns]
+           for lane, ns in verify_worker.hunt_candidates().items()}
+    out["autofix"] = [pick(n, action) for action, n in fix_worker.hunt_candidates()]
+    return out

@@ -27,7 +27,7 @@ def _inputs(**over) -> co.Inputs:
         "tripped": {}, "pins": [], "ai_paused": {},
         "verify_queue": [], "fix_queue": [], "issue_queue": [], "hunter_now": {},
         "pools": {"security": 0, "verify": 0, "design": 0},
-        "failed_runs": [], "rows": []}
+        "failed_runs": [], "rows": [], "paused": {}, "picks": {}}
     base.update(over)  # type: ignore[typeddict-item]
     return base
 
@@ -192,3 +192,29 @@ def test_gather_survives_a_failing_source_and_caches(monkeypatch, temp_store):
     first = co.gather()
     assert first["ai_paused"] is None
     assert co.gather() is first and len(calls) == 1
+
+
+def test_paused_lane_reads_paused_and_is_not_a_need():
+    out = co.build(_inputs(paused={"studio": {"fix"}}), NOW)
+    assert _cell(out, "autofix", "studio") == "paused"
+    assert _cell(out, "verify", "studio") == "on"
+    assert out["needs"] == []
+    assert out["machines"][0]["lanes_on"] == len(co.LANES) - 1
+
+
+def test_a_paused_tripped_lane_reads_paused():
+    tripped = {"studio": {"fix": {"at": _iso(5), "kind": "crash"}}}
+    out = co.build(_inputs(paused={"studio": {"fix"}}, tripped=tripped), NOW)
+    assert _cell(out, "autofix", "studio") == "paused"
+    assert out["needs"] == []
+
+
+def test_picks_and_priority_reach_their_lane():
+    picks = {"security": [{"pr": 3, "title": "t", "action": None}]}
+    vq = [{"pr": 8, "title": "b", "status": "queued", "source": "operator", "step": None,
+           "queued_at": _iso(5), "started_at": None, "host": None, "priority": 2.0}]
+    out = co.build(_inputs(picks=picks, verify_queue=vq), NOW)
+    sec = next(r for r in out["lanes"] if r["lane"] == "security")
+    assert sec["picks"] == picks["security"]
+    ver = next(r for r in out["lanes"] if r["lane"] == "verify")
+    assert ver["picks"] == [] and ver["queue"][0]["priority"] == 2.0

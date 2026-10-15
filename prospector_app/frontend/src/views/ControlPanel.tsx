@@ -66,7 +66,7 @@ export default function ControlPanel() {
   }, [loadPipeline]);
 
   const busy = (overview?.lanes ?? []).some((l) => l.now.length > 0);
-  usePoll(loadOverview, busy ? 5_000 : 15_000);
+  usePoll(loadOverview, busy ? 10_000 : 30_000);
   usePoll(open === "autofix" || tab === "history" ? loadFixQueue : noop, 15_000);
   usePoll(open === "verify" || tab === "history" ? loadVerifyQueue : noop, 30_000);
   usePoll(open === "verify" || tab === "history" ? loadHunt : noop, 30_000);

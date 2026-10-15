@@ -556,6 +556,35 @@ def hunt_key(item: tuple[int, Pr]) -> tuple[bool, bool, float, int]:
             pr.disposition != "merge", -_pain(pr), n)
 
 
+def _pools(prs: dict[int, Pr], open_lanes: frozenset[str]) -> dict[str, list[tuple[int, Pr]]]:
+    """Each hunt lane's candidates, unordered: the PRs `next_auto` picks from."""
+    me = settings.worker_id()
+    return {
+        "security": [
+            (n, pr) for n, pr in prs.items()
+            if "security" in open_lanes
+            and n not in security_failed and gates.blocked_on_security(pr)
+            and not store.run_claim_held_elsewhere(
+                pr.raw.get("security_run"), host=me, stale_after=SECURITY_CLAIM_SECONDS)],
+        "verify": ([(n, pr) for n, pr in prs.items() if auto_verifiable(pr)]
+                   if "verify" in open_lanes else []),
+        "design": [
+            (n, pr) for n, pr in prs.items()
+            if "design" in open_lanes
+            and n not in design_failed and design_review.huntable(pr)
+            and not store.run_claim_held_elsewhere(
+                pr.raw.get("design_run"), host=me, stale_after=DESIGN_CLAIM_SECONDS)],
+    }
+
+
+def hunt_candidates(limit: int = 5) -> dict[str, list[int]]:
+    """Each hunt lane's next `limit` picks in the order the hunter takes them,
+    read without picking."""
+    pools = _pools(data.prs(), frozenset(HUNT_ROTATION))
+    return {lane: [n for n, _ in sorted(pool, key=hunt_key)[:limit]]
+            for lane, pool in pools.items()}
+
+
 def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
               ) -> tuple[str, int] | None:
     """The idle hunt's next pick, or None: ("security", n) for the best clean PR
@@ -577,27 +606,12 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
     pick; a tripped lane's pool is skipped."""
     global _last_auto_lane
     prs = data.prs()
-    me = settings.worker_id()
 
     def _has_priority(pool: list[tuple[int, Pr]]) -> bool:
         return any(gates.priority_author(pr.author, pr.author_association)
                    for _, pr in pool)
 
-    security_pool = [
-        (n, pr) for n, pr in prs.items()
-        if "security" in open_lanes
-        and n not in security_failed and gates.blocked_on_security(pr)
-        and not store.run_claim_held_elsewhere(
-            pr.raw.get("security_run"), host=me, stale_after=SECURITY_CLAIM_SECONDS)]
-    verify_pool = ([(n, pr) for n, pr in prs.items() if auto_verifiable(pr)]
-                   if "verify" in open_lanes else [])
-    design_pool = [
-        (n, pr) for n, pr in prs.items()
-        if "design" in open_lanes
-        and n not in design_failed and design_review.huntable(pr)
-        and not store.run_claim_held_elsewhere(
-            pr.raw.get("design_run"), host=me, stale_after=DESIGN_CLAIM_SECONDS)]
-    pools = {"security": security_pool, "verify": verify_pool, "design": design_pool}
+    pools = _pools(prs, open_lanes)
     lane = (next((name for name in HUNT_ROTATION if _has_priority(pools[name])), None)
             or _rotate([name for name in HUNT_ROTATION if pools[name]]))
     if lane is not None:

@@ -2214,6 +2214,20 @@ def next_auto() -> tuple[str, int, dict | None] | None:
     return (action, n, objection)
 
 
+def hunt_candidates(limit: int = 5) -> list[tuple[str, int]]:
+    """The hunter's next `limit` (action, PR) picks across every action, by
+    hunt priority, read without picking; the slot limits that hold an agent
+    action back are not applied."""
+    budget_ok = (not settings.fix_hunt_security()
+                 or _budget_used(data.store()) < settings.fix_objection_budget())
+    ranked: list[tuple[tuple[bool, int, int, float, int], str, int]] = []
+    for n, rec in data.prs().items():
+        pick = auto_fixable(rec, budget_ok=budget_ok)
+        if pick is not None:
+            ranked.append((_hunt_key(rec, pick[0], n), pick[0], n))
+    return [(action, n) for _, action, n in sorted(ranked)[:limit]]
+
+
 def _beat_loop() -> None:
     while not stop.is_set():
         try:
