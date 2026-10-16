@@ -68,7 +68,8 @@ _BAR_CHECK = {reviewers.PASS: "pass", reviewers.FAIL: "fail", reviewers.STALE: "
 def _design(rec: Pr) -> dict:
     """The design review's row: its own bar and its changed-line coverage,
     marked advisory unless it gates, and never-run while it has neither a
-    review nor a merge to hold."""
+    review nor a merge to hold. A coverage run the worker could not make is
+    left to the row's expanded body, so the line reads as the review's."""
     d = reviewers.DESIGN
     entry = rec.review_entry(d.id)
     gating = review_policy.is_active(d.id)
@@ -76,7 +77,8 @@ def _design(rec: Pr) -> dict:
         return _c("design", d.label, "na", "not reviewed yet", None, advisory=True)
     b = review_policy.own_bar(rec, d)
     detail = reviewers.digest(d, entry, b, rec.head_sha)["summary_line"]
-    covered = coverage.summary(((entry or {}).get("extra") or {}).get("coverage"))
+    record = ((entry or {}).get("extra") or {}).get("coverage")
+    covered = None if coverage.is_fault(record) else coverage.summary(record)
     if covered:
         detail = f"{detail} · {covered}"
     row = _c("design", d.label, _BAR_CHECK[b.status],
