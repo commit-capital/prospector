@@ -1,14 +1,18 @@
 import { useState } from "react";
 import { api, type PRDetail } from "../api";
+import { LinkedIssues } from "./LinkedIssues";
+import { closedNote, shownIssues } from "./linkedIssuesShown";
 
-/** The Summary panel's opening lines: what was wrong, what the PR changes, and
- *  how it works. Until a card is written for this head, the diff summary's
- *  one-liner stands in as the fix, with a button to write the card. */
+/** The Summary panel's opening lines: what was wrong, what the PR changes (and
+ *  the issues it fixes), and how it works. Until a card is written for this
+ *  head, the diff summary's one-liner stands in as the fix, with a button to
+ *  write the card. */
 export function PRStory({ pr, onWritten }: { pr: PRDetail; onWritten: () => void }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string>();
   const d = pr.display;
   const fix = d?.fix ?? pr.summary?.one_liner;
+  const fixes = shownIssues(pr.issues).shown;
 
   const write = () => {
     setBusy(true); setErr(undefined);
@@ -20,10 +24,19 @@ export function PRStory({ pr, onWritten }: { pr: PRDetail; onWritten: () => void
 
   return (
     <>
-      {(fix || d) && (
+      {(fix || d || fixes.length > 0) && (
         <dl className="pr-story">
           {d && <><dt>Problem</dt><dd>{d.problem}</dd></>}
-          {fix && <><dt>Fix</dt><dd>{fix}</dd></>}
+          {(fix || fixes.length > 0) && (
+            <><dt>Fix</dt><dd>
+              {fix}
+              {fixes.length > 0 && <span className="muted"> (Fixes <LinkedIssues issues={pr.issues} />)</span>}
+              {fixes.map((issue) => {
+                const closed = closedNote(issue);
+                return closed && <div key={issue.issue} className="issue-closed-warn">⚠ Issue #{issue.issue} is {closed}.</div>;
+              })}
+            </dd></>
+          )}
           {d && d.how.length > 0 && (
             <><dt>How it works</dt><dd><ul>{d.how.map((x, i) => <li key={i}>{x}</li>)}</ul></dd></>
           )}

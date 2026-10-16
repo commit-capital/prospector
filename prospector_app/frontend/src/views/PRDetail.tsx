@@ -26,8 +26,6 @@ import { useFreshness } from "../useFreshness";
 import { FreshnessBar, FreshnessCallout } from "../components/Freshness";
 import { useRunState } from "../useRunState";
 import { useJobStream } from "../useJobStream";
-import { LinkedIssues } from "../components/LinkedIssues";
-import { closedNote, shownIssues } from "../components/linkedIssuesShown";
 import { splitDiffSizes } from "../testPaths";
 
 const LEVEL_ICON: Record<string, string> = { safe: "🛡️", caution: "⚠️", risk: "⛔", unknown: "❔" };
@@ -630,52 +628,9 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         <FixBody req={pr.fix_request ?? null} runner={fixRunner} />
       </section>
 
-      {/* at-a-glance: size */}
-      <div className="stat-tiles">
-        <div className="tile">
-          <div className="tile-label">Change size</div>
-          <div className="tile-val">
-            <span className="add">+{sz?.additions ?? "?"}</span> <span className="del">−{sz?.deletions ?? "?"}</span>
-            <span className="muted small"> · {sz?.changed_files ?? "?"} files</span>
-          </div>
-          {split && (split.non_test.additions + split.non_test.deletions > 0 || split.test.files > 0) && (
-            <div className="size-split">
-              <div title="Changes to the app's code, not counting tests">
-                <span className="muted">non-test</span>{" "}
-                <span className="add">+{split.non_test.additions}</span> <span className="del">−{split.non_test.deletions}</span>
-                <span className="muted small"> · {split.non_test.files}f</span>
-              </div>
-              {split.test.files > 0 && (
-                <div title="Changes to tests">
-                  <span className="muted">tests</span>{" "}
-                  <span className="add">+{split.test.additions}</span> <span className="del">−{split.test.deletions}</span>
-                  <span className="muted small"> · {split.test.files}f</span>
-                </div>
-              )}
-            </div>
-          )}
-          {split?.removes_tests && (
-            <div className="size-warn" title="This PR deletes more tests than it adds — check carefully">
-              ⚠ removes more tests than it adds (−{split.test.deletions} / +{split.test.additions})
-            </div>
-          )}
-        </div>
-      </div>
-
       {/* #581: security findings, dynamic verification, review-provider
           feedback, and CI check runs now live as expandable detail inside
           their own rows in the Checks panel above, next to their action. */}
-
-      <section className="prc-section">
-        <h3>Issues this may fix</h3>
-        <LinkedIssues issues={pr.issues} />
-        {shownIssues(pr.issues).shown.map((issue) => {
-          const closed = closedNote(issue);
-          return closed && (
-            <div key={issue.issue} className="issue-closed-warn">⚠ Issue #{issue.issue} is {closed}.</div>
-          );
-        })}
-      </section>
 
       {/* description */}
       {pr.body && (
@@ -698,6 +653,31 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           (#46). */}
       <section className="prc-section">
         <h3>Diff <span className="muted small" style={{ textTransform: "none", letterSpacing: 0 }}>· click a line to ask about it or comment · ⌘/ctrl-click to open it on GitHub</span></h3>
+        <div className="diff-size">
+          <span title="The whole change">
+            <span className="add">+{sz?.additions ?? "?"}</span> <span className="del">−{sz?.deletions ?? "?"}</span>
+            <span className="muted"> · {sz?.changed_files ?? "?"} files</span>
+          </span>
+          {split && (split.non_test.additions + split.non_test.deletions > 0 || split.test.files > 0) && (
+            <span title="Changes to the app's code, not counting tests">
+              <span className="muted">non-test</span>{" "}
+              <span className="add">+{split.non_test.additions}</span> <span className="del">−{split.non_test.deletions}</span>
+              <span className="muted"> · {split.non_test.files}f</span>
+            </span>
+          )}
+          {split && split.test.files > 0 && (
+            <span title="Changes to tests">
+              <span className="muted">tests</span>{" "}
+              <span className="add">+{split.test.additions}</span> <span className="del">−{split.test.deletions}</span>
+              <span className="muted"> · {split.test.files}f</span>
+            </span>
+          )}
+          {split?.removes_tests && (
+            <span className="size-warn" title="This PR deletes more tests than it adds — check carefully">
+              ⚠ removes more tests than it adds (−{split.test.deletions} / +{split.test.additions})
+            </span>
+          )}
+        </div>
         {mergeDiff && (
           <div className="segmented diff-mode" role="tablist" aria-label="diff mode">
             <button className={diffMode === "pr" ? "on" : ""} role="tab" aria-selected={diffMode === "pr"}
