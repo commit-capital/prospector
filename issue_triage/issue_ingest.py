@@ -146,7 +146,7 @@ def ingest_records(store: IssueStore, raws: list[dict],
     report = progress.enabled()
     if report:
         progress.say(f"  loading stored issues to compare the {len(raws):,} fetched ones against…")
-    existing = store.all_issues(omit_candidates=True)
+    existing = store.all_issues(omit_candidates=True, numbers=[raw["number"] for raw in raws])
     refs = link_prs.parse_refs(prs) if prs is not None else None  # each body parsed once
     # (raw, meta, summary, repro) for each raw whose facts differ from the store's.
     changed: list[tuple[dict, dict, dict, dict]] = []

@@ -416,7 +416,7 @@ def poll(store: IssueStore, *, mode: str | None = None,
     if mode == "off":
         return 0
     acted = 0
-    for n, issue in store.all_issues(omit_candidates=True).items():
+    for n, issue in store.fix_issues().items():
         pr = ((issue.fix_run or {}).get("proposal") or {}).get("pr")
         fu = fix_review.followup_for(issue.fix_followup, pr)
         if not pr or (fu.get("state") == "done" and fu.get("closed_as")):
