@@ -1630,6 +1630,13 @@ def review_parked_resolve(n: int) -> None:
         restore("the review crashed")
 
 
+def _resolution_diff(n: int) -> str | None:
+    """The kept merge's conflict resolution alone, or None when it cannot be read."""
+    r = _resubmit(n, "diff", "--resolution")
+    text = _diff_text(r)
+    return text if r.returncode == 0 and text.startswith("diff ") else None
+
+
 def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
                            worktree: str,
                            restore: Callable[[str], None]) -> None:
@@ -1639,6 +1646,10 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
     patch = _diff_text(diff_r)
     if diff_r.returncode != 0 or not patch.startswith("diff "):
         restore("the kept worktree's diff could not be read")
+        return
+    resolution = _resolution_diff(n)
+    if resolution is None:
+        restore("the merge commit's resolution could not be read")
         return
     stamp: dict = {"against_head_sha": head, "base_sha": claimed.get("base_sha"),
                    "host": settings.worker_id(), "at": _now(),
@@ -1654,7 +1665,7 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
             verdict = review_resolve.review(
                 worktree, pr=n, title=rec.title or "",
                 merge_diff=str(result.get("merge_diff") or ""),
-                patch=patch,
+                resolution=resolution,
                 resolutions=list(result.get("resolutions") or []),
                 history=history, store_context=context, lens=lens)
             reviews.append({"lens": lens, **verdict})
@@ -1805,12 +1816,17 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
                     "host": settings.worker_id(), "at": _now(),
                     "tier": risktier.tier_facet(all_paths), "compile_preflight": pf,
                     "reviews": [], "tests": None, "objection": objection}
+    resolution = _resolution_diff(n)
+    if resolution is None:
+        park("the merge commit's resolution could not be read")
+        return
     history = resolve_evidence.history(worktree, paths)
     context = resolve_evidence.store_context(rec)
     related = resolve_evidence.related_tests(worktree, all_paths)
     for lens in ("behavior", "history"):
         v = review_resolve.review(worktree, pr=n, title=rec.title or "",
-                                  merge_diff=str(result.get("merge_diff") or ""), patch=patch,
+                                  merge_diff=str(result.get("merge_diff") or ""),
+                                  resolution=resolution, follow_up=follow_up,
                                   resolutions=list(result.get("resolutions") or []),
                                   history=history, store_context=context, lens=lens)
         second["reviews"].append({"lens": lens, **v})

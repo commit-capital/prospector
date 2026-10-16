@@ -192,6 +192,11 @@ _DISALLOWED = [
 # in its environment and never from argv.
 GIT_READ = str(REPO_ROOT / "prospector_app" / "agent" / "git-read")
 GIT_READ_ENV = "PROSPECTOR_GIT_WORKTREE"
+# How a prompt tells the agent to call GIT_READ: the allow rule matches a Bash
+# command that starts with its path, so a `cd`, a variable or a compound line
+# around it is denied.
+GIT_READ_USAGE = (f"Run each git command as a Bash call of its own that starts with "
+                  f"{GIT_READ} itself: no `cd`, shell variable, pipe, `;` or `&&`.")
 
 # What the CLI itself needs to start and authenticate. Everything else an
 # `env_allow` agent sees is named by its caller.

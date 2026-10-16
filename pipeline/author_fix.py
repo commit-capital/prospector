@@ -80,6 +80,7 @@ __CONTRIBUTOR_DOCS__How to work:
 3. Do not weaken, skip, or delete a test to make something pass.
 4. Do not stage, commit, or push. `__GIT__ status` and `__GIT__ diff` show your
    own edits; it is the only git available, and it only reads.
+   __GIT_USAGE__
 __CHECK__
 __HOUSE_STYLE__
 
@@ -181,6 +182,7 @@ def _prompt(worktree: str, pr: int, title: str, body: str, goal: str,
         "__WITHHELD__": _withheld_block(withheld_globs),
         "__CHECK__": _check_block(diff_path is not None),
         "__GIT__": headless_agent.GIT_READ,
+        "__GIT_USAGE__": headless_agent.GIT_READ_USAGE,
         "__CONTRIBUTOR_DOCS__": authoring.docs_block(contributor_docs),
         "__HOUSE_STYLE__": authoring.HOUSE_STYLE,
     })

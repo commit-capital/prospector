@@ -53,10 +53,11 @@ the result has not been pushed. You decide whether it may be.
 
 __LENS__
 
-The worktree at __WORKTREE__ holds the merged result (HEAD is the merge
-commit; HEAD^1 is the PR's branch, HEAD^2 the base). Read whatever you need
-there. `__GIT__ log`, `__GIT__ show` and `__GIT__ diff` reach both parents; it
-is the only git available, and its paths are relative to the worktree root.
+The worktree at __WORKTREE__ holds the merged result (__MERGE__ is the merge
+commit; __MERGE__^1 is the PR's branch, __MERGE__^2 the base). Read whatever
+you need there. `__GIT__ log`, `__GIT__ show` and `__GIT__ diff` reach both
+parents; it is the only git available, and its paths are relative to the
+worktree root. __GIT_USAGE__
 
 What the pull request is about, from this project's triage records:
 __STORE_CONTEXT__
@@ -72,11 +73,13 @@ __MERGE_DIFF__
 The bot's stated rationale per file:
 __RESOLUTIONS__
 
-The bot's final change against the PR's branch:
+The bot's resolution: how the merge commit differs from git's own merge of
+its two parents, conflict markers included. This is everything the bot wrote;
+every other file and line in the merge comes unchanged from one parent.
 ```
-__PATCH__
+__RESOLUTION__
 ```
-
+__FOLLOW_UP__
 Default to "unsafe". Say "safe" only if you looked and found nothing — not
 because nothing jumped out. A wrong rejection parks this for a human, costing
 one click. A wrong approval pushes a bot's guess onto a stranger's branch
@@ -106,8 +109,16 @@ def _resolutions_block(resolutions: list[dict]) -> str:
                      for r in resolutions)
 
 
-def _prompt(worktree: str, *, pr: int, title: str, merge_diff: str, patch: str,
-            resolutions: list[dict], history: str, store_context: str,
+def _follow_up_block(follow_up: str) -> str:
+    if not follow_up:
+        return ""
+    return ("\nAfter an earlier review objected, a second agent committed this on top of\n"
+            "the merge (it is HEAD). Judge it as part of the change:\n"
+            f"```\n{_clip(follow_up)}\n```\n")
+
+
+def _prompt(worktree: str, *, pr: int, title: str, merge_diff: str, resolution: str,
+            follow_up: str, resolutions: list[dict], history: str, store_context: str,
             lens: str) -> str:
     return headless_agent.fill(PROMPT, {
         "__PR__": pr,
@@ -118,8 +129,11 @@ def _prompt(worktree: str, *, pr: int, title: str, merge_diff: str, patch: str,
         "__HISTORY__": history.strip() or "  (no history available)",
         "__MERGE_DIFF__": _clip(merge_diff),
         "__RESOLUTIONS__": _resolutions_block(resolutions),
-        "__PATCH__": _clip(patch),
+        "__RESOLUTION__": _clip(resolution),
+        "__FOLLOW_UP__": _follow_up_block(follow_up),
+        "__MERGE__": "HEAD^" if follow_up else "HEAD",
         "__GIT__": headless_agent.GIT_READ,
+        "__GIT_USAGE__": headless_agent.GIT_READ_USAGE,
     })
 
 
@@ -130,9 +144,9 @@ def _unsafe(reason: str, failed: bool = False) -> dict:
     return out
 
 
-def review(worktree: str, *, pr: int, title: str, merge_diff: str, patch: str,
+def review(worktree: str, *, pr: int, title: str, merge_diff: str, resolution: str,
            resolutions: list[dict], history: str, store_context: str,
-           lens: str, on_event: Callable[[tuple], None] | None = None) -> dict:
+           lens: str, follow_up: str = "", on_event: Callable[[tuple], None] | None = None) -> dict:
     """Judge the resolution through `lens`, returning
     {"verdict": "safe"|"unsafe", "reason": str, "concerns": list[str]}.
 
@@ -146,7 +160,8 @@ def review(worktree: str, *, pr: int, title: str, merge_diff: str, patch: str,
     try:
         text = headless_agent.run_agent(
             _prompt(worktree, pr=pr, title=title, merge_diff=merge_diff,
-                    patch=patch, resolutions=resolutions, history=history,
+                    resolution=resolution, follow_up=follow_up,
+                    resolutions=resolutions, history=history,
                     store_context=store_context, lens=lens),
             allow_gh=False, cwd=worktree, edit_root=None, read_root=worktree,
             git_root=worktree, env_allow=(),
