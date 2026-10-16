@@ -163,3 +163,31 @@ def test_close_wontfix_suggestion_carries_the_analysis_rationale():
     assert s["rationale"] == "breaks assertCheckoutOwner"
     assert s["accept"].tags == ["wontfix", "agent-suggested"]
     assert s["bot_comment"] == decisions.default_comment(models.CloseAction(action="CLOSE_WONTFIX"))
+
+
+def test_a_request_changes_comment_lists_each_ask_once(tmp_path):
+    """An unmergeable merge pick fails the bar twice ("merge conflicts" and
+    "drift conflicts"), both asking for the same rebase; the analysis's own asks
+    may word it too (#11335)."""
+    from pipeline import gates
+    from pipeline import settings
+    from pipeline.store import Store
+    from prospector_app.backend import suggest
+    now, head = "2026-10-06T00:00:00+00:00", "h1"
+    rebase = (f"Rebase onto current {settings.default_branch()} and resolve "
+              "the merge conflicts.")
+    st = Store(tmp_path)
+    st.save_pr({"pr": 1, "meta": {"title": "t", "author": "a", "state": "open", "draft": False,
+                                  "head_sha": head, "checked_at": now},
+                "signals": {"ci": "unreported", "mergeable": False, "checked_at": now,
+                            "against_head_sha": head},
+                "drift": {"state": "conflicts", "checked_at": now, "against_head_sha": head}})
+    st.edit_pr(1).route_to("merge", "r", asks=["rebase onto current "
+                                               f"{settings.default_branch()} and resolve "
+                                               "the merge conflicts"])
+    pr = st.load_pr(1)
+    comment = suggest.suggest_for_record(pr, "request-changes")["comment"]
+    asks = [line[2:] for line in comment.splitlines() if line.startswith("- ")]
+    assert len(asks) == 2
+    assert asks[1].startswith(gates.CI_UNREPORTED[0].upper())
+    assert asks[0].lower().rstrip(".") == rebase.lower().rstrip(".")

@@ -1892,6 +1892,21 @@ def forced_disposition(pr: Pr) -> tuple[str, str] | None:
     return min(routes, key=lambda r: _DISPOSITION_RANK[r[0]])
 
 
+def dedupe_asks(asks: list[str]) -> list[str]:
+    """`asks` with each request kept once, first occurrence and order kept. Two
+    asks are the same request when they match ignoring case, whitespace and
+    trailing punctuation: the analysis's asks and the bar's derived asks can
+    word one request with those differences."""
+    seen: set[str] = set()
+    out = []
+    for a in asks:
+        key = " ".join(a.split()).casefold().rstrip(".!;: ")
+        if key not in seen:
+            seen.add(key)
+            out.append(a)
+    return out
+
+
 def bar_asks(reasons: list[str], pr: Pr | None = None) -> list[str]:
     """Turn a PR's clean-gate failures into actionable author asks. With `pr`,
     each active reviewer's blocker supplies its own ask."""
@@ -1932,7 +1947,7 @@ def bar_asks(reasons: list[str], pr: Pr | None = None) -> list[str]:
                         "or past its 3,000-file listing), so they cannot be reviewed. "
                         "Split the PR, or drop built, generated, or vendored files it "
                         "does not need.")
-    return asks or ["Address the outstanding quality gates before this can merge."]
+    return dedupe_asks(asks) or ["Address the outstanding quality gates before this can merge."]
 
 
 # Staleness never demotes: an unmeasured gate proves nothing, and the fail-closed
