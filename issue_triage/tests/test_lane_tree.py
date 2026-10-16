@@ -220,6 +220,26 @@ def test_additive_test_edits_rejects_an_import_widening_with_an_edited_assertion
     assert _edit(repo, 'toBe(1);', 'toBe(2);') == []
 
 
+def _with_type_import(tmp_path):
+    base = _base(tmp_path)
+    (base / "src" / "x.test.ts").write_text(
+        'import type { Config } from "../src/config";\n' + _TEST_FILE)
+    return lane_tree.materialize(base, tmp_path / "w")
+
+
+def test_additive_test_edits_accepts_merging_a_type_import_into_a_value_import(tmp_path):
+    repo = _with_type_import(tmp_path)
+    assert _edit(repo, 'import type { Config } from "../src/config";',
+                 'import {\n  load,\n  type Config,\n} from "../src/config";') \
+        == ["src/x.test.ts"]
+
+
+def test_additive_test_edits_rejects_dropping_a_type_import_name(tmp_path):
+    repo = _with_type_import(tmp_path)
+    assert _edit(repo, 'import type { Config } from "../src/config";',
+                 'import { load } from "../src/config";') == []
+
+
 def test_additive_test_edits_rejects_a_deleted_test_file(tmp_path):
     repo = _with_test_file(tmp_path)
     (repo / "src" / "x.test.ts").unlink()
