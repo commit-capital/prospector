@@ -42,7 +42,7 @@ def solo(tmp_path, monkeypatch):
     calls: dict = {"agent": _writes_test_and_fix, "red": RED, "green": GREEN,
                    "related": None, "env": None, "commands": []}
 
-    def fake_author(worktree, *, title, body, env, guidance=None, notes=None, attempt=None,
+    def fake_author(worktree, *, title, body, env, model=None, guidance=None, notes=None, attempt=None,
                     contributor_docs=(), on_event=None):
         calls["env"] = env
         calls["guidance"], calls["notes"], calls["attempt"] = guidance, notes, attempt

@@ -457,10 +457,18 @@ at least two, shipping it with the tests of every reproduction it passed:
 candidates whose reproductions pin different behavior, each with a fix that
 passes its own, end `fix-disputed`; fixes that would agree but for existing
 tests they all fail end `fix-pinned`, naming those tests, since the lane never
-rewrites a repository's tests.
+rewrites a repository's tests. A run with no agreed fix and one reproduction,
+passed by its own fix, judges that fix (`cross_lane.lone_reproduction`) unless
+a candidate called the report no defect; the run records `agreement.single`,
+and a fixed attempt so marked waits for an operator's Propose
+(`trust_boundary.held`) and says so under the proposal's risks.
 Agreement proves a fix does what the report asks, never that it does nothing
 more, so a cross-lane fix that clears the host's checks faces the scope-safety
-reviewer too and ends `fixed` only on its explicit `safe`; its inventory of
+reviewer too and ends `fixed` only on its explicit `safe`. A rejected pick is
+revised by its own model, told the reviewer's reason, in up to
+`cross_lane.REVISIONS` rounds of the one-agent lane, each with every check and a
+fresh review, and counts only while it still passes the shipped reproductions
+as they were. The reviewer's inventory of
 unasked changes to inputs that worked vetoes that `safe` only on tier-0 paths,
 and elsewhere is listed under the proposal's risks. The scope-safety
 reviewer returns an inventory of every behavior the change alters, each marked

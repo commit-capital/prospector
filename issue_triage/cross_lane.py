@@ -16,15 +16,23 @@ readings pin different behavior no single fix passes, so a run with two ends
 that fails only existing tests names them (`pinned_failures`), and fixes that
 would be agreed but for such tests end the run `fix-pinned`: the lane never
 rewrites a repository's tests, so whether they still hold is a maintainer's
-call. Any other run without an agreed fix ends `fix-unproven`. The smallest
-agreed fix then goes through the host's checks (`solo_lane.host_checks`:
-compile, related tests, the full suite) together with the tests of every
-reproduction it passed (`shipped_reproductions`). Agreement proves the fix does
-what the report asks, never that it does nothing more, so a fix that clears the
-checks then faces the scope-safety reviewer (`review_issue_fix`), and ends
-`fixed` only on its explicit `safe`. The reviewer's inventory of unasked changes to inputs that
-worked vetoes a `safe` only on tier-0 paths; elsewhere it is recorded beside the
-verdict for the maintainer who reviews the proposal.
+call. A run with no agreed fix whose one reproduction is passed by its own fix
+takes that fix forward (`lone_reproduction`) unless a candidate judged the
+report no defect, recording `agreement.single`, which holds a fixed attempt for
+an operator's Propose (`trust_boundary.held`). Any other run without an agreed
+fix ends `fix-unproven`. The picked fix then goes through the host's checks
+(`solo_lane.host_checks`: compile, related tests, the full suite) together with
+the tests of every reproduction it passed (`shipped_reproductions`). Agreement
+proves the fix does what the report asks, never that it does nothing more, so a
+fix that clears the checks then faces the scope-safety reviewer
+(`review_issue_fix`), and ends `fixed` only on its explicit `safe`. A rejected
+pick is revised by its own model, told the reviewer's reason (`_revise`, at
+most REVISIONS rounds): each round is the one-agent lane over the pick's patch,
+with every check and a fresh review, and counts only while the revised fix
+still passes the shipped reproductions as they were. The reviewer's inventory
+of unasked changes to inputs that worked vetoes a `safe` only on tier-0 paths;
+elsewhere it is recorded beside the verdict for the maintainer who reviews the
+proposal.
 
 `run` returns the staged lane's `LaneResult`, so the replay scores it like the
 other lanes; `agent_runs` counts every candidate and the reviewer.
@@ -63,6 +71,9 @@ from pipeline import (
 
 # Reproductions an agreed fix must pass, its own among them.
 AGREEMENT = 2
+
+# Rounds a rejected pick is revised in, each against the last rejection.
+REVISIONS = 2
 
 
 @dataclass
@@ -177,6 +188,16 @@ def agreed_candidates(live: list[Candidate], *,
     return [c for c in live if len(c.passes) >= AGREEMENT
             and all(ok or (apart_from_pinned and bool(c.pinned.get(r)))
                     for r, ok in c.passes.items())]
+
+
+def lone_reproduction(cands: list[Candidate],
+                      repros: list[Candidate]) -> Candidate | None:
+    """The one reproduction of a run, when its own fix passes it and no
+    candidate judged the report no defect; None otherwise."""
+    if len(repros) != 1 or any(c.ending == "not-a-defect" for c in cands):
+        return None
+    lone = repros[0]
+    return lone if lone.passes.get(lone.index) else None
 
 
 def readings(live: list[Candidate]) -> list[list[Candidate]]:
@@ -298,6 +319,56 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         return None, "", reproduction, 2
     finally:
         shutil.rmtree(workdir / "pick", ignore_errors=True)
+
+
+def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
+            repros: list[Candidate], result: dict, reason: str, *,
+            proof_patch: Callable[..., Path], label: str,
+            on_step: Callable[[str], None]) -> tuple[str | None, str, dict | None, int]:
+    """Revise a pick the scope-safety reviewer rejected for `reason`, in up to
+    REVISIONS rounds, recording each on `result["revisions"]` and a cleared
+    revision's patch, proof, reviews and boundary on `result`. Returns the ending
+    it stops at (None when a revision clears every check) with the reason, the
+    cleared revision's reproduction record, and the agent runs spent."""
+    shipped = shipped_reproductions(pick, repros)
+    test_patch = "".join(r.test_patch for r in shipped)
+    cmd = verify_driver.derive_test_command([p for r in shipped for p in r.test_paths])
+    assert cmd is not None  # a reproduction has test paths
+    rounds: list[dict] = result.setdefault("revisions", [])
+    patch, summary, root_cause = result["patch"], result["summary"], result["root_cause"]
+    spent = 0
+    ending, detail = "fix-rejected", f"scope-safety: {reason}"
+    for n in range(1, REVISIONS + 1):
+        on_step(f"revising the fix: round {n}")
+        res = solo_lane.run(spec, workdir=workdir / f"revise-{n}", on_step=on_step,
+                            start_patch=patch, review=True, model=pick.model,
+                            attempt={"summary": summary, "root_cause": root_cause,
+                                     "review": reason})
+        spent += res.agent_runs
+        revised = res.result or {}
+        record = {"round": n, "answering": reason, "ending": res.ending,
+                  "detail": res.detail[:300], "summary": revised.get("summary", "")}
+        rounds.append(record)
+        if res.ending == "fixed":
+            fix = diffpaths.filter_diff(revised["patch"], lambda p: not diffpaths.is_test_path(p))
+            legs = prove.green_legs(spec.base, patch=proof_patch(test_patch, fix),
+                                    test_cmd=cmd, label=label)
+            record["reproductions_pass"] = _twice(legs, gates.SENTINEL_PASS)
+            if record["reproductions_pass"]:
+                result.update({k: revised[k] for k in (
+                    "patch", "changes", "summary", "root_cause", "proof", "threat", "tier",
+                    "checks", "boundary") if k in revised})
+                result["reviews"] = [*result.get("reviews", []), *revised.get("reviews", [])]
+                return None, "", res.reproduction, spent
+            return ("fix-rejected", "the revision no longer passes the reproductions it "
+                                    "was revised against", None, spent)
+        if res.ending != "fix-rejected":
+            return res.ending, res.detail, None, spent
+        reason = res.detail.removeprefix("scope-safety: ")
+        patch, summary = revised.get("patch") or patch, revised.get("summary") or summary
+        root_cause = revised.get("root_cause") or root_cause
+        ending, detail = res.ending, res.detail
+    return ending, detail, None, spent
 
 
 def _proof_patcher(spec: fix_lane.LaneSpec, label: str) -> Callable[..., Path]:
@@ -427,18 +498,36 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                     c.pinned[r.index] = pinned
         agreed = agreed_candidates(live)
         result["candidates"] = [c.summary() for c in cands]
+        lone = None if agreed else lone_reproduction(cands, repros)
         result["agreement"] = {"reproductions": [r.index for r in repros],
-                               "agreed": [c.index for c in agreed]}
-        if not agreed:
+                               "agreed": [c.index for c in agreed],
+                               **({"single": True} if lone else {})}
+        if not agreed and lone is None:
             return finish(*_unagreed(live, repros, result))
 
-        pick = min(agreed, key=lambda c: (issue_gates.changed_line_count(c.fix_patch), c.index))
+        pick = lone or min(agreed, key=lambda c: (issue_gates.changed_line_count(c.fix_patch),
+                                                  c.index))
         ending, detail, reproduction, spent = _judge_pick(
             spec, workdir, pick, repros, result, proof_patch=proof_patch, label=label,
             on_step=on_step)
         agent_runs += spent
+        if ending == "fix-rejected":
+            ending, detail, revised, spent = _revise(
+                spec, workdir, pick, repros, result, detail.removeprefix("scope-safety: "),
+                proof_patch=proof_patch, label=label, on_step=on_step)
+            agent_runs += spent
+            reproduction = revised or reproduction
+            if ending is None:
+                rounds = len(result["revisions"])
+                return finish("fixed", f"revised in {rounds} round(s) after the scope-safety "
+                                       "review; the revision passes every shipped "
+                                       "reproduction, the host's checks and a fresh review")
         if ending:
             return finish(ending, detail)
+        if lone is not None:
+            return finish("fixed", f"only {pick.model}'s tests (1 of {len(cands)} candidates) "
+                                   "reproduce the defect; its fix passes them and clears the "
+                                   "host's checks and the scope-safety review")
         return finish("fixed", f"{len(agreed)} of {len(live)} fixes pass all {len(repros)} "
                                "reproductions; the smallest clears the host's checks and the "
                                "scope-safety review")
