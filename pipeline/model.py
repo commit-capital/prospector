@@ -279,11 +279,12 @@ class Pr:
     @property
     def asks(self) -> list | None:
         """The effective author asks: the stored ANALYZE asks, with the asks a
-        blocked merge pick or a demoted close-dup pick derives appended."""
+        blocked merge pick or a demoted close-dup pick derives appended, each
+        request listed once."""
         asks = self._analysis().get("asks")
         route = self._stored_route()
         if route is not None and route[2]:
-            return (asks or []) + route[2]
+            return gates.dedupe_asks((asks or []) + route[2])
         return asks
 
     @property
