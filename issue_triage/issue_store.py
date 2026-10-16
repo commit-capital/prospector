@@ -33,11 +33,12 @@ ISSUE_FIX_SOURCES = ("operator", "hunter", "reporter", "followup", "public")
 # Where the follow-up on an issue's proposed pull request stands
 # (`issue_triage.followup`).
 FOLLOWUP_STATES = ("watching", "ready", "handed-back", "done")
+TRIAGE_VERDICTS = ("go", "ask", "skip")
 # How a `done` follow-up's pull request ended.
 FOLLOWUP_CLOSED_AS = ("merged", "closed")
 ISSUE_SECTIONS = ("meta", "summary", "repro", "cluster", "analysis", "links", "resolution",
                   "fix_scan", "fix_request", "fix_run", "fix_thread", "fix_followup",
-                  "fix_public")
+                  "fix_public", "fix_triage")
 
 
 def validate_issue(rec: dict) -> None:
@@ -97,6 +98,10 @@ def validate_issue(rec: dict) -> None:
         if fu.get("closed_as") is not None and fu["closed_as"] not in FOLLOWUP_CLOSED_AS:
             raise ValidationError(f"fix_followup.closed_as: {fu['closed_as']!r} not in "
                                   f"{list(FOLLOWUP_CLOSED_AS)}")
+    tri = rec.get("fix_triage")
+    if tri and tri.get("verdict") not in TRIAGE_VERDICTS:
+        raise ValidationError(
+            f"fix_triage.verdict: {tri.get('verdict')!r} not in {list(TRIAGE_VERDICTS)}")
     pub = rec.get("fix_public")
     if pub:
         for field in ("labels", "posted", "queued"):

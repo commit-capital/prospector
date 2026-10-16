@@ -8,9 +8,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from issue_triage import dispute_question, fix_review, fix_review_runner
+from issue_triage import dispute_question, fix_review, fix_review_runner, fixability, public_loop
 from issue_triage.issue_store import IssueStore
-from pipeline import profile, settings
+from pipeline import profile, prove, settings
 from pipeline import store as S
 from prospector_app.backend import data, issue_data, issue_fix_worker, lane_health
 
@@ -185,6 +185,12 @@ def test_no_reply_waits_until_the_default_is_due(store, monkeypatch):
     assert store.load_issue(1).fix_request["answer"] == {"label": "A"}
 
 
+def _triaged(store: IssueStore, n: int, verdict: str = "go", fixability: int = 50,
+             **extra: object) -> None:
+    store.edit_issue(n).record_fix_triage({"verdict": verdict, "kind": "defect",
+                                           "fixability": fixability, **extra})
+
+
 @pytest.fixture
 def hunting(store, monkeypatch):
     monkeypatch.setattr(issue_data, "issues", lambda: store.all_issues(omit_candidates=True))
@@ -193,6 +199,8 @@ def hunting(store, monkeypatch):
         **store.load_issue(1).raw["meta"], "created_at": (now - timedelta(days=2)).isoformat()}})
     store.save_issue({**store.load_issue(2).raw, "meta": {
         **store.load_issue(2).raw["meta"], "created_at": (now - timedelta(days=1)).isoformat()}})
+    for n in (1, 2):
+        _triaged(store, n)
     return store
 
 
@@ -202,11 +210,33 @@ def test_the_hunter_queues_the_newest_fresh_issue(hunting):
     assert req["action"] == "solve" and req["source"] == "hunter"
 
 
-def test_the_hunter_skips_poorly_reproduced_and_feature_issues(hunting):
+def test_the_hunter_takes_only_what_the_triage_judged_go(hunting):
     now = datetime.now(timezone.utc).isoformat()
-    _issue(hunting, 3, created=now, grade="D")
-    _issue(hunting, 4, created=now, labels=["enhancement"])
+    for n, verdict in ((3, "skip"), (4, "ask")):
+        _issue(hunting, n, created=now)
+        _triaged(hunting, n, verdict, fixability=99)
+    _issue(hunting, 5, created=now)  # not yet triaged
+    _issue(hunting, 6, created=now, labels=["enhancement"])
+    _triaged(hunting, 6, fixability=99)
     assert issue_fix_worker.hunt(hunting) == 2
+
+
+def test_the_hunter_takes_the_most_fixable_before_the_newest(hunting):
+    _triaged(hunting, 1, fixability=90)
+    assert issue_fix_worker.hunt(hunting) == 1
+
+
+def test_a_triage_an_edit_outdated_is_not_hunted(hunting):
+    raw = hunting.load_issue(2).raw
+    hunting.save_issue({**raw, "meta": {**raw["meta"], "updated_at": "2026-10-20T00:00:00Z"}})
+    assert issue_fix_worker.hunt(hunting) == 1
+
+
+def test_the_hunter_carries_the_replies_the_triage_read(hunting):
+    _triaged(hunting, 2, guidance="maint: use option B", notes="author: it is option B")
+    assert issue_fix_worker.hunt(hunting) == 2
+    req = hunting.load_issue(2).fix_request
+    assert req["guidance"] == "maint: use option B" and req["notes"] == "author: it is option B"
 
 
 def test_the_hunter_keeps_to_its_daily_budget(hunting, monkeypatch):
@@ -234,12 +264,65 @@ def test_the_hunter_takes_a_maintainer_s_issue_ahead_of_a_newer_one(hunting):
     assert issue_fix_worker.hunt(hunting) == 1
 
 
-def test_the_hunter_takes_a_maintainer_s_issue_whatever_its_reproduction_grade(hunting):
-    now = datetime.now(timezone.utc).isoformat()
-    _issue(hunting, 3, created=now, grade="D")
-    raw = hunting.load_issue(3).raw
+def test_the_hunter_takes_a_maintainer_s_issue_ahead_of_a_more_fixable_one(hunting):
+    _triaged(hunting, 2, fixability=95)
+    raw = hunting.load_issue(1).raw
     hunting.save_issue({**raw, "meta": {**raw["meta"], "author_association": "MEMBER"}})
-    assert issue_fix_worker.hunt(hunting) == 3
+    assert issue_fix_worker.hunt(hunting) == 1
+
+
+@pytest.fixture
+def triaging(hunting, monkeypatch, tmp_path):
+    """The hunter's issues with no triage yet, a pinned base, and a triage
+    agent that answers from `judged["verdict"]`."""
+    for n in (1, 2):
+        hunting.save_issue({k: v for k, v in hunting.load_issue(n).raw.items()
+                            if k != "fix_triage"})
+    monkeypatch.setattr(prove, "pinned", lambda st: prove.PinnedBase(
+        sha="b" * 40, tier=2, image="img", clone=tmp_path))
+    monkeypatch.setattr(public_loop, "read_replies", lambda issue, after: [])
+    monkeypatch.setattr(issue_fix_worker, "_triage_failed", {})
+    judged: dict = {"verdict": {"verdict": "go", "kind": "defect", "fixability": 70},
+                    "issues": [], "asked": []}
+
+    def judge(issue, clone, *, base_sha, replies=()):
+        judged["issues"].append(issue.number)
+        if isinstance(judged["verdict"], Exception):
+            raise judged["verdict"]
+        return dict(judged["verdict"])
+
+    monkeypatch.setattr(fixability, "judge", judge)
+    monkeypatch.setattr(public_loop, "ask_triage",
+                        lambda issue, record: judged["asked"].append(issue.number) or "posted")
+    return judged
+
+
+def test_the_triage_judges_the_newest_untriaged_issue_and_books_it(hunting, triaging):
+    assert issue_fix_worker.triage_next(hunting) == 2
+    assert hunting.load_issue(2).fix_triage["verdict"] == "go"
+    assert issue_fix_worker.triage_next(hunting) == 1
+    assert issue_fix_worker.triage_next(hunting) is None
+    phases = [r.raw.get("phase") for r in hunting.runs() if hasattr(r, "raw")]
+    assert phases.count("issue-triage:run") == 2
+
+
+def test_an_ask_posts_its_question_and_counts_it(hunting, triaging):
+    triaging["verdict"] = {"verdict": "ask", "kind": "defect", "question": "A or B?"}
+    issue_fix_worker.triage_next(hunting)
+    tri = hunting.load_issue(2).fix_triage
+    assert triaging["asked"] == [2] and tri["asked"] == "posted" and tri["asks"] == 1
+
+
+def test_a_triage_that_cannot_finish_rests_the_issue(hunting, triaging):
+    triaging["verdict"] = ValueError("no JSON object found in agent output")
+    assert issue_fix_worker.triage_next(hunting) is None
+    assert issue_fix_worker.triage_next(hunting) is None
+    assert triaging["issues"] == [2, 1]  # 2 rests; 1 is tried next
+
+
+def test_no_triage_runs_while_capacity_is_paused(hunting, triaging, capacity):
+    capacity["open"] = False
+    assert issue_fix_worker.triage_next(hunting) is None and triaging["issues"] == []
 
 
 def test_a_priority_author_s_queued_request_runs_first(store, monkeypatch):

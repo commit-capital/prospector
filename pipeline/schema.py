@@ -102,7 +102,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 32 — an analysis may carry the `close-wontfix` disposition; an older validator
 #      refuses it.
 # 33 — a PR's `display` section carries no `why`; an older validator refuses it.
-STORE_SCHEMA_VERSION = 33
+# 34 — issues carry `fix_triage` (whether an issue is worth a fix attempt); an
+#      older issue validator warns on it as unknown and an older hunter queues
+#      the issues it skips.
+STORE_SCHEMA_VERSION = 34
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

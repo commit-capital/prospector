@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 # regardless of freshness (membership persists across updates). `links` is NOT
 # here — it is recomputed whenever ingest rewrites an issue (i.e. when its
 # meta/summary/repro move), against whatever PRs currently exist.
-UPDATED_BOUND = ("summary", "repro", "cluster", "analysis", "fix_scan")
+UPDATED_BOUND = ("summary", "repro", "cluster", "analysis", "fix_scan", "fix_triage")
 
 # Per-section producer-logic version; bump to mark every existing instance stale.
 SECTION_SCHEMA_VERSION: dict[str, int] = {}

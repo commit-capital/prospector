@@ -75,6 +75,19 @@ def handed_back(issue: int, key: str, reason: object) -> str:
         "", "It needs a maintainer to take it from here."])
 
 
+def triage_question(issue: int, key: str, question: object, readings: list) -> str:
+    """The question on issue `issue` when its report leaves the fix open."""
+    lines = ["Prospector's automated fix pipeline read this report against the current code "
+             "and needs one thing from you before it tries a fix:", "",
+             f"> {quiet(question)}?"]
+    shown = [quiet(r, REASON_MAX) for r in readings[:5] if quiet(r, REASON_MAX)]
+    if shown:
+        lines += ["", "The readings it sees:",
+                  *[f"- **{chr(65 + i)}.** {r}." for i, r in enumerate(shown)]]
+    lines += ["", "A reply here starts the fix with your answer."]
+    return _finish(issue, key, lines)
+
+
 def problems(body: str) -> list[str]:
     """Why a rendered comment may not be posted; empty when it may."""
     return dispute_question.problems(body)

@@ -67,6 +67,7 @@ from typing import TYPE_CHECKING
 from issue_triage import (
     fetch_issues,
     fix_review,
+    fixability,
     issue_ingest,
     public_comments,
     related_prs,
@@ -108,6 +109,9 @@ REFRESH_MAX_PAGES = 10
 SWAP_ATTEMPTS = 3
 # Attempts replies (or report edits) may start on one issue.
 MAX_REATTEMPTS = 3
+# Questions the fixability triage may ask on one issue before it is left to a
+# maintainer.
+MAX_ASKS = 2
 MAX_ROUTE_MISSES = 3
 CAP_KEY = "reattempts:capped"
 
@@ -406,21 +410,48 @@ def _first_line(body: str) -> str:
     return body.strip().splitlines()[0][:160] if body.strip() else ""
 
 
+def ask_triage(issue: Issue, record: dict) -> str:
+    """Post the fixability triage's question (`record`, verdict `ask`) on
+    issue `issue` as the bot, under `settings.issue_fix_public` and the scope
+    it serves, at most MAX_ASKS times an issue. What became of it: `posted`,
+    `dry-run`, `out-of-scope`, `capped`, `refused` (the rendered comment fails
+    `public_comments.problems`) or `error`."""
+    from prospector_app.backend import executor
+
+    asks = int((issue.fix_triage or {}).get("asks") or 0)
+    if asks >= MAX_ASKS:
+        return "capped"
+    mode = settings.issue_fix_public()
+    if mode == "off" or not in_scope(issue):
+        return "out-of-scope"
+    mode = issue_mode(issue, mode)
+    key = f"triage-{asks + 1}"
+    body = public_comments.triage_question(issue.number, key, record.get("question"),
+                                           list(record.get("readings") or []))
+    if public_comments.problems(body):
+        return "refused"
+    token = executor.mint_bot_token() if mode == "live" else None
+    res = executor.post_fix_comment(issue.number, body,
+                                    marker=public_comments.marker(issue.number, key),
+                                    issue=issue.number, comment_kind="triage-question",
+                                    token=token, dry_run=mode != "live")
+    status = res.get("status")
+    return ("posted" if status in ("executed", "exists")
+            else "dry-run" if status == "dry-run" else "error")
+
+
 def _rival_claim(issue: Issue) -> str | None:
-    """Why a fix on an issue a maintainer did not file should not open its own
-    pull request on its own: another open pull request already claims to fix it.
-    "" when the search could not run, so the proposal waits for the next pass;
-    None when nothing stands in the way, and always for a maintainer's issue."""
-    if gates.priority_author(issue.author, issue.author_association):
-        return None
+    """Why a fix should not open its own pull request on its own: another
+    author's pull request holds the issue (`fixability.active_claim`). "" when
+    the search could not run, so the proposal waits for the next pass; None when
+    nothing stands in the way."""
     found = related_prs.search(issue.number)
     if found is None:
         return ""
-    claims = [p for p in found if p["state"] == "open" and p["closes"]]
-    if not claims:
+    claim = fixability.active_claim(found)
+    if claim is None:
         return None
-    return "an open pull request already claims to fix it: " + ", ".join(
-        f"#{p['number']}" for p in claims[:3])
+    return f"an open pull request already claims to fix it: #{claim['pr']}"
 
 
 def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
