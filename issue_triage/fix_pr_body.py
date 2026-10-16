@@ -63,7 +63,10 @@ def _verification(result: dict, tests: list[str], test_cmd: str | None) -> list[
         lines.append("- They fail on the base commit and pass with the fix, each twice in a "
                      "fresh sandbox" + (f" (`{test_cmd}`)" if test_cmd else "") + ".")
     agreement = result.get("agreement")
-    if agreement:
+    if agreement and agreement.get("single"):
+        lines.append(f"- {len(result.get('candidates') or [])} independent attempts were made; "
+                     "only this fix's own tests reproduce the defect.")
+    elif agreement:
         lines.append(f"- {len(result.get('candidates') or [])} independent attempts wrote "
                      f"{len(agreement.get('reproductions') or [])} reproductions; this fix "
                      "passes every one of them.")
@@ -182,6 +185,9 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
             "- Written by an automated pipeline, not a person: review it as you would an "
             "outside contribution.",
             f"- Risk tier of the touched paths: {'?' if tier is None else tier}.",
+            *(["- Only one of the independent attempts reproduced the defect, so no second "
+               "reading of the report corroborates what its tests expect."]
+              if (result.get("agreement") or {}).get("single") else []),
             *(["- It touches code the repository marks as its highest risk (tier 0: "
                "permissions, secrets, authentication, supply chain). Check what it allows "
                "that was not allowed before, not only that it fixes the report."]

@@ -271,14 +271,14 @@ def host_checks(spec: fix_lane.LaneSpec, *, test_patch: str, fix_patch: str,
 def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         on_step: Callable[[str], None] = lambda step: None,
         start_patch: str | None = None, attempt: dict | None = None,
-        review: bool = False) -> fix_lane.LaneResult:
+        review: bool = False, model: str | None = None) -> fix_lane.LaneResult:
     """One agent reproduces and fixes `spec`'s issue; the host's re-gate and
     test runs name the ending. With `start_patch` the clone opens holding an
     earlier attempt (tests and change, uncommitted) that the agent revises, told
     about it by `attempt` ({summary, root_cause, review}); the whole change from
     the base is judged. `review` puts a fix that clears the host's checks
-    through the scope-safety reviewer too. The clone is removed on the way
-    out."""
+    through the scope-safety reviewer too. `model` pins the agent's model. The
+    clone is removed on the way out."""
     label = f"solo-{spec.issue}"
     clone_dir = workdir / "solo"
     agent_runs = 0
@@ -313,7 +313,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         env["PROSPECTOR_ISSUE_CHECK_MAX_RUNS"] = str(MAX_RUNS)
         on_step("agent revising the fix" if start_patch else "agent reproducing and fixing")
         agent_runs += 1
-        verdict = author(str(clone), title=spec.title, body=spec.body, env=env,
+        verdict = author(str(clone), title=spec.title, body=spec.body, env=env, model=model,
                          guidance=spec.guidance, notes=spec.notes, attempt=attempt,
                          contributor_docs=authoring.docs_from_tree(spec.base.clone))
         checks = check_records.collect(lane_check.records_path(workdir, "solo"), MAX_RUNS)

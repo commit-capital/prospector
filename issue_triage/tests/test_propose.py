@@ -464,3 +464,12 @@ def test_a_rival_whose_test_changed_the_fix_is_credited():
     linked = next(part for part in body.split("\n## ") if part.startswith("Linked"))
     assert "#12 by contrib" in linked and "#13" not in linked
     assert fix_pr_body.problems(title, body, message, issue=7) == []
+
+
+def test_a_fix_one_reproduction_backs_says_so_under_risks():
+    single = {**_result(), "candidates": [{}, {}, {}],
+              "agreement": {"reproductions": [1], "agreed": [], "single": True}}
+    body = _body(result=single)
+    assert "only this fix's own tests reproduce the defect" in body
+    assert "no second reading of the report corroborates" in body
+    assert "no second reading" not in _body()

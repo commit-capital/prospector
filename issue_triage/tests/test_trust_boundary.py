@@ -136,3 +136,17 @@ def test_a_report_the_intake_audit_did_not_clear_holds_its_fix(tmp_path):
     store.edit_issue(7).record_fix_run({"ending": "fixed", "patch": "p",
                                         "boundary": {"crossings": []}, "intake": intake})
     assert "talks to the agent" in (trust_boundary.held(store.load_issue(7)) or "")
+
+
+def test_a_fix_one_reproduction_backs_is_held(tmp_path):
+    store = IssueStore(tmp_path)
+    store.save_issue({"issue": 7, "meta": {"title": "t", "state": "open", "body": "b",
+                                           "updated_at": "2026-10-01T00:00:00Z",
+                                           "author": "boss", "author_association": "OWNER"}})
+    run = {"ending": "fixed", "patch": "p", "boundary": {"crossings": []},
+           "agreement": {"reproductions": [1], "agreed": [], "single": True}}
+    store.edit_issue(7).record_fix_run(run)
+    assert "only one candidate" in (trust_boundary.held(store.load_issue(7)) or "")
+    store.edit_issue(7).record_fix_run({**run, "agreement": {"reproductions": [0, 1],
+                                                             "agreed": [0, 1]}})
+    assert trust_boundary.held(store.load_issue(7)) is None

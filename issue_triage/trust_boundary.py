@@ -180,11 +180,14 @@ def hold(boundary: dict | None, *, maintainer_filed: bool) -> str | None:
 def held(issue: Issue) -> str | None:
     """Why issue's fixed, unproposed attempt waits for an operator, or None: a
     report the intake audit did not read as clear (`intake_audit.flag`), another
-    pull request's tests the fix fails (`second_opinion.flag`), else `hold`."""
+    pull request's tests the fix fails (`second_opinion.flag`), a fix only one
+    candidate's reproduction backs (`cross_lane.lone_reproduction`), else `hold`."""
     run = issue.fix_run or {}
     if run.get("ending") != "fixed" or (run.get("proposal") or {}).get("pr"):
         return None
     maintainer = gates.priority_author(issue.author, issue.author_association)
     return (intake_audit.flag(run.get("intake"))
             or second_opinion.flag(run.get("second_opinion"))
+            or ("only one candidate's tests reproduce the defect"
+                if (run.get("agreement") or {}).get("single") else None)
             or hold(run.get("boundary"), maintainer_filed=maintainer))

@@ -120,6 +120,8 @@ def cross(tmp_path, monkeypatch):
 
     def fake_author(worktree, *, title, body, env, model=None, guidance=None, notes=None,
                     attempt=None, contributor_docs=(), on_event=None):
+        if Path(worktree).parent.name == "solo":  # a revision round
+            return state["agents"][0](worktree)
         index = int(Path(worktree).parent.name.split("-")[1])
         state["models"].append((index, model))
         state["docs"].append(list(contributor_docs))
@@ -239,15 +241,33 @@ def test_a_majority_reading_does_not_outvote_a_reproduction_it_fails(cross):
     assert res.ending == "fix-disputed"
 
 
-def test_a_single_reproduction_cannot_be_agreed_on(cross):
-    def no_test(wt: str) -> dict:
-        (Path(wt) / "src" / "x.ts").write_text("export const x = 2;\n")
-        return {"summary": "s", "root_cause": "r", "tests": [],
-                "changes": [{"path": "src/x.ts", "rationale": "r"}]}
+def _no_test(wt: str) -> dict:
+    (Path(wt) / "src" / "x.ts").write_text("export const x = 2;\n")
+    return {"summary": "s", "root_cause": "r", "tests": [],
+            "changes": [{"path": "src/x.ts", "rationale": "r"}]}
 
-    cross["agents"] = [_writes("a.test.ts", 2), no_test, no_test]
+
+def test_a_lone_reproduction_its_own_fix_passes_is_judged_and_marked_single(cross):
+    cross["agents"] = [_no_test, _writes("b.test.ts", 2), _no_test]
+    res = cross["run"]()
+    assert res.ending == "fixed" and "1 of 3 candidates" in res.detail
+    assert res.result["pick"] == 1
+    assert res.result["agreement"]["single"] is True
+    assert "src/b.test.ts" in res.result["patch"] and cross["reviewed"]
+
+
+def test_a_lone_reproduction_its_own_fix_fails_is_unproven(cross):
+    cross["agents"] = [_writes("a.test.ts", 2, sets=3), _no_test, _no_test]
     res = cross["run"]()
     assert res.ending == "fix-unproven" and "1 independent reproduction" in res.detail
+    assert "single" not in res.result["agreement"]
+
+
+def test_a_lone_reproduction_is_not_taken_when_a_candidate_judged_no_defect(cross):
+    cross["agents"] = [_writes("a.test.ts", 2), _no_test,
+                       lambda wt: {"give_up": "intended", "kind": "not-a-defect"}]
+    res = cross["run"]()
+    assert res.ending == "fix-unproven" and not cross["reviewed"]
 
 
 def test_an_untrusted_candidate_drops_out_and_the_others_can_still_agree(cross):
@@ -381,6 +401,7 @@ def test_a_fix_the_reviewer_judges_unsafe_ends_fix_rejected(cross):
                        "reason": "widens access for viewers", "concerns": []}
     res = cross["run"]()
     assert res.ending == "fix-rejected" and "widens access" in res.detail
+    assert len(res.result["revisions"]) == cross_lane.REVISIONS
 
 
 def test_a_reviewer_that_never_reached_a_verdict_is_a_machine_fault(cross):
@@ -548,3 +569,58 @@ def test_a_run_whose_report_does_not_parse_names_nothing_pinned():
                               output_tail="", duration_s=1.0)
     green = _tail_legs(gates.SENTINEL_TEST_FAIL, [PINNED])
     assert cross_lane.pinned_failures(green, unparsed_red, REPRO_PATCH, BASE_TESTS) == []
+
+
+UNSAFE = {"lens": "scope-safety", "verdict": "unsafe", "reason": "x leaks", "concerns": []}
+
+
+@pytest.fixture
+def reviser(cross, monkeypatch):
+    """The cross lane whose reviews answer in turn from `cross["verdicts"]`,
+    and whose revision rounds run the agent in `cross["reviser"]`."""
+    candidate_author = solo_lane.author
+    cross["revised_with"] = []
+
+    def author(worktree, **kw):
+        if Path(worktree).parent.name != "solo":
+            return candidate_author(worktree, **kw)
+        cross["revised_with"].append((kw.get("model"), (kw.get("attempt") or {}).get("review")))
+        return cross["reviser"](worktree)
+
+    def review(worktree, patch, **kw):
+        cross["reviewed"].append(patch)
+        return cross["verdicts"].pop(0)
+
+    monkeypatch.setattr(solo_lane, "author", author)
+    monkeypatch.setattr(review_issue_fix, "review", review)
+    cross["reviser"] = _writes("a.test.ts", 2)
+    return cross
+
+
+def test_a_rejected_pick_is_revised_by_its_own_model_and_ships_when_cleared(reviser):
+    reviser["verdicts"] = [UNSAFE, {**UNSAFE, "verdict": "safe"}]
+    res = reviser["run"]()
+    assert res.ending == "fixed" and "revised in 1 round" in res.detail
+    pick_model = ("opus", "sonnet", "opus")[res.result["pick"]]
+    assert reviser["revised_with"] == [(pick_model, "x leaks")]
+    assert [r["ending"] for r in res.result["revisions"]] == ["fixed"]
+    assert res.result["revisions"][0]["reproductions_pass"] is True
+    assert [r["verdict"] for r in res.result["reviews"]] == ["unsafe", "safe"]
+
+
+def test_revision_stops_after_its_rounds_answering_each_rejection(reviser):
+    reviser["verdicts"] = [UNSAFE, {**UNSAFE, "reason": "still leaks"},
+                           {**UNSAFE, "reason": "leaks again"}]
+    res = reviser["run"]()
+    assert res.ending == "fix-rejected" and "leaks again" in res.detail
+    assert [why for _, why in reviser["revised_with"]] == ["x leaks", "still leaks"]
+    assert len(res.result["revisions"]) == cross_lane.REVISIONS
+
+
+def test_a_revision_that_escapes_the_reproductions_is_not_shipped(reviser):
+    reviser["verdicts"] = [UNSAFE, {**UNSAFE, "verdict": "safe"}]
+    reviser["reviser"] = _writes("a.test.ts", 3)
+    res = reviser["run"]()
+    assert res.ending == "fix-rejected" and "no longer passes the reproductions" in res.detail
+    assert res.result["revisions"][0]["reproductions_pass"] is False
+    assert "export const x = 3" not in res.result["patch"]
