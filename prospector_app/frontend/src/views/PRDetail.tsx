@@ -11,7 +11,7 @@ import { Collapsible } from "../components/Collapsible";
 import { PRActionBar } from "../components/PRActionBar";
 import { AnalysisLine, PRStory, type AnalysisTarget } from "../components/PRStory";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
-import { FixAction, FixBody, ResolveConflictsButton } from "../components/FixPanel";
+import { FixAction, FixActionButton, FixBody } from "../components/FixPanel";
 import { designFixGoal, unavailable as fixUnavailable } from "../components/fixAvailability";
 import { withLiveConflicts } from "../components/liveChecks";
 import { ThreatEvidencePanel } from "../components/ThreatEvidencePanel";
@@ -300,18 +300,24 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const checksActions: Partial<Record<string, ReactNode>> = {};
   const checksBodies: Partial<Record<string, ReactNode>> = {};
   const checks = withLiveConflicts(pr.checks, fresh.byPr[prNum]);
-  const resolveConflicts = (
-    <ResolveConflictsButton req={pr.fix_request ?? null} runner={fixRunner} busy={fixBusy}
+  const fixButton = (action: "update" | "rebase" | "describe") => (
+    <FixActionButton action={action} req={pr.fix_request ?? null} runner={fixRunner} busy={fixBusy}
       resolved={resolved} onQueue={queueFix} />
   );
+  const resolveConflicts = fixButton("rebase");
+  if (!resolved) {
+    checksActions.drift = fixButton("update");
+    if (pr.signals?.ci === "unreported") checksActions.ci = fixButton("update");
+  }
   if (checks?.checks.some((check) => check.key === "mergeable" && check.status === "fail")) {
     checksActions.mergeable = resolveConflicts;
   }
 
-  const retriggerable = activeReviewers("review").filter((r) => r.retrigger);
-  if (retriggerable.length > 0 && !resolved) {
+  if (!resolved) {
+    const retriggerable = activeReviewers("review").filter((r) => r.retrigger);
     checksActions.review = (
       <>
+        {fixButton("describe")}
         {retriggerable.map((r) => (
           <button key={r.id} className="btn-secondary sm" onClick={() => void retriggerReview(r.id, r.label)}
             disabled={retriggering !== null}
@@ -635,13 +641,13 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       <ChecksPanel c={checks} stages={pr.stages} headSha={pr.live_head_sha ?? pr.head_sha}
         actions={checksActions} bodies={checksBodies} opened={openedCheck} />
 
-      {/* Autofix: have the configured machine user push a small fix to the
-          contributor's branch, rather than asking the author and waiting.
-          Content-authoring actions park their diff here for approval — nothing
-          reaches GitHub until "Approve & push". */}
+      {/* Other actions: have the configured machine user push a change to the
+          contributor's branch. Authored changes park their diff here for
+          approval — nothing reaches GitHub until "Approve & push". The
+          single-purpose actions also sit on the Checks rows they answer. */}
       <section className="panel">
         <div className="panel-head">
-          <h3>Autofix</h3>
+          <h3>Other actions</h3>
           <div className="panel-actions">
             <FixAction req={pr.fix_request ?? null} runner={fixRunner} busy={fixBusy}
               resolved={resolved} onQueue={queueFix} onDequeue={dequeueFix}

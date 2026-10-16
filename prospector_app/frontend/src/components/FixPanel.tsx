@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import type { FixAction, FixRequest, FixRunner } from "../api";
 import { useExec } from "../ExecContext";
+import { useRepoMeta } from "../RepoMetaContext";
 import { localDateTime, timeAgo } from "../timeAgo";
 import { unavailable } from "./fixAvailability";
 import { SandboxChecks } from "./SandboxChecks";
@@ -14,37 +15,46 @@ const PINNED_BAR = "Always applied: succeed only if the change is safe and "
                  + "well-constructed, with no risk of introducing a bug or "
                  + "destabilizing the system. Give up rather than guess.";
 
-const LABEL: Record<FixAction, string> = {
-  update: "↻ Re-test against current main",
-  rebase: "⟳ Resolve merge conflicts",
-  fix: "🔧 Author a fix",
-  describe: "📝 Rewrite the description",
-};
+/** Each action's button label and help, naming the repository's default branch. */
+function copy(b: string): { label: Record<FixAction, string>; help: Record<FixAction, string> } {
+  return {
+    label: {
+      update: `↻ Re-test against current ${b}`,
+      rebase: "⟳ Resolve merge conflicts",
+      fix: "🔧 Author a fix",
+      describe: "📝 Rewrite the description",
+    },
+    help: {
+      update: `Adds a merge commit bringing current ${b} into this PR, which makes CI `
+            + `and the review provider answer "does this still work against ${b} as it `
+            + "is today?\" — their last answer is only as current as the last push. "
+            + "Does not unblock a merge: GitHub merges cleanly with or without this. "
+            + `The contributor's commits are untouched, and a conflicting ${b} stops `
+            + "before anything is pushed. Moving the head does re-stale this PR's "
+            + "stored facts, so it needs a re-ingest afterwards.",
+      rebase: `Replays this PR's commits onto current ${b} to clear a conflict, then `
+            + "force-pushes behind a lease pinned to the author's exact head. The "
+            + "contributor stays the author of every commit, but the commits get new "
+            + "SHAs — which collapses inline review comments anchored to the old ones, "
+            + "and means anyone with the branch checked out needs a hard reset. It "
+            + "parks for your review before any of that happens.",
+      fix: "Has an agent write a change against this PR and park the diff for your "
+         + "review — nothing is pushed until you approve it. You say what to fix; a "
+         + "second agent that did not write it has to fail to find a reason to "
+         + "reject it, and the change has to compile, before it reaches your queue.",
+      describe: "Has an agent rewrite the PR description to follow the repository's "
+              + "pull request template, from the diff and the author's own text (kept "
+              + "verbatim). It parks for your review; approving posts it as the bot and "
+              + "asks the reviewer to look again. For PRs whose only review finding is "
+              + "the description itself.",
+    },
+  };
+}
 
-const HELP: Record<FixAction, string> = {
-  update: "Adds a merge commit bringing current main into this PR, which makes CI "
-        + "and the review provider answer \"does this still work against main as it "
-        + "is today?\" — their last answer is only as current as the last push. "
-        + "Does not unblock a merge: GitHub merges cleanly with or without this. "
-        + "The contributor's commits are untouched, and a conflicting main stops "
-        + "before anything is pushed. Moving the head does re-stale this PR's "
-        + "stored facts, so it needs a re-ingest afterwards.",
-  rebase: "Replays this PR's commits onto current main to clear a conflict, then "
-        + "force-pushes behind a lease pinned to the author's exact head. The "
-        + "contributor stays the author of every commit, but the commits get new "
-        + "SHAs — which collapses inline review comments anchored to the old ones, "
-        + "and means anyone with the branch checked out needs a hard reset. It "
-        + "parks for your review before any of that happens.",
-  fix: "Has an agent write a change against this PR and park the diff for your "
-     + "review — nothing is pushed until you approve it. You say what to fix; a "
-     + "second agent that did not write it has to fail to find a reason to "
-     + "reject it, and the change has to compile, before it reaches your queue.",
-  describe: "Has an agent rewrite the PR description to follow the repository's "
-          + "pull request template, from the diff and the author's own text (kept "
-          + "verbatim). It parks for your review; approving posts it as the bot and "
-          + "asks the reviewer to look again. For PRs whose only review finding is "
-          + "the description itself.",
-};
+function useCopy(): ReturnType<typeof copy> {
+  const { meta } = useRepoMeta();
+  return copy(meta?.default_branch ?? "the default branch");
+}
 
 /** The queue/run state strip: where an in-flight, parked, or failed autofix
  *  request stands. */
@@ -191,7 +201,7 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
   return null;
 }
 
-/** The action bar's autofix controls: queue an action, cancel a queued one, or
+/** The Other actions panel's controls: queue an action, cancel a queued one, or
  *  approve/discard one parked for review. */
 export function FixAction({ req, runner, busy, resolved, onQueue, onDequeue, onApprove }: {
   req: FixRequest | null;
@@ -203,6 +213,7 @@ export function FixAction({ req, runner, busy, resolved, onQueue, onDequeue, onA
   onApprove: () => void;
 }) {
   const { dryRun } = useExec();
+  const { label, help } = useCopy();
   const [goal, setGoal] = useState<string | null>(null);
   const status = req?.status;
   if (status === "running" || status === "pushing") {
@@ -258,33 +269,35 @@ export function FixAction({ req, runner, busy, resolved, onQueue, onDequeue, onA
   }
   return (
     <>
-      {(["update", "rebase", "fix", "describe"] as FixAction[]).map((action) => (
+      {(["update", "fix", "describe"] as FixAction[]).map((action) => (
         <button key={action} className="btn-secondary sm"
           disabled={busy != null || why != null}
           onClick={() => (action === "fix" ? setGoal(DEFAULT_GOAL) : onQueue(action))}
-          title={why ?? HELP[action]}>
-          {busy === action ? "Queuing…" : LABEL[action]}
+          title={why ?? help[action]}>
+          {busy === action ? "Queuing…" : label[action]}
         </button>
       ))}
     </>
   );
 }
 
-/** "Resolve merge conflicts" on its own, for the places that report a conflict:
- *  the live-state banner and the Checks row. Queues the same `rebase` the
- *  Autofix panel does, under the same availability rule. */
-export function ResolveConflictsButton({ req, runner, busy, resolved, onQueue }: {
+/** One autofix action as its own button, for the Checks row or banner it
+ *  answers. Queues through the same path, under the same availability rule, as
+ *  the Other actions panel. */
+export function FixActionButton({ action, req, runner, busy, resolved, onQueue }: {
+  action: Exclude<FixAction, "fix">;
   req: FixRequest | null;
   runner: FixRunner | null;
   busy: FixAction | "dequeue" | "approve" | null;
   resolved: boolean;
   onQueue: (action: FixAction) => void;
 }) {
+  const { label, help } = useCopy();
   const why = unavailable(runner, req, resolved);
   return (
     <button className="btn-secondary sm" disabled={busy != null || why != null}
-      onClick={() => onQueue("rebase")} title={why ?? HELP.rebase}>
-      {busy === "rebase" ? "Queuing…" : LABEL.rebase}
+      onClick={() => onQueue(action)} title={why ?? help[action]}>
+      {busy === action ? "Queuing…" : label[action]}
     </button>
   );
 }
