@@ -2,6 +2,7 @@ import type { VerifyDetail, VerifyFault, VerifyLevel, VerifyReasonMatch, VerifyR
 import type { ReactNode } from "react";
 import { Collapsible } from "./Collapsible";
 import { localDateTime, timeAgo } from "../timeAgo";
+import { useRepoMeta } from "../RepoMetaContext";
 
 /** The operator's #1 question when verification isn't green: whose fault is it?
  *  A leading badge answers it before any detail — PR-fault and harness-fault
@@ -9,8 +10,8 @@ import { localDateTime, timeAgo } from "../timeAgo";
 // The store's verify error kinds, in the operator's words; the raw kind stays
 // in the chip's title.
 const ERROR_KIND_LABEL: Record<string, string> = {
-  "base-lane": "main branch fails its own command",
-  "base-compile": "main branch fails its own command",
+  "base-lane": "default branch fails its own command",
+  "base-compile": "default branch fails its own command",
   "sandbox-error": "sandbox could not run",
   "agent-unavailable": "agent CLI offline",
   "agent-failed": "agent run failed",
@@ -208,7 +209,7 @@ function stepExtras(v: VerifyDetail, steps: VerifyStep[]): { byKey: Map<string, 
     const m = matchSummary(s.repro_reason_match);
     put(["repro"], {
       chips: repro.ran ? [<ExitChip key="repro" code={repro.exit_code} expected={20} decode={RED_DECODE} />] : [],
-      tags: [<span key="corr" className="chip chip-muted sm" title="The agent's own reproduction, run against pinned main. Corroborating evidence only — it never changes the outcome.">corroborating, not a gate</span>],
+      tags: [<span key="corr" className="chip chip-muted sm" title="The agent's own reproduction, run against the pinned default branch. Corroborating evidence only — it never changes the outcome.">corroborating, not a gate</span>],
       details: [
         repro.ran && <Field key="match" label="Did it fail the way the bug predicts?">{m.icon} {m.text}</Field>,
         blind?.expected_repro_signature && <Field key="sig" label="Predicted repro signature"><span className="verify-reasoning">{blind.expected_repro_signature}</span></Field>,
@@ -451,6 +452,7 @@ export function VerifyAction({ v, req, busy, canQueue, onQueue, onDequeue }: {
   onQueue: () => void;
   onDequeue: () => void;
 }) {
+  const branch = useRepoMeta().meta?.default_branch ?? "the default branch";
   const status = req?.status;
   if (!canQueue) return null;
   if (status === "running") {
@@ -466,7 +468,7 @@ export function VerifyAction({ v, req, busy, canQueue, onQueue, onDequeue }: {
   }
   return (
     <button className="btn-secondary sm" disabled={busy != null} onClick={onQueue}
-      title="Queue this PR for sandbox verification: the runner reproduces the claimed bug on pinned main, applies the PR, and confirms the fix in the isolated Docker sandbox.">
+      title={`Queue this PR for sandbox verification: the runner reproduces the claimed bug on pinned ${branch}, applies the PR, and confirms the fix in the isolated Docker sandbox.`}>
       {busy === "queue" ? "Queuing…" : v || status ? "↻ Re-verify" : "🧪 Queue for sandbox verification"}
     </button>
   );
@@ -484,12 +486,13 @@ export function VerifyBody({ v, req, runner, repo }: {
   runner: VerifyRunner | null;
   repo: string | null;
 }) {
+  const branch = useRepoMeta().meta?.default_branch ?? "the default branch";
   return (
     <>
       {req && <RequestStrip req={req} runner={runner} />}
       {!v && !req && (
         <div className="muted small">
-          Not run. Queue this PR to reproduce its claimed bug on pinned main and
+          Not run. Queue this PR to reproduce its claimed bug on pinned {branch} and
           confirm the fix red→green in the isolated sandbox.
         </div>
       )}
@@ -502,6 +505,7 @@ export function VerifyBody({ v, req, runner, repo }: {
 function VerifyRecord({ v, repo }: { v: VerifyDetail; repo: string | null }) {
   const baseSha = v.against_base_sha;
   const baseUrl = repo && baseSha ? `https://github.com/${repo}/commit/${baseSha}` : null;
+  const branch = useRepoMeta().meta?.default_branch ?? "the default branch";
 
   return (
     <>
@@ -520,9 +524,9 @@ function VerifyRecord({ v, repo }: { v: VerifyDetail; repo: string | null }) {
           <div className="vb-detail">{v.detail}</div>
           <div className="verify-meta muted small">
             {v.tier != null && <>tier {v.tier} · </>}
-            against main @{" "}
+            against {branch} @{" "}
             {baseUrl
-              ? <a href={baseUrl} target="_blank" rel="noreferrer" title="The pinned upstream main SHA this batch was verified against"><code>{baseSha?.slice(0, 12)}</code></a>
+              ? <a href={baseUrl} target="_blank" rel="noreferrer" title={`The pinned upstream ${branch} SHA this batch was verified against`}><code>{baseSha?.slice(0, 12)}</code></a>
               : <code>{baseSha?.slice(0, 12) ?? "?"}</code>}
             {v.checked_at && <span title={localDateTime(v.checked_at)}> · {timeAgo(v.checked_at)}</span>}
           </div>

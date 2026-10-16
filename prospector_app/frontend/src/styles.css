@@ -2,7 +2,7 @@
 :root {
   --bg: #ffffff; --panel: #f6f8fa; --panel2: #eaeef2; --border: #d1d9e0;
   --text: #1f2328; --muted: #59636e; --accent: #0969da;
-  --green: #1a7f37; --yellow: #9a6700; --red: #cf222e; --purple: #8250df; --gold: #9a6700;
+  --green: #1a7f37; --yellow: #9a6700; --red: #cf222e; --orange: #bc4c00; --purple: #8250df; --gold: #9a6700;
   --term-bg: #0a0e14; --term-fg: #e6edf3;
   --ready-tint: rgba(9, 105, 218, 0.06);
   --reason-tint: rgba(207, 34, 46, 0.07);
@@ -10,7 +10,7 @@
 :root[data-theme="dark"] {
   --bg: #0d1117; --panel: #161b22; --panel2: #1c2230; --border: #30363d;
   --text: #e6edf3; --muted: #8b949e; --accent: #2f81f7;
-  --green: #3fb950; --yellow: #d29922; --red: #f85149; --purple: #bc8cff; --gold: #e3b341;
+  --green: #3fb950; --yellow: #d29922; --red: #f85149; --orange: #f0883e; --purple: #bc8cff; --gold: #e3b341;
   --term-bg: #0a0e14; --term-fg: #e6edf3;
   --ready-tint: rgba(47, 129, 247, 0.06);
   --reason-tint: rgba(248, 81, 73, 0.08);
@@ -455,6 +455,11 @@ a:hover { text-decoration: underline; }
 .diff-size .size-warn { margin: 0; }
 .analysis-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; }
 .analysis-label { font-weight: 700; color: var(--muted); }
+.chip.chip-jump { background: none; font-family: inherit; line-height: inherit; cursor: pointer; }
+.chip.chip-jump:hover { text-decoration: underline; }
+/* The Summary's suggested action, set apart from the facts above it. */
+.summary-description { margin: 2px 0; background: var(--bg); }
+.summary-action { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--border); }
 .sug-headline { font-size: 15.5px; font-weight: 600; line-height: 1.4; }
 .sug-headline b { font-weight: 800; }
 .sug-stale { font-size: 11.5px; color: var(--yellow); }
@@ -726,8 +731,15 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .difffile { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 14px; }
 .difffile-head { background: var(--panel); padding: 8px 12px; font-family: ui-monospace, monospace; font-size: 12px; border-bottom: 1px solid var(--border); }
 /* jumpToDiff: the line or file header a finding's location link scrolled to. */
-@keyframes diff-flash { from { background: rgba(212, 167, 44, .45); } to { background: transparent; } }
-.difffile-head.diff-flash, tr.diff-flash > td { animation: diff-flash 2.2s ease-out; }
+@keyframes anchor-flash { from { background: rgba(212, 167, 44, .45); } to { background: transparent; } }
+/* A diff file above the leaf risk tier: an outlined T0 / T1 / T2 badge. */
+.tier-mark { display: inline-block; margin-right: 8px; padding: 0 6px; border: 1.5px solid currentColor; border-radius: 4px;
+  font-size: 11px; font-weight: 700; line-height: 16px; cursor: help; }
+.tier-mark-0 { color: var(--red); }
+.tier-mark-1 { color: var(--orange); }
+.tier-mark-2 { color: var(--yellow); }
+.checks-panel, .check-row, .check-row-collapsible, .difffile-head { scroll-margin-top: 12px; }
+.difffile-head.anchor-flash, tr.anchor-flash > td, .check-row.anchor-flash, .collapsible.anchor-flash, .checks-panel.anchor-flash { animation: anchor-flash 2.2s ease-out; }
 /* The PR page's reviewer bodies: summary first, then findings, each with its
    headline, a muted location link into the diff, and the verifier's reason. */
 .reviewer-summary { margin: 6px 0 2px; background: none; border: 0; padding: 0; }

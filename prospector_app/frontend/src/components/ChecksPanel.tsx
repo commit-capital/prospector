@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { ChecksRollup, CheckItem } from "../api";
 import { localDateTime, timeAgo } from "../timeAgo";
 import { Collapsible } from "./Collapsible";
+import { CHECKS_ID, checkRowId } from "./pageAnchor";
 
 const ICON = { pass: "✓", warn: "⚠", fail: "✗", na: "–" } as const;
 const TONE: Record<CheckItem["status"], "green" | "yellow" | "red" | "muted"> = {
@@ -29,12 +30,12 @@ function CheckRowLine({ chk, action, next }: { chk: CheckItem; action?: ReactNod
   );
 }
 
-function CheckRow({ chk, action, body, next }: {
-  chk: CheckItem; action?: ReactNode; body?: ReactNode; next?: boolean;
+function CheckRow({ chk, action, body, next, openSignal }: {
+  chk: CheckItem; action?: ReactNode; body?: ReactNode; next?: boolean; openSignal?: number;
 }) {
   if (!body) {
     return (
-      <div className={`check-row check-${chk.status}`}>
+      <div id={checkRowId(chk.key)} className={`check-row check-${chk.status}`}>
         <CheckRowLine chk={chk} action={action} next={next} />
       </div>
     );
@@ -43,7 +44,8 @@ function CheckRow({ chk, action, body, next }: {
   // itself a button — goes in the `action` slot, a sibling of it
   // (HTML forbids a button inside a button).
   return (
-    <Collapsible className={`check-row-collapsible check-${chk.status}`}
+    <Collapsible id={checkRowId(chk.key)} openSignal={openSignal}
+      className={`check-row-collapsible check-${chk.status}`}
       tone={TONE[chk.status]} summary={<CheckRowLine chk={chk} next={next} />} action={action}>
       {body}
     </Collapsible>
@@ -56,7 +58,7 @@ function CheckRow({ chk, action, body, next }: {
  *  it right next to the status, and — when there's more to say than the
  *  one-line summary carries — an expandable toggle for the detail. The first
  *  stage still owed is marked as the next step; the checks below it stay live. */
-export function ChecksPanel({ c, stages, headSha, actions, bodies }: {
+export function ChecksPanel({ c, stages, headSha, actions, bodies, opened }: {
   c: ChecksRollup | undefined;
   stages?: CheckItem[];
   /** the PR's head as last seen — what a stale row is older than */
@@ -65,6 +67,8 @@ export function ChecksPanel({ c, stages, headSha, actions, bodies }: {
   actions?: Partial<Record<string, ReactNode>>;
   /** per-key expanded detail; a row with no body isn't expandable. */
   bodies?: Partial<Record<string, ReactNode>>;
+  /** the row to open; a new `n` opens it again after the operator closed it */
+  opened?: { key: string; n: number } | null;
 }) {
   if (!c || c.checks.length === 0) return null;
   const ratio = c.total > 0 ? c.passed / c.total : null;
@@ -74,10 +78,10 @@ export function ChecksPanel({ c, stages, headSha, actions, bodies }: {
   const anyStale = [...steps, ...c.checks].some((r) => r.stale);
   const row = (chk: CheckItem) => (
     <CheckRow key={chk.key} chk={chk} action={actions?.[chk.key]} body={bodies?.[chk.key]}
-      next={chk.key === next} />
+      next={chk.key === next} openSignal={opened?.key === chk.key ? opened.n : undefined} />
   );
   return (
-    <section className={`checks-panel checks-panel-${tone}`}>
+    <section id={CHECKS_ID} className={`checks-panel checks-panel-${tone}`}>
       <div className="checks-panel-head">
         <h3>Checks</h3>
         <span className={`chip chip-${tone === "amber" ? "amber" : tone} sm`}>

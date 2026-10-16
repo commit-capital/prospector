@@ -3,8 +3,8 @@ import { api, type TrustBar, type TrustLadder, type TrustRate, type TrustType } 
 
 /** What each action type does, for an operator meeting the ladder cold. */
 const TYPE_LABELS: Record<string, { label: string; hint: string }> = {
-  update: { label: "Branch update", hint: "merge current main into a contributor's PR branch" },
-  rebase: { label: "Rebase", hint: "replay a PR's commits onto current main" },
+  update: { label: "Branch update", hint: "merge the current default branch into a contributor's PR branch" },
+  rebase: { label: "Rebase", hint: "replay a PR's commits onto the current default branch" },
   resolve: { label: "Conflict resolve", hint: "an agent resolves a rebase's merge conflicts" },
   fix: { label: "Fix draft", hint: "an agent authors a change against review findings" },
   describe: { label: "Description rewrite", hint: "an agent rewrites a PR description to the template" },

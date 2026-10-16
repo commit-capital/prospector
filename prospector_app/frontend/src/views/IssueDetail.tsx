@@ -7,7 +7,6 @@ import { useRepoMeta } from "../RepoMetaContext";
 import { TrustedAuthorName } from "../components/TrustedAuthor";
 import { DispositionChip, LinkedPRs, ReproChip } from "./Issues";
 import { IssueActionBar } from "../components/IssueActionBar";
-import { ClaimControl } from "../components/ClaimControl";
 import { FixStatusChip, IssueFixPanel } from "../components/IssueFixPanel";
 import { FlyoutIssueLink } from "../components/FlyoutIssueLink";
 
@@ -47,7 +46,6 @@ export function IssueDetailContent({ issue }: { issue: number }) {
               cluster {d.cluster}</Link>
           )}
           <a className="chip chip-muted" href={d.url} target="_blank" rel="noreferrer">GitHub ↗</a>
-          <ClaimControl kind="issue" n={d.number} />
         </div>
         <div className="muted small">
           opened {d.created_at?.slice(0, 10)} · updated {d.updated_at?.slice(0, 10)}

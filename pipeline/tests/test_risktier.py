@@ -62,3 +62,7 @@ class TestRollup:
         assert f["tier"] == 1
         assert f["pinned_by"] == ["db/schema/runs.ts", "server/routes/approvals.ts"]
         assert risktier.tier_facet([]) == {"tier": None, "pinned_by": []}
+
+    def test_path_tiers_leaves_out_leaves(self):
+        assert risktier.path_tiers(["package.json", "ui/app.tsx", "AGENTS.md"]) == {
+            "package.json": 0, "AGENTS.md": 2}

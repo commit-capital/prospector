@@ -51,6 +51,11 @@ def pr_tier(paths: list[str]) -> int | None:
     return min(classify_path(p) for p in paths)
 
 
+def path_tiers(paths: list[str]) -> dict[str, int]:
+    """Each changed path above the leaf tier, with its tier."""
+    return {p: t for p in paths if (t := classify_path(p)) < 3}
+
+
 def tier_facet(paths: list[str]) -> dict:
     """{"tier": int | None, "pinned_by": [paths]} — the PR's tier plus the
     changed paths sitting at that tier, so a UI can show why."""

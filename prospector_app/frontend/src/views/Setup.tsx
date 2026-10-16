@@ -54,7 +54,7 @@ const SWITCHES: { key: string; id?: string; label: string; hint: string;
     hint: "when someone clicks a fix in the app, do the work here — bring the contributor's branch up to date, or have the AI draft a fix. Every result waits here for a person's approval before anything is pushed",
     needs: ["push_identity"] },
   { key: "TRIAGE_FIX_AUTOHUNT", label: "Queue branch updates on its own",
-    hint: "spot pull requests that have fallen behind the main branch and queue the branch update without being asked",
+    hint: "spot pull requests that have fallen behind the default branch and queue the branch update without being asked",
     needs: ["push_identity"] },
   { key: "TRIAGE_FIX_HUNT_FIX", label: "Draft fixes on its own",
     hint: "spot pull requests that pass their tests but scored below the review bar, and have the AI draft a fix without being asked — or, when the reviewer's only complaint is the description, a new description that follows the template. One try per version of the pull request, and each draft waits for approval",
@@ -92,7 +92,7 @@ const isOn = (flags: WorkerFlags, s: { key: string; parts?: string[] }): boolean
 const EXPLAIN: Record<string, string> = {
   docker: "The program that runs sealed-off, throwaway containers. Every pull request is tested inside one, so its code never runs directly on this computer.",
   sandbox_image: "The sealed-off container those tests run in. It holds no passwords or keys and cannot reach the internet.",
-  base_pin: "This computer's own copy of the project's main branch — the “before” that each pull request is compared against to prove its fix works.",
+  base_pin: "This computer's own copy of the project's default branch — the “before” that each pull request is compared against to prove its fix works.",
   verify_flag: "The background job on this computer that tests queued pull requests.",
   push_identity: "The GitHub account that fixes are pushed to contributors' branches under — yours, or a separate one. Only needed for fixing pull requests, not for testing them.",
   fix_flag: "The background job on this computer that updates branches and drafts fixes.",

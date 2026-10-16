@@ -5,11 +5,11 @@ import { TagPicker } from "./TagPicker";
 import { CommentEditor } from "./CommentEditor";
 import { landed, ExecResultChip } from "./execResult";
 import { StaleOverrideConfirm } from "./FactFreshness";
-import { confirmUnclaimed } from "./claimGuard";
 import { suggestedAct, suggestedCanonical, type Act } from "../prAction";
 import { InfoTip } from "./InfoTip";
 import { dispositionEntry } from "../glossary";
 import { Select } from "./Select";
+import { useRepoMeta } from "../RepoMetaContext";
 
 // How often the action bar asks for a live merge's step while it waits.
 const MERGE_POLL_MS = 2000;
@@ -45,6 +45,7 @@ const reviewEvent = (a: Act) => a === "APPROVE" ? "approve" : a === "REQUEST_CHA
 export function PRActionBar({ pr, runState, onActed, summary }:
   { pr: PRDetail; runState?: RunState; onActed?: () => void; summary?: ReactNode }) {
   const { botLogin, dryRun, canMergeUpstream, reportResult } = useExec();
+  const branch = useRepoMeta().meta?.default_branch ?? "the default branch";
   const [action, setAction] = useState<Act>(() => suggestedAct(pr));
   const [method, setMethod] = useState("squash");
   const [canonical, setCanonical] = useState(() => suggestedCanonical(pr));
@@ -168,7 +169,6 @@ export function PRActionBar({ pr, runState, onActed, summary }:
   const fire = async () => {
     if (blocked) return;
     if (alreadyDone && !window.confirm(`#${pr.number} was already actioned at ${runState?.at}. Act again anyway?`)) return;
-    if (!dryRun && !(await confirmUnclaimed("pr", pr.number))) return;
     let confirmMsg: string;
     if (action === "MERGE") confirmMsg = `⚠ PERMANENT: merge #${pr.number} upstream as ${botLogin}?${mergeOverride ? ` Your reason will be logged as the ${overrideNoun}.` : ""} This cannot be undone.`;
     else if (isClose(action)) confirmMsg = `Post this comment and close #${pr.number} as ${botLogin} (reopenable)?`;
@@ -210,6 +210,7 @@ export function PRActionBar({ pr, runState, onActed, summary }:
     <section className={`suggestion summary-panel tone-${sug?.tone ?? "muted"}`}>
       <h3 className="summary-title">Summary</h3>
       {summary}
+      <div className="summary-action">
       {sug && (
         <div className="sug-headline">
           <span className="analysis-label">Suggested action:</span>{" "}
@@ -261,7 +262,7 @@ export function PRActionBar({ pr, runState, onActed, summary }:
         {action === "MERGE" && !dryRun && result?.status === "blocked" && result.compile_waivable && (
           <div className="pr-tags" title="The compile check could not run on this machine, so it has no verdict on this PR. A real compile failure is never waivable.">
             <span className="muted small">The compile check could not run. To merge without it, say why (logged with the merge):</span>
-            <textarea className="modal-text" rows={2} placeholder="e.g. 'no Docker on this machine; CI green against current main'"
+            <textarea className="modal-text" rows={2} placeholder={`e.g. 'no Docker on this machine; CI green against current ${branch}'`}
               value={compileReason} onChange={(e) => setCompileReason(e.target.value)} disabled={busy} />
             <div>
               <button className="btn-secondary sm" onClick={() => { void mergeWithoutCompile(); }}
@@ -322,6 +323,7 @@ export function PRActionBar({ pr, runState, onActed, summary }:
             🔒 Add private note
           </button>
         )}
+      </div>
       </div>
     </section>
   );

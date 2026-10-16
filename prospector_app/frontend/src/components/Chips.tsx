@@ -183,13 +183,3 @@ export function AckButton({ pr, ack, onAck }: { pr: number; ack: PRResponseAck |
     </button>
   );
 }
-
-export function DriftChip({ s }: { s: string | null }) {
-  if (!s) return null;
-  const tone: BadgeTone = s === "conflicts" ? "amber" : "grey";
-  return (
-    <InfoTip entry={term(`drift.${s}`)} cue={false} focusable={false}>
-      <Badge tone={tone}>{s}</Badge>
-    </InfoTip>
-  );
-}
