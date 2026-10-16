@@ -4,6 +4,7 @@ import { useExec } from "../ExecContext";
 import { CommentEditor } from "./CommentEditor";
 import { landed, ExecResultChip } from "./execResult";
 import { confirmUnclaimed } from "./claimGuard";
+import { Select } from "./Select";
 
 type IAct = "already-fixed" | "dup" | "not-planned" | "completed" | "comment";
 
@@ -109,9 +110,9 @@ export function IssueActionBar({ d, onActed }: { d: IssueDetail; onActed?: () =>
     <div className="suggestion tone-muted">
       <div className="pr-actions-wrap stacked">
         <div className="pr-actions">
-          <select value={action} onChange={(e) => setAction(e.target.value as IAct)} disabled={busy}>
+          <Select value={action} onChange={(next) => setAction(next as IAct)} disabled={busy}>
             {OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
-          </select>
+          </Select>
           {action === "dup" && (
             <input className="canon" placeholder="#" value={canonical}
               onChange={(e) => setCanonical(e.target.value.replace(/\D/g, ""))} disabled={busy} />

@@ -7,6 +7,7 @@ import type {
 import { EnumFilter, NumFilter } from "../shared/FilterWidgets";
 import { CHECK_DEFS, CHECK_STATUS_OPTS } from "./checkDefs";
 import { useExec } from "../../ExecContext";
+import { Select } from "../Select";
 
 const BAR_OPTS: { v: BarStatus; label: string }[] = [
   { v: "pass", label: "✓ Passed its bar" },
@@ -36,11 +37,11 @@ function ReviewerStatusFilters({ kind, spec, onChange }: {
           <div key={r.id}>
             <div className="cfp-label">{r.label}</div>
             <div className="cfp-row">
-              <select className="cfp-select" value={Array.isArray(cur) ? cur[0] ?? "" : cur ?? ""}
-                onChange={(e) => set(r.id, e.target.value)}>
+              <Select className="cfp-select" value={Array.isArray(cur) ? cur[0] ?? "" : cur ?? ""}
+                onChange={(next) => set(r.id, next)}>
                 <option value="">Any</option>
                 {BAR_OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
-              </select>
+              </Select>
             </div>
           </div>
         );
@@ -194,15 +195,15 @@ function BoolFilter({ current, yesLabel, noLabel, onChange }: {
 }) {
   return (
     <div className="cfp-row">
-      <select
+      <Select
         className="cfp-select"
         value={current === undefined ? "" : current ? "yes" : "no"}
-        onChange={(e) => onChange(e.target.value === "" ? undefined : e.target.value === "yes")}
+        onChange={(next) => onChange(next === "" ? undefined : next === "yes")}
       >
         <option value="">Any</option>
         <option value="yes">{yesLabel}</option>
         <option value="no">{noLabel}</option>
-      </select>
+      </Select>
     </div>
   );
 }
@@ -457,11 +458,11 @@ function renderContent(
           />
           <div className="cfp-label" style={{ marginTop: 8 }}>Greptile freshness</div>
           <div className="cfp-row">
-            <select
+            <Select
               className="cfp-select"
               value={spec.greptile_stale === true ? "stale" : spec.greptile_stale === false ? "current" : ""}
-              onChange={(e) => {
-                const v = e.target.value;
+              onChange={(next) => {
+                const v = next;
                 if (!v) s("greptile_stale", undefined);
                 else if (v === "stale") s("greptile_stale", true);
                 else s("greptile_stale", false);
@@ -470,19 +471,19 @@ function renderContent(
               <option value="">Any</option>
               <option value="stale">⚠ Stale (older commit)</option>
               <option value="current">✓ Current (latest commit)</option>
-            </select>
+            </Select>
           </div>
           <div className="cfp-label" style={{ marginTop: 8 }}>Why the score is what it is</div>
           <div className="cfp-row">
-            <select
+            <Select
               className="cfp-select"
               value={spec.greptile_severity ?? ""}
-              onChange={(e) => s("greptile_severity", e.target.value || undefined)}
+              onChange={(next) => s("greptile_severity", next || undefined)}
             >
               <option value="">Any</option>
               <option value="defects">🐛 Flagged a real defect</option>
               <option value="nits">🧹 Nitpicks only</option>
-            </select>
+            </Select>
           </div>
           </>)}
         </>
@@ -541,35 +542,35 @@ function renderContent(
           {spec.loc ? (
             <div className="cfp-loc-knobs">
               <div className="cfp-row">
-                <select
+                <Select
                   className="cfp-select"
                   value={spec.loc.metric}
-                  onChange={(e) => s("loc", { ...spec.loc!, metric: e.target.value as LocFilter["metric"] })}
+                  onChange={(next) => s("loc", { ...spec.loc!, metric: next as LocFilter["metric"] })}
                 >
                   <option value="both">added + removed</option>
                   <option value="additions">added only</option>
                   <option value="deletions">removed only</option>
-                </select>
+                </Select>
               </div>
               <div className="cfp-row">
-                <select
+                <Select
                   className="cfp-select"
                   value={spec.loc.scope}
-                  onChange={(e) => s("loc", { ...spec.loc!, scope: e.target.value as LocFilter["scope"] })}
+                  onChange={(next) => s("loc", { ...spec.loc!, scope: next as LocFilter["scope"] })}
                 >
                   <option value="effective">effective (human lines)</option>
                   <option value="all">all lines</option>
-                </select>
+                </Select>
               </div>
               <div className="cfp-row">
-                <select
+                <Select
                   className="cfp-select"
                   value={spec.loc.op}
-                  onChange={(e) => s("loc", { ...spec.loc!, op: e.target.value as LocFilter["op"] })}
+                  onChange={(next) => s("loc", { ...spec.loc!, op: next as LocFilter["op"] })}
                 >
                   <option value=">">greater than</option>
                   <option value="<">less than</option>
-                </select>
+                </Select>
                 <input
                   type="number"
                   className="cfp-num"
@@ -603,14 +604,14 @@ function renderContent(
           {spec.files ? (
             <div className="cfp-loc-knobs">
               <div className="cfp-row">
-                <select
+                <Select
                   className="cfp-select"
                   value={spec.files.op}
-                  onChange={(e) => s("files", { ...spec.files!, op: e.target.value as FilesFilter["op"] })}
+                  onChange={(next) => s("files", { ...spec.files!, op: next as FilesFilter["op"] })}
                 >
                   <option value=">">more than</option>
                   <option value="<">fewer than</option>
-                </select>
+                </Select>
                 <input
                   type="number"
                   className="cfp-num"

@@ -23,6 +23,7 @@ import { useExec } from "../ExecContext";
 import { useAgentPane } from "../components/AgentPane";
 import { cycleSort, type SortDir } from "../sortCycle";
 import { SkeletonRows } from "../components/SkeletonRows";
+import { Select } from "../components/Select";
 
 const SPEC_PARAM = "spec";
 const Q_PARAM = "q";
@@ -461,12 +462,12 @@ export default function PRExplorer() {
       <div className="pager">
         <label className="page-size-select muted small">
           Rows per page:{" "}
-          <select value={pageSize}
-            onChange={(e) => setPageSize((e.target.value === "all" ? "all" : Number(e.target.value)) as PageSizeOption)}>
+          <Select value={pageSize}
+            onChange={(next) => setPageSize((next === "all" ? "all" : Number(next)) as PageSizeOption)}>
             {PAGE_SIZE_OPTIONS.map((opt) => (
               <option key={opt} value={opt}>{opt === "all" ? "All" : opt}</option>
             ))}
-          </select>
+          </Select>
         </label>
         {totalPages > 1 && (
           <>

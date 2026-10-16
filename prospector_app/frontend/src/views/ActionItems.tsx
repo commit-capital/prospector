@@ -4,6 +4,7 @@ import { useRepoMeta } from "../RepoMetaContext";
 import { PRLink } from "../components/PRLink";
 import { InfoTip } from "../components/InfoTip";
 import { useTableSort } from "../useTableSort";
+import { Select } from "../components/Select";
 
 const STATUS_TIP: Record<string, string> = {
   "open": "Still needs handling — in your active checklist.",
@@ -97,10 +98,10 @@ export default function ActionItems() {
           ))}
           <button className={status === "" ? "on" : ""} onClick={() => { setStatus(""); setPage(0); }}>all</button>
         </div>
-        <select value={kind} onChange={(e) => { setKind(e.target.value); setPage(0); }}>
+        <Select value={kind} onChange={(next) => { setKind(next); setPage(0); }}>
           <option value="">all kinds</option>
           {Object.entries(KIND_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
-        </select>
+        </Select>
         <button className="btn-secondary sm" onClick={load}>↻ refresh</button>
         {total > PAGE_SIZE && (
           <span className="muted small action-items-pager">

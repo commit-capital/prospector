@@ -9,6 +9,7 @@ import { confirmUnclaimed } from "./claimGuard";
 import { suggestedAct, suggestedCanonical, type Act } from "../prAction";
 import { InfoTip } from "./InfoTip";
 import { dispositionEntry } from "../glossary";
+import { Select } from "./Select";
 
 // How often the action bar asks for a live merge's step while it waits.
 const MERGE_POLL_MS = 2000;
@@ -225,15 +226,15 @@ export function PRActionBar({ pr, runState, onActed, summary }:
       {/* the one action row */}
       <div className="pr-actions-wrap stacked">
         <div className="pr-actions">
-          <select value={action} onChange={(e) => setAction(e.target.value as Act)} disabled={busy}>
+          <Select value={action} onChange={(next) => setAction(next as Act)} disabled={busy}>
             {OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
-          </select>
+          </Select>
           {action === "MERGE" && (
-            <select value={method} onChange={(e) => setMethod(e.target.value)} disabled={busy} title="Merge method">
+            <Select value={method} onChange={(next) => setMethod(next)} disabled={busy} title="Merge method">
               <option value="squash">squash</option>
               <option value="merge">merge</option>
               <option value="rebase">rebase</option>
-            </select>
+            </Select>
           )}
           {action === "CLOSE_DUP" && (
             <input className="canon" placeholder="#" value={canonical} onChange={(e) => setCanonical(e.target.value.replace(/\D/g, ""))} disabled={busy} />

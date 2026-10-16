@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type SettingRow, type SettingsReport } from "../api";
+import { Select } from "./Select";
 
 /** Every setting the code reads (pipeline/settings_registry.py), as this machine
  *  runs it: the automation's behavior and this machine's sandbox are editable
@@ -143,9 +144,9 @@ function SettingControl({ s, onSaved, onError }: {
   }
   if (s.kind === "choice") {
     return (
-      <select value={s.value || s.default} disabled={busy} onChange={(e) => void save(e.target.value)}>
+      <Select value={s.value || s.default} disabled={busy} onChange={(next) => void save(next)}>
         {s.choices.map((c) => <option key={c} value={c}>{c}</option>)}
-      </select>
+      </Select>
     );
   }
   const commit = () => void save(draft.trim());

@@ -16,7 +16,8 @@ test("find a PR, preview a close, and read its durable Activity receipt", { time
   assert.match(await page.find(".flyout").text(), /Fix retry counter/);
   assert.equal(await page.find({ role: "button", text: "DRY RUN" }).isEnabled(), false);
 
-  await page.find('.pr-actions select').selectOption("CLOSE");
+  await page.find('.pr-actions .ui-select').click();
+  await page.find('[role="option"][data-value="CLOSE"]').click();
   await page.find('.sug-comment-toggle').click();
   const comment = "Closing preview: retry counter is already covered.";
   await page.find({ label: "Comment e2e-bot will post" }).fill(comment);
@@ -58,7 +59,8 @@ test("a malicious PR shows its merge block and the API enforces it", { timeout: 
   const { page, url, requests, api } = await fixture(t);
   await page.go(`${url}/explore`);
   await page.find({ text: "Blocked security fixture" }).click();
-  await page.find('.pr-actions select').selectOption("MERGE");
+  await page.find('.pr-actions .ui-select').click();
+  await page.find('[role="option"][data-value="MERGE"]').click();
   const blocked = await page.find({ role: "button", text: "Merge blocked" });
   assert.equal(await blocked.isEnabled(), false);
   assert.match(await page.find('.pr-actions-wrap').text(), /malicious/i);
