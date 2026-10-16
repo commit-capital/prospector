@@ -3,7 +3,6 @@ import { api, type IssueDetail, type IssueExecResult } from "../api";
 import { useExec } from "../ExecContext";
 import { CommentEditor } from "./CommentEditor";
 import { landed, ExecResultChip } from "./execResult";
-import { confirmUnclaimed } from "./claimGuard";
 import { Select } from "./Select";
 
 type IAct = "already-fixed" | "dup" | "not-planned" | "completed" | "comment";
@@ -72,7 +71,6 @@ export function IssueActionBar({ d, onActed }: { d: IssueDetail; onActed?: () =>
 
   const fire = async () => {
     if (blocked) return;
-    if (!dryRun && !(await confirmUnclaimed("issue", d.number))) return;
     if (!dryRun && !window.confirm(`Run "${action}" on issue #${d.number} as ${botLogin} (reopenable)?`)) return;
     setBusy(true);
     let r: IssueExecResult;

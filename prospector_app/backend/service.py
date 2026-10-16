@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from pipeline.model import Pr
 
 from prospector_app.backend import author_returns, automation, data
-from prospector_app.backend import claims
 from prospector_app.backend import filters  # spec predicate
 from prospector_app.backend import issues
 from prospector_app.backend import pr_checks
@@ -560,8 +559,6 @@ def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
     Returns a page of rows plus match_ids (every matching PR number) so the UI can
     select-all across pages."""
     eff = dict(spec)
-    if eff.get("claimed") == "mine":
-        eff["claimed"] = claims.me()["by"]
     snap = data.prs()
     cache = _row_cache(snap)
     recs = [(n, rec) for n, rec in snap.items() if _in_state_scope(rec, eff)]
@@ -571,14 +568,13 @@ def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
         row = cache.get(n)
         if row is None:
             continue
-        # Response signals and their acks, author returns, operator claims, and
-        # the author table live outside the PR record (registry, store, and a table folded
-        # from every PR, each with its own cache), so overlay them fresh on the
-        # cached row — an ack must drop the PR from the responses queue, and a
-        # teammate's claim must appear, on the very next query.
+        # Response signals and their acks, author returns, and the author table
+        # live outside the PR record (registry, store, and a table folded from
+        # every PR, each with its own cache), so overlay them fresh on the
+        # cached row — an ack must drop the PR from the responses queue on the
+        # very next query.
         row = {**row, "responses": responses.for_pr(n),
                "author_return": author_returns.open_returns()["pr"].get(n),
-               "claim": claims.for_item("pr", n),
                "author_stats": data.author_stats(rec.author)}
         if filters.matches(row, eff):
             rows.append(row)
@@ -802,6 +798,7 @@ def pr_detail(n: int) -> dict | None:
     hm_known, hm_cached = _human_merge_cached(rec)
     # Which changed paths pinned the tier — the detail view's "why this tier".
     row["risk_tier_paths"] = (_facets(rec).get("risk") or {}).get("pinned_by") or []
+    row["risk_tier_files"] = risktier.path_tiers(changed_paths(rec))
     # The bulk load omits meta.body; read it from the store for this one PR. A
     # live GitHub fetch is the last resort, for a PR whose body was never ingested.
     body = rec.body or data.pr_body(n)
@@ -828,6 +825,7 @@ def pr_detail(n: int) -> dict | None:
                 live_risk = risktier.tier_facet(live_paths)
                 row["risk_tier"] = live_risk["tier"]
                 row["risk_tier_paths"] = live_risk["pinned_by"]
+                row["risk_tier_files"] = risktier.path_tiers(live_paths)
         row["body"] = body if body_fut is None else _resolve_live(body_fut, body, failed_live, "body")
         states = _resolve_live(states_fut, {}, failed_live, "issue_states")
     # Each linked issue's stored state, so the page can say when the issue a PR

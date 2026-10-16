@@ -3,7 +3,7 @@ import { parseDiff, Diff, Hunk, getChangeKey, type HunkData, type ChangeData, ty
 import "react-diff-view/style/index.css";
 import { useAgentPane } from "./AgentPane";
 import { classifyRawDiff } from "./rawDiffLines";
-import { diffFileId, diffLineId } from "./diffAnchor";
+import { diffFileId, diffLineId } from "./pageAnchor";
 
 /** Per-line colored rendering for diffs react-diff-view cannot parse — the
  *  combined format of a merge/conflict diff most of all. Each line is a block
@@ -18,17 +18,25 @@ function RawDiff({ diffText }: { diffText: string }) {
   );
 }
 
+const TIER_TIP: Record<number, string> = {
+  0: "Tier 0: core or supply-chain code (orchestration, auth, CI, dependencies). A mistake here reaches everything — review this file with the most care.",
+  1: "Tier 1: a high-risk area the repository's risk policy names. Review this file carefully.",
+  2: "Tier 2: ordinary source code, not a leaf. Its failures may not be visible or easy to reverse — read it carefully.",
+};
+
 interface Menu { x: number; y: number; file: string; line: number; key: string }
 
 /** Unified diff with a GitHub-style per-line popup: click a line to ask the
  *  agent to explain it, ask a question, or leave a comment.
  *  Ctrl/⌘-click any line (changed or context) jumps to it on GitHub (#18).
- *  `anchored` gives each file and new-side line the ids `jumpToDiff` scrolls to. */
-export function DiffView({ diffText, onComment, blobUrl, anchored }: {
+ *  `anchored` gives each file and new-side line the ids `jumpToDiff` scrolls to.
+ *  `tiers` marks each file above the leaf tier with its risk tier. */
+export function DiffView({ diffText, onComment, blobUrl, anchored, tiers }: {
   diffText: string;
   onComment?: (file: string, line: number) => void;
   blobUrl?: (file: string, line: number) => string | null;
   anchored?: boolean;
+  tiers?: Record<string, number>;
 }) {
   const { askAbout } = useAgentPane();
   const [menu, setMenu] = useState<Menu | null>(null);
@@ -68,9 +76,13 @@ export function DiffView({ diffText, onComment, blobUrl, anchored }: {
       onMouseDownCapture={(e) => { mouse.current = { x: e.clientX, y: e.clientY, mod: e.metaKey || e.ctrlKey }; }}>
       {files.map((file, i) => {
         const path = file.newPath || file.oldPath || `file-${i}`;
+        const tier = tiers?.[path] ?? tiers?.[file.oldPath];
         return (
           <div className="difffile" key={path} id={anchored ? diffFileId(path) : undefined}>
-            <div className="difffile-head">{path}</div>
+            <div className="difffile-head">
+              {tier != null && TIER_TIP[tier] && <span className={`tier-mark tier-mark-${tier}`} title={TIER_TIP[tier]}>T{tier}</span>}
+              {path}
+            </div>
             <Diff
               viewType="unified"
               diffType={file.type}

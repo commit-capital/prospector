@@ -1000,18 +1000,6 @@ class Store:
                 raise ValidationError(f"responses.{kind}: required dict")
         self._save_registry("responses", registry)
 
-    def load_claims(self) -> dict:
-        """Which items an operator has claimed as theirs to work
-        (`{items: {"pr:123": {by, machine, at}}}`), shared across operators —
-        the app marks a claimed item in every instance so two people don't
-        act on it at once."""
-        return self._load_registry("claims", {"items": {}})
-
-    def save_claims(self, registry: dict) -> None:
-        if not isinstance(registry.get("items"), dict):
-            raise ValidationError("claims.items: required dict")
-        self._save_registry("claims", registry)
-
     def load_live_sweep(self) -> dict:
         """When the app's live sweep last ran (`{swept_at}`), shared across
         operators — one operator's sweep tells every app how fresh the live

@@ -3,14 +3,13 @@ import { Link } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixAction as FixActionName, type FixRunner, type ReviewDigest, type ReviewEntry, type ReviewFinding, type CoverageRecord } from "../api";
-import { DriftChip, TierChip, authorTip } from "../components/Chips";
+import { authorTip } from "../components/Chips";
 import { ChecksPanel } from "../components/ChecksPanel";
 import { DiffView } from "../components/DiffView";
-import { diffFileId, jumpToDiff } from "../components/diffAnchor";
+import { CHECKS_ID, checkRowId, diffFileId, flashTo, jumpToDiff } from "../components/pageAnchor";
 import { Collapsible } from "../components/Collapsible";
 import { PRActionBar } from "../components/PRActionBar";
-import { AnalysisLine, PRStory } from "../components/PRStory";
-import { ClaimControl } from "../components/ClaimControl";
+import { AnalysisLine, PRStory, type AnalysisTarget } from "../components/PRStory";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixBody, ResolveConflictsButton } from "../components/FixPanel";
 import { designFixGoal, unavailable as fixUnavailable } from "../components/fixAvailability";
@@ -43,6 +42,8 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   // by a refusal and by a parked agent resolution alike.
   const [diffMode, setDiffMode] = useState<"pr" | "merge">("pr");
   const [lineComment, setLineComment] = useState<{ file: string; line: number } | null>(null);
+  // The Checks row a Summary chip last opened; a new `n` reopens it.
+  const [openedCheck, setOpenedCheck] = useState<{ key: string; n: number } | null>(null);
   const [retriggering, setRetriggering] = useState<string | null>(null);
   const [clearingSecret, setClearingSecret] = useState(false);
   const [err, setErr] = useState<string>();
@@ -429,6 +430,27 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     <VerifyBody v={pr.verify_detail ?? null} req={pr.verify_request ?? null} runner={runner} repo={repo} />
   );
 
+  // A Summary chip opens its Checks row (or leads to the Checks panel or a diff
+  // file); the scroll waits a frame for the opened row to render.
+  const jump = (to: AnalysisTarget) => {
+    if ("diff" in to) { jumpToDiff(to.diff, null); return; }
+    const key = "check" in to ? to.check : null;
+    if (key) setOpenedCheck((o) => ({ key, n: (o?.n ?? 0) + 1 }));
+    window.requestAnimationFrame(() => {
+      const el = document.getElementById(key ? checkRowId(key) : CHECKS_ID);
+      if (el) flashTo(el);
+    });
+  };
+
+  // The author's own description, collapsed under the Summary's facts.
+  const description = pr.body && (
+    <Collapsible className="summary-description" summary={<>Full PR description</>}>
+      <div className="markdown prbody-md">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{pr.body.slice(0, 4000)}</ReactMarkdown>
+      </div>
+    </Collapsible>
+  );
+
   // A close-dup's evidence: each change in the PR and where it already exists.
   const dupCoverage = Boolean(pr.concerns?.length) && (
     <div className="dup-coverage">
@@ -478,15 +500,12 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             ? <a href={pr.author_stats.url} target="_blank" rel="noreferrer" title={authorTip(pr.author_stats)}>@{pr.author}</a>
             : <span title={authorTip(pr.author_stats)}>@{pr.author}</span>}
           {pr.trusted_author && <span className="chip chip-gold sm" title="A contributor we trust. When two PRs are about equally good, theirs is preferred.">trusted</span>}
-          <DriftChip s={pr.drift_state} />
-          <TierChip tier={pr.risk_tier} pinnedBy={pr.risk_tier_paths} />
           {pr.stacked && (pr.stacked_on != null
             ? <Link className="chip chip-muted" to={`/prs/${pr.stacked_on}`} title={`Stacked on #${pr.stacked_on} (base ${pr.base_ref}), not the default branch. It is never merge-ready and no hunter judges it until its base merges and GitHub retargets it.`}>stacked on #{pr.stacked_on}</Link>
             : <span className="chip chip-muted" title={`Targets ${pr.base_ref}, not the default branch. It is never merge-ready and no hunter judges it until GitHub retargets it.`}>stacked on {pr.base_ref}</span>)}
           {pr.clusters.map((cid) => <Link key={cid} className="chip chip-blue" to={`/prs/clusters/${cid}`} title="The group of PRs that fix the same problem. Click to open.">cluster {cid}</Link>)}
           {pr.url && <a className="chip chip-muted" href={pr.url} target="_blank" rel="noreferrer">GitHub ↗</a>}
           {resolved && <span className={`chip ${pr.github_state === "merged" ? "chip-purple" : "chip-muted"}`} title="Current state on GitHub">{pr.github_state}</span>}
-          <ClaimControl kind="pr" n={pr.number} />
           <span className="fresh-refreshed"><FreshnessBar f={fresh} /></span>
         </div>
       </div>
@@ -504,6 +523,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           upstream. One banner stands in for the whole action stack; the
           informational tiles + diff below stay for context. */}
       {pr.out_of_scope ? (
+        <>
         <div className="verdict-banner v-safe">
           <span className="vb-icon">📦</span>
           <div>
@@ -514,6 +534,8 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </div>
           </div>
         </div>
+        {description}
+        </>
       ) : resolved ? (
         <>
         <div className={`verdict-banner ${pr.github_state === "merged" ? "v-safe" : ""}`}>
@@ -528,6 +550,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         <section className="suggestion summary-panel tone-muted">
           <h3 className="summary-title">Summary</h3>
           <PRStory pr={pr} onWritten={reloadPr} />
+          {description}
         </section>
         {/* A malicious PR's evidence outlives the PR: closing it upstream is
             when GitHub may stop serving it. */}
@@ -603,14 +626,14 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       {/* The Summary: what the PR fixes and how, what we found, and the one
           action surface under the suggestion. */}
       <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }}
-        summary={<><PRStory pr={pr} onWritten={reloadPr} />{dupCoverage}<AnalysisLine pr={pr} /></>} />
+        summary={<><PRStory pr={pr} onWritten={reloadPr} />{description}{dupCoverage}<AnalysisLine pr={pr} onJump={jump} /></>} />
        </>
       )}
 
       {/* #550/#581: what checks ran, when, and what they found — plus the
           action that unblocks each one, right there. */}
       <ChecksPanel c={checks} stages={pr.stages} headSha={pr.live_head_sha ?? pr.head_sha}
-        actions={checksActions} bodies={checksBodies} />
+        actions={checksActions} bodies={checksBodies} opened={openedCheck} />
 
       {/* Autofix: have the configured machine user push a small fix to the
           contributor's branch, rather than asking the author and waiting.
@@ -631,17 +654,6 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       {/* #581: security findings, dynamic verification, review-provider
           feedback, and CI check runs now live as expandable detail inside
           their own rows in the Checks panel above, next to their action. */}
-
-      {/* description */}
-      {pr.body && (
-        <section className="prc-section">
-          <Collapsible summary={<>📝 PR description</>}>
-            <div className="markdown prbody-md">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{pr.body.slice(0, 4000)}</ReactMarkdown>
-            </div>
-          </Collapsible>
-        </section>
-      )}
 
       {/* the PR's single timeline: GitHub's activity with our writes tagged,
           and a Prospector summary per commit, oldest first */}
@@ -708,7 +720,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
               <>
                 {diff.note && <div className="diff-note">ℹ️ {diff.note}</div>}
                 {diff.diff
-                  ? <DiffView diffText={diff.diff} onComment={(file, line) => setLineComment({ file, line })} blobUrl={blobUrl} anchored />
+                  ? <DiffView diffText={diff.diff} onComment={(file, line) => setLineComment({ file, line })} blobUrl={blobUrl} anchored tiers={pr.risk_tier_files} />
                   : <div className="diff-status muted">{diff.error ? `No diff — ${diff.error}` : "No diff (empty/no commits)."}{pr.url && <> · <a href={pr.url} target="_blank" rel="noreferrer">GitHub ↗</a></>}</div>}
               </>
             )}

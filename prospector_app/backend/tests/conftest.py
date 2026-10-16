@@ -37,7 +37,6 @@ def _cold_data_snapshot(monkeypatch):
     cache. A test that wants data populated loads it (monkeypatch _store + refresh,
     or monkeypatch data.prs/clusters directly)."""
     from prospector_app.backend import activity
-    from prospector_app.backend import claims
     from prospector_app.backend import data
     from prospector_app.backend import issues
     from prospector_app.backend import service
@@ -51,10 +50,6 @@ def _cold_data_snapshot(monkeypatch):
     # serve another test's rows or links.
     monkeypatch.setattr(service, "_ROWS", None)
     monkeypatch.setattr(issues, "_pr_links_cache", None)
-    # The held claims are the last store's. Invalidating waits out a re-read an
-    # earlier test left in flight, so none lands in this one.
-    claims._snapshot.invalidate()
-    monkeypatch.setattr(claims, "_items", {})
     yield
     # A freshen a test kicked onto a daemon thread publishes under _check_lock and
     # releases it last; let it finish so it never blocks the next test's cold load
