@@ -10,7 +10,7 @@ import traceback
 from datetime import datetime, timezone
 
 from pipeline import settings
-from prospector_app.backend import data
+from prospector_app.backend import data, schema_gate
 
 LABELS: dict[str, str] = {
     "threat-refresh": "Threat scan of new heads",
@@ -39,6 +39,8 @@ def lanes_on() -> dict[str, bool]:
 
 
 def _write(now: datetime) -> None:
+    if schema_gate.paused("worker-loops"):
+        return
     try:
         data.store().save_worker_loops({"host": settings.worker_id(), "at": now.isoformat(),
                                         "lanes": lanes_on(), "loops": dict(_passes)})

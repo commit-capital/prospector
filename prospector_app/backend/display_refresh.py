@@ -14,7 +14,7 @@ import traceback
 from datetime import datetime
 
 from pipeline import capacity, display_pass, headless_agent, settings, storekit
-from prospector_app.backend import data, worker_loops
+from prospector_app.backend import data, schema_gate, worker_loops
 
 LANE = "display"
 TRIGGER = "worker"
@@ -59,7 +59,8 @@ def pass_once() -> list[int]:
 def _loop() -> None:
     while not _stop.is_set():
         try:
-            pass_once()
+            if not schema_gate.paused(LANE):
+                pass_once()
         except Exception:
             traceback.print_exc()
         worker_loops.ran(LANE, REFRESH_SECONDS)

@@ -103,3 +103,17 @@ def test_the_status_route_serves_the_aggregate(store):
     body = r.json()
     assert body["active"] == []
     assert "queued" in body and "workers" in body and "jobs" in body
+
+
+def test_a_run_claimed_by_a_worker_behind_the_store_reads_outdated(store, monkeypatch):
+    from pipeline import schema
+    from prospector_app.backend import schema_gate
+    verify_queue.queue_pr(1)
+    store.claim_verify_request(1, host="mac-studio")
+    store.save_verify_worker({"host": "mac-studio", "pid": 1, "last_beat": _now(),
+                              "current_pr": 1, "autohunt": False})
+    monkeypatch.setattr(schema_gate, "store_version", lambda: schema.STORE_SCHEMA_VERSION + 1)
+    data.refresh()
+    [a] = work_status.now()["active"]
+    assert a["worker_online"] is True
+    assert a["worker_outdated"] is True

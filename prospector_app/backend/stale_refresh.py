@@ -13,7 +13,7 @@ import traceback
 
 from pipeline import ingest, settings
 from pipeline.freshness import is_current
-from prospector_app.backend import data, threat_refresh, worker_loops
+from prospector_app.backend import data, schema_gate, threat_refresh, worker_loops
 
 REFRESH_SECONDS = 30 * 60
 # PRs refreshed per pass; each costs a handful of GitHub reads.
@@ -65,7 +65,8 @@ def refresh_stale(limit: int = BATCH) -> list[int]:
 def _loop() -> None:
     while not _stop.is_set():
         try:
-            refresh_stale()
+            if not schema_gate.paused("stale-refresh"):
+                refresh_stale()
         except Exception:
             traceback.print_exc()
         worker_loops.ran("stale-refresh", REFRESH_SECONDS)

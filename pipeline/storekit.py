@@ -437,7 +437,7 @@ def _stamp_registry(engine: Engine, name: str, data: dict) -> None:
             c.execute(stmt)
 
 
-def _read_store_schema_version(engine: Engine) -> int:
+def store_schema_version(engine: Engine) -> int:
     """The store's stamped schema version; 0 when no stamp row exists."""
     return int((_read_registry(engine, "schema") or {}).get("version", 0))
 
@@ -445,14 +445,14 @@ def _read_store_schema_version(engine: Engine) -> int:
 def _store_schema_ahead(engine: Engine) -> bool:
     """True when the store was stamped by code newer than this checkout."""
     from pipeline import schema
-    return _read_store_schema_version(engine) > schema.STORE_SCHEMA_VERSION
+    return store_schema_version(engine) > schema.STORE_SCHEMA_VERSION
 
 
 def refresh_schema_guard(engine: Engine) -> int:
     """Read and cache the store's stamped schema version for the write guard.
     Called at store construction; assert_writable consults (and maintains) the
     cache afterward."""
-    v = _read_store_schema_version(engine)
+    v = store_schema_version(engine)
     with _SCHEMA_VERSIONS_LOCK:
         _SCHEMA_VERSIONS[_engine_key(engine)] = v
     return v

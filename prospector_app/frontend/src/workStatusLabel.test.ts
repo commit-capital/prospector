@@ -21,7 +21,7 @@ test("a single fix run names the PR, its action, and how long it has run", () =>
   const s: WorkStatus = {
     ...empty,
     active: [{ lane: "fix", pr: 908, title: null, action: "rebase", step: "rebasing onto base",
-      host: "mac-studio", started_at: minsAgo(5), source: "auto", worker_online: true }],
+      host: "mac-studio", started_at: minsAgo(5), source: "auto", worker_online: true, worker_outdated: false }],
   };
   assert.equal(workStatusLabel(s), "fix #908 · rebase · 5m");
 });
@@ -30,7 +30,7 @@ test("a single verify run shows its step instead of an action", () => {
   const s: WorkStatus = {
     ...empty,
     active: [{ lane: "verify", pr: 912, title: null, action: null, step: "sandbox",
-      host: "mac-studio", started_at: minsAgo(2), source: null, worker_online: true }],
+      host: "mac-studio", started_at: minsAgo(2), source: null, worker_online: true, worker_outdated: false }],
   };
   assert.equal(workStatusLabel(s), "verify #912 · sandbox · 2m");
 });
@@ -39,7 +39,7 @@ test("a run started seconds ago omits the elapsed part", () => {
   const s: WorkStatus = {
     ...empty,
     active: [{ lane: "fix", pr: 908, title: null, action: "update", step: "merging base in",
-      host: "h", started_at: minsAgo(0), source: null, worker_online: true }],
+      host: "h", started_at: minsAgo(0), source: null, worker_online: true, worker_outdated: false }],
   };
   assert.equal(workStatusLabel(s), "fix #908 · update");
 });
@@ -48,14 +48,23 @@ test("a run whose claiming worker stopped beating says so", () => {
   const s: WorkStatus = {
     ...empty,
     active: [{ lane: "fix", pr: 908, title: null, action: "rebase", step: "claimed",
-      host: "h", started_at: minsAgo(9), source: null, worker_online: false }],
+      host: "h", started_at: minsAgo(9), source: null, worker_online: false, worker_outdated: false }],
   };
   assert.equal(workStatusLabel(s), "fix #908 · worker offline?");
 });
 
+test("a run whose claiming worker is behind the store's schema says it needs an update", () => {
+  const s: WorkStatus = {
+    ...empty,
+    active: [{ lane: "verify", pr: 13079, title: null, action: null, step: "sandbox",
+      host: "h", started_at: minsAgo(9), source: null, worker_online: true, worker_outdated: true }],
+  };
+  assert.equal(workStatusLabel(s), "verify #13079 · worker needs update");
+});
+
 test("several concurrent runs collapse to a count", () => {
   const a = { lane: "fix", pr: 1, title: null, action: "update", step: null,
-    host: "h", started_at: null, source: null, worker_online: true } as const;
+    host: "h", started_at: null, source: null, worker_online: true, worker_outdated: false } as const;
   const s: WorkStatus = { ...empty, active: [{ ...a }, { ...a, lane: "verify", pr: 2 }] };
   assert.equal(workStatusLabel(s), "2 running");
 });

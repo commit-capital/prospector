@@ -59,7 +59,7 @@ from pipeline import (author_fix, capacity, ci_signal, compile_preflight, descri
 from pipeline.storekit import now as _now
 from prospector_app.backend import (activity, data, executor, fix_queue, lane_health,
                                     lane_pause, review_refresh, safety_guard, sandbox_check,
-                                    service,
+                                    schema_gate, service,
                                     verify_worker, worker_log, worker_selftest)
 from prospector_app.backend.resubmit_identity import unattended_env, worker_env
 
@@ -2240,7 +2240,8 @@ def hunt_candidates(limit: int = 5) -> list[tuple[str, int]]:
 def _beat_loop() -> None:
     while not stop.is_set():
         try:
-            beat()
+            if not schema_gate.paused("fix-worker"):
+                beat()
         except Exception:
             traceback.print_exc()
         stop.wait(POLL_SECONDS)
@@ -2261,6 +2262,9 @@ def _drain_loop() -> None:
         traceback.print_exc()
     last_reclaim = time.monotonic()
     while not stop.is_set():
+        if schema_gate.paused("fix-worker"):
+            stop.wait(POLL_SECONDS)
+            continue
         try:
             if time.monotonic() - last_reclaim >= RECLAIM_SECONDS:
                 last_reclaim = time.monotonic()

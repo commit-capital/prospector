@@ -1,7 +1,8 @@
 """One systemwide health verdict, for the strip every page shows.
 
 Composes what the shared store already knows — every worker's tripped lanes,
-every worker's heartbeat and Docker disk reading, and each ingest's last run — into a short list of
+every worker's heartbeat (and the schema version its code writes) and Docker
+disk reading, and each ingest's last run — into a short list of
 problem items with one overall severity, so an outage on any machine reaches
 the operator on whatever page they have open. `summarize` is pure over plain
 data; `status` gathers the live inputs.
@@ -12,8 +13,9 @@ import time
 from datetime import datetime, timezone
 from typing import NotRequired, TypedDict
 
-from pipeline import storekit, verify_driver, worker_health
-from prospector_app.backend import data, escalation, fix_queue, threat_view, verify_queue
+from pipeline import settings, storekit, verify_driver, worker_health
+from prospector_app.backend import (data, escalation, fix_queue, schema_gate, threat_view,
+                                    verify_queue)
 
 
 class HealthItem(TypedDict):
@@ -116,13 +118,18 @@ def summarize(health_hosts: list[dict], offline: list[dict],
               worker_lanes: list[tuple[str, str]],
               ingest_last: dict[str, str | None],
               now_ts: float | None = None,
-              stood_down: frozenset[str] = frozenset()) -> SystemHealth:
+              stood_down: frozenset[str] = frozenset(),
+              outdated: dict[str, int] | None = None, store_schema: int = 0,
+              me: str | None = None) -> SystemHealth:
     """The strip's answer, from plain data: `health_hosts` is
     `escalation.health_status()["hosts"]`, `offline` is
     `escalation.offline_workers()`, `worker_lanes` every `(lane, host)` the
     worker registries name, and `ingest_last` each ingest's last-run stamp
     keyed per INGEST_LABELS. `stood_down` names the machines an operator
-    stood down; they contribute nothing."""
+    stood down; they contribute nothing. `outdated` maps each machine whose
+    code is behind the store's `store_schema` to its code's version; its lanes
+    are down and it reads as needing an update, `me` (this machine) in the
+    operator's own words."""
     now_ts = now_ts if now_ts is not None else time.time()
     health_hosts = [h for h in health_hosts if str(h["host"]) not in stood_down]
     offline = [o for o in offline if str(o["host"]) not in stood_down]
@@ -139,16 +146,25 @@ def summarize(health_hosts: list[dict], offline: list[dict],
     lanes = set(worker_lanes)
     for host, names in tripped_by_host.items():
         lanes.update((name, host) for name in names)
+    outdated = {h: v for h, v in (outdated or {}).items() if h not in stood_down}
     down = {(lane, host) for lane, host in lanes
-            if host in offline_by_host or lane in tripped_by_host.get(host, [])}
+            if host in offline_by_host or host in outdated
+            or lane in tripped_by_host.get(host, [])}
 
     items: list[HealthItem] = []
+    for host, code_v in sorted(outdated.items(), key=lambda kv: kv[0] != me):
+        items.append({
+            "kind": "outdated", "severity": "red", "host": host,
+            "label": (f"Action needed: update Prospector on this machine — the store is "
+                      f"on v{store_schema}, this Prospector is v{code_v}") if host == me
+                     else f"{host}: needs updating · on v{code_v}, store is v{store_schema}",
+            "detail": "Pull main and restart Prospector; its workers are paused until then."})
     if down:
         severity = "red" if len(down) == len(lanes) else "amber"
         items.append({"kind": "lanes", "severity": severity, "host": None,
                       "label": f"{len(down)}/{len(lanes)} worker lanes down",
                       "detail": None})
-        for host in sorted(set(tripped_by_host) | set(offline_by_host)):
+        for host in sorted((set(tripped_by_host) | set(offline_by_host)) - set(outdated)):
             if host in offline_by_host:
                 items.append({
                     "kind": "offline", "severity": severity, "host": host,
@@ -227,8 +243,11 @@ def status() -> SystemHealth:
     health = escalation.health_status(regs)
     from prospector_app.backend import machine_mode
     stood = frozenset(machine_mode.stood_down_in(regs))
+    store_v = schema_gate.store_version()
+    me = settings.worker_id()
     summary = summarize(health["hosts"], escalation.offline_workers(registries=regs),
-                        worker_lanes, ingest_last, stood_down=stood)
+                        worker_lanes, ingest_last, stood_down=stood,
+                        outdated=schema_gate.outdated_hosts(regs, store_v, me), store_schema=store_v, me=me)
     from prospector_app.backend import capacity_view
     try:
         paused = capacity_view.health_items()
