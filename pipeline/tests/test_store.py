@@ -46,6 +46,27 @@ class TestPRRoundTrip:
         store.save_pr(_pr(2))
         assert set(store.all_prs()) == {1, 2}
 
+    def test_holding_reads_the_corpus_once_and_then_only_writes(self, store, monkeypatch):
+        store.save_pr(_pr(1))
+        store.save_cluster({"id": 7, "root_problem": "x", "prs": [1], "checked_at": "t"})
+        store.save_cluster({"id": 8, "root_problem": "y", "prs": [], "checked_at": "t"})
+        reads: list[str | None] = []
+        since = store._prs.since
+        monkeypatch.setattr(store._prs, "since",
+                            lambda wm, **kw: (reads.append(wm), since(wm, **kw))[1])
+        with store.holding():
+            assert set(store.all_prs()) == {1}
+            assert set(store.all_clusters()) == {7, 8}
+            store.save_pr(_pr(2))
+            store.save_pr(_pr(1, meta=dict(_pr(1)["meta"], title="edited")))
+            store.delete_cluster(8)
+            prs = store.all_prs()
+            assert set(prs) == {1, 2} and prs[1].raw["meta"]["title"] == "edited"
+            assert set(store.all_clusters()) == {7}
+        assert reads[0] is None and all(wm is not None for wm in reads[1:])
+        store.save_pr(_pr(3))
+        assert set(store.all_prs()) == {1, 2, 3}
+
     def test_all_prs_omits_body_but_keeps_other_meta(self, store):
         store.save_pr(_pr(1, meta=dict(_pr(1)["meta"], body="the full description")))
         recs = store.all_prs()
