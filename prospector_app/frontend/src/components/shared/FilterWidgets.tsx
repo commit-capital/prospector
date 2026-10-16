@@ -1,4 +1,5 @@
 import type { NumCmp } from "../../api";
+import { Select } from "../Select";
 
 // Generic column-filter-popout building blocks shared by the PR Explorer and
 // Issues per-column filters (#494) — neither widget knows about PR or Issue
@@ -62,14 +63,14 @@ export function NumFilter({
   return (
     <div className="cfp-row">
       {label && <span className="cfp-row-label">{label}</span>}
-      <select
+      <Select
         className="cfp-select"
         value={cmp?.op ?? ">"}
-        onChange={(e) => onCmp({ op: e.target.value as NumCmp["op"], value: cmp?.value as number })}
+        onChange={(next) => onCmp({ op: next as NumCmp["op"], value: cmp?.value as number })}
       >
         <option value=">">above</option>
         <option value="<">below</option>
-      </select>
+      </Select>
       <input
         type="number"
         className="cfp-num"

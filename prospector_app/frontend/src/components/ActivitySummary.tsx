@@ -4,6 +4,7 @@ import { useRepoMeta } from "../RepoMetaContext";
 import { CLOSE_REASON_LABEL } from "../closeReasons";
 import { ItemRefLink } from "./AuthorReturn";
 import { localDateTime, timeAgo } from "../timeAgo";
+import { Select } from "./Select";
 
 const RANGE_OPTIONS = [
   { label: "7 days", days: 7, allTime: false },
@@ -622,10 +623,10 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
         {/* Unified person picker — operators first, then PR authors */}
         <label className="muted small">
           person:{" "}
-          <select
+          <Select
             value={selectedKey}
-            onChange={(e) => {
-              const key = e.target.value;
+            onChange={(next) => {
+              const key = next;
               setSelectedPerson(key ? (people.find((p) => (
                 `${p.is_operator ? "operator" : "author"}:${p.login}` === key
               )) ?? null) : null);
@@ -646,7 +647,7 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
                 ))}
               </optgroup>
             )}
-          </select>
+          </Select>
         </label>
         {selectedPerson && (
           <span className="muted small">

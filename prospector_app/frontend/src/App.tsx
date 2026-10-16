@@ -15,6 +15,7 @@ import { usePoll } from "./poll";
 import { prefetchTabs } from "./prefetch";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
+import { Select } from "./components/Select";
 
 const PRFlyout = lazy(() => loadWithRecovery("pr-flyout", async () => ({
   default: (await import("./components/PRFlyout")).PRFlyout,
@@ -294,10 +295,10 @@ function SettingsMenu() {
         <div className="settings-dropdown" role="menu">
           <div className="settings-row">
             <span className="muted small">Posting as</span>
-            <select value={identity} onChange={(e) => setIdentity(e.target.value)}
+            <Select value={identity} onChange={(next) => setIdentity(next)}
               disabled={identities.length <= 1}>
               {identities.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
-            </select>
+            </Select>
           </div>
           {/* The deployment's two write identities, each with its own lane and
               availability: the bot App posts upstream; the contributor-push

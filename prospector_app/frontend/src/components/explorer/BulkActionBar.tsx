@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Term } from "../InfoTip";
 import { term } from "../../glossary";
 import { useExec } from "../../ExecContext";
+import { Select } from "../Select";
 
 export type BulkAction = "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE" | "CLOSE_WONTFIX"
   | "CLOSE_OVERSIZED" | "REQUEST_CHANGES" | "COMMENT" | "REVIEW_RETRIGGER"
@@ -62,10 +63,10 @@ export function BulkActionBar({ selected, onApply }:
         title="Copy the selected PR numbers (e.g. #1234, #1235) to the clipboard">
         📋 Copy IDs
       </button>
-      <select value={choice} onChange={(e) => setChoice(e.target.value)}
+      <Select value={choice} onChange={(next) => setChoice(next)}
         title="One action applied to every selected PR. Each write is gated per-PR and logged to the activity feed.">
         {actions.map((a) => <option key={a.v} value={a.v} title={term(`bulk.${a.v.split(":")[0]}`)?.meaning}>{a.label}</option>)}
-      </select>
+      </Select>
       {action === "CLOSE_DUP" && !perPr && (
         <input className="canon" placeholder="#" value={canonical}
           onChange={(e) => setCanonical(e.target.value.replace(/\D/g, ""))} />
