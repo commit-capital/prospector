@@ -1,4 +1,5 @@
 import type { VerifyDetail, VerifyFault, VerifyLevel, VerifyReasonMatch, VerifyRequest, VerifyRunner, VerifySignals, VerifyStep } from "../api";
+import type { ReactNode } from "react";
 import { Collapsible } from "./Collapsible";
 import { localDateTime, timeAgo } from "../timeAgo";
 
@@ -72,15 +73,19 @@ const GREEN_DECODE: Record<number, string> = {
   0: "passed, as required here", 10: "boot probe failed", 20: "STILL failing with the fix", 30: "patch conflict",
 };
 
-function ExitFact({ label, code, expected, decode }: {
-  label: string; code: number | null | undefined; expected?: number; decode: Record<number, string>;
+const EXIT_TRUST = "Exit codes the trusted host observed from each phase container. Untrusted code cannot forge its own PID-1 exit, so these are the phase's facts; a red is accepted only on exactly 20.";
+
+/** A host-observed exit code on its step's line. The decode shows inline only
+ *  when the code is not the one the phase requires. */
+function ExitChip({ label, code, expected, decode }: {
+  label?: string; code: number | null | undefined; expected: number; decode: Record<number, string>;
 }) {
   if (code == null) return null;
   const decoded = decode[code] ?? "infrastructure error — never a signal";
-  const tone = expected === undefined ? "" : code === expected ? " ok" : " bad";
+  const ok = code === expected;
   return (
-    <span className={`verify-exit${tone}`} title={`Exit code observed by the trusted host from docker run — untrusted code cannot forge it. ${code} = ${decoded}.`}>
-      {label} <b>{code}</b> <span className="muted">{decoded}</span>
+    <span className={`verify-exit ${ok ? "ok" : "bad"}`} title={`${EXIT_TRUST} ${code} = ${decoded}.`}>
+      🔒 {label && <>{label} </>}exit <b>{code}</b>{!ok && <span className="muted"> {decoded}</span>}
     </span>
   );
 }
@@ -89,28 +94,228 @@ const STEP_ICON: Record<VerifyStep["result"], string> = {
   pass: "✓", fail: "✗", warn: "⚠", skip: "–", info: "ℹ",
 };
 
-/** The run's checks in order, in plain English — the first thing to read. The
- *  step that broke is highlighted and carries the judge's explanation inline.
- *  `steps` is nullable: a backend from before the field existed omits it. */
-function Story({ steps }: { steps: VerifyStep[] | null | undefined }) {
-  if (!steps || steps.length === 0) return null;
-  return (
-    <div className="verify-story">
-      {steps.map((st) => (
-        <div key={st.key} className={`vstep vstep-${st.result}`}>
-          <span className="vstep-icon">{STEP_ICON[st.result] ?? "·"}</span>
-          <div className="vstep-body">
-            <div className="vstep-label">{st.label}</div>
-            <div className="vstep-note">{st.note}</div>
-            {st.reasoning && (
-              <Collapsible defaultOpen={st.result === "fail"} summary={<>judge's explanation</>}>
-                <div className="verify-reasoning vstep-reasoning">{st.reasoning}</div>
-              </Collapsible>
-            )}
+/** What a step carries beside its server-written line: trusted exit chips,
+ *  trust tags, and the evidence its one "details" toggle opens on. */
+interface StepExtra {
+  chips: ReactNode[];
+  tags: ReactNode[];
+  details: ReactNode[];
+  reasonings: { label: string; text: string }[];
+  open: boolean;
+}
+
+const emptyExtra = (): StepExtra => ({ chips: [], tags: [], details: [], reasonings: [], open: false });
+
+function Field({ label, children }: { label: ReactNode; children: ReactNode }) {
+  return <div className="verify-field"><span className="verify-field-label">{label}</span>{children}</div>;
+}
+
+function Reasoning({ label, text }: { label: string; text: string }) {
+  return <Field label={label}><span className="verify-reasoning">{text}</span></Field>;
+}
+
+/** Hangs each signal's evidence on the step it belongs to. Each part names its
+ *  step keys nearest-first; a part whose steps a run never reached lands on
+ *  the story's last step, and with no story at all, in `orphan`. */
+function stepExtras(v: VerifyDetail, steps: VerifyStep[]): { byKey: Map<string, StepExtra>; orphan: StepExtra } {
+  const byKey = new Map<string, StepExtra>(steps.map((st) => [st.key, emptyExtra()]));
+  const orphan = emptyExtra();
+  const last = steps.length ? steps[steps.length - 1].key : null;
+  const put = (keys: string[], part: Partial<StepExtra>) => {
+    const key = keys.find((k) => byKey.has(k)) ?? last;
+    const into = key ? byKey.get(key)! : orphan;
+    into.chips.push(...(part.chips ?? []));
+    into.tags.push(...(part.tags ?? []));
+    into.details.push(...(part.details ?? []));
+    into.reasonings.push(...(part.reasonings ?? []));
+    into.open ||= part.open ?? false;
+  };
+  const reason = (label: string, text: string | null | undefined) => (text ? [{ label, text }] : []);
+
+  const s = v.signals ?? {};
+  const blind = s.blind_adequacy;
+  const rg = s.red_green;
+  const repro = s.independent_repro;
+  const authored = s.authored_test;
+  // an escalation exists to be read — open the judgment content by default
+  const attention = v.level === "attention";
+
+  if (blind) {
+    put(["blind"], {
+      tags: [
+        blind.confidence && <span key="conf" className="muted small">· {blind.confidence} confidence</span>,
+        <span key="pre" className="chip chip-blue sm" title="This judgment was committed to the store before any container ran — the phase's integrity property. It cannot have been rationalized backward from a green result.">committed before any run</span>,
+      ],
+      details: [
+        blind.claimed_symptom && <Field key="sym" label="Claimed symptom">{blind.claimed_symptom}</Field>,
+        blind.test_cmd && <Field key="cmd" label="Test command"><code className="verify-cmd">{blind.test_cmd}</code></Field>,
+        (blind.requires_live_agent || blind.from_linked_issue || blind.has_test === false) && (
+          <div key="flags" className="verify-field muted small">
+            {blind.has_test === false && <>ships no test · </>}
+            {blind.requires_live_agent && <>reproducing needs a live agent (Tier 2) · </>}
+            {blind.from_linked_issue && <>repro taken from the linked issue</>}
           </div>
-        </div>
-      ))}
-    </div>
+        ),
+      ],
+      reasonings: reason("Reasoning", blind.reasoning),
+      open: attention,
+    });
+  }
+
+  if (rg) {
+    put(["apply"], { chips: [<ExitChip key="apply" code={rg.apply_exit} expected={0} decode={APPLY_DECODE} />] });
+    put(["red"], { chips: [<ExitChip key="red" code={rg.red_exit} expected={20} decode={RED_DECODE} />] });
+    put(["green"], { chips: [<ExitChip key="green" code={rg.green_exit} expected={0} decode={GREEN_DECODE} />] });
+    if (byKey.has("confirm")) {
+      put(["confirm"], { chips: [
+        <ExitChip key="red2" label="red" code={rg.red_exit_confirm} expected={20} decode={RED_DECODE} />,
+        <ExitChip key="green2" label="green" code={rg.green_exit_confirm} expected={0} decode={GREEN_DECODE} />,
+      ] });
+    }
+  }
+
+  // The comparison the phase turns on: the pre-committed prediction vs. the
+  // red output that actually happened.
+  if (blind?.expected_red_signature || rg?.red_output_tail) {
+    const m = matchSummary(s.red_reason_match);
+    put(["red", "author-red", "apply", "blind"], {
+      details: [
+        <Field key="match" label="Did the test fail the way the bug predicts?">{m.icon} {m.text}</Field>,
+        <div key="cmp" className="verify-compare">
+          <div>
+            <div className="verify-block-label">📌 predicted red signature <span className="chip chip-blue sm" title="The blind pass's prediction of what the red output should look like, recorded before any result existed.">pre-committed</span></div>
+            <Tail text={blind?.expected_red_signature} />
+          </div>
+          <div>
+            <div className="verify-block-label">captured red output <UntrustedTag /></div>
+            <Tail text={rg?.red_output_tail} />
+          </div>
+        </div>,
+      ],
+      reasonings: reason("Judge's reasoning", s.red_reason_match?.reasoning),
+      open: attention,
+    });
+  }
+  if (rg?.green_output_tail) {
+    put(["green", "red", "apply", "blind"], {
+      details: [<div key="green" className="verify-field"><div className="verify-block-label">test output with the fix <UntrustedTag /></div><Tail text={rg.green_output_tail} /></div>],
+    });
+  }
+
+  // Corroborating evidence, never a gate. A repro the story has no step for
+  // and that never ran has nothing to show.
+  if (repro && (byKey.has("repro") || repro.ran || repro.output_tail)) {
+    const m = matchSummary(s.repro_reason_match);
+    put(["repro"], {
+      chips: repro.ran ? [<ExitChip key="repro" code={repro.exit_code} expected={20} decode={RED_DECODE} />] : [],
+      tags: [<span key="corr" className="chip chip-muted sm" title="The agent's own reproduction, run against pinned main. Corroborating evidence only — it never changes the outcome.">corroborating, not a gate</span>],
+      details: [
+        repro.ran && <Field key="match" label="Did it fail the way the bug predicts?">{m.icon} {m.text}</Field>,
+        blind?.expected_repro_signature && <Field key="sig" label="Predicted repro signature"><span className="verify-reasoning">{blind.expected_repro_signature}</span></Field>,
+        blind?.repro_command && <Field key="cmd" label={<>Repro command <span className="muted small">(agent-authored)</span></>}><code className="verify-cmd">{blind.repro_command}</code></Field>,
+        repro.output_tail && <div key="out" className="verify-field"><div className="verify-block-label">repro output <UntrustedTag /></div><Tail text={repro.output_tail} /></div>,
+        repro.from_linked_issue && <div key="issue" className="muted small">Repro steps taken from the linked issue.</div>,
+      ],
+      reasonings: reason("Judge's reasoning", s.repro_reason_match?.reasoning),
+    });
+  }
+
+  // The agent-authored test lane (no-test PRs) — corroborating evidence only.
+  if (authored?.attempted) {
+    const verified = v.outcome === "agent-verified";
+    put(["author", "blind"], {
+      tags: [
+        <span key="corr" className="chip chip-muted sm" title="The PR ships no test, so the harness authored one. The agent wrote file contents only; the driver validated the paths (new test files only), built the patch, and derived the command itself. Corroborating evidence — it never counts toward the auto-merge bar.">corroborating, not a gate</span>,
+        <span key="pre" className="chip chip-blue sm" title="The authored files and the predicted failure were committed to the store before any container ran — they cannot have been rationalized backward from a result.">committed before any run</span>,
+      ],
+      details: [
+        authored.test_cmd && <Field key="cmd" label={<>Derived command <span className="muted small">(driver-derived from the authored paths)</span></>}><code className="verify-cmd">{authored.test_cmd}</code></Field>,
+        authored.expected_red_signature && <Field key="sig" label="Predicted red signature"><span className="verify-reasoning">{authored.expected_red_signature}</span></Field>,
+        ...(authored.files ?? []).map((f) => (
+          <Collapsible key={`file:${f.path}`} summary={<>authored file <code>{f.path}</code></>}>
+            <pre className="verify-tail">{f.contents}</pre>
+          </Collapsible>
+        )),
+      ],
+      reasonings: reason("Authoring reasoning", authored.reasoning),
+      open: verified,
+    });
+    put(["author-red", "author", "blind"], {
+      chips: [<ExitChip key="ared" code={authored.red_exit} expected={20} decode={RED_DECODE} />],
+      details: [authored.red_output_tail && <div key="out" className="verify-field"><div className="verify-block-label">authored red output <UntrustedTag /></div><Tail text={authored.red_output_tail} /></div>],
+    });
+    put(["author-green", "author-red", "author", "blind"], {
+      chips: [<ExitChip key="agreen" code={authored.green_exit} expected={0} decode={GREEN_DECODE} />],
+      details: [authored.green_output_tail && <div key="out" className="verify-field"><div className="verify-block-label">authored green output <UntrustedTag /></div><Tail text={authored.green_output_tail} /></div>],
+    });
+    put(["author-confirm", "author-green", "author-red", "author", "blind"], {
+      chips: [
+        <ExitChip key="ared2" label="confirm red" code={authored.red_exit_confirm} expected={20} decode={RED_DECODE} />,
+        <ExitChip key="agreen2" label="confirm green" code={authored.green_exit_confirm} expected={0} decode={GREEN_DECODE} />,
+      ],
+    });
+  }
+  return { byKey, orphan };
+}
+
+/** The reasonings and evidence behind one step; the step's own reasoning
+ *  leads, and a signal repeating it is shown once. */
+function ExtraDetails({ extra, reasoning, reasoningLabel }: { extra: StepExtra; reasoning: string | null; reasoningLabel: string }) {
+  return (
+    <>
+      {reasoning && <Reasoning label={reasoningLabel} text={reasoning} />}
+      {extra.reasonings.filter((r) => r.text !== reasoning).map((r) => <Reasoning key={r.label} {...r} />)}
+      {extra.details}
+    </>
+  );
+}
+
+const hasDetails = (extra: StepExtra, reasoning: string | null): boolean =>
+  !!reasoning || extra.reasonings.length > 0 || extra.details.some(Boolean);
+
+/** The run's checks in order, in plain English — the first thing to read.
+ *  Each step carries its trusted exit codes inline and one "details" toggle
+ *  over its judgments and evidence; the step that broke opens it. */
+function Story({ v }: { v: VerifyDetail }) {
+  const steps = v.story ?? [];
+  const { byKey, orphan } = stepExtras(v, steps);
+  return (
+    <>
+      {steps.length > 0 && (
+        <>
+          <div className="verify-section-head">Steps:</div>
+          <div className="verify-story">
+            {steps.map((st) => {
+              const extra = byKey.get(st.key) ?? emptyExtra();
+              const label = st.key === "author" ? "Authoring reasoning" : "Judge's reasoning";
+              return (
+                <div key={st.key} className={`vstep vstep-${st.result}`}>
+                  <span className="vstep-icon">{STEP_ICON[st.result] ?? "·"}</span>
+                  <div className="vstep-body">
+                    <div className="vstep-head">
+                      <span className="vstep-label">{st.label}</span>
+                      {extra.tags}
+                      {extra.chips}
+                    </div>
+                    <div className="vstep-note">{st.note}</div>
+                    {hasDetails(extra, st.reasoning) && (
+                      <Collapsible defaultOpen={st.result === "fail" || extra.open} summary={<>details</>}>
+                        <ExtraDetails extra={extra} reasoning={st.reasoning} reasoningLabel={label} />
+                      </Collapsible>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+      {(orphan.chips.some(Boolean) || hasDetails(orphan, null)) && (
+        <Collapsible defaultOpen={orphan.open} summary={<>Evidence {orphan.tags}{orphan.chips}</>}>
+          <ExtraDetails extra={orphan} reasoning={null} reasoningLabel="" />
+        </Collapsible>
+      )}
+    </>
   );
 }
 
@@ -295,15 +500,6 @@ export function VerifyBody({ v, req, runner, repo }: {
 
 /** The stored VERIFY record (dynamic verification in the secretless sandbox). */
 function VerifyRecord({ v, repo }: { v: VerifyDetail; repo: string | null }) {
-  const s = v.signals ?? {};
-  const blind = s.blind_adequacy;
-  const rg = s.red_green;
-  const repro = s.independent_repro;
-  const authored = s.authored_test;
-  const redMatch = matchSummary(s.red_reason_match);
-  const reproMatch = matchSummary(s.repro_reason_match);
-  // an escalation exists to be read — open the judgment content by default
-  const open = v.level === "attention";
   const baseSha = v.against_base_sha;
   const baseUrl = repo && baseSha ? `https://github.com/${repo}/commit/${baseSha}` : null;
 
@@ -333,156 +529,12 @@ function VerifyRecord({ v, repo }: { v: VerifyDetail; repo: string | null }) {
         </div>
       </div>
 
-      <Story steps={v.story} />
-
-      {/* Signal 2 — host-observed exit codes: the trusted facts. Everything
-          below them is judgment or untrusted evidence. */}
-      {rg && (
-        <div className="verify-exits">
-          <span className="verify-exits-label" title="Exit codes the trusted host observed from each phase container. Untrusted code cannot forge its own PID-1 exit, so these are the phase's facts; a red is accepted only on exactly 20.">
-            🔒 host-observed exit codes
-          </span>
-          <ExitFact label="apply patch" code={rg.apply_exit} expected={0} decode={APPLY_DECODE} />
-          <ExitFact label="test without fix" code={rg.red_exit} expected={20} decode={RED_DECODE} />
-          <ExitFact label="test with fix" code={rg.green_exit} expected={0} decode={GREEN_DECODE} />
-        </div>
-      )}
-
-      {/* Signal 1 — the blind adequacy verdict (agent judgment). */}
-      {blind && (
-        <Collapsible defaultOpen={open}
-          tone={blind.faithful === false ? "red" : blind.faithful ? "green" : "muted"}
-          summary={<>
-            🕶️ Pre-run review — {blind.faithful === false ? "the PR's test was judged NOT a faithful repro of the bug" : blind.faithful ? "the PR's test was judged a faithful repro of the bug" : "no verdict"}
-            {blind.confidence && <span className="muted"> · {blind.confidence} confidence</span>}
-            <span className="chip chip-blue sm" style={{ marginLeft: 8 }} title="This judgment was committed to the store before any container ran — the phase's integrity property. It cannot have been rationalized backward from a green result.">committed before any run</span>
-          </>}>
-          {blind.claimed_symptom && (
-            <div className="verify-field"><span className="verify-field-label">Claimed symptom</span>{blind.claimed_symptom}</div>
-          )}
-          {blind.reasoning && (
-            <div className="verify-field"><span className="verify-field-label">Reasoning</span><span className="verify-reasoning">{blind.reasoning}</span></div>
-          )}
-          {blind.test_cmd && (
-            <div className="verify-field"><span className="verify-field-label">Test command</span><code className="verify-cmd">{blind.test_cmd}</code></div>
-          )}
-          {(blind.requires_live_agent || blind.from_linked_issue || blind.has_test === false) && (
-            <div className="verify-field muted small">
-              {blind.has_test === false && <>ships no test · </>}
-              {blind.requires_live_agent && <>reproducing needs a live agent (Tier 2) · </>}
-              {blind.from_linked_issue && <>repro taken from the linked issue</>}
-            </div>
-          )}
-        </Collapsible>
-      )}
-
-      {/* Signal 3 — the comparison the phase turns on: the pre-committed
-          prediction vs. the red output that actually happened. */}
-      {(blind?.expected_red_signature || rg?.red_output_tail) && (
-        <Collapsible defaultOpen={open}
-          tone={redMatch.tone === "green" ? "green" : redMatch.tone === "red" ? "red" : "muted"}
-          summary={<>🔬 Failure-reason check — did the test fail the way the bug predicts? {redMatch.icon} {redMatch.text}</>}>
-          {s.red_reason_match?.reasoning && (
-            <div className="verify-field"><span className="verify-field-label">Judge's reasoning</span><span className="verify-reasoning">{s.red_reason_match.reasoning}</span></div>
-          )}
-          <div className="verify-compare">
-            <div>
-              <div className="verify-block-label">📌 predicted red signature <span className="chip chip-blue sm" title="The blind pass's prediction of what the red output should look like, recorded before any result existed.">pre-committed</span></div>
-              <Tail text={blind?.expected_red_signature} />
-            </div>
-            <div>
-              <div className="verify-block-label">captured red output <UntrustedTag /></div>
-              <Tail text={rg?.red_output_tail} />
-            </div>
-          </div>
-          {rg?.green_output_tail && (
-            <Collapsible summary={<>green run output <UntrustedTag /></>}>
-              <Tail text={rg.green_output_tail} />
-            </Collapsible>
-          )}
-        </Collapsible>
-      )}
-
-      {/* Signal 4 (+ its reason check) — corroborating evidence, never a gate. */}
-      {repro && (
-        <Collapsible
-          tone={reproMatch.tone === "green" ? "green" : reproMatch.tone === "red" ? "yellow" : "muted"}
-          summary={<>
-            🔁 Independent repro — {repro.ran ? <>ran, exit <b>{repro.exit_code}</b> · {reproMatch.icon} {reproMatch.text}</> : "did not run"}
-            <span className="chip chip-muted sm" style={{ marginLeft: 8 }} title="The agent's own reproduction, run against pinned main. Corroborating evidence only — it never changes the outcome.">corroborating, not a gate</span>
-          </>}>
-          {s.repro_reason_match?.reasoning && (
-            <div className="verify-field"><span className="verify-field-label">Judge's reasoning</span><span className="verify-reasoning">{s.repro_reason_match.reasoning}</span></div>
-          )}
-          {blind?.expected_repro_signature && (
-            <div className="verify-field"><span className="verify-field-label">Predicted repro signature</span><span className="verify-reasoning">{blind.expected_repro_signature}</span></div>
-          )}
-          {blind?.repro_command && (
-            <div className="verify-field"><span className="verify-field-label">Repro command <span className="muted small">(agent-authored)</span></span><code className="verify-cmd">{blind.repro_command}</code></div>
-          )}
-          {repro.output_tail && (
-            <div className="verify-field">
-              <div className="verify-block-label">repro output <UntrustedTag /></div>
-              <Tail text={repro.output_tail} />
-            </div>
-          )}
-          {repro.from_linked_issue && <div className="muted small">Repro steps taken from the linked issue.</div>}
-        </Collapsible>
-      )}
-
-      {/* The agent-authored test lane (no-test PRs) — corroborating evidence
-          only; the outcome copy and story carry the policy context. */}
-      {authored?.attempted && (
-        <Collapsible defaultOpen={v.outcome === "agent-verified"}
-          tone={v.outcome === "agent-verified" ? "green" : "yellow"}
-          summary={<>
-            🧪 Agent-authored test — {authored.skipped_reason
-              ? <>not runnable ({authored.skipped_reason})</>
-              : authored.red_exit == null
-                ? "authored, never ran"
-                : <>ran red→green: red <b>{authored.red_exit}</b> · green <b>{authored.green_exit}</b></>}
-            <span className="chip chip-muted sm" style={{ marginLeft: 8 }} title="The PR ships no test, so the harness authored one. The agent wrote file contents only; the driver validated the paths (new test files only), built the patch, and derived the command itself. Corroborating evidence — it never counts toward the auto-merge bar.">corroborating, not a gate</span>
-            <span className="chip chip-blue sm" style={{ marginLeft: 6 }} title="The authored files and the predicted failure were committed to the store before any container ran — they cannot have been rationalized backward from a result.">committed before any run</span>
-          </>}>
-          {authored.reasoning && (
-            <div className="verify-field"><span className="verify-field-label">Authoring reasoning</span><span className="verify-reasoning">{authored.reasoning}</span></div>
-          )}
-          {authored.test_cmd && (
-            <div className="verify-field"><span className="verify-field-label">Derived command <span className="muted small">(driver-derived from the authored paths)</span></span><code className="verify-cmd">{authored.test_cmd}</code></div>
-          )}
-          {authored.expected_red_signature && (
-            <div className="verify-field"><span className="verify-field-label">Predicted red signature</span><span className="verify-reasoning">{authored.expected_red_signature}</span></div>
-          )}
-          {(authored.red_exit != null || authored.green_exit != null) && (
-            <div className="verify-exits">
-              <span className="verify-exits-label">🔒 host-observed exit codes</span>
-              <ExitFact label="authored test without fix" code={authored.red_exit} expected={20} decode={RED_DECODE} />
-              <ExitFact label="authored test with fix" code={authored.green_exit} expected={0} decode={GREEN_DECODE} />
-              <ExitFact label="confirm red" code={authored.red_exit_confirm} expected={20} decode={RED_DECODE} />
-              <ExitFact label="confirm green" code={authored.green_exit_confirm} expected={0} decode={GREEN_DECODE} />
-            </div>
-          )}
-          {(authored.files ?? []).map((f) => (
-            <Collapsible key={f.path} summary={<>authored file <code>{f.path}</code></>}>
-              <pre className="verify-tail">{f.contents}</pre>
-            </Collapsible>
-          ))}
-          {authored.red_output_tail && (
-            <Collapsible summary={<>authored red output <UntrustedTag /></>}>
-              <Tail text={authored.red_output_tail} />
-            </Collapsible>
-          )}
-          {authored.green_output_tail && (
-            <Collapsible summary={<>authored green output <UntrustedTag /></>}>
-              <Tail text={authored.green_output_tail} />
-            </Collapsible>
-          )}
-        </Collapsible>
-      )}
+      <Story v={v} />
 
       {/* The judge's findings — observations worth a human's read, not verdicts. */}
       {v.findings.length > 0 && (
         <div className="verify-findings">
+          <div className="verify-section-head">Findings:</div>
           {v.findings.map((f, i) => (
             <Collapsible key={i} tone="muted"
               summary={<>📎 {f.title ?? "finding"}{f.confidence && <span className="muted small"> · {f.confidence} confidence</span>}</>}>

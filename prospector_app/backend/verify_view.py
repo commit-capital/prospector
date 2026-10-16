@@ -634,15 +634,25 @@ def _build_story(signals: wire.VerifySignals) -> list[VerifyStep]:
     """The run's checks in execution order, each with a plain-English verdict.
     Mirrors the checks gates.verify_outcome gates on — for explanation only;
     the outcome itself is always the stored one. Empty when the record carries
-    no signals (nothing to narrate)."""
+    no signals (nothing to narrate). The independent repro closes the story
+    of a run that reached the red step, and of any other run it ran in."""
     if not signals:
         return []
+    steps = _gated_steps(signals)
+    repro = signals.get("independent_repro") or {}
+    if repro.get("ran") or any(st["key"] == "red" for st in steps):
+        repro_step = _repro_step(signals.get("blind_adequacy") or {}, repro,
+                                 signals.get("repro_reason_match") or {})
+        if repro_step:
+            steps.append(repro_step)
+    return steps
+
+
+def _gated_steps(signals: wire.VerifySignals) -> list[VerifyStep]:
     blind = signals.get("blind_adequacy") or {}
     rg = signals.get("red_green") or {}
     judge = signals.get("red_reason_match") or {}
     regress = signals.get("regress") or {}
-    repro = signals.get("independent_repro") or {}
-    rating = signals.get("repro_reason_match") or {}
 
     blind_label = ("Pre-run review: is the PR's test a faithful reproduction "
                    "of the claimed bug?")
@@ -698,9 +708,6 @@ def _build_story(signals: wire.VerifySignals) -> list[VerifyStep]:
     steps.extend(_lane_steps(signals))
     if regress:
         steps.append(_regress_step(regress))
-    repro_step = _repro_step(blind, repro, rating)
-    if repro_step:
-        steps.append(repro_step)
     return steps
 
 

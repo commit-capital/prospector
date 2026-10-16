@@ -367,6 +367,40 @@ def test_a_rejected_repro_renders_its_reason_in_the_story():
     assert "src/x.test.ts" in repro["note"]
 
 
+def test_a_repro_that_ran_closes_every_path():
+    # The repro runs on the unfixed base whatever the other checks did: an
+    # agent-authored run and a diff that no longer applies still narrate it.
+    repro = {"independent_repro": {"ran": True, "exit_code": 20},
+             "repro_reason_match": {"matches": True, "confidence": "high"}}
+    authored = {
+        "blind_adequacy": {"has_test": False, "repro_command": "npx vitest run r"},
+        "authored_test": {"attempted": True, "files": [{"path": "a.test.ts"}],
+                          "red_exit": 20, "green_exit": 0},
+        "red_green": {"apply_exit": 0},
+        "red_reason_match": {"matches": True, "confidence": "high"}, **repro}
+    conflict = {
+        "blind_adequacy": {"faithful": True, "test_cmd": "t",
+                           "repro_command": "npx vitest run r"},
+        "red_green": {"apply_exit": 30}, **repro}
+    for outcome, signals in (("agent-verified", authored),
+                             ("needs-rebase", conflict)):
+        d = verify_view.verify_detail(_pr(_verify(outcome, signals=signals)))
+        assert d is not None
+        assert d["story"][-1]["key"] == "repro", outcome
+        assert d["story"][-1]["result"] == "pass", outcome
+
+
+def test_a_run_that_stopped_at_apply_omits_a_repro_that_never_ran():
+    signals = {
+        "blind_adequacy": {"faithful": True, "test_cmd": "t",
+                           "repro_command": "npx vitest run r"},
+        "red_green": {"apply_exit": 30},
+        "independent_repro": {"ran": False, "exit_code": None}}
+    d = verify_view.verify_detail(_pr(_verify("needs-rebase", signals=signals)))
+    assert d is not None
+    assert [s["key"] for s in d["story"]] == ["blind", "apply"]
+
+
 def test_confirm_step_pass_when_the_re_run_agrees():
     signals = {
         "blind_adequacy": {"faithful": True, "test_cmd": "t"},
