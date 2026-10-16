@@ -756,3 +756,51 @@ class TestSplit:
         errs = ad.commit_analysis(s, {"cluster_id": 1, "rationale": "r", "split": [
             {"root_problem": "a", "prs": [1, 2]}]})
         assert errs == ["split: the members share one defect — analyze them as one cluster"]
+
+    def test_bundle_names_the_issue_bound_members(self, tmp_path):
+        s = Store(tmp_path)
+        self._seed(s, (1, 2, 3))
+        for n in (1, 3):
+            set_section(s, n, "issues", {"linked": [{"issue": 9, "pain": None, "how": "explicit"}]})
+        assert ad.bundle(s, 1)["bound"] == [[1, 3]]
+
+    def test_a_split_the_bound_members_collapse_is_asked_again_once(self, tmp_path, monkeypatch):
+        # cluster 598: every member links one issue, so no split can stand
+        s = Store(tmp_path)
+        self._seed(s, (1, 2, 3))
+        for n in (1, 2, 3):
+            set_section(s, n, "issues", {"linked": [{"issue": 9, "pain": None, "how": "explicit"}]})
+        split = '{"cluster_id": 1, "rationale": "r", "split": [' \
+                '{"root_problem": "a", "prs": [1, 2]}, {"root_problem": "b", "prs": [3]}]}'
+        verdict = ('{"cluster_id": 1, "outcome": "merge-ready", "rationale": "r", "prs": ['
+                   + ", ".join(f'{{"pr": {n}, "head_sha": "h{n}", "disposition": '
+                               f'"{"merge" if n == 1 else "needs-human"}", "rationale": "r"}}'
+                               for n in (1, 2, 3)) + "]}")
+        prompts: list[str] = []
+
+        def run_on_bundle(bundle, prompt, **_):
+            prompts.append(prompt("bundle.json"))
+            return split
+        monkeypatch.setattr(ad.headless_agent, "run_on_bundle", run_on_bundle)
+        text = ad.run_analyze_agent(ad.bundle(s, 1))
+        assert len(prompts) == 2 and "was refused" in prompts[1]
+        assert ad.commit_analysis(s, ad.headless_agent.extract_json(text)) != []
+
+        answers = iter([split, verdict])
+        monkeypatch.setattr(ad.headless_agent, "run_on_bundle", lambda *a, **k: next(answers))
+        text = ad.run_analyze_agent(ad.bundle(s, 1))
+        assert ad.commit_analysis(s, ad.headless_agent.extract_json(text)) == []
+        assert s.load_cluster(1).outcome == "merge-ready"
+
+    def test_a_split_that_stands_is_not_asked_again(self, tmp_path, monkeypatch):
+        s = Store(tmp_path)
+        self._seed(s, (1, 2))
+        calls: list[int] = []
+        split = '{"cluster_id": 1, "rationale": "r", "split": [' \
+                '{"root_problem": "a", "prs": [1]}, {"root_problem": "b", "prs": [2]}]}'
+
+        def run_on_bundle(*_, **__):
+            calls.append(1)
+            return split
+        monkeypatch.setattr(ad.headless_agent, "run_on_bundle", run_on_bundle)
+        assert ad.run_analyze_agent(ad.bundle(s, 1)) == split and calls == [1]
