@@ -65,8 +65,6 @@ export interface FilterSpec {
   has_tests?: boolean;
   draft?: boolean;
   stacked?: boolean;
-  // "mine" / "unclaimed" / an operator name, over the row's shared claim marker
-  claimed?: string;
   state?: "closed" | "all";       // PR Explorer defaults to open PRs only; widen to include closed/merged
   trusted_author?: boolean;
   clean?: boolean;
@@ -127,20 +125,6 @@ export interface DeepResult {
 export interface PRResponseAck {
   at: string;
   by: string;
-}
-
-/** Who is working an item (PR or issue), from which machine, since when.
- *  Shared across operators so two people don't act on the same item. */
-export interface ItemClaim {
-  by: string;
-  machine: string;
-  at: string;
-}
-
-/** Every live claim keyed "pr:123" / "issue:45", plus this backend's claiming identity. */
-export interface ClaimSet {
-  items: Record<string, ItemClaim>;
-  me: { by: string; machine: string };
 }
 
 /** One worker lane's health on a machine, from the shared worker_health registry. */
@@ -488,7 +472,6 @@ export interface PRRow {
   age_days?: number | null;
   responses?: PRResponses | null;
   author_return?: OpenAuthorReturn | null;
-  claim?: ItemClaim | null;
   pain_score?: number | null;
   automation?: AutomationStanding | null;
   pain_breakdown?: PainBreakdown | null;
@@ -1287,6 +1270,8 @@ export interface PRDetail extends PRRow {
   merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "unreviewed" | "verify" | null };
   // the changed paths that pinned risk_tier (the detail view's "why this tier")
   risk_tier_paths?: string[];
+  // each changed path above the leaf tier, with its tier (0 = core … 2)
+  risk_tier_files?: Record<string, number>;
 }
 
 export interface DiffResult {
@@ -1597,7 +1582,6 @@ export interface IssueDetail extends IssueRow {
   fixed_comment: string | null;
   dup_comment: string | null;
   cluster_label: string | null;
-  claim?: ItemClaim | null;
   fix_request?: IssueFixRequest | null;
   fix_run?: IssueFixRun | null;
   fix_thread?: IssueFixThreadEntry[];
@@ -2380,15 +2364,6 @@ export const api = {
     const qs = activitySearch(scope, { days: String(days) });
     if (allTime) qs.set("all_time", "true");
     return get<FirehoseStats>(`/api/activity/firehose?${qs}`);
-  },
-  claims: () => get<ClaimSet>("/api/claims"),
-  setClaim: async (kind: "pr" | "issue", n: number, action: "claim" | "release"): Promise<ClaimSet> => {
-    const r = await fetch(`/api/claims/${kind}/${n}`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
-    });
-    if (!r.ok) throw new Error(`/api/claims/${kind}/${n} → ${r.status}`);
-    return r.json() as Promise<ClaimSet>;
   },
   machines: () => get<MachinesRoster>("/api/machines"),
   machinesActivity: () => get<ActivityView>("/api/machines/activity"),

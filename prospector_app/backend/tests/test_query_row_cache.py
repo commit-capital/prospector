@@ -85,9 +85,6 @@ class _StubStore:
     def clusters_since(self, watermark):
         return self._next()
 
-    def load_claims(self):
-        return {}
-
 
 def _serve(monkeypatch, *batches) -> None:
     """Load a scripted store into data's snapshot and serve it to readers with

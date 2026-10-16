@@ -5,7 +5,6 @@ import { TagPicker } from "./TagPicker";
 import { CommentEditor } from "./CommentEditor";
 import { landed, ExecResultChip } from "./execResult";
 import { StaleOverrideConfirm } from "./FactFreshness";
-import { confirmUnclaimed } from "./claimGuard";
 import { suggestedAct, suggestedCanonical, type Act } from "../prAction";
 import { InfoTip } from "./InfoTip";
 import { dispositionEntry } from "../glossary";
@@ -167,7 +166,6 @@ export function PRActionBar({ pr, runState, onActed, summary }:
   const fire = async () => {
     if (blocked) return;
     if (alreadyDone && !window.confirm(`#${pr.number} was already actioned at ${runState?.at}. Act again anyway?`)) return;
-    if (!dryRun && !(await confirmUnclaimed("pr", pr.number))) return;
     let confirmMsg: string;
     if (action === "MERGE") confirmMsg = `⚠ PERMANENT: merge #${pr.number} upstream as ${botLogin}?${mergeOverride ? ` Your reason will be logged as the ${overrideNoun}.` : ""} This cannot be undone.`;
     else if (isClose(action)) confirmMsg = `Post this comment and close #${pr.number} as ${botLogin} (reopenable)?`;
@@ -209,6 +207,7 @@ export function PRActionBar({ pr, runState, onActed, summary }:
     <section className={`suggestion summary-panel tone-${sug?.tone ?? "muted"}`}>
       <h3 className="summary-title">Summary</h3>
       {summary}
+      <div className="summary-action">
       {sug && (
         <div className="sug-headline">
           <span className="analysis-label">Suggested action:</span>{" "}
@@ -321,6 +320,7 @@ export function PRActionBar({ pr, runState, onActed, summary }:
             🔒 Add private note
           </button>
         )}
+      </div>
       </div>
     </section>
   );
