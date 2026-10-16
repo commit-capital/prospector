@@ -23,7 +23,7 @@ from collections.abc import Callable, Generator, Iterable
 
 from sqlalchemy import (
     ARRAY, Connection, Engine, Table, Text, cast, create_engine,
-    delete as sa_delete, func, inspect, select, text, type_coerce,
+    delete as sa_delete, func, inspect, or_, select, text, type_coerce,
     update as sa_update,
 )
 from sqlalchemy.dialects.postgresql import Insert as PGInsert, insert as pg_insert
@@ -611,6 +611,19 @@ def strip_json_paths(data_col: ColumnElement, dialect: str,
     return data_col
 
 
+def json_has_any_key(data_col: ColumnElement, dialect: str,
+                     keys: list[str]) -> ColumnElement[bool] | None:
+    """A SQL condition true for the rows whose JSON record holds any of the
+    top-level `keys`, so a caller after a few sectioned rows never ships the
+    table. On Postgres a key holding JSON null also matches. None on any other
+    dialect: the caller filters in Python too."""
+    if dialect == "postgresql":
+        return data_col.op("?|")(cast(keys, ARRAY(Text())))
+    if dialect == "sqlite":
+        return or_(*(func.json_extract(data_col, f"$.{k}").isnot(None) for k in keys))
+    return None
+
+
 class ValidationError(ValueError):
     pass
 
@@ -894,15 +907,17 @@ class Collection(Generic[T]):
             return {int(r[0]) for r in conn.execute(select(self.pk)).all()}
         return self._read(q)
 
-    def all(self, omit_paths: list[tuple[str, ...]] | None = None) -> dict[int, T]:
-        """Every record, keyed by id, read in pages. `omit_paths` drops the named
-        nested JSON paths from each record server-side (e.g. ('meta', 'body')) so
-        the bulk read never ships a heavy field the caller doesn't need — the
-        omitted value reads back as absent and is fetched on demand elsewhere."""
+    def all(self, omit_paths: list[tuple[str, ...]] | None = None,
+            where: ColumnElement[bool] | None = None) -> dict[int, T]:
+        """Every record `where` matches, keyed by id, read in pages. `omit_paths`
+        drops the named nested JSON paths from each record server-side (e.g.
+        ('meta', 'body')) so the bulk read never ships a heavy field the caller
+        doesn't need — the omitted value reads back as absent and is fetched on
+        demand elsewhere."""
         data_col = self.table.c.data
         if omit_paths:
             data_col = strip_json_paths(data_col, self.engine.dialect.name, omit_paths)
-        rows = self._paged([data_col])
+        rows = self._paged([data_col], where)
         return {r[0]: self.view(r[1]) for r in rows}
 
     def since(self, watermark: str | None,

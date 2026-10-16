@@ -161,3 +161,24 @@ def test_append_run_names_the_machine(tmp_path, monkeypatch):
     st = issue_store.IssueStore(tmp_path)
     st.append_run({"phase": "ingest", "stats": {}})
     assert st.runs()[-1].raw["host"] == "studio"
+
+
+def test_fix_issues_reads_only_issues_with_a_fix_section(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    st.save_issue({"issue": 1, "meta": dict(GOOD_META)})
+    st.save_issue({"issue": 2, "meta": dict(GOOD_META), "fix_run": {"ending": "fixed"},
+                   "links": {"candidates": [{"pr": 9}]}})
+    st.save_issue({"issue": 3, "meta": dict(GOOD_META),
+                   "fix_request": {"action": "solve", "status": "queued", "source": "hunter"}})
+    st.save_issue({"issue": 4, "meta": dict(GOOD_META), "fix_public": {"labels": {}}})
+    got = st.fix_issues()
+    assert sorted(got) == [2, 3, 4]
+    assert "candidates" not in (got[2].raw.get("links") or {})
+
+
+def test_all_issues_reads_only_the_numbers_asked_for(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    for n in (1, 2, 3):
+        st.save_issue({"issue": n, "meta": dict(GOOD_META)})
+    assert sorted(st.all_issues(numbers=[3, 1, 99])) == [1, 3]
+    assert st.all_issues(numbers=[]) == {}

@@ -246,7 +246,7 @@ def poll_replies(store: IssueStore) -> int:
     """Queue an `answer` for each question asked on GitHub that got one, or
     whose default is due. Returns how many were queued."""
     queued = 0
-    for n, issue in store.all_issues(omit_candidates=True).items():
+    for n, issue in store.fix_issues().items():
         run = issue.fix_run or {}
         question = run.get("question") or {}
         asked = question.get("asked") or {}

@@ -516,7 +516,7 @@ def sync(store: IssueStore, *, mode: str | None = None,
             return 0
     host = settings.worker_id()
     acted = 0
-    for issue in store.all_issues(omit_candidates=True).values():
+    for issue in store.fix_issues().values():
         if not (issue.fix_run or issue.fix_request or issue.fix_public):
             continue
         if (not in_scope(issue) and not any((issue.fix_public.get("labels") or {}).values())
@@ -742,7 +742,7 @@ def answer_replies(store: IssueStore, *, mode: str | None = None,
         return 0
     now = now or datetime.now(timezone.utc)
     acted = 0
-    for issue in store.all_issues(omit_candidates=True).values():
+    for issue in store.fix_issues().values():
         if not issue.fix_run or not in_scope(issue):
             continue
         try:

@@ -225,9 +225,21 @@ class IssueStore:
         """Persist many issue records in one validated bulk UPSERT."""
         self._issues.save_many(recs)
 
-    def all_issues(self, *, omit_candidates: bool = False) -> dict[int, issue_model.Issue]:
+    def all_issues(self, *, omit_candidates: bool = False,
+                   numbers: Iterable[int] | None = None) -> dict[int, issue_model.Issue]:
+        """Every issue, or only those in `numbers`, filtered server-side."""
         omit = [("links", "candidates")] if omit_candidates else None
-        return self._issues.all(omit_paths=omit)
+        where = (None if numbers is None
+                 else schema.issues.c.issue.in_(sorted({int(n) for n in numbers})))
+        return self._issues.all(omit_paths=omit, where=where)
+
+    def fix_issues(self) -> dict[int, issue_model.Issue]:
+        """The issues holding a fix attempt, request or public record (candidates
+        omitted) — the few the issue-fix worker's loops act on, read without the
+        rest of the table."""
+        where = storekit.json_has_any_key(schema.issues.c.data, self.engine.dialect.name,
+                                          ["fix_run", "fix_request", "fix_public"])
+        return self._issues.all(omit_paths=[("links", "candidates")], where=where)
 
     def issues_since(self, watermark: str | None, *, omit_candidates: bool = False
                      ) -> tuple[dict[int, issue_model.Issue], str | None]:
