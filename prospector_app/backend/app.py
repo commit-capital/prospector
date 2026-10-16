@@ -848,15 +848,15 @@ def pr_history_endpoint(n: int):
 @app.post("/api/prs/{n}/display")
 def pr_display_write(n: int):
     """Write PR #n's plain-language card now (pipeline/display_pass.py), as
-    the operator. 422 when no reply passed the checks."""
+    the operator. 422, naming the failed check, when no reply passed."""
     try:
         sec = display_pass.write(data.store(), n, trigger="operator")
     except KeyError:
         raise HTTPException(404, f"PR #{n} not found")
     except headless_agent.AgentUnavailable as e:
         raise HTTPException(503, str(e))
-    if sec is None:
-        raise HTTPException(422, "no summary passed the checks; try again")
+    if isinstance(sec, str):
+        raise HTTPException(422, f"The summary was not written: {sec}.")
     data.refresh()
     return sec
 

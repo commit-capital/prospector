@@ -32,7 +32,8 @@ def test_check_accepts_a_faithful_card():
     ("how", ["Same change as #43."]),
 ])
 def test_check_rejects_invented_refs(field, value):
-    assert dp.check({**GOOD, field: value}, _src(), "close-dup") is None
+    why = dp.check({**GOOD, field: value}, _src(), "close-dup")
+    assert isinstance(why, str) and why.startswith("it cited #")
 
 
 def test_check_allows_refs_the_inputs_name():
@@ -45,7 +46,24 @@ def test_check_allows_refs_the_inputs_name():
     (["It is a duplicate."], "merge"),
 ])
 def test_check_rejects_a_changed_verdict(how, disposition):
-    assert dp.check({**GOOD, "how": how}, _src("Clean and tested."), disposition) is None
+    why = dp.check({**GOOD, "how": how}, _src("Clean and tested."), disposition)
+    assert isinstance(why, str) and f"the verdict is {disposition}" in why
+
+
+@pytest.mark.parametrize("how,disposition", [
+    (["Updates stale URLs on reuse so auth and links work"], "request-changes"),
+    (["Drops duplicate rows before the insert"], "merge"),
+    (["Cleans up abandoned worktrees on startup"], "merge"),
+    (["Requests are retried until the merge is ready"], "close-dup"),
+])
+def test_check_keeps_ordinary_words_that_name_no_verdict(how, disposition):
+    assert dp.check({**GOOD, "how": how}, _src("Clean and tested."), disposition) == {**GOOD, "how": how}
+
+
+def test_check_reads_any_close_recommendation_against_a_merge():
+    why = dp.check({**GOOD, "how": ["This PR should be closed."]}, _src("Clean."), "merge")
+    assert why == "it said “should be closed”, but the verdict is merge"
+    assert dp.check({**GOOD, "how": ["This PR should be closed."]}, _src("Clean."), "close-stale")
 
 
 def test_check_keeps_a_verdict_phrase_the_rationale_uses():
@@ -56,7 +74,7 @@ def test_check_keeps_a_verdict_phrase_the_rationale_uses():
 @pytest.mark.parametrize("reply", [None, "text", {**GOOD, "how": []}, {**GOOD, "fix": ""},
                                    {**GOOD, "how": ["word " * 30]}])
 def test_check_rejects_malformed_replies(reply):
-    assert dp.check(reply, _src(), "close-dup") is None
+    assert isinstance(dp.check(reply, _src(), "close-dup"), str)
 
 
 def test_problem_section_prefers_the_problem_heading():
@@ -69,7 +87,7 @@ def test_write_stores_a_current_section(tmp_path, monkeypatch):
     st = _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(dp, "_ask", lambda prompt: GOOD)
     sec = dp.write(st, 1, trigger="operator")
-    assert sec is not None and sec["problem"] == GOOD["problem"]
+    assert isinstance(sec, dict) and sec["problem"] == GOOD["problem"]
     pr = st.load_pr(1)
     assert pr.disposition == "close-wontfix"
     assert dp.current(pr) == pr.section("display")
@@ -79,9 +97,11 @@ def test_write_stores_a_current_section(tmp_path, monkeypatch):
 def test_write_stores_nothing_when_every_reply_is_rejected(tmp_path, monkeypatch):
     st = _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(dp, "_ask", lambda prompt: {**GOOD, "fix": "Fixes #999."})
-    assert dp.write(st, 1, trigger="operator") is None
+    why = dp.write(st, 1, trigger="operator")
+    assert why == "it cited #999, which nothing it was given names"
     assert st.load_pr(1).section("display") is None
-    assert [r.raw["stats"]["written"] for r in st.runs(phase=dp.PHASE)] == [False]
+    assert [(r.raw["stats"]["written"], r.raw["stats"]["reason"])
+            for r in st.runs(phase=dp.PHASE)] == [(False, why)]
 
 
 def test_a_new_verdict_or_head_retires_the_card(tmp_path, monkeypatch):

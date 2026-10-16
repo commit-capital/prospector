@@ -6,6 +6,7 @@ import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixA
 import { authorTip } from "../components/Chips";
 import { ChecksPanel } from "../components/ChecksPanel";
 import { DiffView } from "../components/DiffView";
+import { MergeSideBySide } from "../components/MergeSideBySide";
 import { CHECKS_ID, checkRowId, diffFileId, flashTo, jumpToDiff } from "../components/pageAnchor";
 import { Collapsible } from "../components/Collapsible";
 import { PRActionBar } from "../components/PRActionBar";
@@ -40,7 +41,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   // Which diff the Diff panel shows: the PR's own change, or the conflicted
   // merge state a "Resolve merge conflicts" attempt paused on (#46) — carried
   // by a refusal and by a parked agent resolution alike.
-  const [diffMode, setDiffMode] = useState<"pr" | "merge" | "proposed">("pr");
+  const [diffMode, setDiffMode] = useState<"pr" | "merge" | "merge3" | "proposed">("pr");
   const [lineComment, setLineComment] = useState<{ file: string; line: number } | null>(null);
   // The Checks row a Summary chip last opened; a new `n` reopens it.
   const [openedCheck, setOpenedCheck] = useState<{ key: string; n: number } | null>(null);
@@ -716,6 +717,13 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
               Merge diff
             </button>
             )}
+            {mergeDiff && (
+            <button className={diffMode === "merge3" ? "on" : ""} role="tab" aria-selected={diffMode === "merge3"}
+              onClick={() => setDiffMode("merge3")}
+              title="The same conflict as three columns: main's code, the PR's code, and the merged result.">
+              Merge diff side-by-side
+            </button>
+            )}
             {proposedPatch && (
             <button className={diffMode === "proposed" ? "on" : ""} role="tab" aria-selected={diffMode === "proposed"}
               onClick={() => setDiffMode("proposed")}
@@ -736,7 +744,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </div>
             <DiffView diffText={proposedPatch} />
           </>
-        ) : diffMode === "merge" && mergeDiff ? (
+        ) : (diffMode === "merge" || diffMode === "merge3") && mergeDiff ? (
           <>
             <div className="diff-note">
               ⚠ Where this PR and the current base collide — the conflicted hunks a
@@ -744,7 +752,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
               {conflictPaths.length > 0 && <> ({conflictPaths.length} file{conflictPaths.length === 1 ? "" : "s"})</>},
               not the PR's own change.
             </div>
-            <DiffView diffText={mergeDiff} />
+            {diffMode === "merge3" ? <MergeSideBySide diffText={mergeDiff} /> : <DiffView diffText={mergeDiff} />}
           </>
         ) : (
           <>
