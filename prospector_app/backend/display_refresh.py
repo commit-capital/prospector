@@ -46,7 +46,7 @@ def pass_once() -> list[int]:
     try:
         with capacity.unattended(LANE):
             for n in picks:
-                if display_pass.write(store, n, trigger=TRIGGER) is not None:
+                if isinstance(display_pass.write(store, n, trigger=TRIGGER), dict):
                     written.append(n)
     except (capacity.CapacityPaused, headless_agent.AgentUnavailable) as e:
         print(f"[display] pass stopped: {e}", flush=True)

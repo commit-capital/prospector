@@ -5,7 +5,8 @@ For one PR head a cheap model reads the title, the description's problem
 section, the linked issues, the diff summary and the effective rationale, and
 writes {problem, fix, how} for a maintainer skimming the page. `check`
 rejects a reply that cites a PR or issue number the inputs never name, or that
-names a verdict other than the PR's own, and a rejected reply is never stored.
+recommends a verdict other than the PR's own, and says why; a rejected reply is
+never stored.
 
 The `display` section is stamped with the head it describes and a hash of the
 verdict, rationale, asks and summary it was written from (`source_hash`); `current`
@@ -73,17 +74,36 @@ ASKS of the author:
 BLOCKERS (what still stops a merge):
 {blockers}"""
 
-# Phrases that name each verdict. A reply naming another verdict's phrase the
-# rationale, asks and blockers do not themselves use has changed the verdict.
+# Phrases that recommend each verdict, matched on word boundaries. "close"
+# stands for every close-* verdict. A reply using one for a verdict other than
+# the PR's, that the rationale, asks and blockers do not themselves use, has
+# changed the verdict. Each is a recommendation, since words like "stale" or
+# "duplicate" on their own describe the code a PR touches as often as the PR.
 _VERDICT_PHRASES: dict[str, tuple[str, ...]] = {
-    "merge": ("ready to merge", "should be merged", "safe to merge", "can be merged"),
-    "request-changes": ("request changes", "request-changes", "needs changes"),
-    "close-dup": ("duplicate",),
-    "close-fixed": ("already fixed", "already landed"),
-    "close-wontfix": ("won't fix", "wontfix", "wrong approach"),
-    "close-stale": ("stale", "abandoned"),
-    "needs-human": ("needs a human", "needs-human"),
+    "merge": (r"ready to (?:be )?merged?", r"should be merged", r"safe to merge",
+              r"can be merged"),
+    "request-changes": (r"request(?:ing)? changes", r"request-changes", r"needs changes"),
+    "close": (r"should be closed",),
+    "close-dup": (r"(?:is|as) a duplicate", r"duplicate of #\d+", r"duplicates #\d+"),
+    "close-fixed": (r"already fixed", r"already landed"),
+    "close-wontfix": (r"won't fix", r"wontfix", r"wrong approach"),
+    "close-stale": (r"close[ds]? as stale", r"(?:PR|pull request) (?:is|was|looks|has gone) stale",
+                    r"(?:PR|pull request) (?:is|was|looks) abandoned", r"stale PR",
+                    r"abandoned PR"),
+    "needs-human": (r"needs a human", r"needs-human"),
 }
+
+
+def _phrase(pattern: str, text: str) -> str | None:
+    m = re.search(rf"\b(?:{pattern})\b", text, re.IGNORECASE)
+    return m.group(0) if m else None
+
+
+def _allows(verdict: str, disposition: str | None) -> bool:
+    if verdict == "close":
+        return (disposition or "").startswith("close-")
+    return verdict == disposition
+
 
 _PROBLEM_HEADING = re.compile(r"(?i)what happened|problem|motivation|bug|thinking path|why|summary")
 
@@ -142,32 +162,36 @@ def _words(s: str) -> int:
     return len(s.split())
 
 
-def check(reply: object, src: dict[str, str], disposition: str | None) -> dict | None:
-    """The reply as a display payload, or None when it breaks a rule: a missing
-    or overlong field, a PR or issue number the inputs never name, or a phrase
-    naming another verdict that the reasons it was given do not use."""
+def check(reply: object, src: dict[str, str], disposition: str | None) -> dict | str:
+    """The reply as a display payload, or why it was rejected: a missing or
+    overlong field, a PR or issue number the inputs never name, or a phrase
+    recommending another verdict that the reasons it was given do not use."""
     if not isinstance(reply, dict):
-        return None
+        return "the reply was not the expected JSON"
     problem, fix = reply.get("problem"), reply.get("fix")
     how = reply.get("how")
     if not (isinstance(problem, str) and isinstance(fix, str) and problem.strip() and fix.strip()):
-        return None
+        return "the problem or fix was missing"
     if not (isinstance(how, list) and 1 <= len(how) <= MAX_BULLETS
             and all(isinstance(x, str) and x.strip() for x in how)):
-        return None
+        return f"how it works needs 1 to {MAX_BULLETS} bullets"
     if _words(problem) > MAX_SENTENCE_WORDS or _words(fix) > MAX_SENTENCE_WORDS:
-        return None
+        return f"the problem or fix ran over {MAX_SENTENCE_WORDS} words"
     if any(_words(x) > MAX_BULLET_WORDS for x in how):
-        return None
+        return f"a bullet ran over {MAX_BULLET_WORDS} words"
     out = " ".join([problem, fix, *how])
     named = set(re.findall(r"\d+", " ".join(src.values())))
-    if any(n not in named for n in re.findall(r"#(\d+)", out)):
-        return None
-    low = out.lower()
-    reasons = " ".join((src["rationale"], src["asks"], src["blockers"])).lower()
-    for d, phrases in _VERDICT_PHRASES.items():
-        if d != disposition and any(p in low and p not in reasons for p in phrases):
-            return None
+    invented = [n for n in re.findall(r"#(\d+)", out) if n not in named]
+    if invented:
+        return f"it cited #{invented[0]}, which nothing it was given names"
+    reasons = " ".join((src["rationale"], src["asks"], src["blockers"]))
+    for verdict, patterns in _VERDICT_PHRASES.items():
+        if _allows(verdict, disposition):
+            continue
+        for pattern in patterns:
+            said = _phrase(pattern, out)
+            if said and not _phrase(pattern, reasons):
+                return f"it said “{said}”, but the verdict is {disposition}"
     return {"problem": problem.strip(), "fix": fix.strip(), "how": [x.strip() for x in how]}
 
 
@@ -183,36 +207,40 @@ def _ask(prompt: str) -> object:
         return None
 
 
-def compose(pr: Pr) -> dict | None:
-    """A checked display payload for `pr`, or None when every attempt was rejected."""
+def compose(pr: Pr) -> dict | str:
+    """A checked display payload for `pr`, or why the last attempt was rejected."""
     src = inputs(pr)
     prompt = _PROMPT.format(**src)
+    got: dict | str = "no attempt ran"
     for _ in range(ATTEMPTS):
         got = check(_ask(prompt), src, pr.disposition)
-        if got is not None:
+        if isinstance(got, dict):
             return got
-    return None
+    return got
 
 
-def write(store: Store, n: int, *, trigger: str) -> dict | None:
+def write(store: Store, n: int, *, trigger: str) -> dict | str:
     """Compose and store PR `n`'s display section, booking the attempt on the
-    ledger. Returns the stored section, or None when nothing passed the checks."""
+    ledger. Returns the stored section, or why no reply passed the checks."""
     pr = store.load_pr(n)
     if pr is None:
         raise KeyError(n)
     head, digest = pr.effective_head_sha, source_hash(pr)
     started = storekit.now()
     payload = compose(pr)
-    if payload is not None:
+    written = isinstance(payload, dict)
+    if isinstance(payload, dict):
         store.edit_pr(n).set_display({**payload, "model": MODEL, "source_hash": digest},
                                      head_sha=head)
     store.append_run({"phase": PHASE, "pr": n, "started": started, "finished": storekit.now(),
                       "trigger": trigger,
-                      "stats": {"head_sha": head, "written": payload is not None}})
-    if payload is None:
-        return None
+                      "stats": {"head_sha": head, "written": written,
+                                **({} if written else {"reason": payload})}})
+    if isinstance(payload, str):
+        return payload
     fresh = store.load_pr(n)
-    return fresh.section("display") if fresh else None
+    sec = fresh.section("display") if fresh else None
+    return sec if sec is not None else "the card was not stored"
 
 
 def wanted(prs: dict[int, Pr]) -> list[int]:
@@ -243,7 +271,8 @@ def main() -> int:
     ns = ns[: args.limit] if args.limit else ns
     for i, n in enumerate(ns, 1):
         sec = write(store, n, trigger="operator")
-        print(f"[{i}/{len(ns)}] PR #{n}: {'written' if sec else 'rejected'}", flush=True)
+        print(f"[{i}/{len(ns)}] PR #{n}: {'written' if isinstance(sec, dict) else f'rejected: {sec}'}",
+              flush=True)
     return 0
 
 
