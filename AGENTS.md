@@ -803,9 +803,11 @@ pinned to `TRIAGE_AGENT_MODEL` (default `opus`; empty leaves the CLI's default).
 `codex:<model>` entry in `TRIAGE_ISSUE_FIX_MODELS` runs that cross-lane candidate on the
 Codex CLI (`pipeline/headless_codex.py`) under the same boundary: a permissions profile
 that reads the system and its roots, writes its clone and a private temp directory, and
-denies the operator's home, the deployment's credentials and the network; execpolicy
-letting only the sandbox check out and forbidding the runners that would execute the
-repository's code; and a private Codex home per run. Its usage books under the `codex`
+denies the operator's home, the deployment's credentials and the network; escalation
+off and the runners that would execute the repository's code forbidden; the sandbox
+check run by the host on the agent's behalf (a stand-in inside the profile files its
+arguments, `headless_codex._Broker` runs the tool with them); and a private Codex home
+per run. Its usage books under the `codex`
 account, which the AI capacity policy does not cap. A tripped lane picks nothing (a lane tripped on the
 agent alone still pushes what an operator approved). A lane tripped on the
 agent or the sandbox retests itself every fifteen minutes
