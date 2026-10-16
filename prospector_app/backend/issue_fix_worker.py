@@ -38,11 +38,14 @@ from issue_triage import (
     dispute_question,
     fix_review,
     fix_review_runner,
+    fixability,
     followup,
     public_loop,
 )
+from issue_triage.issue_model import Issue
 from issue_triage.issue_store import IssueStore
-from pipeline import capacity, gates, headless_agent, settings, storekit
+from pipeline import capacity, gates, headless_agent, prove, settings, storekit
+from pipeline.store import Store
 from prospector_app.backend import data, lane_health, schema_gate, verify_worker, worker_log, worker_loops
 
 LANE = "issue-fix"
@@ -52,10 +55,8 @@ REPLY_POLL_SECONDS = 30 * 60
 # the public loop.
 FOLLOWUP_POLL_SECONDS = 10 * 60
 SHUTDOWN_TIMEOUT = 10.0
-# How recent an issue the hunter picks, and the reproduction grades it trusts in
-# an issue a maintainer did not file.
+# How recent an issue the hunter picks.
 HUNT_MAX_AGE = timedelta(days=30)
-HUNT_GRADES = frozenset({"A", "B"})
 HUNT_SKIP_LABELS = frozenset({"enhancement", "documentation", "question"})
 # A failed request is the machine's (a worker restarted mid-run, a base or
 # sandbox that could not run), never a verdict on the issue. The hunter queues a
@@ -292,35 +293,92 @@ def _retryable(req: dict | None) -> bool:
     return age is None or age >= FAILED_RETRY_COOLDOWN.total_seconds()
 
 
+def _huntable(issues: dict) -> list[tuple[bool, int, Issue]]:
+    """The open issues the hunter may take, as (maintainer's, number, issue):
+    filed within HUNT_MAX_AGE, carrying no HUNT_SKIP_LABELS, with no attempt,
+    or one whose last `solve` failed and may be retried."""
+    since = (datetime.now(timezone.utc) - HUNT_MAX_AGE).isoformat()
+    out = []
+    for n, i in issues.items():
+        meta = i.raw.get("meta") or {}
+        if (meta.get("state") != "open" or (meta.get("created_at") or "") < since
+                or HUNT_SKIP_LABELS & set(meta.get("labels") or [])
+                or i.fix_run or not _retryable(i.fix_request)):
+            continue
+        out.append((gates.priority_author(i.author, i.author_association), n, i))
+    return out
+
+
+# Issues whose triage the agent failed this process, by when, so a run that
+# cannot finish is not retried every tick.
+_triage_failed: dict[int, float] = {}
+TRIAGE_RETRY_SECONDS = 6 * 3600
+
+
+def triage_next(store: IssueStore) -> int | None:
+    """Judge the next huntable issue with no current fixability triage, a
+    maintainer's and the newest first, over this machine's pinned base, while
+    the lane's AI capacity is open, and post the question an `ask` carries
+    (`public_loop.ask_triage`). The issue judged, or None. A base this machine
+    lacks leaves every issue untriaged; an agent outage propagates."""
+    from prospector_app.backend import issue_data
+
+    now = time.monotonic()
+    pending = [(m, (i.raw.get("meta") or {}).get("created_at") or "", n, i)
+               for m, n, i in _huntable(issue_data.issues())
+               if fixability.current(i) is None
+               and now - _triage_failed.get(n, -TRIAGE_RETRY_SECONDS) >= TRIAGE_RETRY_SECONDS]
+    if not pending or not lane_health.capacity_open(LANE):
+        return None
+    *_, n, issue = max(pending, key=lambda p: p[:3])
+    try:
+        base = prove.pinned(Store())
+    except prove.NoBase:
+        return None
+    started = storekit.now()
+    created = storekit.parse_ts((issue.raw.get("meta") or {}).get("created_at"))
+    replies = (public_loop.read_replies(issue, created) or []) if created else []
+    try:
+        with capacity.metered(LANE):
+            record = fixability.judge(issue, base.clone, base_sha=base.sha, replies=replies)
+    except (ValueError, RuntimeError) as e:
+        if isinstance(e, headless_agent.AgentUnavailable):
+            raise
+        _triage_failed[n] = time.monotonic()
+        traceback.print_exc()
+        return None
+    record["asks"] = int((issue.fix_triage or {}).get("asks") or 0)
+    if record["verdict"] == "ask":
+        record["asked"] = public_loop.ask_triage(issue, record)
+        record["asks"] += record["asked"] == "posted"
+    store.edit_issue(n).record_fix_triage(record)
+    store.append_run({"phase": "issue-triage:run", "issue": n, "started": started,
+                      "finished": storekit.now(), "trigger": "worker",
+                      "stats": {"verdict": record["verdict"], "kind": record.get("kind"),
+                                "fixability": record.get("fixability"),
+                                "asked": record.get("asked")}})
+    return n
+
+
 def hunt(store: IssueStore) -> int | None:
-    """Queue a `solve` for the newest fresh issue with no attempt, or whose
-    last `solve` failed and may be retried, a
-    maintainer's (gates.priority_author) ahead of any other, within the day's
-    budget and while the lane's AI capacity is open. Another author's issue
-    must be well reproduced (HUNT_GRADES); a maintainer's is taken as
-    reported. The issue queued, or None. Reads the app's issue snapshot; the
-    queue write re-checks the issue on the store."""
+    """Queue a `solve` for the most promising huntable issue the fixability
+    triage judged `go` at its current content, a maintainer's ahead of any
+    other, then by fixability, then the newest (`fixability.hunt_key`),
+    within the day's budget and while the lane's AI capacity is open. The
+    triage's replies ride as notes. The issue queued, or None. Reads the app's
+    issue snapshot; the queue write re-checks the issue on the store."""
     from prospector_app.backend import issue_data
 
     issues = issue_data.issues()
     if _hunted_today(issues) >= settings.issue_fix_hunt_budget():
         return None
-    since = (datetime.now(timezone.utc) - HUNT_MAX_AGE).isoformat()
-    picks = []
-    for n, i in issues.items():
-        meta = i.raw.get("meta") or {}
-        maintainer = gates.priority_author(i.author, i.author_association)
-        if (meta.get("state") != "open" or (meta.get("created_at") or "") < since
-                or (not maintainer
-                    and (i.raw.get("repro") or {}).get("grade") not in HUNT_GRADES)
-                or HUNT_SKIP_LABELS & set(meta.get("labels") or [])
-                or i.fix_run or not _retryable(i.fix_request)):
-            continue
-        picks.append((maintainer, meta.get("created_at") or "", n))
-    for *_, n in sorted(picks, reverse=True):
+    picks = [(fixability.hunt_key(i, maintainer=m), n, fixability.current(i) or {})
+             for m, n, i in _huntable(issues)]
+    for _, n, tri in sorted((p for p in picks if p[2].get("verdict") == "go"), reverse=True):
         if not lane_health.capacity_open(LANE):
             return None
-        ok, _ = fix_review.queue(store, n, "solve", by="hunter", source="hunter")
+        ok, _ = fix_review.queue(store, n, "solve", by="hunter", source="hunter",
+                                 guidance=tri.get("guidance"), notes=tri.get("notes"))
         if ok:
             return n
     return None
@@ -400,6 +458,7 @@ def _drain() -> None:
                         _every_ten_minutes(store)
                         last_followup = time.monotonic()
                     if settings.issue_fix_hunt():
+                        triage_next(store)
                         hunt(store)
         except Exception:
             traceback.print_exc()

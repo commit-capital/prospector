@@ -575,10 +575,25 @@ closed), a revision goes onto that pull request the way the follow-up's own do
 approach it discards; `answer` resumes a dispute on the chosen reading or
 re-solves with a written answer; `ask-reporter` and `propose` take the executor's
 bot paths. Between requests the lane reads replies to questions asked on GitHub
-every half hour, and `TRIAGE_ISSUE_FIX_HUNT=1` lets it queue one `solve` for a
-fresh, well-reproduced issue within `TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day.
-Another author's pull request on the issue never stops an attempt: it is
-evidence (`issue_triage/second_opinion.py`, the ONE policy for it). Once a solve
+every half hour, and `TRIAGE_ISSUE_FIX_HUNT=1` lets it queue `solve`s, up to
+`TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day, only for a fresh issue the
+fixability triage judged `go` at its current content, a maintainer's first,
+then the most fixable (`fixability.hunt_key`). The triage
+(`issue_triage/fixability.py`, the ONE policy for whether an issue is worth an
+attempt; section `fix_triage`, schema 34) runs one issue at a time ahead of the
+hunter, on this machine's pinned base: another author's open pull request that
+claims the issue and moved within `RIVAL_ACTIVE_DAYS` (14) makes it `skip`
+with no agent, and the same claim holds a finished fix from proposing
+(`public_loop._rival_claim`); otherwise a read-only Sonnet agent reads the
+report, the author's and maintainers' replies, and the code, and answers `go`,
+`ask` or `skip` with a fixability estimate, the host keeping only cited paths
+the clone holds. An `ask` posts its one question on the issue as the bot
+(`public_loop.ask_triage`, under the public loop's mode and scope, at most
+`MAX_ASKS` an issue); the section is stamped against the issue's content, so
+the author's reply restales it and the next pass reads the answer, which rides
+to the `solve` as guidance (a maintainer's) and notes (anyone else's). Another
+author's pull request that does not hold the issue is evidence
+(`issue_triage/second_opinion.py`, the ONE policy for it). Once a solve
 ends `fixed`, the open pull requests by others that claim to fix the issue — at
 most three with tests, none whose author is blocklisted or whose diff reads
 malicious — have their test files run in the sandbox on the base (they must
@@ -707,8 +722,7 @@ maintainer's words as guidance and the issue author's as notes; an edit to the
 report queues `solve` too, carrying any replies. An attempt that concluded over a day before the loop first read it
 starts from that read. Replies start at most `MAX_REATTEMPTS` (3) attempts per
 issue, then one comment leaves it to a maintainer. An agent outage in the pass
-trips the worker's agent lanes. The hunter takes a maintainer's issue whatever its reproduction
-grade. `TRIAGE_ISSUE_FIX_PUBLIC` is
+trips the worker's agent lanes. `TRIAGE_ISSUE_FIX_PUBLIC` is
 `live` (the default), `dry-run` (each write logged as a dry-run and noted once on
 the issue, its record kept apart in `fix_public.dry`), or `off`.
 

@@ -10,7 +10,7 @@ a description affirms the search only when it ran.
 """
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 from urllib.parse import quote
 
 from issue_triage import link_prs
@@ -23,6 +23,7 @@ class RelatedPr(TypedDict):
     state: str  # open | closed | merged
     author: str | None
     closes: bool
+    updated_at: NotRequired[str | None]
 
 
 def search(issue: int, *, exclude: set[int] | None = None) -> list[RelatedPr] | None:
@@ -42,5 +43,6 @@ def search(issue: int, *, exclude: set[int] | None = None) -> list[RelatedPr] | 
         out.append({"number": item["number"], "title": str(item.get("title") or ""),
                     "state": "merged" if merged else str(item.get("state") or "closed"),
                     "author": (item.get("user") or {}).get("login"),
-                    "closes": int(issue) in link_prs.parse_issue_refs(item.get("body"))})
+                    "closes": int(issue) in link_prs.parse_issue_refs(item.get("body")),
+                    "updated_at": item.get("updated_at")})
     return out

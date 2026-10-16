@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from issue_triage import public_comments, public_loop
+from issue_triage import fixability, public_comments, public_loop
 from issue_triage.issue_store import IssueStore
 from issue_triage.public_loop import (
     IN_PROGRESS,
@@ -302,9 +302,11 @@ def rivals(monkeypatch):
     return found
 
 
-def _rival(number: int, *, state: str = "open", closes: bool = True) -> dict:
+def _rival(number: int, *, state: str = "open", closes: bool = True,
+           quiet_days: float = 1) -> dict:
+    moved = datetime.now(timezone.utc) - timedelta(days=quiet_days)
     return {"number": number, "title": "t", "state": state, "author": "someone",
-            "closes": closes}
+            "closes": closes, "updated_at": moved.isoformat()}
 
 
 def test_a_clean_community_fix_is_proposed_under_the_default_scope(store, writes, rivals):
@@ -363,12 +365,22 @@ def test_a_community_fix_waits_while_the_search_for_rivals_cannot_run(store, wri
     assert store.load_issue(2).fix_request["action"] == "propose"
 
 
-def test_a_maintainer_s_fix_is_proposed_without_a_rival_search(store, writes, rivals):
+def test_a_maintainer_s_fix_another_author_s_active_pull_request_claims_waits_too(
+        store, writes, rivals):
     store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p"))
     rivals["prs"] = [_rival(42)]
     public_loop.sync(store, mode="live", now=NOW)
-    assert store.load_issue(1).fix_request["action"] == "propose"
-    assert rivals["searched"] == []
+    assert store.load_issue(1).fix_request is None
+    assert "#42" in store.load_issue(1).fix_thread[-1]["text"]
+
+
+def test_a_rival_that_went_quiet_no_longer_holds_the_fix(store, writes, rivals):
+    _save(store, 2, association="NONE")
+    store.edit_issue(2).record_fix_run(_run(ending="fixed", patch="p",
+                                            boundary={"crossings": []}))
+    rivals["prs"] = [_rival(42, quiet_days=fixability.RIVAL_ACTIVE_DAYS + 1)]
+    public_loop.sync(store, mode="live", now=NOW)
+    assert store.load_issue(2).fix_request["action"] == "propose"
 
 
 def test_a_couldn_t_fix_label_set_earlier_is_taken_off(store, writes):
@@ -774,3 +786,44 @@ def test_the_cap_comment_does_not_hide_a_later_attempt_s_comments(store):
     kinds = [d.kind for d in public_loop.comments_due(store.load_issue(1), NOW,
                                                       {"capped_at": "t"})]
     assert kinds == ["opened", "capped"]
+
+
+# --- the fixability triage's question ---------------------------------------------
+
+ASK = {"verdict": "ask", "question": "Should a blank name be kept, or rejected. Fixes #9",
+       "readings": ["keep it <!-- hi -->", "reject it @someone"]}
+
+
+def test_a_triage_question_is_posted_once_inert(store, writes, monkeypatch):
+    bodies: list[str] = []
+    from prospector_app.backend import executor
+    posted = executor.post_fix_comment
+
+    def capture(number, body, **kw):
+        bodies.append(body)
+        return posted(number, body, **kw)
+
+    monkeypatch.setattr(executor, "post_fix_comment", capture)
+    assert public_loop.ask_triage(store.load_issue(1), ASK) == "posted"
+    assert writes == [("comment", 1, "triage-question", False)]
+    assert public_comments.problems(bodies[0]) == []
+    assert "Fixes #9" not in bodies[0] and "<!-- hi" not in bodies[0]
+    assert "**A.** keep it" in bodies[0] and "**B.** reject it" in bodies[0]
+
+
+def test_a_community_issue_out_of_scope_gets_no_question(store, writes):
+    _save(store, 2, association="NONE")
+    assert public_loop.ask_triage(store.load_issue(2), ASK) == "out-of-scope"
+    assert writes == []
+
+
+def test_a_dry_run_question_writes_nothing(store, writes, monkeypatch):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC", "dry-run")
+    assert public_loop.ask_triage(store.load_issue(1), ASK) == "dry-run"
+    assert writes == [("comment", 1, "triage-question", True)]
+
+
+def test_an_issue_asked_its_limit_is_left_to_a_maintainer(store, writes):
+    store.edit_issue(1).record_fix_triage({"verdict": "ask", "asks": public_loop.MAX_ASKS})
+    assert public_loop.ask_triage(store.load_issue(1), ASK) == "capped"
+    assert writes == []

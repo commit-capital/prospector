@@ -224,6 +224,15 @@ class Issue:
         (`issue_triage.public_loop`); empty when it has done nothing."""
         return self._fix_section("fix_public") or {}
 
+    @property
+    def fix_triage(self) -> dict | None:
+        """Whether the issue is worth a fix attempt (`issue_triage.fixability`)."""
+        return self._fix_section("fix_triage")
+
+    def record_fix_triage(self, section: dict) -> None:
+        _stamp(self.rec, "fix_triage", section, None)
+        self._persist()
+
     def stage_fix_public(self, section: dict) -> None:
         """Stage the public-loop record without persisting, for a
         compare-and-swap."""
