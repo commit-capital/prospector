@@ -439,6 +439,10 @@ class Store:
         self._clusters: Collection[model.Cluster] = Collection(
             self.engine, schema.clusters, "id", validate_cluster, self._cluster_view,
             schema.mirror_cluster)
+        self._held_prs: tuple[dict[int, model.Pr], str | None] | None = None
+        self._held_clusters: tuple[dict[int, model.Cluster], str | None] | None = None
+        self._holding = False
+        self._held_lock = threading.Lock()
 
     def _pr_view(self, rec: dict) -> model.Pr:
         from pipeline import model
@@ -472,8 +476,27 @@ class Store:
         """Every PR, with `meta.body` (the PR description — ~40% of the store and
         unused by the board, summarize, gates, and suggest) omitted from the bulk
         read. The detail and deep-search paths rehydrate it per-PR via
-        `pr_bodies`; everything else never touches it."""
-        return self._prs.all(omit_paths=[("meta", "body")])
+        `pr_bodies`; everything else never touches it. Inside `holding` the
+        table is read once and each later call reads only the PRs written since."""
+        if not self._holding:
+            return self._prs.all(omit_paths=[("meta", "body")])
+        with self._held_lock:
+            prs, watermark = self._held_prs or ({}, None)
+            delta, high = self.prs_since(watermark)
+            prs = {**prs, **delta}
+            self._held_prs = (prs, high or watermark)
+            return dict(prs)
+
+    @contextmanager
+    def holding(self) -> Generator[None]:
+        """Hold the corpus `all_prs` and `all_clusters` return for the block, so a
+        multi-stage pass that re-reads it between stages ships each row once."""
+        self._holding = True
+        try:
+            yield
+        finally:
+            self._holding = False
+            self._held_prs = self._held_clusters = None
 
     def prs_since(self, watermark: str | None) -> tuple[dict[int, model.Pr], str | None]:
         """PRs written at or after `watermark` (all when None), body omitted, plus
@@ -684,8 +707,18 @@ class Store:
 
     def all_clusters(self) -> dict[int, model.Cluster]:
         """Every live cluster, keyed by id; tombstoned rows awaiting reaping are
-        skipped, so every consumer sees only real clusters."""
-        return {cid: c for cid, c in self._clusters.all().items() if not c.raw.get("deleted")}
+        skipped, so every consumer sees only real clusters. Held like `all_prs`
+        inside `holding`."""
+        if not self._holding:
+            return {cid: c for cid, c in self._clusters.all().items()
+                    if not c.raw.get("deleted")}
+        with self._held_lock:
+            clusters, watermark = self._held_clusters or ({}, None)
+            live, deleted, high = self.clusters_since(watermark)
+            clusters = {cid: c for cid, c in {**clusters, **live}.items()
+                        if cid not in deleted}
+            self._held_clusters = (clusters, high or watermark)
+            return dict(clusters)
 
     # -- Runs ledger ----------------------------------------------------------
     def append_run(self, record: dict, *, stamp: bool = True) -> None:

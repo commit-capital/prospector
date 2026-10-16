@@ -258,6 +258,13 @@ def assign(store: Store, limit: int, concurrency: int, outage: _Outage,
 
 def run(store: Store, *, limit: int, analyze_limit: int, concurrency: int,
         trigger: str | None = None) -> int:
+    with store.holding():
+        return _run(store, limit=limit, analyze_limit=analyze_limit,
+                    concurrency=concurrency, trigger=trigger)
+
+
+def _run(store: Store, *, limit: int, analyze_limit: int, concurrency: int,
+         trigger: str | None) -> int:
     outage = _Outage()
     _say("① Re-homing PRs whose head moved since they were clustered…")
     reset = cluster_driver.reset_stale_memberships(store)
