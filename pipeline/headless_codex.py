@@ -4,13 +4,16 @@ Claude: a model named `codex:<model>` runs here.
 Every shell command the agent runs is confined by a Codex permissions profile
 (macOS seatbelt): it reads the system directories and its read roots, writes
 its edit root and a private temp directory, and reaches nothing under the
-operator's home, no credential the deployment names, and no network. The one
-command an `allow` rule names (`Bash(<tool>:*)`, the sandbox check) is the only
-one execpolicy lets run outside the profile; the runners that would execute the
-repository's code on the host are forbidden outright. Each run gets its own
-Codex home holding the operator's login and those rules and nothing else, and
-starts from no user configuration, no repository instruction files, and the
-environment `headless_agent` scrubs for Claude.
+operator's home, no credential the deployment names, and no network. Escalation
+is off, so no command leaves the profile; the runners that would execute the
+repository's code are forbidden outright. A host tool an `allow` rule names
+(`Bash(<tool>:*)`, the sandbox check) is run by the host for the agent: the
+prompt names a stand-in inside the profile that files its arguments in a spool
+directory, and `_Broker` runs the tool with them as an argument list and files
+back its output and exit, which is the reach `Bash(<tool>:*)` grants Claude.
+Each run gets its own Codex home holding the operator's login and the rules
+and nothing else, and starts from no user configuration, no repository
+instruction files, and the environment `headless_agent` scrubs for Claude.
 """
 from __future__ import annotations
 
@@ -45,14 +48,28 @@ _KEY_FILE_VARS = ("TRIAGE_BOT_KEY_FILE", "TRIAGE_PUSH_SSH_KEY_FILE")
 
 _ALLOW_RE = re.compile(r"^Bash\((.+):\*\)$")
 
+# What a brokered tool's output is cut to, from its end.
+OUTPUT_BYTES = 200_000
+
 CONTEXT = """
 
 ## Working in Codex
 
-Your shell runs in a sandbox: it reads and writes the worktree, reads the system's tools, and has no network. Read and search files with ordinary commands (`rg`, `sed -n`, `cat`, `ls`) and edit them with apply_patch. Do not run the project's code yourself (node, pnpm, a test runner): the check command above is the only way to run it, and it runs in an isolated container.
+Your shell runs in a sandbox: it reads and writes the worktree, reads the system's tools, and has no network. Read and search files with ordinary commands (`rg`, `sed -n`, `cat`, `ls`) and edit them with apply_patch. Do not run the project's code yourself (node, pnpm, a test runner): the check command above is the only way to run it, and it runs in an isolated container. It can take minutes; wait for it.
 """
 
 _OUTPUT_HEADING = "\n# Output\n"
+
+# A stand-in for a host tool: it files its arguments, NUL-separated, and waits
+# for the host's answer.
+_STAND_IN = """#!/bin/sh
+spool='__SPOOL__'
+id="$$-$(date +%s)"
+printf '%s\\0' "$@" > "$spool/$id.tmp" && mv "$spool/$id.tmp" "$spool/$id.req" || exit 1
+while [ ! -f "$spool/$id.done" ]; do sleep 1; done
+cat "$spool/$id.out"
+exit "$(cat "$spool/$id.done")"
+"""
 
 _LIMIT = re.compile(r"usage limit|rate limit|hit your \w+ limit|quota", re.I)
 _UNAVAILABLE = re.compile(r"not logged in|log ?in|unauthori[sz]ed|401|"
@@ -75,7 +92,7 @@ def _secrets() -> list[str]:
 
 
 def filesystem(read_roots: Sequence[str], edit_root: str | None, tmp: str,
-               codex_home: str) -> dict[str, str]:
+               codex_home: str, stand_ins: str | None = None) -> dict[str, str]:
     """The run's permissions profile, path to access. A more specific path's
     entry wins, so a root under the home it denies is still reachable."""
     fs = {"/": "read", _real(Path.home()): "none"}
@@ -84,31 +101,29 @@ def filesystem(read_roots: Sequence[str], edit_root: str | None, tmp: str,
     if edit_root:
         fs[_real(edit_root)] = "write"
     fs[_real(tmp)] = "write"
+    if stand_ins:
+        fs[_real(stand_ins)] = "read"
     for path in [*_secrets(), _real(codex_home), _real(Path.home() / ".codex")]:
         fs[path] = "none"
     return fs
 
 
-def rules(allowed: Sequence[str]) -> str:
-    """The run's execpolicy: each allowed command prefix runs outside the
-    profile, each forbidden one never runs."""
-    return "".join(
-        [f"prefix_rule(pattern = {json.dumps([cmd])}, decision = \"allow\")\n"
-         for cmd in allowed]
-        + [f"prefix_rule(pattern = {json.dumps([cmd])}, decision = \"forbidden\")\n"
-           for cmd in _FORBIDDEN])
+def rules() -> str:
+    """The run's execpolicy: each forbidden command prefix never runs."""
+    return "".join(f"prefix_rule(pattern = {json.dumps([cmd])}, decision = \"forbidden\")\n"
+                   for cmd in _FORBIDDEN)
 
 
 def allowed_commands(allow: Sequence[str]) -> list[str]:
-    """The commands `allow` rules name. A rule that is not `Bash(<tool>:*)`
+    """The host tools `allow` rules name. A rule that is not `Bash(<tool>:*)`
     for a file is a ValueError: it has no Codex counterpart."""
     out = []
     for rule in allow:
         m = _ALLOW_RE.match(rule)
         if not m or not Path(m.group(1)).is_file():
             raise ValueError(f"{rule!r} has no Codex counterpart: only Bash(<tool>:*) "
-                             "for a host tool runs outside the sandbox")
-        out.append(_real(m.group(1)))
+                             "for a host tool is brokered")
+        out.append(m.group(1))
     return out
 
 
@@ -142,23 +157,91 @@ def flags(fs: Mapping[str, str], cwd: str, model: str | None) -> list[str]:
     ]
 
 
-def with_context(prompt: str) -> str:
-    """`prompt` with the Codex note ahead of its Output section, so the answer
-    format stays last."""
+def with_context(prompt: str, stand_ins: Mapping[str, str] | None = None) -> str:
+    """`prompt` with each brokered tool's path replaced by its stand-in's and
+    the Codex note ahead of its Output section, so the answer format stays
+    last."""
+    for tool, stand_in in (stand_ins or {}).items():
+        prompt = prompt.replace(tool, stand_in)
     behavior, heading, output = prompt.rpartition(_OUTPUT_HEADING)
     if not heading:
         return prompt + CONTEXT
     return behavior + CONTEXT + heading + output
 
 
-def _prepare_home(home: Path, allowed: Sequence[str]) -> None:
+def _prepare_home(home: Path) -> None:
     source = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "auth.json"
     if not source.is_file():
         raise headless_agent.AgentUnavailable(
             "codex is not logged in on this machine (no file-backed auth.json)")
     (home / "auth.json").symlink_to(source.resolve())
     (home / "rules").mkdir()
-    (home / "rules" / "default.rules").write_text(rules(allowed))
+    (home / "rules" / "default.rules").write_text(rules())
+
+
+class _Broker:
+    """Runs host tools for a sandboxed agent. Each tool gets a stand-in in
+    `stand_ins` and a spool directory inside the agent's writable temp
+    directory; a request is the arguments the stand-in filed, run as
+    `[tool, *args]` under `env` in `cwd`, answered with the tool's output (its
+    last OUTPUT_BYTES) and exit code."""
+
+    def __init__(self, tools: Sequence[str], stand_ins: Path, tmp: Path, *,
+                 env: Mapping[str, str], cwd: str) -> None:
+        self.env, self.cwd = dict(env), cwd
+        self.spools: dict[Path, str] = {}
+        self.paths: dict[str, str] = {}
+        for i, tool in enumerate(tools):
+            spool = tmp / f"broker-{i}"
+            spool.mkdir()
+            stand_in = stand_ins / Path(tool).name
+            stand_in.write_text(_STAND_IN.replace("__SPOOL__", str(spool)))
+            stand_in.chmod(0o755)
+            self.spools[spool] = tool
+            self.paths[tool] = str(stand_in)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def __enter__(self) -> _Broker:
+        if self.spools:
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=10)
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            if not self.serve_pending():
+                self._stop.wait(0.5)
+
+    def serve_pending(self) -> int:
+        """Answer every filed request, returning how many there were."""
+        served = 0
+        for spool, tool in self.spools.items():
+            for req in sorted(spool.glob("*.req")):
+                name = req.name.removesuffix(".req")
+                taken = spool / f"{name}.taken"
+                try:
+                    req.rename(taken)
+                except OSError:
+                    continue
+                args = taken.read_bytes().split(b"\0")[:-1]
+                self._answer(spool, name, tool, [a.decode("utf-8", "replace") for a in args])
+                served += 1
+        return served
+
+    def _answer(self, spool: Path, name: str, tool: str, args: list[str]) -> None:
+        try:
+            done = subprocess.run([tool, *args], cwd=self.cwd, env=self.env,
+                                  stdin=subprocess.DEVNULL, capture_output=True)
+            output, code = (done.stdout + done.stderr)[-OUTPUT_BYTES:], done.returncode
+        except OSError as e:
+            output, code = f"the host could not run the check: {e}\n".encode(), 127
+        (spool / f"{name}.out").write_bytes(output)
+        (spool / f"{name}.done").write_text(str(code))
 
 
 def parse(lines: Sequence[str]) -> tuple[str, dict | None, str | None]:
@@ -198,28 +281,30 @@ def run(prompt: str, *, model: str | None, cwd: str, read_root: str | Sequence[s
         raise ValueError("a Codex run needs a read_root")
     roots = headless_agent._roots(read_root)
     headless_agent._assert_scoped(cwd, read_root, edit_root, None)
-    allowed = allowed_commands(allow)
+    tools = allowed_commands(allow)
     if system_prompt:
         prompt = system_prompt + "\n\n" + prompt
     lane = capacity.meter_lane()
     started = datetime.now(timezone.utc)
+    env = headless_agent._agent_env(env_allow, env_extra)
     with tempfile.TemporaryDirectory(prefix="codex-home-") as home, \
-            tempfile.TemporaryDirectory(prefix="codex-tmp-") as tmp:
-        _prepare_home(Path(home), allowed)
-        cmd = [CODEX_BIN, *flags(filesystem(roots, edit_root, tmp, home), _real(cwd), model)]
-        env = {**headless_agent._agent_env(env_allow, env_extra),
-               "CODEX_HOME": home, "TMPDIR": tmp}
+            tempfile.TemporaryDirectory(prefix="codex-tmp-") as tmp, \
+            tempfile.TemporaryDirectory(prefix="codex-bin-") as bin_dir, \
+            _Broker(tools, Path(bin_dir), Path(tmp), env=env, cwd=cwd) as broker:
+        _prepare_home(Path(home))
+        fs = filesystem(roots, edit_root, tmp, home, bin_dir)
+        cmd = [CODEX_BIN, *flags(fs, _real(cwd), model)]
         try:
             proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, text=True,
-                                    start_new_session=True, env=env)
+                                    stderr=subprocess.STDOUT, text=True, start_new_session=True,
+                                    env={**env, "CODEX_HOME": home, "TMPDIR": tmp})
         except FileNotFoundError:
             raise headless_agent.AgentUnavailable(f"{CODEX_BIN} is not installed or not on PATH")
         assert proc.stdin is not None and proc.stdout is not None
 
         def feed(stdin=proc.stdin) -> None:
             try:
-                stdin.write(with_context(prompt))
+                stdin.write(with_context(prompt, broker.paths))
             except BrokenPipeError:
                 pass
             finally:

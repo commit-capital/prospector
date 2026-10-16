@@ -49,13 +49,33 @@ def test_the_profile_denies_the_home_and_credentials_but_reaches_the_roots(home,
     assert fs[real(tmp_path / "h")] == "none" and fs[real(tmp_path / "t")] == "write"
 
 
-def test_only_the_allowed_tool_leaves_the_sandbox_and_code_runners_are_forbidden():
-    text = headless_codex.rules(headless_codex.allowed_commands([f"Bash({TOOL}:*)"]))
-    allows = [line for line in text.splitlines() if '"allow"' in line]
-    assert allows == [f'prefix_rule(pattern = {json.dumps([os.path.realpath(TOOL)])}, '
-                      'decision = "allow")']
+def test_nothing_is_let_out_of_the_sandbox_and_code_runners_are_forbidden():
+    text = headless_codex.rules()
+    assert '"allow"' not in text
     for cmd in ("node", "pnpm", "python3", "git", "docker", "curl"):
         assert f'["{cmd}"], decision = "forbidden"' in text
+
+
+def test_the_host_runs_a_brokered_tool_with_the_stand_in_s_arguments(tmp_path):
+    tool = tmp_path / "check"
+    tool.write_text('#!/bin/sh\nprintf "%s|" "$@"\necho "cwd=$(pwd) pin=$PIN"\nexit 3\n')
+    tool.chmod(0o755)
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "tmp").mkdir()
+    with headless_codex._Broker([str(tool)], tmp_path / "bin", tmp_path / "tmp",
+                                env={"PIN": "7", "PATH": os.environ["PATH"]},
+                                cwd=str(tmp_path)) as broker:
+        stand_in = broker.paths[str(tool)]
+        done = subprocess.run([stand_in, "test", "a b.ts", "$(cat /etc/passwd)"],
+                              capture_output=True, text=True, timeout=30)
+    assert done.returncode == 3
+    assert done.stdout == f"test|a b.ts|$(cat /etc/passwd)|cwd={tmp_path} pin=7\n"
+
+
+def test_the_prompt_names_the_stand_in_in_place_of_the_tool():
+    out = headless_codex.with_context(f"Run `{TOOL} test x`.\n\n# Output\nJSON.",
+                                      {TOOL: "/sandboxed/check"})
+    assert TOOL not in out and "`/sandboxed/check test x`" in out
 
 
 @pytest.mark.parametrize("rule", ["Bash(git:*)", "Read(/etc/**)", "Bash(/no/such/tool:*)"])
@@ -148,7 +168,7 @@ def test_a_run_gets_a_private_home_holding_the_login_and_the_rules(home, tmp_pat
     assert out == '{"ok": 1}'
     assert seen["auth"] == os.path.realpath(home["user"] / ".codex" / "auth.json")
     assert os.path.realpath(seen["env"]["CODEX_HOME"]) != os.path.realpath(home["user"] / ".codex")
-    assert '"allow"' in seen["rules"] and '"forbidden"' in seen["rules"]
+    assert '"forbidden"' in seen["rules"] and '"allow"' not in seen["rules"]
     assert not Path(seen["env"]["CODEX_HOME"]).exists()
     assert booked[0]["account"] == "codex" and booked[0]["model"] == "codex:gpt-x"
     assert booked[0]["input_tokens"] == 3
