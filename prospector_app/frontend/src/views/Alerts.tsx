@@ -9,6 +9,7 @@ import { stopRowOpen } from "../rowOpen";
 import { cycleSort, type SortDir } from "../sortCycle";
 import Advisories from "./Advisories";
 import { SkeletonRows } from "../components/SkeletonRows";
+import { Select } from "../components/Select";
 
 const PAGE_SIZE = 50;
 type AlertSortKey = "number" | "source" | "severity" | "title" | "state" | "verdict" | "links" | "updated";
@@ -122,9 +123,9 @@ function DismissForm({ d, onDone }: { d: AlertDetail; onDone: () => void }) {
     <div className="detail-section">
       <h4>Dismiss upstream (as {botLogin})</h4>
       <div className="form-row">
-        <select value={reason} onChange={(e) => setReason(e.target.value)} title="Dismissal reason — the exact vocabulary this alert source accepts">
+        <Select value={reason} onChange={(next) => setReason(next)} title="Dismissal reason — the exact vocabulary this alert source accepts">
           {d.dismiss_reasons.map((x) => <option key={x} value={x}>{x}</option>)}
-        </select>
+        </Select>
       </div>
       <textarea placeholder="Operator note (required for judgment reasons: false positive / won't fix / …)"
         value={comment} onChange={(e) => setComment(e.target.value)} rows={2} />

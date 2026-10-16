@@ -17,6 +17,7 @@ import { AgentProviderChooser } from "../components/AgentProviderChooser";
 import { SettingsPanel } from "../components/SettingsPanel";
 import { useRepoMeta } from "../RepoMetaContext";
 import { slackHookProblem } from "../slackHook";
+import { Select } from "../components/Select";
 
 /** How often the readiness rows re-check while the page is open. Fast enough
  *  that rows turn green as setup-worker-machine.sh works through its steps. */
@@ -776,10 +777,10 @@ function CapacityForm({ initial, host }: { initial: CapacityAccount; host: strin
       </p>
       <div className="capacity-form">
         <label htmlFor="cap-zone">Time zone</label>
-        <select id="cap-zone" value={fields.timezone} disabled={busy}
-          onChange={(e) => set({ timezone: e.target.value })}>
+        <Select id="cap-zone" value={fields.timezone} disabled={busy}
+          onChange={(next) => set({ timezone: next })}>
           {zones.map((z) => <option key={z} value={z}>{z}</option>)}
-        </select>
+        </Select>
         {subscription ? (
           <>
             <label htmlFor="cap-day-start">Daytime</label>

@@ -22,6 +22,7 @@ import { SkeletonRows } from "../components/SkeletonRows";
 import { FixStatusChip } from "../components/IssueFixPanel";
 import { peekRead, runRead } from "../readCache";
 import { ISSUE_PAGE_SIZE as PAGE_SIZE, ISSUE_TABLE_FIRST_PAGE, issueTableRead, type IssueSortKey } from "./issueTable";
+import { Select } from "../components/Select";
 
 const ISSUE_DESC_FIRST = new Set<IssueSortKey>(["number", "pain", "repro", "dups", "prs"]);
 
@@ -545,10 +546,10 @@ function AllIssuesTable({
               onClick={() => onDispFilter(f.key)}>{f.label}</button>
           ))}
         </div>
-        <select value={fixFilter} onChange={(e) => onFixFilter(e.target.value)}
+        <Select value={fixFilter} onChange={(next) => onFixFilter(next)}
           title="Filter by the auto-fix factory's status for each issue">
           {FIX_FILTERS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
-        </select>
+        </Select>
         <label className="muted small" title="Only issues a maintainer filed — the ones the auto-fix worker takes first">
           <input type="checkbox" checked={maintainerFilter} onChange={(e) => onMaintainerFilter(e.target.checked)} />
           Filed by a maintainer

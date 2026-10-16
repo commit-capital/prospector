@@ -19,6 +19,7 @@ import { useExec } from "../ExecContext";
 import { useRepoMeta } from "../RepoMetaContext";
 import { useFreshness } from "../useFreshness";
 import { useTableSort } from "../useTableSort";
+import { Select } from "../components/Select";
 
 // A muted "merged / decided" figure beside an author, so reputation is visible
 // at the point of action — a 0-of-264 author no longer reads like anyone else.
@@ -668,8 +669,7 @@ export default function ClusterDetail() {
                       )}
                     </td>
                     <td onClick={stop} className="action-cell">
-                      <select className="action-select" value={st?.override_action} onChange={(e) => {
-                        const act = e.target.value;
+                      <Select className="action-select" value={st?.override_action} onChange={(act) => {
                         update(r.number, { override_action: act });
                         // the edit was for the old action's wording — drop it so we
                         // don't post a close comment on a request-changes, etc. (#65)
@@ -683,7 +683,7 @@ export default function ClusterDetail() {
                           title={o === "skip" ? "Leave this PR untouched — no action, stays open."
                             : o === "merge" && hasConflict(r) ? "Can't merge — this PR now has conflicts; the author must rebase."
                             : dispositionEntry(o as Disposition)?.meaning}>{o}</option>)}
-                      </select>
+                      </Select>
                       {hasConflict(r) && state[r.number]?.override_action === "merge" && (
                         <div className="muted small" style={{ color: "var(--red)" }}>⚠ can't merge — has conflicts</div>
                       )}
