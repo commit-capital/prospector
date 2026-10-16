@@ -5,7 +5,6 @@ import { useExec } from "../ExecContext";
 import { useRepoMeta } from "../RepoMetaContext";
 import { localDateTime, timeAgo } from "../timeAgo";
 import { unavailable } from "./fixAvailability";
-import { DiffView } from "./DiffView";
 import { SandboxChecks } from "./SandboxChecks";
 
 /** What the composer starts with. The operator edits the goal; the bar beneath
@@ -304,9 +303,13 @@ export function FixActionButton({ action, req, runner, busy, resolved, onQueue }
 }
 
 /** The expanded autofix detail: the request's live state plus, once one is
- *  parked for review, the exact diff the runner authored. The diff is shown
- *  before anything is pushed — approving is what sends it. */
-export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRunner | null }) {
+ *  parked for review, a link to its change in the Diff section — shown before
+ *  anything is pushed, since approving is what sends it. */
+export function FixBody({ req, runner, onShowPatch }: {
+  req: FixRequest | null;
+  runner: FixRunner | null;
+  onShowPatch?: () => void;
+}) {
   if (!req) {
     return (
       <div className="muted small">
@@ -383,15 +386,13 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
                 : "did not pass"}
         </div>
       )}
-      {showPatch && (
-        <>
-          <div className="small muted" style={{ marginTop: 8 }}>
-            {req.result?.patch_truncated
-              ? "The change as it would be pushed — too large to show whole; this is its start:"
-              : "The change, exactly as it would be pushed:"}
-          </div>
-          <DiffView diffText={req.result?.patch ?? ""} />
-        </>
+      {showPatch && onShowPatch && (
+        <div className="small" style={{ marginTop: 8 }}>
+          <button className="link-btn" onClick={onShowPatch}>
+            Review the proposed change in the Diff ↓
+          </button>
+          {req.result?.patch_truncated && <span className="muted"> (too large to show whole)</span>}
+        </div>
       )}
       {req.result?.body && (req.status === "awaiting-review" || req.status === "approved") && (
         <>
