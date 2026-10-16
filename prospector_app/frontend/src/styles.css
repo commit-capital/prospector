@@ -706,6 +706,19 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .difffile { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 14px; }
 .difffile-head { background: var(--panel); padding: 8px 12px; font-family: ui-monospace, monospace; font-size: 12px; border-bottom: 1px solid var(--border); }
+/* jumpToDiff: the line or file header a finding's location link scrolled to. */
+@keyframes diff-flash { from { background: rgba(212, 167, 44, .45); } to { background: transparent; } }
+.difffile-head.diff-flash, tr.diff-flash > td { animation: diff-flash 2.2s ease-out; }
+/* The PR page's reviewer bodies: summary first, then findings, each with its
+   headline, a muted location link into the diff, and the verifier's reason. */
+.reviewer-summary { margin: 6px 0 2px; background: none; border: 0; padding: 0; }
+.reviewer-summary p { margin: 0 0 4px; }
+.finding-list { margin: 4px 0 0 18px; padding: 0; }
+.finding-list > li { margin-bottom: 8px; }
+.finding-loc { font-size: var(--fs-xs); margin-top: 1px; }
+.finding-loc a { color: var(--muted); text-decoration: none; }
+.finding-loc a:hover { color: var(--accent); text-decoration: underline; }
+.finding-loc code { font-size: inherit; background: none; padding: 0; }
 .rawdiff { background: var(--panel); padding: 12px; overflow: auto; font-size: 12px; }
 /* raw-fallback diff lines (merge/combined diffs): block spans so the add/del
    tint covers the full row, colored with the theme's green/red tokens */
