@@ -128,6 +128,7 @@ def test_timeline_lists_endings_and_collapses_background():
         ("security", 5, False), ("autofix", 6, True)]
     watch = [t for t in past if t["lane"] == "background"]
     assert len(watch) == 1 and watch[0]["text"] == "PR watch ×2"
+    assert watch[0]["hint"] == co.machine_activity.BACKGROUND_HINTS["ingest:watch"]
     row = next(r for r in co.build(_inputs(rows=rows), NOW)["lanes"] if r["lane"] == "autofix")
     assert row["ended_24h"] == 1 and row["faults_24h"] == 1
 
@@ -236,3 +237,17 @@ def test_a_fresh_gather_skips_the_cache(monkeypatch):
     assert len(calls) == 1
     co.gather(fresh=True)
     assert len(calls) == 2
+
+
+def test_every_loop_and_background_phase_has_a_hint():
+    assert set(co.worker_loops.HINTS) == set(co.worker_loops.LABELS)
+    assert set(co.machine_activity.BACKGROUND_HINTS) == set(co.machine_activity.BACKGROUND)
+
+
+def test_upcoming_loop_carries_its_hint():
+    loops = {"studio": {"lanes": ALL_ON, "loops": {
+        "pr-watch": {"last_at": _iso(10), "every_seconds": 900}}}}
+    out = co.build(_inputs(loops=loops), NOW)
+    [loop] = out["loops"]
+    [up] = [t for t in out["timeline"] if t["when"] == "upcoming"]
+    assert loop["hint"] == up["hint"] == co.worker_loops.HINTS["pr-watch"]

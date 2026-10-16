@@ -213,7 +213,7 @@ export function Lanes({ overview, open, onToggle, fixQueue, onFixChanged, onChan
             <td colSpan={5} className="muted small">
               {overview.loops.length === 0 ? "no machine runs the periodic loops"
                 : overview.loops.map((lp) => (
-                  <span key={`${lp.host}-${lp.loop}`} className="loop-chip">
+                  <span key={`${lp.host}-${lp.loop}`} className="loop-chip" title={lp.hint ?? undefined}>
                     {lp.label}{many ? ` (${lp.host.split(/[.-]/)[0]})` : ""}: {lp.next_at
                       ? `next ${clock(lp.next_at)}`
                       : `last ${ago(lp.last_at)}`}

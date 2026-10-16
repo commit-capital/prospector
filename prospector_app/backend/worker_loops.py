@@ -23,6 +23,29 @@ LABELS: dict[str, str] = {
     "issue-followup": "Issue follow-up",
     "docker-disk": "Docker disk check",
 }
+# What each loop does, shown when the pointer rests on its name.
+HINTS: dict[str, str] = {
+    "threat-refresh": "Scans the diff of every PR head recorded since the last scan for attack "
+                      "signatures and blocked authors, so a force-pushed payload is flagged soon "
+                      "after it arrives.",
+    "pr-watch": "Lists the PRs GitHub reports updated since the last pass and records new PRs, "
+                "moved heads, reopens and closes in the store, then wakes the threat scan.",
+    "stale-refresh": "Re-reads from GitHub the merge candidates whose stored head may have "
+                     "moved, so a candidate is not left waiting on stale facts.",
+    "rereview": "Asks an active code reviewer to review a clean, CI-green PR whose review is "
+                "stale or missing at a head several hours old, posting the reviewer's mention as "
+                "the bot.",
+    "responses": "Reads how authors answered our actions: replies, reopens, new commits and "
+                 "resubmissions since a PR or issue was last acted on.",
+    "cluster": "Summarizes new and moved PRs, places them into clusters, and analyzes the "
+               "clusters still waiting on a disposition.",
+    "display": "Writes the plain-language summary card on PR pages, merge picks first.",
+    "issue-followup": "Follows up the pull requests the issue fixer opened (CI, reviews, "
+                      "maintainer feedback), syncs the issues' public status labels and comments, "
+                      "and reads replies to questions asked on issues.",
+    "docker-disk": "Reads the free space on Docker's disk, so the health strip can warn before "
+                   "the sandbox runs out of room.",
+}
 
 _lock = threading.Lock()
 _passes: dict[str, dict] = {}

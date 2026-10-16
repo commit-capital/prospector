@@ -31,6 +31,21 @@ BACKGROUND: dict[str, tuple[str, str]] = {
     "verify:pin-refresh": ("base pin refresh", "base pin refreshes"),
     "reingest": ("re-ingest", "re-ingests"),
     "threat-evidence:capture": ("evidence capture", "evidence captures")}
+# What each background phase did, shown when the pointer rests on its name.
+BACKGROUND_HINTS: dict[str, str] = {
+    "ingest:watch": "Recorded the PRs GitHub reported updated: new PRs, moved heads, reopens "
+                    "and closes.",
+    "threat-scan:heads": "Scanned newly recorded PR heads for attack signatures and blocked "
+                         "authors.",
+    "rereview:request": "Asked a code reviewer to review a PR whose review was stale or missing "
+                        "at its current head.",
+    "responses:scan": "Read how authors answered our actions: replies, reopens, new commits and "
+                      "resubmissions.",
+    "verify:pin-refresh": "Rebuilt this machine's pinned default-branch image that sandbox "
+                          "verification runs against.",
+    "reingest": "Re-read PRs from GitHub to refresh their stored facts.",
+    "threat-evidence:capture": "Preserved the diff and metadata of a PR head flagged malicious.",
+}
 # Phases a Control-tab job writes and the clustering lane writes too; the
 # lane's rows carry `trigger: worker`.
 WORKER_BACKGROUND: dict[str, tuple[str, str]] = {

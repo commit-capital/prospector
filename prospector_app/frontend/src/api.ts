@@ -199,14 +199,14 @@ export interface OverviewLane {
   lane: string; label: string; cells: OverviewCell[]; now: OverviewNowItem[]; queue: OverviewQueueItem[]; picks: OverviewPick[];
   parked: number; pool: number | null; ended_24h: number; faults_24h: number;
 }
-export interface OverviewLoop { loop: string; label: string; host: string; last_at: string | null; next_at: string | null }
+export interface OverviewLoop { loop: string; label: string; hint: string | null; host: string; last_at: string | null; next_at: string | null }
 export interface OverviewMachine { host: string; local: boolean; state: "working" | "idle" | "off" | "offline"; last_beat: string | null; lanes_on: number; stood_down: boolean; stood_down_note: string | null }
 export interface OverviewNeed {
   key: string; kind: "trip" | "offline" | "pins" | "failed-runs" | "parked"; title: string; at: string | null;
   host: string | null; lane: string | null; detail: string | null; count: number;
   groups: { lane: "security" | "verify"; reason: string; prs: number[] }[];
 }
-export interface OverviewTimelineItem { when: "past" | "now" | "upcoming"; at: string; lane: string; host: string | null; pr: number | null; issue: number | null; text: string; bad: boolean }
+export interface OverviewTimelineItem { when: "past" | "now" | "upcoming"; at: string; lane: string; host: string | null; pr: number | null; issue: number | null; text: string; hint: string | null; bad: boolean }
 export interface ControlOverview {
   local: string; machines: OverviewMachine[]; lanes: OverviewLane[]; loops: OverviewLoop[];
   needs: OverviewNeed[]; timeline: OverviewTimelineItem[]; ai_paused: { reason: string; retry_at: string | null } | null;
