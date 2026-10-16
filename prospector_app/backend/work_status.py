@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from prospector_app.backend import data, fix_queue, jobs, verify_queue
+from pipeline import settings
+from prospector_app.backend import data, fix_queue, jobs, schema_gate, verify_queue
 
 
 class ActiveEntry(TypedDict):
@@ -20,6 +21,7 @@ class ActiveEntry(TypedDict):
     started_at: str | None
     source: str | None
     worker_online: bool
+    worker_outdated: bool
 
 
 class WorkerEntry(TypedDict):
@@ -48,11 +50,13 @@ def now() -> dict:
     """Active runs, queued/parked counts, every known worker's liveness, and
     this backend's running jobs. `worker_online` on an active entry asks whether
     the claiming host's worker is still beating — a claimed run whose worker
-    went quiet is stuck, not slow."""
-    st = data.store()
-    verify_workers = _workers("verify", st.load_verify_worker(),
-                              verify_queue.beat_online)
-    fix_workers = _workers("fix", st.load_fix_worker(), fix_queue.beat_online)
+    went quiet is stuck, not slow — and `worker_outdated` whether that host's
+    code is behind the store's schema, so it cannot finish the run."""
+    regs = data.store().load_worker_registries()
+    verify_workers = _workers("verify", regs["verify_worker"], verify_queue.beat_online)
+    fix_workers = _workers("fix", regs["fix_worker"], fix_queue.beat_online)
+    outdated = schema_gate.outdated_hosts(regs, schema_gate.store_version(),
+                                          settings.worker_id())
     online = {(w["lane"], w["host"]): w["online"]
               for w in verify_workers + fix_workers}
 
@@ -64,7 +68,8 @@ def now() -> dict:
             active.append({"lane": "verify", "pr": e["pr"], "title": e["title"],
                            "action": None, "step": e["step"], "host": e["host"],
                            "started_at": e["started_at"], "source": e["source"],
-                           "worker_online": online.get(("verify", e["host"]), False)})
+                           "worker_online": online.get(("verify", e["host"]), False),
+                           "worker_outdated": e["host"] in outdated})
         else:  # queued or waiting-for-base — both are work a worker will pick up
             queued["verify"] += 1
     for f in fix_queue.queue_entries():
@@ -73,7 +78,8 @@ def now() -> dict:
                            "action": f["action"], "step": f["step"],
                            "host": f["host"], "started_at": f["started_at"],
                            "source": f["source"],
-                           "worker_online": online.get(("fix", f["host"]), False)})
+                           "worker_online": online.get(("fix", f["host"]), False),
+                           "worker_outdated": f["host"] in outdated})
         elif f["status"] == "awaiting-review":
             awaiting_review += 1
         else:  # queued or approved — waiting on a worker tick

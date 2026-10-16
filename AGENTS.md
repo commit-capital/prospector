@@ -791,7 +791,10 @@ heartbeat so it never reads as offline. Every five minutes a verify, autofix or
 issue-fix machine reads the free space on Docker's own disk (`df` inside the
 sandbox image, so the Colima or Docker Desktop VM's; `disk_watch.py`) onto its
 health record, and the strip warns, without tripping a lane, while it is below
-`TRIAGE_DOCKER_MIN_FREE_GB` (default 20) or full. No issue is filed for either. Each
+`TRIAGE_DOCKER_MIN_FREE_GB` (default 20) or full. No issue is filed for either. A machine whose code is behind the store's
+schema, and so cannot write, sits out every worker loop (`schema_gate.paused`);
+each heartbeat records its code's schema version, so the strip on every machine
+names a worker a schema bump left behind as needing an update, not offline. Each
 worker's health is its own `worker_health:<id>` registry row. Worker stdout
 is mirrored to `<verify scratch>/logs/worker-<id>.log` (`worker_log.py`).
 The security lane's skip set carries a reason per PR

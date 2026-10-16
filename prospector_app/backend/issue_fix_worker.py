@@ -43,7 +43,7 @@ from issue_triage import (
 )
 from issue_triage.issue_store import IssueStore
 from pipeline import capacity, gates, headless_agent, settings, storekit
-from prospector_app.backend import data, lane_health, verify_worker, worker_log, worker_loops
+from prospector_app.backend import data, lane_health, schema_gate, verify_worker, worker_log, worker_loops
 
 LANE = "issue-fix"
 POLL_SECONDS = 20.0
@@ -132,7 +132,8 @@ def _beat_loop() -> None:
     switched off is not read as one that went dark."""
     while not _drained.is_set():
         try:
-            beat()
+            if not schema_gate.paused("issue-fix"):
+                beat()
         except Exception:
             traceback.print_exc()
         _drained.wait(POLL_SECONDS)
@@ -382,6 +383,9 @@ def _drain() -> None:
     last_reclaim = time.monotonic()
     while not stop.is_set():
         ran = False
+        if schema_gate.paused("issue-fix"):
+            stop.wait(POLL_SECONDS)
+            continue
         try:
             if time.monotonic() - last_reclaim >= RECLAIM_SECONDS:
                 last_reclaim = time.monotonic()

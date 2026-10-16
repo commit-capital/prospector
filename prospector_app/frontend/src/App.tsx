@@ -356,7 +356,7 @@ function WorkStatusBadge() {
   usePoll(loadStatus, 15_000);
   if (!status) return null;
   const busy = status.active.length > 0 || status.jobs.running > 0;
-  const stuck = status.active.some((a) => !a.worker_online);
+  const stuck = status.active.some((a) => !a.worker_online || a.worker_outdated);
   const queuedTotal = status.queued.verify + status.queued.fix;
   return (
     <div className="work-status">
@@ -369,10 +369,12 @@ function WorkStatusBadge() {
           <div key={`${a.lane}-${a.pr}`} className="work-status-row">
             <span>{a.lane} <b>#{a.pr}</b>
               {a.action ? ` · ${a.action}` : ""}{a.step ? ` · ${a.step}` : ""}</span>
-            <span className={a.worker_online ? "muted" : "work-status-stuck"}>
-              {a.host ?? "?"} · {a.worker_online
-                ? `started ${agoPhrase(a.started_at)}`
-                : "worker offline — run is stuck"}
+            <span className={a.worker_online && !a.worker_outdated ? "muted" : "work-status-stuck"}>
+              {a.host ?? "?"} · {a.worker_outdated
+                ? "needs updating — run is stuck"
+                : a.worker_online
+                  ? `started ${agoPhrase(a.started_at)}`
+                  : "worker offline — run is stuck"}
             </span>
           </div>
         ))}
@@ -474,7 +476,7 @@ function Toasts() {
 }
 
 // The thin systemwide health strip on every page: worker lanes down on any
-// machine sharing this store (tripped, or the worker offline), a worker whose
+// machine sharing this store (tripped, offline, or behind the store's schema), a worker whose
 // Docker disk is filling (its remedy is the hover tooltip), stale ingests,
 // and AI accounts whose background work is paused at its capacity cap. Amber
 // for a partial problem, red for a full outage; hidden while everything is

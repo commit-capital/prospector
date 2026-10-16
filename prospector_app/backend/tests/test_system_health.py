@@ -289,3 +289,26 @@ def test_status_reads_the_recorded_docker_disk(store, monkeypatch):
 
     out = system_health.status()
     assert [i["kind"] for i in out["items"]] == ["disk"]
+
+
+def test_a_machine_behind_the_store_reads_needs_updating_not_offline():
+    out = system_health.summarize(
+        [], [{"host": "studio", "lane": "verify", "age_seconds": 7200.0}],
+        [("verify", "studio"), ("fix", "laptop")], FRESH, NOW_TS,
+        outdated={"studio": 32}, store_schema=33, me="laptop")
+    assert out["severity"] == "red"
+    assert out["lanes_down"] == 1
+    labels = [i["label"] for i in out["items"]]
+    assert "studio: needs updating · on v32, store is v33" in labels
+    assert not any("offline" in label for label in labels)
+
+
+def test_this_machine_behind_the_store_asks_for_an_update_first():
+    out = system_health.summarize(
+        [], [], [("verify", "studio"), ("verify", "laptop")], FRESH, NOW_TS,
+        outdated={"studio": 32, "laptop": 32}, store_schema=33, me="studio")
+    first = out["items"][0]
+    assert first["kind"] == "outdated" and first["host"] == "studio"
+    assert first["label"] == ("Action needed: update Prospector on this machine — "
+                              "the store is on v33, this Prospector is v32")
+    assert out["workers_stalled"] is True

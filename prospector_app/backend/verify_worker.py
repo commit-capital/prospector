@@ -51,7 +51,7 @@ from pipeline import wire
 from pipeline import worker_health
 from pipeline.freshness import is_current
 from pipeline.storekit import now as _now
-from prospector_app.backend import data
+from prospector_app.backend import data, schema_gate
 from prospector_app.backend import service
 from prospector_app.backend import verify_queue
 from prospector_app.backend import lane_health
@@ -874,7 +874,8 @@ def _finalize(n: int, rc: int, tail: str) -> None:
 def _beat_loop() -> None:
     while not stop.is_set():
         try:
-            beat()
+            if not schema_gate.paused("verify-worker"):
+                beat()
         except Exception:
             traceback.print_exc()
         stop.wait(POLL_SECONDS)
@@ -925,6 +926,9 @@ def _drain_loop() -> None:
         traceback.print_exc()
     last_reclaim = time.monotonic()
     while not stop.is_set():
+        if schema_gate.paused("verify-worker"):
+            stop.wait(POLL_SECONDS)
+            continue
         try:
             maybe_refresh_base()
             hold_stale_pin()

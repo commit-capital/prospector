@@ -10,7 +10,7 @@ import threading
 import traceback
 
 from pipeline import settings, verify_driver, worker_health
-from prospector_app.backend import data, worker_loops
+from prospector_app.backend import data, schema_gate, worker_loops
 
 INTERVAL_SECONDS = 5 * 60
 
@@ -36,7 +36,8 @@ def check_once() -> None:
 def _loop() -> None:
     while not _stop.is_set():
         try:
-            check_once()
+            if not schema_gate.paused("docker-disk"):
+                check_once()
         except Exception:
             traceback.print_exc()
         worker_loops.ran("docker-disk", INTERVAL_SECONDS)

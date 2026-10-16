@@ -1096,7 +1096,8 @@ export interface VerifyQueueEntry {
 
 /** One in-flight run anywhere on the deployment, for the header status label.
  *  `worker_online` asks whether the claiming host's worker is still beating —
- *  a claimed run whose worker went quiet is stuck, not slow. */
+ *  a claimed run whose worker went quiet is stuck, not slow — and
+ *  `worker_outdated` whether that host's code is behind the store's schema. */
 export interface WorkActive {
   lane: "verify" | "fix";
   pr: number;
@@ -1107,6 +1108,7 @@ export interface WorkActive {
   started_at?: string | null;
   source?: string | null;
   worker_online: boolean;
+  worker_outdated: boolean;
 }
 
 /** One lane's worker heartbeat on one machine, for the header flyout. */
@@ -1139,7 +1141,7 @@ export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]
  *  account whose background work is paused.
  *  `detail` is the hover tooltip, shown inline on a capacity line. */
 export interface SystemHealthItem {
-  kind: "lanes" | "trip" | "offline" | "ingest" | "capacity" | "disk";
+  kind: "lanes" | "trip" | "offline" | "outdated" | "ingest" | "capacity" | "disk";
   severity: "amber" | "red";
   label: string;
   detail?: string | null;

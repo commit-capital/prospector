@@ -1231,7 +1231,7 @@ class Store:
 
     def load_verify_worker(self) -> dict:
         """Sandbox verification-worker heartbeats, one record per host
-        (`{hosts: {<hostname>: {host, pid, last_beat, current_pr, autohunt,
+        (`{hosts: {<hostname>: {host, pid, last_beat, schema, current_pr, autohunt,
         security_failed}}}`) — which machines' workers exist, when each last
         beat, the PR each is running (None when idle), whether each idle
         auto-hunt is enabled, and each worker's this-process security-failure
@@ -1258,15 +1258,17 @@ class Store:
         `hosts` map the caller read, pruning entries stale past
         _WORKER_PRUNE_SECONDS. host and last_beat are required: a beat that
         names no machine or no time tells an app nothing about whether a runner
-        is online. Two hosts' merges may race on the shared row; a lost beat is
-        rewritten by the loser's next tick."""
+        is online. Each beat records the schema version its code writes, so
+        another machine can tell a worker left behind by a schema bump. Two
+        hosts' merges may race on the shared row; a lost beat is rewritten by
+        the loser's next tick."""
         if not record.get("host"):
             raise ValidationError(f"{name}.host: required")
         if not record.get("last_beat"):
             raise ValidationError(f"{name}.last_beat: required")
         from datetime import datetime, timedelta, timezone
         host = str(record["host"])
-        hosts = {**hosts, host: record}
+        hosts = {**hosts, host: {**record, "schema": schema.STORE_SCHEMA_VERSION}}
         cutoff = (datetime.now(timezone.utc)
                   - timedelta(seconds=self._WORKER_PRUNE_SECONDS)
                   ).isoformat(timespec="microseconds")

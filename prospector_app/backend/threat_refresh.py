@@ -23,7 +23,7 @@ import time
 import traceback
 
 from pipeline import settings, storekit, threat_evidence, threat_scan
-from prospector_app.backend import data, worker_loops
+from prospector_app.backend import data, schema_gate, worker_loops
 
 REFRESH_SECONDS = 10 * 60
 # PRs scanned per pass, most recently updated first; the rest wait a pass.
@@ -114,6 +114,9 @@ def wake() -> None:
 def _loop() -> None:
     while True:
         _wake.clear()
+        if schema_gate.paused("threat-refresh"):
+            _wake.wait(REFRESH_SECONDS)
+            continue
         try:
             retry_evidence()
         except Exception:

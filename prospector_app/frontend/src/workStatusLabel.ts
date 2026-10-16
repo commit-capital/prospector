@@ -17,6 +17,7 @@ export function workStatusLabel(s: WorkStatus): string {
   if (s.active.length === 1) {
     const a = s.active[0];
     const head = `${a.lane} #${a.pr}`;
+    if (a.worker_outdated) return `${head} · worker needs update`;
     if (!a.worker_online) return `${head} · worker offline?`;
     const doing = a.lane === "fix" ? a.action : a.step;
     const age = elapsed(a.started_at);
