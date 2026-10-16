@@ -146,6 +146,12 @@ SETTINGS: tuple[Setting, ...] = (
        "The autofix hunter may queue agent-written fixes."),
     _b("TRIAGE_FIX_HUNT_RESOLVE", "workers", "Hunt conflict resolves",
        "A conflicted hunted rebase may escalate to an agent resolve."),
+    Setting("TRIAGE_FIX_HANDBACK", "workers", "choice", "Hand failed autofixes to the author",
+            "dry-run",
+            "A hunted autofix the agents could not get past their own review is handed back "
+            "on GitHub: a comment asking the author to fix it, or a close when the author "
+            "has been silent 30 days: live, dry-run (logged only), or off.", editable=True,
+            choices=("live", "dry-run", "off")),
     Setting("TRIAGE_FIX_AUTOPUSH", "workers", "list", "Autofix actions that push unattended",
             "(none)", "Comma-separated autofix actions that push without approval.",
             editable=True),

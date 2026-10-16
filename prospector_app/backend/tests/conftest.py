@@ -78,6 +78,16 @@ def _no_live_ci_read(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_handback(monkeypatch):
+    """Hunted autofix endings park or refuse as they do with hand-backs off,
+    and a hand-back's live read never reaches GitHub, unless a test turns them
+    on (test_handback.py)."""
+    from prospector_app.backend import handback
+    monkeypatch.setenv("TRIAGE_FIX_HANDBACK", "off")
+    monkeypatch.setattr(handback, "live_state", lambda n: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_worker_log_tee(monkeypatch):
     """A lane's startup mirrors stdout to the worker log; under test that would
     wrap pytest's own capture stream for the rest of the session."""

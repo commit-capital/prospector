@@ -57,7 +57,7 @@ from pipeline import (author_fix, capacity, ci_signal, compile_preflight, descri
                       resolve_evidence, review_fix, review_policy, review_resolve,
                       reviewers, risktier, settings, storekit, verify_driver)
 from pipeline.storekit import now as _now
-from prospector_app.backend import (activity, data, executor, fix_queue, lane_health,
+from prospector_app.backend import (activity, data, executor, fix_queue, handback, lane_health,
                                     lane_pause, review_refresh, safety_guard, sandbox_check,
                                     schema_gate, service,
                                     verify_worker, worker_log, worker_selftest)
@@ -657,6 +657,25 @@ def _decline(n: int, req: dict, reason: str, result: dict | None = None) -> None
     _refuse(n, req, reason, result, judged=False)
 
 
+def _hand_back(n: int, req: dict, reason: str, result: dict | None = None, *,
+               kind: str, judged: bool = True) -> None:
+    """End the request `refused` as `_refuse` does and, when the hunter queued
+    it, hand the PR back to its author on GitHub (`handback.deliver`): a
+    comment asking them to fix `kind`, or a close when they have gone
+    silent."""
+    rec = data.store().load_pr(n)
+    if rec is not None and handback.active(req):
+        paths = [str(p) for p in ((result or {}).get("conflict_paths") or [])]
+        try:
+            outcome = handback.deliver(rec, req, kind, paths)
+        except Exception as e:
+            traceback.print_exc()
+            outcome = {"do": "skip", "why": f"the hand-back crashed: {e}"}
+        result = {**(result or {}), "handed_back": outcome}
+        reason = f"{reason} {handback.summary(outcome)}"
+    _refuse(n, req, reason, result, judged=judged)
+
+
 def recheck_eligibility(n: int, action: str,
                         paths: list[str] | None = None) -> tuple[bool, str]:
     """Re-run the autofix gate against the record as it stands now. A request
@@ -678,18 +697,24 @@ def recheck_eligibility(n: int, action: str,
                                  objection=bool(req.get("objection")))
 
 
-def _end_on_preflight(n: int, claimed: dict, pf: dict, result: dict) -> None:
+def _end_on_preflight(n: int, claimed: dict, pf: dict, result: dict, *,
+                      hand_back: str | None = None) -> None:
     """Write the ending for a compile preflight that did not clear, after
     discarding the worktree. An `error` is the sandbox failing to run at all —
     this machine's problem, a `failed` the hunter retries once it cools —
     while a refusal or a compile that exits non-zero is a verdict on the PR.
-    Only a compile that ran and failed judges the change itself."""
+    Only a compile that ran and failed judges the change itself, and only
+    that one is handed back to the author as `hand_back` names."""
     _resubmit(n, "abort")
     if pf.get("error"):
         _fail(n, claimed, plain_preflight(pf), result=result,
               kind=str(pf.get("error_kind") or "sandbox"))
+        return
+    reason = str(result.get("detail") or plain_preflight(pf))
+    if pf.get("exit") == gates.SENTINEL_TEST_FAIL and hand_back is not None:
+        _hand_back(n, claimed, reason, result, kind=hand_back)
     else:
-        _refuse(n, claimed, str(result.get("detail") or plain_preflight(pf)), result=result,
+        _refuse(n, claimed, reason, result=result,
                 judged=pf.get("exit") == gates.SENTINEL_TEST_FAIL)
 
 
@@ -743,7 +768,8 @@ def run_one(n: int) -> None:
                 followup = _compile_objection(n, claimed, pf)
                 if followup is not None:
                     result["detail"] = f"{pf_why} A fix is queued from the compile error."
-                _end_on_preflight(n, claimed, pf, result)
+                _end_on_preflight(n, claimed, pf, result,
+                                  hand_back="build" if followup is None else None)
                 if followup is not None:
                     try:
                         fix_queue.queue_pr(n, "fix", objection=followup)
@@ -995,10 +1021,11 @@ def _author_fix(n: int, claimed: dict) -> None:
                                      origin={"concerns": list(review.get("concerns") or [])})
         if not _may_continue(rec, objection):
             _resubmit(n, "abort")
-            _refuse(n, claimed, f"The reviewing agent rejected the change: "
-                                f"{review['reason']}",
-                    result={"patch": patch, "changes": verdict["changes"],
-                            "review_verdict": review, **_checks_only(verdict["checks"])})
+            _hand_back(n, claimed, f"The reviewing agent rejected the change: "
+                                   f"{review['reason']}",
+                       result={"patch": patch, "changes": verdict["changes"],
+                               "review_verdict": review, **_checks_only(verdict["checks"])},
+                       kind="fix")
             return
         # The request keeps the objection it was queued for; the retry's own
         # objection lives in its round, where `spent` also reads.
@@ -1015,12 +1042,13 @@ def _author_fix(n: int, claimed: dict) -> None:
         all_checks = list(verdict["checks"]) + list(verdict2["checks"])
         if review2["verdict"] != "safe":
             _resubmit(n, "abort")
-            _refuse(n, claimed, "The reviewing agent rejected the change twice: "
-                                f"{review['reason']}; then {review2['reason']}",
-                    result={"patch": patch2, "changes": verdict2["changes"],
-                            "review_verdict": review2,
-                            "rounds": rounds + [{"objection": objection, "review": review2}],
-                            **_checks_only(all_checks)})
+            _hand_back(n, claimed, "The reviewing agent rejected the change twice: "
+                                   f"{review['reason']}; then {review2['reason']}",
+                       result={"patch": patch2, "changes": verdict2["changes"],
+                               "review_verdict": review2,
+                               "rounds": rounds + [{"objection": objection, "review": review2}],
+                               **_checks_only(all_checks)},
+                       kind="fix")
             return
         verdict = {**verdict2, "changes": list(verdict["changes"]) + list(verdict2["changes"]),
                    "checks": all_checks}
@@ -1037,7 +1065,8 @@ def _author_fix(n: int, claimed: dict) -> None:
         pf_ok, pf_why = gates.compile_preflight_gate(pf)
         if not pf_ok:
             _end_on_preflight(n, claimed, pf,
-                              {**evidence, "compile_preflight": pf, "detail": pf_why})
+                              {**evidence, "compile_preflight": pf, "detail": pf_why},
+                              hand_back="fix")
             return
     evidence["compile_preflight"] = pf
 
@@ -1055,7 +1084,8 @@ def _author_fix(n: int, claimed: dict) -> None:
                                   f"not with the PR: {str(lint['error'])[:400]}",
                       result=evidence, kind=str(lint.get("error_kind") or "sandbox"))
             else:
-                _refuse(n, claimed, block[:1].upper() + block[1:], result=evidence)
+                _hand_back(n, claimed, block[:1].upper() + block[1:], result=evidence,
+                           kind="fix")
             return
 
     result = {**evidence, "message": verdict["summary"] or _commit_message("fix")}
@@ -1078,6 +1108,10 @@ def _author_fix(n: int, claimed: dict) -> None:
         result["autopush_bar"] = {"ok": ok, "reason": why}
         if ok:
             _push(n, claimed, "fix", result, unattended=True)
+            return
+        if handback.active(claimed) and handback.evidence_judged({"tests": result["tests"]}):
+            _resubmit(n, "abort")
+            _hand_back(n, claimed, why[:1].upper() + why[1:], result, kind="fix")
             return
     _park(n, claimed, "fix", result, settings.worker_id())
 
@@ -1124,8 +1158,9 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
     verdict["checks"] = sandbox_check.collect_checks(n)
     if "give_up" in verdict:
         _resubmit(n, "abort")
-        _decline(n, claimed, f"The agent declined to write a change: "
-                             f"{verdict['give_up']}", result=_checks_only(verdict["checks"]) or None)
+        _hand_back(n, claimed, f"The agent declined to write a change: "
+                               f"{verdict['give_up']}",
+                   result=_checks_only(verdict["checks"]) or None, kind="fix", judged=False)
         return None
 
     diff = _resubmit(n, "diff")
@@ -1142,10 +1177,10 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
         return None
     if len(patch) > PATCH_CHARS:
         _resubmit(n, "abort")
-        _refuse(n, claimed, f"The agent wrote {len(patch)} characters of diff, past "
-                            f"the {PATCH_CHARS} the queue carries. A change this "
-                            f"large belongs to a person, not an unattended fix.",
-                result=_checks_only(verdict["checks"]) or None)
+        _hand_back(n, claimed, f"The agent wrote {len(patch)} characters of diff, past "
+                               f"the {PATCH_CHARS} the queue carries. A change this "
+                               f"large belongs to a person, not an unattended fix.",
+                   result=_checks_only(verdict["checks"]) or None, kind="fix")
         return None
     if "\nBinary files " in patch or patch.startswith("Binary files "):
         # A textual diff names a binary change without carrying it, so the
@@ -1159,8 +1194,8 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
         author_fix.assert_disclosed(list(verdict["changes"]) + list(prior_changes or []), paths)
     except ValueError as e:
         _resubmit(n, "abort")
-        _refuse(n, claimed, f"The authored change was not trusted: {e}",
-                result={"patch": patch, **_checks_only(verdict["checks"])})
+        _hand_back(n, claimed, f"The authored change was not trusted: {e}",
+                   result={"patch": patch, **_checks_only(verdict["checks"])}, kind="fix")
         return None
     ok, why = recheck_eligibility(n, "fix", paths)
     if not ok:
@@ -1221,7 +1256,8 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
     evidence = ({"merge_diff": merge_diff, "conflict_paths": paused}
                 if merge_diff else None)
     if claimed.get("source") == "auto" and not settings.fix_hunt_resolve():
-        _decline(n, claimed, _conflict_refusal(paused), result=evidence)
+        _hand_back(n, claimed, _conflict_refusal(paused),
+                   result=evidence or {"conflict_paths": paused}, kind="conflicts", judged=False)
         return
     rec = data.store().load_pr(n)
     if rec is None:
@@ -1284,10 +1320,11 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
         return
     if "give_up" in verdict:
         _resubmit(n, "abort")
-        _decline(n, claimed,
-                 f"{_conflict_refusal(paused)} The agent declined to guess: "
-                 f"{verdict['give_up']}",
-                 result=evidence)
+        _hand_back(n, claimed,
+                   f"{_conflict_refusal(paused)} The agent declined to guess: "
+                   f"{verdict['give_up']}",
+                   result=evidence or {"conflict_paths": paused}, kind="conflicts",
+                   judged=False)
         return
 
     cont = _resubmit(n, "continue")
@@ -1296,10 +1333,10 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
         output = (cont.stderr or cont.stdout).strip()
         if _fail_if_crashed(n, claimed, cont.returncode, output, evidence):
             return
-        _refuse(n, claimed,
-                f"{_conflict_refusal(paused)} The agent's resolution did not pass the "
-                f"merge checks: {output[:500]}",
-                result=evidence)
+        _hand_back(n, claimed,
+                   f"{_conflict_refusal(paused)} The agent's resolution did not pass the "
+                   f"merge checks: {output[:500]}",
+                   result=evidence or {"conflict_paths": paused}, kind="conflicts")
         return
     diff = _resubmit(n, "diff")
     if diff.returncode != 0 or not (diff.stdout or "").strip():
@@ -1327,7 +1364,8 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
                 _continue_resolve(n, rec, claimed, str(claimed.get("against_head_sha") or ""),
                                   worktree, result, stamp, followup)
                 return
-            _end_on_preflight(n, claimed, pf, {**result, "detail": pf_why})
+            _end_on_preflight(n, claimed, pf, {**result, "detail": pf_why},
+                              hand_back="conflicts")
             return
     _park(n, claimed, "resolve", result, settings.worker_id())
 
@@ -1708,7 +1746,12 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
                 return
     result["auto_review"] = stamp
     ok, why = gates.resolve_autopush_bar(result)
-    stamp["bar"] = {"ok": ok, "reason": why}
+    stamp["bar"] = {"ok": ok, "reason": why, "judged": _resolve_judged(ok, stamp)}
+    if stamp["bar"]["judged"] and handback.active(claimed):
+        _resubmit(n, "abort")
+        _hand_back(n, claimed, f"The agents did not clear the conflict resolution: {why}",
+                   result, kind="conflicts")
+        return
     data.store().edit_pr(n).record_fix_request(
         "approved" if ok else "awaiting-review", "resolve",
         queued_at=claimed.get("queued_at"), started_at=claimed.get("started_at"),
@@ -1717,6 +1760,60 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
     data.refresh()
     print(f"[fix-worker] resolve auto-review for PR #{n}: "
           f"{'cleared for push' if ok else why}", flush=True)
+
+
+def _resolve_judged(ok: bool, stamp: dict) -> bool:
+    """Whether a resolve bar that did not pass is the agents' judgment on the
+    change rather than a risk-tier hold, which stays with an operator."""
+    tier = (stamp.get("tier") or {}).get("tier")
+    return not ok and tier not in (None, 0) and handback.evidence_judged(stamp)
+
+
+# Hand-backs one backlog pass makes, so a switch to live spreads its writes.
+HANDBACK_PER_PASS = 10
+
+
+def hand_back_backlog() -> list[int]:
+    """Under a live TRIAGE_FIX_HANDBACK, make the hand-backs
+    `handback.candidates` names: a parked resolve the agents judged (this
+    host's, since its kept worktree is removed here) and a refusal whose
+    hand-back was only a dry-run. Returns the PRs handed back."""
+    if settings.fix_handback() != "live":
+        return []
+    done: list[int] = []
+    for rec, req, kind, paths in handback.candidates():
+        if len(done) >= HANDBACK_PER_PASS:
+            break
+        n = rec.number
+        if req.get("status") == "awaiting-review":
+            if req.get("host") not in (None, settings.worker_id()):
+                continue
+            claimed = data.store().claim_fix_request(n, host=settings.worker_id(),
+                                                     statuses=("awaiting-review",))
+            if claimed is None:
+                continue
+            _resubmit(n, "abort")
+            result = dict(claimed.get("result") or {})
+            bar = (result.get("auto_review") or {}).get("bar") or {}
+            _hand_back(n, claimed, "The agents did not clear the conflict resolution: "
+                                   f"{bar.get('reason') or 'no reason recorded'}",
+                       result, kind=kind)
+        else:
+            prior = (req.get("result") or {}).get("handed_back") or {}
+            outcome = handback.deliver(rec, req, kind, paths)
+            reason = str(req.get("refused_reason") or "").removesuffix(
+                " " + handback.summary(prior))
+            data.store().edit_pr(n).record_fix_request(
+                "refused", req.get("action", "fix"), queued_at=req.get("queued_at"),
+                started_at=req.get("started_at"), finished_at=req.get("finished_at"),
+                refused_reason=f"{reason} {handback.summary(outcome)}"[-TAIL_CHARS:],
+                result={**(req.get("result") or {}), "handed_back": outcome},
+                source=req.get("source"), guidance=req.get("guidance"),
+                objection=req.get("objection"), host=req.get("host"),
+                head_sha=req.get("against_head_sha"))
+            data.refresh()
+        done.append(n)
+    return done
 
 
 def _may_continue(rec: Pr, objection: dict) -> bool:
@@ -1743,11 +1840,18 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
     _running_step(n, claimed, "continuing after the reviewer's objection")
     checks: list[dict] = []
 
-    def park(detail: str, *, discard: bool = True) -> None:
-        if discard:
-            _resubmit(n, "discard")
+    def park(detail: str, *, judged: bool = False) -> None:
+        """Park the merge underneath for the operator, or, when the agents
+        judged the continuation and the hunter queued it, hand it back."""
         res = {**result, "rounds": [first], **_checks_only(checks),
-               "auto_review": {**first, "bar": {"ok": False, "reason": detail}}}
+               "auto_review": {**first, "bar": {"ok": False, "reason": detail,
+                                                "judged": judged}}}
+        if judged and handback.active(claimed):
+            _resubmit(n, "abort")
+            _hand_back(n, claimed, f"The agents did not clear the conflict resolution: "
+                                   f"{detail}", res, kind="conflicts")
+            return
+        _resubmit(n, "discard")
         data.store().edit_pr(n).record_fix_request(
             "awaiting-review", "resolve", queued_at=claimed.get("queued_at"),
             started_at=claimed.get("started_at"), result=res, source=claimed.get("source"),
@@ -1773,12 +1877,12 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
         return
     checks = sandbox_check.collect_checks(n)
     if "give_up" in verdict:
-        park(f"the continuation agent declined: {verdict['give_up']}")
+        park(f"the continuation agent declined: {verdict['give_up']}", judged=True)
         return
     committed = _resubmit(n, "commit", "-m",
                           verdict.get("summary") or "Address the reviewer's objection")
     if committed.returncode == 5:
-        park("the continuation changed nothing")
+        park("the continuation changed nothing", judged=True)
         return
     if committed.returncode != 0:
         park(f"committing the continuation failed: "
@@ -1793,7 +1897,7 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
     try:
         author_fix.assert_disclosed(verdict["changes"], touched)
     except ValueError as e:
-        park(f"the continuation was not trusted: {e}")
+        park(f"the continuation was not trusted: {e}", judged=True)
         return
     all_paths = sorted(set(touched) | set(paths))
     ok, why = recheck_eligibility(n, "resolve", all_paths)
@@ -1810,7 +1914,8 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
     if pf is not None:
         pf_ok, pf_why = gates.compile_preflight_gate(pf)
         if not pf_ok:
-            park(f"the continuation did not clear the compile preflight: {pf_why}")
+            park(f"the continuation did not clear the compile preflight: {pf_why}",
+                 judged=pf.get("exit") == gates.SENTINEL_TEST_FAIL)
             return
     second: dict = {"against_head_sha": head, "base_sha": claimed.get("base_sha"),
                     "host": settings.worker_id(), "at": _now(),
@@ -1838,7 +1943,12 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
            "touched_paths": all_paths, "rounds": [first, second], "auto_review": second,
            **_checks_only(checks)}
     ok, why = gates.resolve_autopush_bar(res)
-    second["bar"] = {"ok": ok, "reason": why}
+    second["bar"] = {"ok": ok, "reason": why, "judged": _resolve_judged(ok, second)}
+    if second["bar"]["judged"] and handback.active(claimed):
+        _resubmit(n, "abort")
+        _hand_back(n, claimed, f"The agents did not clear the conflict resolution: {why}",
+                   res, kind="conflicts")
+        return
     data.store().edit_pr(n).record_fix_request(
         "approved" if ok else "awaiting-review", "resolve",
         queued_at=claimed.get("queued_at"), started_at=claimed.get("started_at"),
@@ -2297,6 +2407,9 @@ def _drain_loop() -> None:
                 if marked or stranded:
                     print(f"[fix-worker] reclaimed from an offline worker: "
                           f"failed {marked}, re-armed {stranded}", flush=True)
+                handed = hand_back_backlog()
+                if handed:
+                    print(f"[fix-worker] handed back to their authors: {handed}", flush=True)
             fix_open = lane_health.open_or_retest("fix")
             n = next_approved() if pushes_open(fix_open) else None
             if n is not None:
