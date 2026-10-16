@@ -16,7 +16,7 @@ from pipeline import ci_signal
 from pipeline import diffpaths
 from pipeline import progress
 from pipeline import settings
-from pipeline.gh import complete_pr_checks, gh_graphql, required_checks
+from pipeline.gh import RateLimited, complete_pr_checks, gh_graphql, required_checks
 
 _log = logging.getLogger(__name__)
 
@@ -68,7 +68,8 @@ def fetch(prs: list[int], *,
     numbers GitHub explicitly reported NOT_FOUND — the PR no longer exists
     upstream (scrubbed/deleted), a deterministic verdict callers may act on.
     A number in neither is a transient miss (failed request, other GraphQL
-    error) and remains eligible for a retry.
+    error) and remains eligible for a retry. A rate-limit refusal ends the
+    fetch: every later request would meet the same spent budget.
     """
     out: dict[int, dict] = {}
     not_found: set[int] = set()
@@ -79,7 +80,13 @@ def fetch(prs: list[int], *,
               if progress.enabled() and len(prs) > CHUNK_SIZE else None)
     for i in range(0, len(prs), CHUNK_SIZE):
         chunk = prs[i:i + CHUNK_SIZE]
-        payload = gh_graphql(_query(chunk), rate_limit_waits=rate_limit_waits)
+        try:
+            payload = gh_graphql(_query(chunk), rate_limit_waits=rate_limit_waits,
+                                 raise_on_rate_limit=True)
+        except RateLimited as exc:
+            _log.warning("live PR fetch stopped at PR %d: GitHub rate limit (%s); "
+                         "%d of %d PRs not fetched", chunk[0], exc, len(prs) - i, len(prs))
+            break
         if report is not None:
             report.advance(len(chunk))
         if payload is None:

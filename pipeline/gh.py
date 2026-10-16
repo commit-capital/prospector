@@ -22,6 +22,13 @@ SECONDARY_RATE_LIMIT = "secondary rate limit"
 RATE_LIMIT_BACKOFF: tuple[float, ...] = (60, 120, 240)
 
 
+class RateLimited(RuntimeError):
+    """GitHub refused a call for rate limit — primary budget spent, or a
+    secondary limit that outlasted every wait. Raised only to a caller that
+    asks (`raise_on_rate_limit`), so a loop over many requests can stop
+    instead of sending each one into the same refusal."""
+
+
 def operator_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     """Environment for GitHub reads authenticated by the local ``gh`` login.
 
@@ -108,7 +115,8 @@ def _graphql(query: str, variables: Mapping[str, str] | None, timeout: int,
 
 
 def gh_graphql(query: str, *, variables: Mapping[str, str] | None = None,
-               timeout: int = 60, rate_limit_waits: Sequence[float] = ()) -> dict | None:
+               timeout: int = 60, rate_limit_waits: Sequence[float] = (),
+               raise_on_rate_limit: bool = False) -> dict | None:
     """`gh api graphql` for `query`, parsed as a JSON object, or None when no
     usable response came back (timeout, unparseable/non-object body, or an
     error body with no `data`); a None is logged with gh's own error text.
@@ -118,9 +126,12 @@ def gh_graphql(query: str, *, variables: Mapping[str, str] | None = None,
     `data` object is returned regardless of exit code.
 
     A caller answering an HTTP request passes no ``rate_limit_waits`` and fails
-    fast."""
+    fast. With ``raise_on_rate_limit`` a rate-limit refusal raises `RateLimited`
+    instead of returning None."""
     parsed, reason = _graphql(query, variables, timeout, rate_limit_waits)
     if parsed is None:
+        if raise_on_rate_limit and "rate limit" in reason.lower():
+            raise RateLimited(reason)
         _log.warning("gh api graphql failed: %s", reason)
     return parsed
 
