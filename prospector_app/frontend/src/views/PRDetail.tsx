@@ -9,6 +9,7 @@ import { DiffView } from "../components/DiffView";
 import { MergeSideBySide } from "../components/MergeSideBySide";
 import { CHECKS_ID, checkRowId, diffFileId, flashTo, jumpToDiff } from "../components/pageAnchor";
 import { Collapsible } from "../components/Collapsible";
+import { bannerFindings } from "../components/bannerFindings";
 import { PRActionBar } from "../components/PRActionBar";
 import { AnalysisLine, PRStory, type AnalysisTarget } from "../components/PRStory";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
@@ -578,6 +579,26 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           <div>
             <div className="vb-headline">{sum.headline}</div>
             <div className="vb-detail">{sum.detail}</div>
+            {findings.length > 0 && (() => {
+              const { shown, more } = bannerFindings(findings);
+              return (
+                <ul className="vb-findings">
+                  {shown.map((f, i) => (
+                    <li key={i}>
+                      <button type="button" className="link-btn" onClick={() => jump({ check: "security" })}
+                        title={`${f.detail}\n📍 ${f.location}`}>
+                        <b className="sev">{f.severity}</b> {f.title}
+                      </button>
+                    </li>
+                  ))}
+                  <li>
+                    <button type="button" className="link-btn" onClick={() => jump({ check: "security" })}>
+                      {more > 0 ? `+${more} more — see all in Checks ↓` : "Details in Checks ↓"}
+                    </button>
+                  </li>
+                </ul>
+              );
+            })()}
           </div>
         </div>
       )}
