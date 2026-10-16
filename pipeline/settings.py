@@ -504,7 +504,7 @@ def sandbox_large_cpus() -> int | None:
 def issue_fix_models() -> tuple[str, ...]:
     """The model each candidate of the cross-tested issue-fix lane runs on, one
     candidate per entry: TRIAGE_ISSUE_FIX_MODELS, comma-separated, else two on
-    Opus and one on Sonnet."""
+    Opus and one on Sonnet. A `codex:<model>` entry runs on Codex."""
     raw = os.environ.get("TRIAGE_ISSUE_FIX_MODELS", "")
     models = tuple(m.strip() for m in raw.split(",") if m.strip())
     return models or ("opus", "sonnet", "opus")

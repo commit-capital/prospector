@@ -471,7 +471,8 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     final text. The prompt travels over stdin — it can embed a whole PR diff,
     and argv has an OS size cap. `model` pins a specific model (e.g. a cheap
     Haiku for mechanical work); None takes `settings.agent_model()`, and only
-    an empty TRIAGE_AGENT_MODEL leaves the CLI's own default in charge.
+    an empty TRIAGE_AGENT_MODEL leaves the CLI's own default in charge. A
+    `codex:<model>` runs on Codex under the same boundary (`headless_codex`).
     `read_root` names the directories and files Read/Grep/Glob may reach — one
     path or several, a directory granting its subtree and any other path that
     one file; `cwd`, `edit_root` and `git_root` must lie inside a directory
@@ -494,6 +495,13 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     (capacity.current_lane()) a closed capacity gate raises
     capacity.CapacityPaused before any agent starts. Every run's capacity
     reading and usage are recorded for its account."""
+    from pipeline import headless_codex
+    if model and model.startswith(headless_codex.PREFIX):
+        return headless_codex.run(
+            prompt, model=model.removeprefix(headless_codex.PREFIX) or None, cwd=cwd,
+            read_root=read_root, edit_root=edit_root, allow=allow, env_allow=env_allow,
+            env_extra=env_extra, timeout=timeout, allow_gh=allow_gh, git_root=git_root,
+            system_prompt=system_prompt)
     if capacity.current_lane() is not None:
         decision = capacity.check(_store(), capacity.account(), probe=probe_reading)
         if not decision.allowed:

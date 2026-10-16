@@ -58,7 +58,8 @@ SETTINGS: tuple[Setting, ...] = (
             choices=("opus", "sonnet", "haiku")),
     Setting("TRIAGE_ISSUE_FIX_MODELS", "behavior", "list", "Issue-fix candidate models",
             "opus,sonnet,opus",
-            "One cross-tested issue-fix candidate per model, comma-separated.", editable=True),
+            "One cross-tested issue-fix candidate per model, comma-separated; "
+            "codex:<model> runs that candidate on the Codex CLI.", editable=True),
     Setting("TRIAGE_ISSUE_FIX_FOLLOWUP", "behavior", "choice", "Follow up proposed PRs", "live",
             "What the issue-fix worker does with a pull request it opened that is not yet "
             "green: live, dry-run (notes only), or off.", editable=True,
