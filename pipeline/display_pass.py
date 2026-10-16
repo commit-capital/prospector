@@ -3,7 +3,7 @@ changes a verdict.
 
 For one PR head a cheap model reads the title, the description's problem
 section, the linked issues, the diff summary and the effective rationale, and
-writes {problem, fix, why, how} for a maintainer skimming the page. `check`
+writes {problem, fix, how} for a maintainer skimming the page. `check`
 rejects a reply that cites a PR or issue number the inputs never name, or that
 names a verdict other than the PR's own, and a rejected reply is never stored.
 
@@ -42,7 +42,6 @@ _PROMPT = """You write the summary card a maintainer reads at the top of a pull 
 Return ONLY a JSON object inside a ```json fenced block with exactly these keys:
 - "problem": ONE sentence: what was wrong or missing for users before this PR.
 - "fix": ONE sentence: what the PR changes to solve it.
-- "why": 1 to 4 short bullets (strings) giving the reasons for the verdict "{verdict}". Take them ONLY from the RATIONALE, ASKS and BLOCKERS below; never add a concern of your own. Fewer reasons, fewer bullets.
 - "how": 1 to 4 short bullets (strings) explaining how the change works, in plain words.
 
 Rules:
@@ -150,18 +149,17 @@ def check(reply: object, src: dict[str, str], disposition: str | None) -> dict |
     if not isinstance(reply, dict):
         return None
     problem, fix = reply.get("problem"), reply.get("fix")
-    why, how = reply.get("why"), reply.get("how")
+    how = reply.get("how")
     if not (isinstance(problem, str) and isinstance(fix, str) and problem.strip() and fix.strip()):
         return None
-    if not all(isinstance(b, list) and 1 <= len(b) <= MAX_BULLETS
-               and all(isinstance(x, str) and x.strip() for x in b) for b in (why, how)):
+    if not (isinstance(how, list) and 1 <= len(how) <= MAX_BULLETS
+            and all(isinstance(x, str) and x.strip() for x in how)):
         return None
-    assert isinstance(why, list) and isinstance(how, list)
     if _words(problem) > MAX_SENTENCE_WORDS or _words(fix) > MAX_SENTENCE_WORDS:
         return None
-    if any(_words(x) > MAX_BULLET_WORDS for x in [*why, *how]):
+    if any(_words(x) > MAX_BULLET_WORDS for x in how):
         return None
-    out = " ".join([problem, fix, *why, *how])
+    out = " ".join([problem, fix, *how])
     named = set(re.findall(r"\d+", " ".join(src.values())))
     if any(n not in named for n in re.findall(r"#(\d+)", out)):
         return None
@@ -170,8 +168,7 @@ def check(reply: object, src: dict[str, str], disposition: str | None) -> dict |
     for d, phrases in _VERDICT_PHRASES.items():
         if d != disposition and any(p in low and p not in reasons for p in phrases):
             return None
-    return {"problem": problem.strip(), "fix": fix.strip(),
-            "why": [x.strip() for x in why], "how": [x.strip() for x in how]}
+    return {"problem": problem.strip(), "fix": fix.strip(), "how": [x.strip() for x in how]}
 
 
 def _ask(prompt: str) -> object:

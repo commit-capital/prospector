@@ -8,7 +8,7 @@ import { ChecksPanel } from "../components/ChecksPanel";
 import { DiffView } from "../components/DiffView";
 import { Collapsible } from "../components/Collapsible";
 import { PRActionBar } from "../components/PRActionBar";
-import { ProblemFix, StoryDetails } from "../components/PRStory";
+import { AnalysisLine, PRStory } from "../components/PRStory";
 import { ClaimControl } from "../components/ClaimControl";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixBody, ResolveConflictsButton } from "../components/FixPanel";
@@ -178,7 +178,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   };
 
   // Run-state (#10): has a live action already landed on this PR? Drives the
-  // "already closed" badge + re-fire guard on the action controls.
+  // re-fire guard and the Reopen undo on the action controls.
   const run = useRunState([prNum]);
   const rs = run.byPr[prNum];
 
@@ -263,6 +263,12 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const securityHasRun = pr.checks?.checks.some((check) => check.key === "security" && check.at != null) ?? false;
   const secretsHasRun = pr.checks?.checks.some((check) => check.key === "secrets" && check.at != null) ?? false;
   const sum = pr.safety_summary;
+  // The security banner shows only a problem: anything short of a GREEN at
+  // this head, and a missing review only on a merge pick (the Summary's 🛡️ chip
+  // carries the rest).
+  const securityStale = pr.checks?.checks.some((check) => check.key === "security" && check.stale) ?? false;
+  const securityProblem = !!sum && (sum.level === "safe" ? securityStale
+    : sum.level !== "unknown" || pr.disposition === "merge");
   const sz = pr.size;
   const ci = pr.ci_checks ?? [];
 
@@ -424,6 +430,45 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     <VerifyBody v={pr.verify_detail ?? null} req={pr.verify_request ?? null} runner={runner} repo={repo} />
   );
 
+  // A close-dup's evidence: each change in the PR and where it already exists.
+  const dupCoverage = Boolean(pr.concerns?.length) && (
+    <div className="dup-coverage">
+      <div className="muted small dup-coverage-title"
+        title="Each change in this PR, and where that change already exists.">
+        Duplicate coverage
+      </div>
+      <table className="facts-table">
+        <thead><tr><th>Change</th><th>Covered by</th><th>Evidence</th></tr></thead>
+        <tbody>
+          {(pr.concerns ?? []).map((c, i) => (
+            <tr key={i}>
+              <td>
+                {c.label}
+                {Boolean(c.paths?.length) && (
+                  <span className="muted small"> ({(c.paths ?? []).slice(0, 3).join(", ")}{(c.paths ?? []).length > 3 ? ", …" : ""})</span>
+                )}
+              </td>
+              <td>
+                <span className={`chip chip-${coverageTone(c.coverage)} sm`}
+                  title={c.coverage === "landed" ? c.landed_sha : undefined}>
+                  {c.coverage === "pr" && c.covered_by != null
+                    ? <PRLink n={c.covered_by} />
+                    : coverageLabel(c)}
+                </span>
+              </td>
+              <td className="muted small">{c.evidence ?? ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {Boolean(pr.sanity_trips?.length) && (
+        <div className="callout dup-sanity">
+          A person needs to review this because: {(pr.sanity_trips ?? []).join("; ")}.
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="prcontent">
       {/* header */}
@@ -481,9 +526,9 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </div>
           </div>
         </div>
-        <section className="prc-section verdict-card">
-          <ProblemFix pr={pr} />
-          <StoryDetails pr={pr} showWhy={false} onWritten={reloadPr} />
+        <section className="suggestion summary-panel tone-muted">
+          <h3 className="summary-title">Summary</h3>
+          <PRStory pr={pr} onWritten={reloadPr} />
         </section>
         {/* A malicious PR's evidence outlives the PR: closing it upstream is
             when GitHub may stop serving it. */}
@@ -496,55 +541,10 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         </>
       ) : (
        <>
-      {/* The verdict card: what the PR fixes, the suggestion with the one
-          action surface under it, and the why/how folded away below. */}
-      <section className="prc-section verdict-card">
-        <ProblemFix pr={pr} />
-        <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }} />
-        {Boolean(pr.concerns?.length) && (
-          <div className="dup-coverage">
-            <div className="muted small dup-coverage-title"
-              title="Each change in this PR, and where that change already exists.">
-              Duplicate coverage
-            </div>
-            <table className="facts-table">
-              <thead><tr><th>Change</th><th>Covered by</th><th>Evidence</th></tr></thead>
-              <tbody>
-                {(pr.concerns ?? []).map((c, i) => (
-                  <tr key={i}>
-                    <td>
-                      {c.label}
-                      {Boolean(c.paths?.length) && (
-                        <span className="muted small"> ({(c.paths ?? []).slice(0, 3).join(", ")}{(c.paths ?? []).length > 3 ? ", …" : ""})</span>
-                      )}
-                    </td>
-                    <td>
-                      <span className={`chip chip-${coverageTone(c.coverage)} sm`}
-                        title={c.coverage === "landed" ? c.landed_sha : undefined}>
-                        {c.coverage === "pr" && c.covered_by != null
-                          ? <PRLink n={c.covered_by} />
-                          : coverageLabel(c)}
-                      </span>
-                    </td>
-                    <td className="muted small">{c.evidence ?? ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {Boolean(pr.sanity_trips?.length) && (
-              <div className="callout dup-sanity">
-                A person needs to review this because: {(pr.sanity_trips ?? []).join("; ")}.
-              </div>
-            )}
-          </div>
-        )}
-        <StoryDetails pr={pr} showWhy onWritten={reloadPr} />
-      </section>
-
-      {/* Blockers, directly under the action they gate. SECURITY / SAFETY
-          verdict first. */}
-      {sum && (
-        <div className={`verdict-banner v-${sum.level}`}>
+      {/* Problems first, loud, above the Summary: the security verdict when it
+          is anything but a current GREEN, then the merge blocks. */}
+      {sum && securityProblem && (
+        <div className={`verdict-banner ${sum.level === "risk" ? "v-risk" : "v-caution"}`}>
           <span className="vb-icon">{LEVEL_ICON[sum.level]}</span>
           <div>
             <div className="vb-headline">{sum.headline}</div>
@@ -601,6 +601,10 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         );
       })()}
 
+      {/* The Summary: what the PR fixes and how, what we found, and the one
+          action surface under the suggestion. */}
+      <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }}
+        summary={<><PRStory pr={pr} onWritten={reloadPr} />{dupCoverage}<AnalysisLine pr={pr} /></>} />
        </>
       )}
 

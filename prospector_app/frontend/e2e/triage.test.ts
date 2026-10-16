@@ -20,6 +20,7 @@ test("find a PR, preview a close, and read its durable Activity receipt", { time
   await page.find('.sug-comment-toggle').click();
   const comment = "Closing preview: retry counter is already covered.";
   await page.find({ label: "Comment e2e-bot will post" }).fill(comment);
+  await page.find({ role: "button", text: "Add private note" }).click();
   await page.find('.pr-tags textarea').fill("Private review note for the fixture");
   await page.find({ role: "button", text: "Close (dry)" }).click();
   await page.waitUntil("document.querySelector('.pr-actions')?.innerText.includes('dry-run')");
