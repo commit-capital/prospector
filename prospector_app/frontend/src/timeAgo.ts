@@ -33,3 +33,18 @@ export function localDateTime(iso?: string | null): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
     `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
+
+/** A timestamp as a short local date and time, "Sep 10, 9:42 PM", with the
+ *  year added when it is not the current one. Empty for a missing or
+ *  unparsable stamp. */
+export function shortDateTime(iso?: string | null, now: Date = new Date()): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const d = new Date(t);
+  const date = d.toLocaleDateString([], {
+    month: "short", day: "numeric",
+    ...(d.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  });
+  return `${date}, ${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+}
