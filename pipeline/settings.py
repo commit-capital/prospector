@@ -405,6 +405,15 @@ def fix_hunt_resolve() -> bool:
     return os.environ.get("TRIAGE_FIX_HUNT_RESOLVE", "") == "1"
 
 
+def fix_handback() -> str:
+    """What the fix worker does on GitHub with a hunted request the agents
+    could not clear (`prospector_app.backend.handback`): `live` comments to
+    the author or closes a stale PR, `dry-run` (the default) logs each write
+    and makes none, `off` leaves GitHub alone."""
+    value = os.environ.get("TRIAGE_FIX_HANDBACK", "dry-run").strip().lower()
+    return value if value in ("off", "dry-run", "live") else "dry-run"
+
+
 def positive_int(name: str, default: int) -> int:
     """The environment's positive integer for `name`; an unparseable or
     non-positive value reads as `default`."""

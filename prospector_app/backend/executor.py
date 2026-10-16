@@ -1501,6 +1501,27 @@ def post_fix_comment(number: int, body: str, *, marker: str, issue: int, comment
                       attempt=attempt, failure="posting the comment failed unexpectedly")
 
 
+def hand_back_comment(n: int, body: str, *, marker: str, token: str | None,
+                      dry_run: bool) -> dict:
+    """Post an autofix hand-back `body` on PR `n` as the bot, unless a bot
+    comment ending in `marker` is already there. Logged to Activity."""
+    base: dict = {"pr": int(n), "action": "AUTOFIX_HANDBACK"}
+
+    def attempt(token: str) -> dict[str, object]:
+        if _bot_commented_with(n, marker):
+            return {"status": "exists", "detail": f"the hand-back comment is on #{n}"}
+        r = bot_run(["gh", "api", f"repos/{settings.repo()}/issues/{int(n)}/comments",
+                     "-f", f"body={body}"], token)
+        if r.returncode != 0:
+            return {"status": "error", "detail": _gh_api_error(r) or f"gh exited {r.returncode}"}
+        return {"status": "executed", "detail": f"asked the author of #{n} to take it",
+                "event_url": _html_url(r.stdout)}
+
+    return _bot_write("autofix-handback", base, token=token, dry_run=dry_run,
+                      preview=f'would comment on #{n}: "{body[:80]}…"',
+                      attempt=attempt, failure="posting the hand-back comment failed unexpectedly")
+
+
 def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -> dict:
     """Ask issue `issue` the question its last lane run's dispute raised, as a
     bot comment. The run must pass `issue_gates.question_gate` and the rendered

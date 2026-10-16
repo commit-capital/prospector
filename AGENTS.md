@@ -386,6 +386,20 @@ additionally lets the hunter queue unguided `fix` actions, on the inverse
 population — CI passing, mergeable, review score below the bar and scored at
 the current head — at most `TRIAGE_FIX_HUNT_LIMIT`
 (default 3) in flight, and only where the profile names `autofix.fixable_gates`.
+A hunted request the agents judged and turned down — a resolve or fix
+reviewer's rejection, a continuation that declined, a compile, lint or
+related-tests failure, an agent that would not guess at a conflict — is handed
+back to its author (`prospector_app/backend/handback.py`, the ONE policy for
+it): it ends `refused`, and the bot comments once per head asking the author to
+fix the conflicts, the build or the review findings, or closes the PR with a
+note when its author is not a maintainer and has not pushed, commented or
+reviewed on it in 30 days. A risk-tier-0 hold, a withheld path and a machine
+fault stay with the operator, as do an operator's own request and a fix for CI
+the bot broke. `TRIAGE_FIX_HANDBACK` is `live`, `dry-run` (the default: logged
+to Activity, nothing written) or `off`; while live, the worker also hands back
+this host's judged parked resolves and the dry-run refusals still at their
+head, ten a pass. `uv run python -m prospector_app.backend.handback` lists what
+a live hand-back would do now.
 A pushed `fix` re-triggers the review provider as the bot (Activity-logged) and
 starts the backend wait that ingests the fresh score. Every action that ends —
 refused, failed, parked for review, or pushed — appends a `fix:single` entry to

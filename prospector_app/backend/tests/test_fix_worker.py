@@ -1194,6 +1194,20 @@ def test_a_rejected_change_refuses_and_keeps_the_patch_visible(store, monkeypatc
     assert not _pushed(probe)
 
 
+def test_a_hunted_fix_the_reviewer_rejects_goes_to_the_author(store, monkeypatch,
+                                                              handback_live):
+    fix_queue.queue_pr(1, "fix", source="auto", guidance="bound the retry loop")
+    monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
+    _authored(monkeypatch)
+    _reviewed(monkeypatch, {"verdict": "unsafe", "reason": "breaks parse() callers",
+                            "concerns": []})
+    fix_worker.run_one(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused" and req["result"]["handed_back"]["kind"] == "fix"
+    [(kind, _, body)] = handback_live["writes"]
+    assert kind == "comment" and "review feedback" in body
+
+
 def test_an_undisclosed_edit_refuses(store, monkeypatch):
     # The patch touches a.ts; the agent only admitted to b.ts.
     _queue_fix()
@@ -1899,6 +1913,123 @@ def test_failing_related_tests_stay_parked(review_lane, store, monkeypatch):
     req = store.load_pr(1).fix_request
     assert req["status"] == "awaiting-review"
     assert "test" in req["result"]["auto_review"]["bar"]["reason"]
+
+
+@pytest.fixture
+def handback_live(monkeypatch):
+    """Hand-backs on, against a live PR still open at HEAD whose author was
+    active `days_ago` days ago; the bot's writes are recorded, not made."""
+    from datetime import datetime, timedelta, timezone
+    from prospector_app.backend import handback
+    monkeypatch.setenv("TRIAGE_FIX_HANDBACK", "live")
+    state = {"days_ago": 2, "writes": []}
+    monkeypatch.setattr(handback, "live_state", lambda n: {
+        "state": "open", "head": HEAD, "author": "contrib",
+        "last_active": datetime.now(timezone.utc) - timedelta(days=state["days_ago"])})
+    monkeypatch.setattr(handback.executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr(handback.executor, "hand_back_comment",
+                        lambda n, body, **kw: state["writes"].append(("comment", n, body))
+                        or {"status": "executed"})
+    monkeypatch.setattr(handback.executor, "execute_pr",
+                        lambda n, action, **kw: state["writes"].append(
+                            ("close", n, action.comment)) or {"status": "executed"})
+    return state
+
+
+def test_a_judged_rejection_of_a_hunted_resolve_goes_to_the_author(
+        review_lane, store, handback_live):
+    review_lane["reviews"].append(
+        {"verdict": "unsafe", "reason": "drops the base side's guard", "concerns": []})
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert req["result"]["handed_back"]["do"] == "comment"
+    assert "Handed back to the author." in req["refused_reason"]
+    [(kind, n, body)] = handback_live["writes"]
+    assert (kind, n) == ("comment", 1)
+    assert "@contrib" in body and "`one.txt`" in body and HEAD[:12] in body
+    assert ("abort",) in review_lane["resubmit"].calls
+
+
+def test_a_silent_contributor_is_closed_instead(review_lane, store, handback_live):
+    handback_live["days_ago"] = 45
+    review_lane["reviews"].append({"verdict": "unsafe", "reason": "r", "concerns": []})
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    assert store.load_pr(1).fix_request["result"]["handed_back"]["do"] == "close"
+    assert [w[0] for w in handback_live["writes"]] == ["close"]
+
+
+def test_a_maintainer_is_never_closed(review_lane, store, handback_live):
+    handback_live["days_ago"] = 45
+    rec = store.load_pr(1).raw
+    rec["meta"] |= {"author": "lead", "author_association": "MEMBER"}
+    store.save_pr(rec)
+    data.refresh()
+    review_lane["reviews"].append({"verdict": "unsafe", "reason": "r", "concerns": []})
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    assert [w[0] for w in handback_live["writes"]] == ["comment"]
+
+
+def test_a_tier0_resolve_stays_parked_for_the_operator(review_lane, store, handback_live):
+    _parked_resolve(store, result={**RESOLVE_RESULT, "conflict_paths": ["package.json"]})
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert req["result"]["auto_review"]["bar"]["judged"] is False
+    assert handback_live["writes"] == []
+
+
+def test_an_operators_resolve_stays_parked(review_lane, store, handback_live):
+    review_lane["reviews"].append({"verdict": "unsafe", "reason": "r", "concerns": []})
+    import socket
+    store.load_pr(1).record_fix_request(
+        "awaiting-review", "resolve", queued_at=NOW, result=dict(RESOLVE_RESULT),
+        host=socket.gethostname(), head_sha=HEAD)
+    data.refresh()
+    fix_worker.review_parked_resolve(1)
+    assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+    assert handback_live["writes"] == []
+
+
+def test_a_dry_run_hand_back_is_delivered_once_live(review_lane, store, handback_live,
+                                                   monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_HANDBACK", "dry-run")
+    monkeypatch.setattr(fix_worker.handback.executor, "hand_back_comment",
+                        lambda n, body, **kw: {"status": "dry-run"})
+    review_lane["reviews"].append({"verdict": "unsafe", "reason": "r", "concerns": []})
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused" and req["result"]["handed_back"]["status"] == "dry-run"
+    assert fix_worker.hand_back_backlog() == []  # dry-run makes no writes
+    monkeypatch.setenv("TRIAGE_FIX_HANDBACK", "live")
+    monkeypatch.setattr(fix_worker.handback.executor, "hand_back_comment",
+                        lambda n, body, **kw: handback_live["writes"].append(n)
+                        or {"status": "executed"})
+    assert fix_worker.hand_back_backlog() == [1]
+    req = store.load_pr(1).fix_request
+    assert req["result"]["handed_back"]["status"] == "executed"
+    assert req["refused_reason"].endswith("Handed back to the author.")
+    assert "(dry-run)" not in req["refused_reason"]
+    assert fix_worker.hand_back_backlog() == []
+
+
+@pytest.mark.parametrize(("reason", "handed"), [
+    ("the behavior-lens reviewer did not clear it: drops a guard", True),
+    ("the continuation agent declined: the reviewer is wrong", True),
+    ("the continued worktree's diff could not be read", False),
+    ("conflicted paths reach risk tier 0: server/heartbeat.ts", False),
+])
+def test_the_backlog_hands_back_judged_parks_only(review_lane, store, handback_live,
+                                                  reason, handed):
+    _parked_resolve(store, result={**RESOLVE_RESULT, "auto_review": {
+        "reviews": [], "bar": {"ok": False, "reason": reason}}})
+    assert fix_worker.hand_back_backlog() == ([1] if handed else [])
+    status = store.load_pr(1).fix_request["status"]
+    assert status == ("refused" if handed else "awaiting-review")
 
 
 def test_a_sandbox_error_leaves_no_stamp_so_a_recovered_host_retries(
