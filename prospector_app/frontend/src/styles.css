@@ -1795,3 +1795,25 @@ tr.row-done:hover > td { opacity: 1; }
 .sandbox-checks .chk-fail { color: var(--red); }
 .sandbox-checks .chk-error { color: var(--gold); }
 .sandbox-checks span[title] { cursor: help; }
+
+/* Merge diff side-by-side: main / this PR / merged, one grid so a change row's
+   three cells share a height and the columns stay aligned. */
+.m3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; font-size: 12px; background: var(--bg); }
+.m3-head { background: var(--panel); font-weight: 700; font-size: 12.5px;
+  padding: 6px 10px; border-bottom: 2px solid var(--border); border-right: 1px solid var(--border); }
+.m3-band, .m3-hunk { grid-column: 1 / -1; padding: 4px 10px; border-bottom: 1px solid var(--border); }
+.m3-band { background: var(--panel2); font-size: 11.5px; }
+.m3-hunk { background: var(--panel); color: var(--muted); font-size: 11px; }
+.m3-cell { border-right: 1px solid var(--border); min-width: 0; }
+.m3-last { border-right: none; }
+.m3-line, .m3-band, .m3-hunk { font-family: ui-monospace, monospace; }
+.m3-line { display: flex; min-height: 18px; line-height: 18px; }
+.m3-num { flex: none; width: 3.5em; padding-right: 8px; text-align: right; color: var(--muted); user-select: none; }
+.m3-code { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.m3-add { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.m3-del { background: color-mix(in srgb, var(--red) 14%, transparent); }
+.m3-conflict { background: color-mix(in srgb, var(--yellow) 12%, transparent);
+  border-left: 3px solid var(--yellow); padding: 2px 0 4px; }
+.m3-conflict-head { font-weight: 600; font-size: 11.5px; padding: 2px 8px; }
+.m3-conflict-sub { color: var(--muted); font-size: 11px; padding: 2px 8px; }
