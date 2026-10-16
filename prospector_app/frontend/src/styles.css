@@ -682,10 +682,9 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .vstep-note { font-size: 12px; margin-top: 1px; }
 .vstep-skip .vstep-label, .vstep-skip .vstep-note,
 .vstep-info .vstep-label, .vstep-info .vstep-note { color: var(--muted); }
-.vstep-reasoning { font-size: 12px; }
-.verify-exits { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
-.verify-exits-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
-.verify-exit { border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; font-size: 12px; background: var(--panel); }
+.verify-section-head { font-weight: 700; font-size: 12.5px; margin: 12px 0 4px; }
+.vstep-head { display: flex; gap: 6px; flex-wrap: wrap; align-items: baseline; }
+.verify-exit { border: 1px solid var(--border); border-radius: 6px; padding: 0 6px; font-size: 11px; background: var(--panel); white-space: nowrap; }
 .verify-exit b { font-family: ui-monospace, monospace; }
 .verify-exit.ok { border-color: var(--green); }
 .verify-exit.bad { border-color: var(--red); }
