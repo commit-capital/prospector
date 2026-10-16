@@ -203,8 +203,8 @@ def reconcile_closures(store: IssueStore, open_now: set[int], prs: list[dict],
     report = progress.enabled()
     if report:
         progress.say("  loading stored issues to find open ones the fetch did not return…")
-    missing = [(n, iss) for n, iss in store.all_issues(omit_candidates=True).items()
-               if n not in open_now and iss.state == "open"]
+    missing = [row["issue"] for row, _ in store.issue_rows([], states=["open"])
+               if row["issue"] not in open_now]
     if report and not missing:
         progress.say("  every issue the store holds open was in the open fetch")
     refetching = (progress.Progress("refetching", len(missing),
@@ -213,13 +213,13 @@ def reconcile_closures(store: IssueStore, open_now: set[int], prs: list[dict],
                   if report else None)
     refetched: list[dict] = []
     transitions = 0
-    for n, iss in missing:
+    for n in missing:
         raw = fetch_one(n)
         if refetching is not None:
             refetching.advance()
         if raw is None:
             continue
-        if raw.get("state", "open") != iss.state:
+        if raw.get("state", "open") != "open":
             transitions += 1
         refetched.append(raw)
     if refetching is not None:
