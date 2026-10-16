@@ -3114,3 +3114,14 @@ def test_without_a_lint_command_no_lint_runs(store, monkeypatch, tmp_path):
     req = _run_linted_fix(store, monkeypatch)
     assert req["status"] == "awaiting-review"
     assert "lint" not in req["result"] and runs == []
+
+
+def test_a_parked_patch_is_kept_whole():
+    patch = "diff --git a/a b/a\n" + "+x\n" * 3000
+    assert fix_worker._shown_patch(patch) == {"patch": patch}
+
+
+def test_a_patch_past_the_cap_keeps_its_start_and_says_so():
+    patch = "diff --git a/a b/a\n" + "+x\n" * fix_worker.PATCH_CHARS
+    shown = fix_worker._shown_patch(patch)
+    assert shown["patch"] == patch[:fix_worker.PATCH_CHARS] and shown["patch_truncated"] is True

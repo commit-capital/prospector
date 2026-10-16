@@ -41,7 +41,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   // Which diff the Diff panel shows: the PR's own change, or the conflicted
   // merge state a "Resolve merge conflicts" attempt paused on (#46) — carried
   // by a refusal and by a parked agent resolution alike.
-  const [diffMode, setDiffMode] = useState<"pr" | "merge" | "merge3">("pr");
+  const [diffMode, setDiffMode] = useState<"pr" | "merge" | "merge3" | "proposed">("pr");
   const [lineComment, setLineComment] = useState<{ file: string; line: number } | null>(null);
   // The Checks row a Summary chip last opened; a new `n` reopens it.
   const [openedCheck, setOpenedCheck] = useState<{ key: string; n: number } | null>(null);
@@ -277,6 +277,13 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   // rebase was paused — the Diff panel's second mode (#46). Rides refusals and
   // parked agent resolutions alike.
   const mergeDiff = pr.fix_request?.result?.merge_diff ?? null;
+  // A parked autofix request's change, which "Approve & push" would send.
+  const parked = pr.fix_request?.status === "awaiting-review" || pr.fix_request?.status === "approved";
+  const proposedPatch = parked ? pr.fix_request?.result?.patch ?? null : null;
+  const showProposed = () => {
+    setDiffMode("proposed");
+    requestAnimationFrame(() => document.getElementById("pr-diff")?.scrollIntoView({ block: "start", behavior: "smooth" }));
+  };
   const conflictPaths = pr.fix_request?.result?.conflict_paths ?? [];
 
   // non-test surface area + test-removal flag (#17/#22): prefer the loaded diff
@@ -655,7 +662,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
               onApprove={approveFix} />
           </div>
         </div>
-        <FixBody req={pr.fix_request ?? null} runner={fixRunner} />
+        <FixBody req={pr.fix_request ?? null} runner={fixRunner} onShowPatch={proposedPatch ? showProposed : undefined} />
       </section>
 
       {/* #581: security findings, dynamic verification, review-provider
@@ -670,7 +677,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           "Resolve merge conflicts" attempt refused on conflicts, the captured
           conflict diff is offered as a second mode beside the PR's own change
           (#46). */}
-      <section className="prc-section">
+      <section className="prc-section" id="pr-diff">
         <h3>Diff <span className="muted small" style={{ textTransform: "none", letterSpacing: 0 }}>· click a line to ask about it or comment · ⌘/ctrl-click to open it on GitHub</span></h3>
         <div className="diff-size">
           <span title="The whole change">
@@ -697,25 +704,47 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </span>
           )}
         </div>
-        {mergeDiff && (
+        {(mergeDiff || proposedPatch) && (
           <div className="segmented diff-mode" role="tablist" aria-label="diff mode">
             <button className={diffMode === "pr" ? "on" : ""} role="tab" aria-selected={diffMode === "pr"}
               onClick={() => setDiffMode("pr")} title="The PR's own change.">
               Diff
             </button>
+            {mergeDiff && (
             <button className={diffMode === "merge" ? "on" : ""} role="tab" aria-selected={diffMode === "merge"}
               onClick={() => setDiffMode("merge")}
               title="The conflicted state a “Resolve merge conflicts” attempt paused on — the hunks before any resolution.">
               Merge diff
             </button>
+            )}
+            {mergeDiff && (
             <button className={diffMode === "merge3" ? "on" : ""} role="tab" aria-selected={diffMode === "merge3"}
               onClick={() => setDiffMode("merge3")}
               title="The same conflict as three columns: main's code, the PR's code, and the merged result.">
               Merge diff side-by-side
             </button>
+            )}
+            {proposedPatch && (
+            <button className={diffMode === "proposed" ? "on" : ""} role="tab" aria-selected={diffMode === "proposed"}
+              onClick={() => setDiffMode("proposed")}
+              title="The change a parked autofix request would push to the contributor's branch when approved.">
+              Proposed change
+            </button>
+            )}
           </div>
         )}
-        {diffMode !== "pr" && mergeDiff ? (
+        {diffMode === "proposed" && proposedPatch ? (
+          <>
+            <div className="diff-note">
+              {pr.fix_request?.result?.patch_truncated
+                ? "⚠ The change “Approve & push” would send, too large to show whole: this is its start."
+                : !proposedPatch.startsWith("diff ")
+                  ? "⚠ Only the end of this change was stored. Discard and re-queue the request to review it whole."
+                  : "The change “Approve & push” would send to the contributor's branch, exactly as it would be pushed."}
+            </div>
+            <DiffView diffText={proposedPatch} />
+          </>
+        ) : (diffMode === "merge" || diffMode === "merge3") && mergeDiff ? (
           <>
             <div className="diff-note">
               ⚠ Where this PR and the current base collide — the conflicted hunks a

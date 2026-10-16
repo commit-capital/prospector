@@ -79,6 +79,14 @@ PATCH_CHARS = 200_000
 # Captured resubmit output kept on a request the worker has to mark failed.
 TAIL_CHARS = 4000
 
+
+def _shown_patch(patch: str) -> dict[str, str | bool]:
+    """The parked change the operator reviews, whole up to PATCH_CHARS, with a
+    flag when it was cut there."""
+    if len(patch) <= PATCH_CHARS:
+        return {"patch": patch}
+    return {"patch": patch[:PATCH_CHARS], "patch_truncated": True}
+
 # resubmit exits that describe a world that moved rather than a decision:
 # a git/network failure or a git/gh call that timed out (4), refs that shifted
 # under the pin (6), and a push the remote rejected (7). Retrying re-reads the
@@ -730,7 +738,7 @@ def run_one(n: int) -> None:
         if pf is not None:
             pf_ok, pf_why = gates.compile_preflight_gate(pf)
             if not pf_ok:
-                result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+                result = {**_shown_patch(patch), "compile_preflight": pf,
                           "detail": pf_why}
                 followup = _compile_objection(n, claimed, pf)
                 if followup is not None:
@@ -743,7 +751,7 @@ def run_one(n: int) -> None:
                         print(f"[fix-worker] PR #{n}: the compile follow-up was not queued: {e}",
                               flush=True)
                 return
-        result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+        result = {**_shown_patch(patch), "compile_preflight": pf,
                   "message": _commit_message(action)}
         if action not in settings.fix_autopush():
             _park(n, claimed, action, result, host)
@@ -1303,7 +1311,7 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
 
     _running_step(n, claimed, "compile preflight")
     pf = _preflight(n, patch)
-    result = {"patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+    result = {**_shown_patch(patch), "compile_preflight": pf,
               "resolutions": verdict["resolutions"], "conflict_paths": paused,
               "merge_diff": merge_diff,
               "message": "Merge current base, conflicts agent-resolved"}
@@ -1810,7 +1818,7 @@ def _continue_resolve(n: int, rec: Pr, claimed: dict, head: str, worktree: str,
             break
     if all(r.get("verdict") == "safe" for r in second["reviews"]) and len(second["reviews"]) == 2:
         second["tests"] = _related_tests_run(n, head, patch, related)
-    res = {**result, "patch": patch[-TAIL_CHARS:], "compile_preflight": pf,
+    res = {**result, **_shown_patch(patch), "compile_preflight": pf,
            "touched_paths": all_paths, "rounds": [first, second], "auto_review": second,
            **_checks_only(checks)}
     ok, why = gates.resolve_autopush_bar(res)
