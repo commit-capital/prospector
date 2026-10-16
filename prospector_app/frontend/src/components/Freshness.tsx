@@ -2,17 +2,25 @@ import type { ReactNode } from "react";
 import type { Divergence } from "../api";
 import type { FreshnessState } from "../useFreshness";
 import { liveConflicts } from "./liveChecks";
+import { shortDateTime } from "../timeAgo";
 
-/** Header indicator for the background live-state refresh (#25). */
-export function FreshnessBar({ f }: { f: FreshnessState }) {
-  if (f.status === "idle") return null;
-  if (f.status === "loading") return <span className="fresh-bar muted small"><span className="spinner" /> checking GitHub for changes…</span>;
-  if (f.status === "error") return <span className="fresh-bar muted small">⚠ couldn't refresh live state</span>;
+/** Header indicator for the background live-state refresh (#25). `updatedAt`,
+ *  the PR's own last update on GitHub, leads it so the refresh time reads as
+ *  when Prospector checked the PR, not when the PR changed. */
+export function FreshnessBar({ f, updatedAt }: { f: FreshnessState; updatedAt?: string | null }) {
+  const updated = shortDateTime(updatedAt);
+  const lead = updated
+    ? <span className="muted" title={updatedAt ?? undefined}>PR last updated {updated}{f.status === "idle" ? "" : " · "}</span>
+    : null;
+  if (f.status === "idle") return lead;
+  if (f.status === "loading") return <span className="fresh-bar muted small">{lead}<span className="spinner" /> checking GitHub for changes…</span>;
+  if (f.status === "error") return <span className="fresh-bar muted small">{lead}⚠ couldn't refresh live state</span>;
   return (
     <span className={`fresh-bar small ${f.changed ? "fresh-changed" : "muted"}`}>
+      {lead}
       {f.changed
-        ? <>⚠ {f.changed} PR{f.changed === 1 ? "" : "s"} changed upstream · refreshed {f.at}</>
-        : <>✓ Refreshed at {f.at} — no upstream changes</>}
+        ? <>⚠ {f.changed} PR{f.changed === 1 ? "" : "s"} changed upstream · PR data refreshed {f.at}</>
+        : <>✓ PR data refreshed at {f.at} — no upstream changes</>}
     </span>
   );
 }
