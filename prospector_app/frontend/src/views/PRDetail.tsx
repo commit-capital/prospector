@@ -442,6 +442,15 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     });
   };
 
+  // The author's own description, collapsed under the Summary's facts.
+  const description = pr.body && (
+    <Collapsible className="summary-description" summary={<>Full PR description</>}>
+      <div className="markdown prbody-md">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{pr.body.slice(0, 4000)}</ReactMarkdown>
+      </div>
+    </Collapsible>
+  );
+
   // A close-dup's evidence: each change in the PR and where it already exists.
   const dupCoverage = Boolean(pr.concerns?.length) && (
     <div className="dup-coverage">
@@ -514,6 +523,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           upstream. One banner stands in for the whole action stack; the
           informational tiles + diff below stay for context. */}
       {pr.out_of_scope ? (
+        <>
         <div className="verdict-banner v-safe">
           <span className="vb-icon">📦</span>
           <div>
@@ -524,6 +534,8 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </div>
           </div>
         </div>
+        {description}
+        </>
       ) : resolved ? (
         <>
         <div className={`verdict-banner ${pr.github_state === "merged" ? "v-safe" : ""}`}>
@@ -538,6 +550,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         <section className="suggestion summary-panel tone-muted">
           <h3 className="summary-title">Summary</h3>
           <PRStory pr={pr} onWritten={reloadPr} />
+          {description}
         </section>
         {/* A malicious PR's evidence outlives the PR: closing it upstream is
             when GitHub may stop serving it. */}
@@ -613,7 +626,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       {/* The Summary: what the PR fixes and how, what we found, and the one
           action surface under the suggestion. */}
       <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }}
-        summary={<><PRStory pr={pr} onWritten={reloadPr} />{dupCoverage}<AnalysisLine pr={pr} onJump={jump} /></>} />
+        summary={<><PRStory pr={pr} onWritten={reloadPr} />{description}{dupCoverage}<AnalysisLine pr={pr} onJump={jump} /></>} />
        </>
       )}
 
@@ -641,17 +654,6 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       {/* #581: security findings, dynamic verification, review-provider
           feedback, and CI check runs now live as expandable detail inside
           their own rows in the Checks panel above, next to their action. */}
-
-      {/* description */}
-      {pr.body && (
-        <section className="prc-section">
-          <Collapsible summary={<>📝 PR description</>}>
-            <div className="markdown prbody-md">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{pr.body.slice(0, 4000)}</ReactMarkdown>
-            </div>
-          </Collapsible>
-        </section>
-      )}
 
       {/* the PR's single timeline: GitHub's activity with our writes tagged,
           and a Prospector summary per commit, oldest first */}

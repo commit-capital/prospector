@@ -436,6 +436,7 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 .chip.chip-jump { background: none; font-family: inherit; line-height: inherit; cursor: pointer; }
 .chip.chip-jump:hover { text-decoration: underline; }
 /* The Summary's suggested action, set apart from the facts above it. */
+.summary-description { margin: 2px 0; background: var(--bg); }
 .summary-action { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--border); }
 .sug-headline { font-size: 15.5px; font-weight: 600; line-height: 1.4; }
 .sug-headline b { font-weight: 800; }
