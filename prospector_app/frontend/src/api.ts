@@ -588,7 +588,7 @@ export interface AuthorStats {
   issues_resolved?: number;
 }
 
-interface SafetyFinding {
+export interface SafetyFinding {
   severity: string;
   lens: string;
   category: string;

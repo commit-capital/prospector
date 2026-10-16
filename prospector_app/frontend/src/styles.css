@@ -605,6 +605,10 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .verdict-banner .vb-icon { font-size: 22px; line-height: 1; }
 .vb-headline { font-weight: 700; font-size: 14px; }
 .vb-detail { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.vb-findings { list-style: none; margin: 6px 0 0; padding: 0; font-size: 12.5px; }
+.vb-findings li { margin-top: 2px; }
+.vb-findings .link-btn { padding: 0; text-align: left; }
+.vb-findings .sev { text-transform: uppercase; font-size: 11px; margin-right: 4px; }
 .v-safe { background: color-mix(in srgb, var(--green) 12%, transparent); border-color: var(--green); }
 .v-caution { background: color-mix(in srgb, var(--yellow) 14%, transparent); border-color: var(--yellow); }
 .v-risk { background: color-mix(in srgb, var(--red) 14%, transparent); border-color: var(--red); }
