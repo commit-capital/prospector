@@ -402,7 +402,10 @@ def _sync_linked_issue_memberships(store: Store) -> list[int]:
     return created
 
 
-def _bound_together(prs: list[Pr]) -> list[set[int]]:
+SPLIT_COLLAPSED = "split: the members share one defect — analyze them as one cluster"
+
+
+def bound_together(prs: list[Pr]) -> list[set[int]]:
     """The groups of `prs` the sync steps keep in one cluster: PRs directly
     referencing one issue, and PRs sharing a head commit."""
     keys: dict[tuple[str, object], set[int]] = {}
@@ -414,6 +417,19 @@ def _bound_together(prs: list[Pr]) -> list[set[int]]:
                     and type(link.get("issue")) is int:
                 keys.setdefault(("issue", link["issue"]), set()).add(rec.n)
     return [g for g in keys.values() if len(g) > 1]
+
+
+def merge_bound(parts: list[tuple[str, set[int]]],
+                bound: list[set[int]]) -> list[tuple[str, set[int]]]:
+    """`parts` ({root_problem, prs} pairs) with every set of parts that holds
+    one `bound` group merged into one, under its largest part's root problem."""
+    for group in bound:
+        hit = [p for p in parts if p[1] & group]
+        if len(hit) > 1:
+            parts = [p for p in parts if p not in hit]
+            parts.append((max(hit, key=lambda p: len(p[1]))[0],
+                          set().union(*(p[1] for p in hit))))
+    return parts
 
 
 def split_cluster(store: Store, cid: int, groups: list[dict]) -> tuple[list[int], list[str]]:
@@ -444,14 +460,9 @@ def split_cluster(store: Store, cid: int, groups: list[dict]) -> tuple[list[int]
         seen |= prs
         parts.append((root, prs))
     errs.extend(f"split: open member {n} is in no group" for n in sorted(set(recs) - seen))
-    for bound in _bound_together(list(recs.values())):
-        hit = [p for p in parts if p[1] & bound]
-        if len(hit) > 1:
-            parts = [p for p in parts if p not in hit]
-            parts.append((max(hit, key=lambda p: len(p[1]))[0],
-                          set().union(*(p[1] for p in hit))))
+    parts = merge_bound(parts, bound_together(list(recs.values())))
     if len(parts) < 2:
-        errs.append("split: the members share one defect — analyze them as one cluster")
+        errs.append(SPLIT_COLLAPSED)
     if errs:
         return [], errs
 
