@@ -861,6 +861,8 @@ export interface SandboxCheck {
  *  conflicted hunks. */
 export interface FixResult {
   patch?: string | null;
+  /** The patch was cut at the queue's size cap, so `patch` is its start only. */
+  patch_truncated?: boolean | null;
   message?: string | null;
   output?: string | null;
   detail?: string | null;

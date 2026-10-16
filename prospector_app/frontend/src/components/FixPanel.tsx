@@ -5,6 +5,7 @@ import { useExec } from "../ExecContext";
 import { useRepoMeta } from "../RepoMetaContext";
 import { localDateTime, timeAgo } from "../timeAgo";
 import { unavailable } from "./fixAvailability";
+import { DiffView } from "./DiffView";
 import { SandboxChecks } from "./SandboxChecks";
 
 /** What the composer starts with. The operator edits the goal; the bar beneath
@@ -385,9 +386,11 @@ export function FixBody({ req, runner }: { req: FixRequest | null; runner: FixRu
       {showPatch && (
         <>
           <div className="small muted" style={{ marginTop: 8 }}>
-            The change, exactly as it would be pushed:
+            {req.result?.patch_truncated
+              ? "The change as it would be pushed — too large to show whole; this is its start:"
+              : "The change, exactly as it would be pushed:"}
           </div>
-          <pre className="log-tail">{req.result?.patch}</pre>
+          <DiffView diffText={req.result?.patch ?? ""} />
         </>
       )}
       {req.result?.body && (req.status === "awaiting-review" || req.status === "approved") && (
