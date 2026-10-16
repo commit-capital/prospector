@@ -27,7 +27,7 @@ def _run(monkeypatch, reply, **over) -> dict:
 
     monkeypatch.setattr(headless_agent, "run_agent", fake_run_agent)
     kwargs = dict(pr=7, title="fix: handle None", merge_diff=MERGE_DIFF,
-                  patch=PATCH,
+                  resolution=PATCH,
                   resolutions=[{"path": "src/app.py", "rationale": "kept both"}],
                   history="src/app.py:\n  commits on this PR's side:\n    abc #101",
                   store_context="stops the retry loop", lens="behavior")
@@ -82,6 +82,15 @@ def test_the_prompt_carries_the_evidence(monkeypatch):
     assert "kept both" in p          # the resolver's rationale
     assert "#101" in p               # the per-side history
     assert "stops the retry loop" in p
+    assert headless_agent.GIT_READ_USAGE in p
+    assert "HEAD^1 is the PR's branch" in p and "second agent" not in p
+
+
+def test_a_follow_up_is_shown_and_the_merge_is_named_below_it(monkeypatch):
+    p = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "ok"}),
+             follow_up="diff --git a/two.txt b/two.txt\n+follow")["calls"]["prompt"]
+    assert "+follow" in p and "second agent" in p
+    assert "HEAD^ is the merge" in p and "HEAD^^1 is the PR's branch" in p
 
 
 def test_each_lens_gets_its_own_charge(monkeypatch):
@@ -94,7 +103,7 @@ def test_each_lens_gets_its_own_charge(monkeypatch):
 
 def test_an_unknown_lens_is_rejected():
     with pytest.raises(ValueError):
-        review_resolve.review("/wt", pr=7, title="t", merge_diff="", patch="d",
+        review_resolve.review("/wt", pr=7, title="t", merge_diff="", resolution="d",
                               resolutions=[], history="", store_context="",
                               lens="vibes")
 

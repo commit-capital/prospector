@@ -48,6 +48,7 @@ For each conflicted file:
    on both sides that touch the conflicted files, and `__GIT__ show :2:<file>`
    / `:3:<file>` each side's whole version. It is the only git available, it
    only reads, and its paths are relative to the worktree root.
+   __GIT_USAGE__
 2. Edit the file to remove every conflict marker, keeping BOTH sides' intent
    whenever they do not genuinely contradict — for example, two independent
    additions at the same location are both kept.
@@ -76,6 +77,7 @@ def _prompt(worktree: str, conflict_paths: list[str], pr: int, title: str, body:
         "__BODY__": (body or "(no description)").strip()[:4000],
         "__PATHS__": "\n".join(f"  {p}" for p in conflict_paths),
         "__GIT__": headless_agent.GIT_READ,
+        "__GIT_USAGE__": headless_agent.GIT_READ_USAGE,
     })
 
 

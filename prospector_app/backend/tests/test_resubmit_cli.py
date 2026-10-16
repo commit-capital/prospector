@@ -911,6 +911,23 @@ def test_merge_diff_when_ready_is_change_relative_to_base(monkeypatch, tmp_path,
     assert out.startswith("diff ")
 
 
+def test_merge_diff_resolution_shows_the_resolver_edits_alone(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path)
+    _wire_merge(monkeypatch, tmp_path, repos)
+    resubmit.cmd_prepare(42, merge=True)
+    wt = resubmit._worktree(42)
+    (wt / "one.txt").write_text("resolved one\n")
+    resubmit.cmd_continue(42)
+    (wt / "follow.txt").write_text("fix\n")
+    assert resubmit.cmd_commit(42, "follow-up") == 0
+    capsys.readouterr()
+    assert resubmit.cmd_diff(42, resolution=True) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("diff ")
+    assert "-<<<<<<<" in out and "+resolved one" in out
+    assert "follow.txt" not in out
+
+
 def test_merge_push_needs_no_flags_and_lands_a_merge_commit(monkeypatch, tmp_path):
     repos = _make_rebase_repos(tmp_path)
     _wire_merge(monkeypatch, tmp_path, repos)

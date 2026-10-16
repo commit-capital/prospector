@@ -72,7 +72,7 @@ class _Probe:
             self.push_unattended.append(unattended)
         if args[0] == "apply" and stdin is not None:
             self.applied.append(stdin)
-        rc, out = self.overrides.get(args[0], (self.rc, self.stdout))
+        rc, out = self.overrides.get(args, self.overrides.get(args[0], (self.rc, self.stdout)))
         return type("R", (), {"returncode": rc, "stdout": out, "stderr": self.stderr})()
 
 
@@ -2044,17 +2044,27 @@ def test_a_judged_rejection_beside_a_failed_reviewer_still_stamps(review_lane, s
     assert "guard" in req["result"]["auto_review"]["bar"]["reason"]
 
 
-def test_the_review_judges_the_worktrees_full_diff_not_the_stored_tail(
+def test_the_reviewers_judge_the_resolution_and_the_tests_run_the_full_diff(
         review_lane, store, monkeypatch):
     full = "diff --git a/one.txt b/one.txt\n+the full resolution\n"
+    resolution = "diff --git a/one.txt b/one.txt\n-<<<<<<< ours\n+the full resolution\n"
     fake = review_lane["resubmit"]
     fake.overrides["diff"] = (0, full)
+    fake.overrides[("diff", "--resolution")] = (0, resolution)
     _parked_resolve(store, result={**RESOLVE_RESULT,
                                    "patch": "+a stored 4000-char tail"})
     fix_worker.review_parked_resolve(1)
     assert store.load_pr(1).fix_request["status"] == "approved"
-    assert all(c["patch"] == full.strip() for c in review_lane["review_calls"])
+    assert all(c["resolution"] == resolution.strip() for c in review_lane["review_calls"])
     assert review_lane["run_patches"] and full.strip() in review_lane["run_patches"][0]
+
+
+def test_an_unreadable_resolution_restores_the_request(review_lane, store):
+    review_lane["resubmit"].overrides[("diff", "--resolution")] = (4, "")
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+    assert not review_lane["review_calls"]
 
 
 def test_an_evidence_crash_restores_the_request_and_backs_off(review_lane, store,
@@ -2663,9 +2673,9 @@ class TestResolveContinuationMechanics:
         monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
             autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
         seq = iter(verdicts)
-        calls: dict = {"resubmit": [], "disclosed": [], "preflight": []}
+        calls: dict = {"resubmit": [], "disclosed": [], "preflight": [], "reviews": []}
         monkeypatch.setattr(fix_worker.review_resolve, "review",
-                            lambda worktree, **kw: next(seq))
+                            lambda worktree, **kw: calls["reviews"].append(kw) or next(seq))
         monkeypatch.setattr(fix_worker.author_fix, "author",
                             lambda worktree, **kw: {"summary": "Follow up",
                                                     "changes": changes or [{"path": "two.txt", "note": "n"}]})
@@ -2712,6 +2722,9 @@ class TestResolveContinuationMechanics:
         assert req["status"] == "approved"
         assert req["result"]["touched_paths"] == ["one.txt", "two.txt"]
         assert req["result"]["compile_preflight"] == {"exit": 0}
+        first, *second = calls["reviews"]
+        assert "follow_up" not in first
+        assert second and all(kw["follow_up"].endswith("+follow") for kw in second)
 
     def test_a_failing_compile_after_the_continuation_discards_and_parks(
             self, store, monkeypatch, tmp_path):
