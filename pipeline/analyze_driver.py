@@ -25,6 +25,7 @@ import re
 
 from pipeline import actions
 from pipeline import cluster_driver
+from pipeline import diff_cache
 from pipeline import freshness
 from pipeline import gates
 from pipeline import headless_agent
@@ -104,8 +105,6 @@ def backfill_salvage_items(store: Store, today: str) -> int:
                             and it["pr"] not in worthy)]
     store.save_action_items(reg)
     return len(worthy)
-
-DIFFS = Path(__file__).resolve().parent / "cache" / "diffs"
 
 
 def merge_bar_sentence() -> str:
@@ -208,7 +207,7 @@ def _already_on_master(rec: Pr, master: redundancy.MasterTree | None) -> dict | 
     diff), or None when no tree reader was supplied or the diff isn't cached."""
     if master is None:
         return None
-    dp = DIFFS / f"{rec.head_sha}.diff"
+    dp = diff_cache.DIFFS / f"{rec.head_sha}.diff"
     if not dp.exists():
         return None
     return redundancy.compute(dp.read_text(errors="replace"), master.read)
@@ -223,6 +222,10 @@ def bundle(store: Store, cid: int, prs: dict[int, Pr] | None = None,
     active = _active_members(store, c, prs)
     members = []
     for rec in active:
+        # The cache is machine-local: a head another machine summarized is read
+        # through to the shared store, then GitHub.
+        readable = bool(rec.head_sha) and diff_cache.fetch_diff(rec.number, rec.head_sha,
+                                                                store=store)
         s = rec.section("summary") or {}
         sig = rec.signals or {}
         e = SummaryEntry.from_pr(rec.number, rec, s)
@@ -251,7 +254,7 @@ def bundle(store: Store, cid: int, prs: dict[int, Pr] | None = None,
             "drift": rec.drift_state,
             "issues": (rec.section("issues") or {}).get("linked", []),
             "already_on_master": _already_on_master(rec, master),
-            "diff_path": str(DIFFS / f"{rec.head_sha}.diff"),
+            "diff_path": str(diff_cache.DIFFS / f"{rec.head_sha}.diff") if readable else None,
         })
     return {"cluster": {"id": cid, "root_problem": c.root_problem},
             "members": members,
@@ -274,7 +277,7 @@ You are the triage analyst for ONE cluster of pull requests on the open-source r
 
 ## Input
 
-Read the JSON file at __BUNDLE_PATH__ — it is {cluster:{id,root_problem}, members:[...]}. Each member has a mechanism-level summary, signals (ci, mergeable, has_tests), `reviews` — every automated code reviewer and security scanner active on the repository, keyed by id ({label, kind: review|scanner, status: pass|fail|stale|pending, reason, score (Greptile only), open: {severity: count}, summary_line}); a scanner's open findings are security evidence, a reviewer's are quality feedback — drift, linked issues with pain, a `trusted` flag (true = a trusted contributor named in the repository profile), a `greptile_review` ({severity: defects|nits|clean, findings:[{headline,class,why}]} or null) — the semantic read of Greptile's comments — an `already_on_master` count ({hunks, redundant, unchecked, files} or null) — how many of the PR's diff hunks produce a result that is ALREADY present on the current default branch (a "redundant" hunk applies as a no-op; "unchecked" hunks could not be compared) — and diff_path. READ the diffs of at least the top merge candidates to compare them line-by-line before declaring duplicates or picking a winner.
+Read the JSON file at __BUNDLE_PATH__ — it is {cluster:{id,root_problem}, members:[...]}. Each member has a mechanism-level summary, signals (ci, mergeable, has_tests), `reviews` — every automated code reviewer and security scanner active on the repository, keyed by id ({label, kind: review|scanner, status: pass|fail|stale|pending, reason, score (Greptile only), open: {severity: count}, summary_line}); a scanner's open findings are security evidence, a reviewer's are quality feedback — drift, linked issues with pain, a `trusted` flag (true = a trusted contributor named in the repository profile), a `greptile_review` ({severity: defects|nits|clean, findings:[{headline,class,why}]} or null) — the semantic read of Greptile's comments — an `already_on_master` count ({hunks, redundant, unchecked, files} or null) — how many of the PR's diff hunks produce a result that is ALREADY present on the current default branch (a "redundant" hunk applies as a no-op; "unchecked" hunks could not be compared) — and diff_path. READ the diffs of at least the top merge candidates to compare them line-by-line before declaring duplicates or picking a winner. A null diff_path means the member's diff could not be read: never give that member "merge" — use "needs-human" and say its diff could not be read.
 
 # Behavior
 

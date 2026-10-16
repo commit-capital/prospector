@@ -1,5 +1,8 @@
 """ANALYZE driver: pending-cluster selection, bundles, validated commits."""
+import pytest
+
 from pipeline import analyze_driver as ad
+from pipeline import diff_cache
 from pipeline.testsupport import bump_section, set_section, threat_section
 from pipeline.store import Store
 from pipeline.testsupport import reviews_section
@@ -21,6 +24,16 @@ def _pr(store, n, head="h1", analysis=None, summary=True, draft=False, author="a
     if analysis:
         rec["analysis"] = dict(analysis, checked_at=NOW)
     store.save_pr(rec)
+
+
+@pytest.fixture(autouse=True)
+def diffs(tmp_path, monkeypatch):
+    """An empty diff cache, and a GitHub that answers no diff."""
+    d = tmp_path / "diffs"
+    monkeypatch.setattr(diff_cache, "DIFFS", d)
+    monkeypatch.setattr(diff_cache, "_gh_pr_diff", lambda pr: None)
+    monkeypatch.setattr(diff_cache, "_synthesize_diff", lambda pr: None)
+    return d
 
 
 def _cluster(store, cid, prs, outcome=None, proposals=None):
@@ -148,11 +161,10 @@ class TestBundle:
         b = ad.bundle(s, 1)
         assert b["members"][0]["already_on_master"] is None
 
-    def test_already_on_master_computed_from_cached_diff(self, tmp_path, monkeypatch):
+    def test_already_on_master_computed_from_cached_diff(self, tmp_path, diffs):
         s = Store(tmp_path)
         _pr(s, 1)
         _cluster(s, 1, [1])
-        diffs = tmp_path / "diffs"
         diffs.mkdir()
         (diffs / "h1.diff").write_text(
             "diff --git a/x.ts b/x.ts\n"
@@ -163,7 +175,6 @@ class TestBundle:
             " const a = [\n"
             "+  1,\n"
             " ];\n")
-        monkeypatch.setattr(ad, "DIFFS", diffs)
 
         class _Tree:
             def read(self, path):
@@ -173,6 +184,22 @@ class TestBundle:
         assert b["members"][0]["already_on_master"] == {
             "hunks": 1, "redundant": 1, "unchecked": 0,
             "files": {"x.ts": {"hunks": 1, "redundant": 1}}}
+
+
+    def test_a_diff_only_the_shared_store_holds_is_cached_for_the_agent(self, tmp_path, diffs):
+        s = Store(tmp_path)
+        _pr(s, 1)
+        _cluster(s, 1, [1])
+        s.save_diffs_many([("h1", 1, "diff --git a/x.ts b/x.ts\n")])
+        b = ad.bundle(s, 1)
+        assert b["members"][0]["diff_path"] == str(diffs / "h1.diff")
+        assert (diffs / "h1.diff").read_text() == "diff --git a/x.ts b/x.ts\n"
+
+    def test_an_unreadable_diff_has_no_path(self, tmp_path):
+        s = Store(tmp_path)
+        _pr(s, 1)
+        _cluster(s, 1, [1])
+        assert ad.bundle(s, 1)["members"][0]["diff_path"] is None
 
 
 class TestCommitAnalysis:
