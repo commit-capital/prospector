@@ -3,6 +3,7 @@ import { parseDiff, Diff, Hunk, getChangeKey, type HunkData, type ChangeData, ty
 import "react-diff-view/style/index.css";
 import { useAgentPane } from "./AgentPane";
 import { classifyRawDiff } from "./rawDiffLines";
+import { diffFileId, diffLineId } from "./diffAnchor";
 
 /** Per-line colored rendering for diffs react-diff-view cannot parse — the
  *  combined format of a merge/conflict diff most of all. Each line is a block
@@ -21,11 +22,13 @@ interface Menu { x: number; y: number; file: string; line: number; key: string }
 
 /** Unified diff with a GitHub-style per-line popup: click a line to ask the
  *  agent to explain it, ask a question, or leave a comment.
- *  Ctrl/⌘-click any line (changed or context) jumps to it on GitHub (#18). */
-export function DiffView({ diffText, onComment, blobUrl }: {
+ *  Ctrl/⌘-click any line (changed or context) jumps to it on GitHub (#18).
+ *  `anchored` gives each file and new-side line the ids `jumpToDiff` scrolls to. */
+export function DiffView({ diffText, onComment, blobUrl, anchored }: {
   diffText: string;
   onComment?: (file: string, line: number) => void;
   blobUrl?: (file: string, line: number) => string | null;
+  anchored?: boolean;
 }) {
   const { askAbout } = useAgentPane();
   const [menu, setMenu] = useState<Menu | null>(null);
@@ -66,13 +69,16 @@ export function DiffView({ diffText, onComment, blobUrl }: {
       {files.map((file, i) => {
         const path = file.newPath || file.oldPath || `file-${i}`;
         return (
-          <div className="difffile" key={path}>
+          <div className="difffile" key={path} id={anchored ? diffFileId(path) : undefined}>
             <div className="difffile-head">{path}</div>
             <Diff
               viewType="unified"
               diffType={file.type}
               hunks={file.hunks}
               selectedChanges={selected ? [selected] : []}
+              generateAnchorID={anchored
+                ? (c: ChangeData) => (c.type === "delete" ? undefined : diffLineId(path, "newLineNumber" in c ? c.newLineNumber : c.lineNumber))
+                : undefined}
               gutterEvents={{ onClick: (e: ChangeEventArgs) => e.change && openMenu(path, e.change) }}
               codeEvents={{ onClick: (e: ChangeEventArgs) => e.change && openMenu(path, e.change) }}
             >

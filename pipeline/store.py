@@ -258,8 +258,8 @@ def validate_pr(rec: dict) -> None:
                     f"{sorted(GREPTILE_FINDING_CLASSES)}")
     dp = rec.get("display")
     if dp and not (isinstance(dp.get("problem"), str) and isinstance(dp.get("fix"), str)
-                   and all(isinstance(dp.get(k), list) for k in ("why", "how"))):
-        raise ValidationError("display: needs problem, fix (strings) and why, how (lists)")
+                   and isinstance(dp.get("how"), list)):
+        raise ValidationError("display: needs problem, fix (strings) and how (a list)")
     rv = rec.get("reviews")
     if rv:
         for rid, entry in rv.items():

@@ -294,6 +294,15 @@ def test_design_row_carries_its_coverage(monkeypatch):
     assert chk["detail"] == "Design review 1 blocking · coverage 75% (3/4 changed lines) · advisory"
 
 
+def test_design_row_leaves_a_coverage_fault_to_its_body(monkeypatch):
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "advisory")
+    review_policy.reset()
+    entry = {**_DESIGN_BLOCKING, "extra": {"rubric": reviewers.DESIGN_RUBRIC, "coverage": {
+        "status": "fault", "reason": "the coverage run exited 40: no space", "files": []}}}
+    chk = _design_check(_pr(reviews=reviews_section(HEAD, NOW, design=entry)))
+    assert chk["detail"] == "Design review 1 blocking · advisory"
+
+
 def test_gating_design_row_waits_for_its_review(monkeypatch):
     monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "gate")
     review_policy.reset()

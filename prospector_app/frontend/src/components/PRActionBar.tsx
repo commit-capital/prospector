@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api, type PRDetail, type ExecResult, type MergeProgress, type RunState } from "../api";
 import { useExec } from "../ExecContext";
 import { TagPicker } from "./TagPicker";
-import { RunBadge } from "./RunBadge";
 import { CommentEditor } from "./CommentEditor";
 import { landed, ExecResultChip } from "./execResult";
 import { StaleOverrideConfirm } from "./FactFreshness";
@@ -13,8 +12,6 @@ import { dispositionEntry } from "../glossary";
 
 // How often the action bar asks for a live merge's step while it waits.
 const MERGE_POLL_MS = 2000;
-
-const TONE_ICON = { green: "✅", yellow: "✋", red: "⛔", muted: "↪" } as const;
 
 const OPTS: { v: Act; label: string }[] = [
   { v: "MERGE", label: "merge" },
@@ -40,17 +37,19 @@ const isClose = (a: Act) => a.startsWith("CLOSE");
 const isReviewEvent = (a: Act) => a === "APPROVE" || a === "REQUEST_CHANGES" || a === "COMMENT";
 const reviewEvent = (a: Act) => a === "APPROVE" ? "approve" : a === "REQUEST_CHANGES" ? "request-changes" : "comment";
 
-/** One action surface for the PR detail page: comment / approve / request-changes
- *  / merge / close, plus reopen. The agent's recommendation heads it and is
- *  the pre-selected action; merge is gated by pr.merge_gate. */
-export function PRActionBar({ pr, runState, onActed }:
-  { pr: PRDetail; runState?: RunState; onActed?: () => void }) {
+/** The PR detail page's Summary panel: `summary` (what the PR is and what we
+ *  found), then the one action surface — comment / approve / request-changes /
+ *  merge / close, plus reopen. The agent's recommendation is the pre-selected
+ *  action; merge is gated by pr.merge_gate. */
+export function PRActionBar({ pr, runState, onActed, summary }:
+  { pr: PRDetail; runState?: RunState; onActed?: () => void; summary?: ReactNode }) {
   const { botLogin, dryRun, canMergeUpstream, reportResult } = useExec();
   const [action, setAction] = useState<Act>(() => suggestedAct(pr));
   const [method, setMethod] = useState("squash");
   const [canonical, setCanonical] = useState(() => suggestedCanonical(pr));
   const [tags, setTags] = useState<string[]>([]);
   const [reason, setReason] = useState("");
+  const [noteOpen, setNoteOpen] = useState(false);
   // Why to merge past a compile preflight that could not run (no Docker, a base
   // that will not build); offered only after a merge comes back compile_waivable.
   const [compileReason, setCompileReason] = useState("");
@@ -83,7 +82,6 @@ export function PRActionBar({ pr, runState, onActed }:
 
   const sug = pr.suggestion;
   const mergeGate = pr.merge_gate;
-  const checks = pr.checks;
   const dispoEntry = dispositionEntry(pr.disposition);
   // The suggestion's own rationale shows only when it departs from the
   // disposition, whose reasons the card's Details already carry.
@@ -126,6 +124,8 @@ export function PRActionBar({ pr, runState, onActed }:
   const overrideNoun = mergeGate?.override_kind === "verify" ? "verify-escalate override"
     : mergeGate?.override_kind === "unreviewed" ? "reason to merge without a security review"
     : "security-YELLOW override";
+  // An override is typed into the private note, so it opens whenever one is due.
+  const overrideDue = action === "MERGE" && !!mergeGate?.overridable && !mergeGate?.ok;
   const mergeBlocked = action === "MERGE" && (!canMergeUpstream || !(mergeGate?.ok || mergeOverride));
   const alreadyDone = !dryRun && !!runState?.done;
   const blocked = needsCanon || needsBody || mergeBlocked;
@@ -206,20 +206,16 @@ export function PRActionBar({ pr, runState, onActed }:
     : alreadyDone ? `already actioned at ${runState?.at} — click to act again` : "";
 
   return (
-    <div className={`suggestion tone-${sug?.tone ?? "muted"}`}>
+    <section className={`suggestion summary-panel tone-${sug?.tone ?? "muted"}`}>
+      <h3 className="summary-title">Summary</h3>
+      {summary}
       {sug && (
         <div className="sug-headline">
-          {TONE_ICON[sug.tone]} Suggestion:{" "}
+          <span className="analysis-label">Suggested action:</span>{" "}
           <b>{dispoEntry ? <InfoTip entry={dispoEntry}>{sug.label}</InfoTip> : sug.label}</b>
-          {checks && checks.total > 0 && (
-            <span className="sug-checks" title="Checks passed out of the checks that ran on this PR (the Checks table below).">
-              {" "}· Checks {checks.passed}/{checks.total}
-            </span>
-          )}
           {sug.accept && (sug.reversible
             ? <span className="rev-badge rev-ok" title="Reversible — closes can be reopened, comments deleted.">reversible</span>
             : <span className="rev-badge rev-perm" title="PERMANENT — a merge cannot be undone. Review carefully.">⚠ permanent</span>)}
-          {runState && <> <RunBadge rs={runState} compact /></>}
         </div>
       )}
       {pr.disposition && pr.proposed_action?.fresh === false && (
@@ -250,7 +246,6 @@ export function PRActionBar({ pr, runState, onActed }:
           {runState?.done && runState.undoable && (
             <button className="btn-secondary sm" onClick={reopen} disabled={busy} title="Undo: reopen + remove bot comment + withdraw any change request">↩ Reopen</button>
           )}
-          {runState && !result && <RunBadge rs={runState} compact />}
           {result && <ExecResultChip result={result} />}
         </div>
         {sug && sugDiffers && !(action === "MERGE" && !mergeGate?.ok && sug.rationale === mergeGate?.reason) && (
@@ -294,7 +289,7 @@ export function PRActionBar({ pr, runState, onActed }:
               ? <>⚠ {mergeGate.override_kind === "verify" ? "verify escalated"
                   : mergeGate.override_kind === "unreviewed" ? "no security review"
                   : "security YELLOW"} — merging logs your reason as the override</>
-              : <>⛔ Merge blocked — {mergeGate.reason}{mergeGate.overridable ? " — type an override reason below (🔒 reason + note) to merge anyway" : ""}</>}
+              : <>⛔ Merge blocked — {mergeGate.reason}{mergeGate.overridable ? " — type an override reason below to merge anyway" : ""}</>}
           </div>
         )}
         {action === "MERGE" && mergeGate?.ok && (
@@ -309,16 +304,24 @@ export function PRActionBar({ pr, runState, onActed }:
             placeholder={action === "REQUEST_CHANGES" ? "what needs to change (required)" : "comment posted to the PR (optional)"} />
         )}
 
-        {/* private reason tags + note — training data, never posted */}
-        <div className="pr-tags">
-          <span className="muted small">{action === "MERGE" && mergeGate?.overridable && !mergeGate?.ok
-            ? `🔒 override reason (private — logged to the store as the ${overrideNoun}, never posted):`
-            : "🔒 reason + note (private, optional — training data, not posted):"}</span>
-          <TagPicker selected={tags} onToggle={toggle} />
-          <textarea className="modal-text" rows={2} placeholder="optional note: e.g. 'merging despite no security review — Easy-Lane, trusted author, cold path'"
-            value={reason} onChange={(e) => setReason(e.target.value)} />
-        </div>
+        {/* private reason tags + note — training data, never posted; rides
+            whichever action fires */}
+        {overrideDue || noteOpen ? (
+          <div className="pr-tags">
+            <span className="muted small">{overrideDue
+              ? `🔒 override reason (private — logged to the store as the ${overrideNoun}, never posted):`
+              : "🔒 reason + note (private, optional — training data, not posted):"}</span>
+            <TagPicker selected={tags} onToggle={toggle} />
+            <textarea className="modal-text" rows={2} placeholder="optional note: e.g. 'merging despite no security review — Easy-Lane, trusted author, cold path'"
+              value={reason} onChange={(e) => setReason(e.target.value)} />
+          </div>
+        ) : (
+          <button className="sug-comment-toggle" onClick={() => setNoteOpen(true)}
+            title="Tag why you took this action and add a note. Kept as training data; never posted.">
+            🔒 Add private note
+          </button>
+        )}
       </div>
-    </div>
+    </section>
   );
 }

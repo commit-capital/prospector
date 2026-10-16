@@ -2,13 +2,14 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixAction as FixActionName, type FixRunner, type ReviewDigest, type ReviewEntry, type CoverageRecord } from "../api";
+import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixAction as FixActionName, type FixRunner, type ReviewDigest, type ReviewEntry, type ReviewFinding, type CoverageRecord } from "../api";
 import { DriftChip, TierChip, authorTip } from "../components/Chips";
 import { ChecksPanel } from "../components/ChecksPanel";
 import { DiffView } from "../components/DiffView";
+import { diffFileId, jumpToDiff } from "../components/diffAnchor";
 import { Collapsible } from "../components/Collapsible";
 import { PRActionBar } from "../components/PRActionBar";
-import { ProblemFix, StoryDetails } from "../components/PRStory";
+import { AnalysisLine, PRStory } from "../components/PRStory";
 import { ClaimControl } from "../components/ClaimControl";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixBody, ResolveConflictsButton } from "../components/FixPanel";
@@ -178,7 +179,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   };
 
   // Run-state (#10): has a live action already landed on this PR? Drives the
-  // "already closed" badge + re-fire guard on the action controls.
+  // re-fire guard and the Reopen undo on the action controls.
   const run = useRunState([prNum]);
   const rs = run.byPr[prNum];
 
@@ -263,6 +264,12 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const securityHasRun = pr.checks?.checks.some((check) => check.key === "security" && check.at != null) ?? false;
   const secretsHasRun = pr.checks?.checks.some((check) => check.key === "secrets" && check.at != null) ?? false;
   const sum = pr.safety_summary;
+  // The security banner shows only a problem: anything short of a GREEN at
+  // this head, and a missing review only on a merge pick (the Summary's 🛡️ chip
+  // carries the rest).
+  const securityStale = pr.checks?.checks.some((check) => check.key === "security" && check.stale) ?? false;
+  const securityProblem = !!sum && (sum.level === "safe" ? securityStale
+    : sum.level !== "unknown" || pr.disposition === "merge");
   const sz = pr.size;
   const ci = pr.ci_checks ?? [];
 
@@ -316,9 +323,9 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       </>
     );
   }
-  const reviewBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.kind === "review" && d.id !== "design");
+  const reviewBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.kind === "review" && d.id !== "design", blobUrl);
   if (reviewBlocks.length > 0) checksBodies.review = <>{reviewBlocks}</>;
-  const designBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.id === "design");
+  const designBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.id === "design", blobUrl, { summaryFirst: true });
   if (designBlocks.length > 0 || designJob.log.length > 1) {
     checksBodies.design = (
       <>
@@ -352,7 +359,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       </>
     );
   }
-  const scanBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.kind === "scanner");
+  const scanBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.kind === "scanner", blobUrl);
   if (scanBlocks.length > 0) checksBodies.scans = <>{scanBlocks}</>;
 
   if (ci.length > 0) {
@@ -424,6 +431,45 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     <VerifyBody v={pr.verify_detail ?? null} req={pr.verify_request ?? null} runner={runner} repo={repo} />
   );
 
+  // A close-dup's evidence: each change in the PR and where it already exists.
+  const dupCoverage = Boolean(pr.concerns?.length) && (
+    <div className="dup-coverage">
+      <div className="muted small dup-coverage-title"
+        title="Each change in this PR, and where that change already exists.">
+        Duplicate coverage
+      </div>
+      <table className="facts-table">
+        <thead><tr><th>Change</th><th>Covered by</th><th>Evidence</th></tr></thead>
+        <tbody>
+          {(pr.concerns ?? []).map((c, i) => (
+            <tr key={i}>
+              <td>
+                {c.label}
+                {Boolean(c.paths?.length) && (
+                  <span className="muted small"> ({(c.paths ?? []).slice(0, 3).join(", ")}{(c.paths ?? []).length > 3 ? ", …" : ""})</span>
+                )}
+              </td>
+              <td>
+                <span className={`chip chip-${coverageTone(c.coverage)} sm`}
+                  title={c.coverage === "landed" ? c.landed_sha : undefined}>
+                  {c.coverage === "pr" && c.covered_by != null
+                    ? <PRLink n={c.covered_by} />
+                    : coverageLabel(c)}
+                </span>
+              </td>
+              <td className="muted small">{c.evidence ?? ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {Boolean(pr.sanity_trips?.length) && (
+        <div className="callout dup-sanity">
+          A person needs to review this because: {(pr.sanity_trips ?? []).join("; ")}.
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="prcontent">
       {/* header */}
@@ -481,9 +527,9 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             </div>
           </div>
         </div>
-        <section className="prc-section verdict-card">
-          <ProblemFix pr={pr} />
-          <StoryDetails pr={pr} showWhy={false} onWritten={reloadPr} />
+        <section className="suggestion summary-panel tone-muted">
+          <h3 className="summary-title">Summary</h3>
+          <PRStory pr={pr} onWritten={reloadPr} />
         </section>
         {/* A malicious PR's evidence outlives the PR: closing it upstream is
             when GitHub may stop serving it. */}
@@ -496,55 +542,10 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         </>
       ) : (
        <>
-      {/* The verdict card: what the PR fixes, the suggestion with the one
-          action surface under it, and the why/how folded away below. */}
-      <section className="prc-section verdict-card">
-        <ProblemFix pr={pr} />
-        <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }} />
-        {Boolean(pr.concerns?.length) && (
-          <div className="dup-coverage">
-            <div className="muted small dup-coverage-title"
-              title="Each change in this PR, and where that change already exists.">
-              Duplicate coverage
-            </div>
-            <table className="facts-table">
-              <thead><tr><th>Change</th><th>Covered by</th><th>Evidence</th></tr></thead>
-              <tbody>
-                {(pr.concerns ?? []).map((c, i) => (
-                  <tr key={i}>
-                    <td>
-                      {c.label}
-                      {Boolean(c.paths?.length) && (
-                        <span className="muted small"> ({(c.paths ?? []).slice(0, 3).join(", ")}{(c.paths ?? []).length > 3 ? ", …" : ""})</span>
-                      )}
-                    </td>
-                    <td>
-                      <span className={`chip chip-${coverageTone(c.coverage)} sm`}
-                        title={c.coverage === "landed" ? c.landed_sha : undefined}>
-                        {c.coverage === "pr" && c.covered_by != null
-                          ? <PRLink n={c.covered_by} />
-                          : coverageLabel(c)}
-                      </span>
-                    </td>
-                    <td className="muted small">{c.evidence ?? ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {Boolean(pr.sanity_trips?.length) && (
-              <div className="callout dup-sanity">
-                A person needs to review this because: {(pr.sanity_trips ?? []).join("; ")}.
-              </div>
-            )}
-          </div>
-        )}
-        <StoryDetails pr={pr} showWhy onWritten={reloadPr} />
-      </section>
-
-      {/* Blockers, directly under the action they gate. SECURITY / SAFETY
-          verdict first. */}
-      {sum && (
-        <div className={`verdict-banner v-${sum.level}`}>
+      {/* Problems first, loud, above the Summary: the security verdict when it
+          is anything but a current GREEN, then the merge blocks. */}
+      {sum && securityProblem && (
+        <div className={`verdict-banner ${sum.level === "risk" ? "v-risk" : "v-caution"}`}>
           <span className="vb-icon">{LEVEL_ICON[sum.level]}</span>
           <div>
             <div className="vb-headline">{sum.headline}</div>
@@ -601,6 +602,10 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         );
       })()}
 
+      {/* The Summary: what the PR fixes and how, what we found, and the one
+          action surface under the suggestion. */}
+      <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }}
+        summary={<><PRStory pr={pr} onWritten={reloadPr} />{dupCoverage}<AnalysisLine pr={pr} /></>} />
        </>
       )}
 
@@ -723,7 +728,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
               <>
                 {diff.note && <div className="diff-note">ℹ️ {diff.note}</div>}
                 {diff.diff
-                  ? <DiffView diffText={diff.diff} onComment={(file, line) => setLineComment({ file, line })} blobUrl={blobUrl} />
+                  ? <DiffView diffText={diff.diff} onComment={(file, line) => setLineComment({ file, line })} blobUrl={blobUrl} anchored />
                   : <div className="diff-status muted">{diff.error ? `No diff — ${diff.error}` : "No diff (empty/no commits)."}{pr.url && <> · <a href={pr.url} target="_blank" rel="noreferrer">GitHub ↗</a></>}</div>}
               </>
             )}
@@ -759,12 +764,13 @@ function CoverageLine({ coverage }: { coverage: CoverageRecord }): ReactNode {
     line = "no related tests reach the changed files";
   } else if (coverage.status === "fault") {
     return (
-      <div className="muted small" style={{ marginTop: 4 }}>
+      <div className="muted small" style={{ marginTop: 8 }}>
+        Coverage:{" "}
         <span className="chip chip-amber sm"
           title="This machine could not run the measurement; booked to the design lane's worker health, not to this PR">
           worker fault
         </span>{" "}
-        Coverage could not run on this machine — a fault in Prospector, not this PR: {coverage.reason ?? ""}
+        could not run on this machine, not this PR: {coverage.reason ?? ""}
       </div>
     );
   } else {
@@ -772,7 +778,7 @@ function CoverageLine({ coverage }: { coverage: CoverageRecord }): ReactNode {
   }
   const gaps = coverage.files.filter((f) => f.uncovered.length > 0 || !f.measured);
   return (
-    <div className="muted small" style={{ marginTop: 4 }}>
+    <div className="muted small" style={{ marginTop: 8 }}>
       <span title="Measured by running the PR's related tests in the sandbox; reported by the PR's own test run, so advisory">
         Coverage: {line}
       </span>
@@ -797,11 +803,35 @@ function CoverageLine({ coverage }: { coverage: CoverageRecord }): ReactNode {
   );
 }
 
+/** A finding's location: basename:line, full path in its tooltip. It scrolls
+ *  to the line in the page's diff, or opens GitHub when the file is not there. */
+function FindingLocation({ f, blobUrl }: {
+  f: ReviewFinding;
+  blobUrl: (file: string, line: number) => string | null;
+}): ReactNode {
+  if (!f.path) return null;
+  const path = f.path;
+  const label = `${path.split("/").pop()}${f.line != null ? `:${f.line}` : ""}`;
+  const github = (f.line != null ? blobUrl(path, f.line) : null) ?? f.url;
+  return (
+    <div className="muted small finding-loc">
+      (<a href={github ?? `#${diffFileId(path)}`} title={`${path}${f.line != null ? `:${f.line}` : ""}`}
+        target={github ? "_blank" : undefined} rel={github ? "noreferrer" : undefined}
+        onClick={(e) => { if (jumpToDiff(path, f.line)) e.preventDefault(); }}>
+        <code>{label}</code>
+      </a>)
+    </div>
+  );
+}
+
 /** One block per reviewer `which` picks on the PR page's Review / Design / Scans
- *  check rows: status line, stale banner, the reviewer's own summary, and its
- *  open findings. */
+ *  check rows: status line, stale banner, the reviewer's own summary (first
+ *  with `summaryFirst`, else last), its open findings, and the design lane's
+ *  coverage record last. */
 function reviewerBlocks(detail: Record<string, { entry: ReviewEntry | null; digest: ReviewDigest }> | null,
-                        which: (d: ReviewDigest) => boolean): ReactNode[] {
+                        which: (d: ReviewDigest) => boolean,
+                        blobUrl: (file: string, line: number) => string | null,
+                        { summaryFirst = false }: { summaryFirst?: boolean } = {}): ReactNode[] {
   if (!detail) return [];
   return Object.values(detail).filter((d) => which(d.digest) && d.digest.status !== "na").map(({ entry, digest }) => {
     const open = (entry?.findings ?? []).filter((f) => !f.resolved && !f.outdated);
@@ -824,6 +854,11 @@ function reviewerBlocks(detail: Record<string, { entry: ReviewEntry | null; dige
             ⚠ This verdict is from an older commit. The author may have pushed commits addressing the {digest.label} feedback since.
           </p>
         )}
+        {summaryFirst && entry?.summary && (
+          <div className="markdown reviewer-summary">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{`**Summary:** ${entry.summary}`}</ReactMarkdown>
+          </div>
+        )}
         {trust != null && <div className="muted small">Contributor trust {trust}/100{verdict ? ` · ${verdict}` : ""}</div>}
         {digest.checks.length > 0 && (
           <div className="muted small">
@@ -833,38 +868,41 @@ function reviewerBlocks(detail: Record<string, { entry: ReviewEntry | null; dige
           </div>
         )}
         {report && <div className="small"><a href={report} target="_blank" rel="noreferrer">full report ↗</a></div>}
-        {coverage && <CoverageLine coverage={coverage} />}
         {open.length > 0 && (
-          <ul className="small" style={{ margin: "6px 0 0 16px" }}>
-            {open.map((f, i) => {
-              const verdict = f.verification?.verdict;
-              return (
-                <li key={i}>
-                  <span style={verdict === "refuted" ? { textDecoration: "line-through", opacity: 0.6 } : undefined}>
-                    {f.path ? <code>{f.path}{f.line != null ? `:${f.line}` : ""}</code> : null}
-                    {f.severity ? <span className="chip chip-muted sm" style={{ marginLeft: 4 }}>{f.severity}</span> : null}
-                    {" "}{f.title ?? f.body.split("\n")[0]}
-                  </span>
-                  {verdict && verdict !== "confirmed" && (
-                    <span className="chip chip-muted sm" style={{ marginLeft: 4 }}
-                          title={f.verification?.reason || undefined}>
-                      {verdict === "unsure" ? `unsure (was ${f.claimed_severity ?? "major"})` : verdict}
+          <div className="small" style={{ marginTop: 6 }}>
+            <b>Findings:</b>
+            <ul className="finding-list">
+              {open.map((f, i) => {
+                const verdict = f.verification?.verdict;
+                return (
+                  <li key={i}>
+                    <span style={verdict === "refuted" ? { textDecoration: "line-through", opacity: 0.6 } : undefined}>
+                      {f.title ?? f.body.split("\n")[0]}
+                      {f.severity ? <span className="chip chip-muted sm" style={{ marginLeft: 6 }}>{f.severity}</span> : null}
                     </span>
-                  )}
-                  {f.url && <a className="action-log-link" href={f.url} target="_blank" rel="noreferrer" title="view on GitHub ↗"> ↗</a>}
-                  {verdict && verdict !== "confirmed" && f.verification?.reason && (
-                    <div className="muted small">{f.verification.reason}</div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+                    {verdict && verdict !== "confirmed" && (
+                      <span className="chip chip-muted sm" style={{ marginLeft: 4 }}
+                            title={f.verification?.reason || undefined}>
+                        {verdict === "unsure" ? `unsure (was ${f.claimed_severity ?? "major"})` : verdict}
+                      </span>
+                    )}
+                    {f.url && <a className="action-log-link" href={f.url} target="_blank" rel="noreferrer" title="view on GitHub ↗"> ↗</a>}
+                    <FindingLocation f={f} blobUrl={blobUrl} />
+                    {verdict && verdict !== "confirmed" && f.verification?.reason && (
+                      <div className="muted small">{f.verification.reason}</div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         )}
-        {entry?.summary && (
+        {!summaryFirst && entry?.summary && (
           <div className="markdown greptile-body" style={{ marginTop: 6 }}>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.summary}</ReactMarkdown>
           </div>
         )}
+        {coverage && <CoverageLine coverage={coverage} />}
       </div>
     );
   });
