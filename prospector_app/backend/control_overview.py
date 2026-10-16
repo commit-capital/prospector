@@ -96,6 +96,7 @@ class LaneRow(TypedDict):
 class LoopRow(TypedDict):
     loop: str
     label: str
+    hint: str | None
     host: str
     last_at: str | None
     next_at: str | None
@@ -131,6 +132,7 @@ class TimelineItem(TypedDict):
     pr: int | None
     issue: int | None
     text: str
+    hint: str | None
     bad: bool
 
 
@@ -310,7 +312,7 @@ def build(inp: Inputs, now: datetime) -> Overview:
     ended: Counter[str] = Counter()
     faults: Counter[str] = Counter()
     past: list[TimelineItem] = []
-    background: Counter[tuple[str, str, str | None]] = Counter()
+    background: Counter[tuple[str, str, str | None]] = Counter()  # (phase, hour, host)
     for _ledger, raw in inp["rows"]:
         when = storekit.parse_ts(raw.get("finished") or raw.get("started"))
         phase = raw.get("phase")
@@ -327,14 +329,16 @@ def build(inp: Inputs, now: datetime) -> Overview:
             issue = raw.get("issue") if isinstance(raw.get("issue"), int) else None
             text = _outcome_text(lane, stats)
             past.append({"when": "past", "at": when.isoformat(), "lane": lane, "host": host,
-                         "pr": pr, "issue": issue, "bad": bad,
+                         "pr": pr, "issue": issue, "bad": bad, "hint": None,
                          "text": f"#{pr or issue} → {text}" if (pr or issue) else text})
         elif phase in machine_activity.BACKGROUND:
             hour = when.replace(minute=0, second=0, microsecond=0).isoformat()
-            background[(machine_activity.BACKGROUND[phase][0], hour, host)] += 1
-    for (label, hour, host), n in background.items():
+            background[(phase, hour, host)] += 1
+    for (phase, hour, host), n in background.items():
+        label = machine_activity.BACKGROUND[phase][0]
         past.append({"when": "past", "at": hour, "lane": "background", "host": host,
                      "pr": None, "issue": None, "bad": False,
+                     "hint": machine_activity.BACKGROUND_HINTS.get(phase),
                      "text": label if n == 1 else f"{label} ×{n}"})
     past.sort(key=lambda t: t["at"], reverse=True)
 
@@ -350,22 +354,23 @@ def build(inp: Inputs, now: datetime) -> Overview:
             nxt = (last + every if last and host in online and enabled
                    and last + 2 * every >= now else None)
             loops.append({"loop": name, "label": worker_loops.LABELS.get(name, name),
+                          "hint": worker_loops.HINTS.get(name),
                           "host": host, "last_at": p.get("last_at"),
                           "next_at": nxt.isoformat() if nxt else None})
 
     upcoming: list[TimelineItem] = [
         {"when": "upcoming", "at": lp["next_at"], "lane": "background", "host": lp["host"],
-         "pr": None, "issue": None, "bad": False, "text": lp["label"]}
+         "pr": None, "issue": None, "bad": False, "text": lp["label"], "hint": lp["hint"]}
         for lp in loops if lp["next_at"] and lp["next_at"] <= (now + timedelta(hours=1)).isoformat()]
     for lane, q in queues.items():
         if q:
             upcoming.append({"when": "upcoming", "at": now.isoformat(), "lane": lane, "host": None,
-                             "pr": q[0]["pr"], "issue": q[0]["issue"], "bad": False,
+                             "pr": q[0]["pr"], "issue": q[0]["issue"], "bad": False, "hint": None,
                              "text": f"#{q[0]['pr'] or q[0]['issue']} · first in its queue"})
     upcoming.sort(key=lambda t: t["at"])
     current: list[TimelineItem] = [
         {"when": "now", "at": n["started_at"] or now.isoformat(), "lane": lane, "host": n["host"],
-         "pr": n["pr"], "issue": n["issue"], "bad": False,
+         "pr": n["pr"], "issue": n["issue"], "bad": False, "hint": None,
          "text": f"#{n['pr'] or n['issue']}" + (f" · {n['step']}" if n["step"] else "")}
         for lane, items in nows.items() for n in items]
 
