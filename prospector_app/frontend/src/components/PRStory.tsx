@@ -1,13 +1,13 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type PRDetail } from "../api";
 import { LinkedIssues } from "./LinkedIssues";
 import { closedNote, shownIssues } from "./linkedIssuesShown";
 import { useRepoMeta } from "../RepoMetaContext";
 
 /** The Summary panel's opening lines: what was wrong, what the PR changes (and
- *  the issues it fixes), and how it works. Until a card is written for this
- *  head, the diff summary's one-liner stands in as the fix, with a button to
- *  write the card. */
+ *  the issues it fixes), and how it works. An open, analyzed PR with no card
+ *  for its head gets one written as the page opens, once per head; meanwhile,
+ *  and if that fails, the diff summary's one-liner stands in as the fix. */
 export function PRStory({ pr, onWritten }: { pr: PRDetail; onWritten: () => void }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string>();
@@ -22,6 +22,16 @@ export function PRStory({ pr, onWritten }: { pr: PRDetail; onWritten: () => void
       .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy(false));
   };
+
+  const tried = useRef<string | null>(null);
+  const wants = !d && pr.github_state === "open" && Boolean(pr.disposition);
+  const key = `${pr.number}:${pr.head_sha ?? ""}`;
+  useEffect(() => {
+    if (!wants || tried.current === key) return;
+    tried.current = key;
+    write();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wants, key]);
 
   return (
     <>
@@ -43,11 +53,12 @@ export function PRStory({ pr, onWritten }: { pr: PRDetail; onWritten: () => void
           )}
         </dl>
       )}
-      {!d && (
+      {!d && busy && <div className="muted small"><span className="spinner" /> Writing a plain-language summary…</div>}
+      {!d && !busy && (err || !wants) && (
         <div>
-          <button className="btn-secondary sm" onClick={write} disabled={busy}
+          <button className="btn-secondary sm" onClick={write}
             title="Have an agent write a plain-language problem, fix and how-it-works for this PR.">
-            {busy ? "Writing…" : "Write summary"}
+            {err ? "Try again" : "Write summary"}
           </button>
         </div>
       )}
