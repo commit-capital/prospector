@@ -421,18 +421,18 @@ select { background: var(--panel); border: 1px solid var(--border); color: var(-
 
 /* The PR page's verdict card: problem and fix, then the suggestion line that
    heads the action bar, then the why/how folded away. */
-.pr-story { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0 0 10px; font-size: 13.5px; line-height: 1.5; }
+/* the PR page's Summary panel */
+.summary-panel { gap: 8px; padding: 12px 14px; }
+.summary-title { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.pr-story { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; font-size: 13.5px; line-height: 1.5; }
 .pr-story dt { font-weight: 700; color: var(--muted); }
 .pr-story dd { margin: 0; }
+.pr-story dd ul { margin: 0; padding-left: 18px; }
+.analysis-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; }
+.analysis-label { font-weight: 700; color: var(--muted); }
 .sug-headline { font-size: 15.5px; font-weight: 600; line-height: 1.4; }
 .sug-headline b { font-weight: 800; }
-.sug-checks { font-weight: 600; color: var(--muted); }
 .sug-stale { font-size: 11.5px; color: var(--yellow); }
-.pr-story-details { margin-top: 6px; }
-.pr-story-part + .pr-story-part { margin-top: 8px; }
-.pr-story-head { font-weight: 700; font-size: 12.5px; }
-.pr-story-part ul { margin: 2px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.5; }
-.pr-story-rationale { font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; }
 
 /* buttons */
 /* Every button uses the app's typeface. Unclassed buttons get the panel look

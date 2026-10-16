@@ -101,7 +101,8 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #      and drops the design review.
 # 32 — an analysis may carry the `close-wontfix` disposition; an older validator
 #      refuses it.
-STORE_SCHEMA_VERSION = 32
+# 33 — a PR's `display` section carries no `why`; an older validator refuses it.
+STORE_SCHEMA_VERSION = 33
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

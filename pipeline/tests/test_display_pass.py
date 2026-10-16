@@ -5,7 +5,6 @@ from pipeline.store import Store
 
 GOOD = {"problem": "Deleting an agent's instructions file asked for no confirmation.",
         "fix": "Require an explicit --yes flag before the CLI deletes it.",
-        "why": ["Small, tested change to one command."],
         "how": ["The command stops before deleting unless --yes is passed."]}
 
 
@@ -30,31 +29,31 @@ def test_check_accepts_a_faithful_card():
 
 @pytest.mark.parametrize("field,value", [
     ("problem", "This fixes #999, a crash."),
-    ("why", ["Same change as #43."]),
+    ("how", ["Same change as #43."]),
 ])
 def test_check_rejects_invented_refs(field, value):
     assert dp.check({**GOOD, field: value}, _src(), "close-dup") is None
 
 
 def test_check_allows_refs_the_inputs_name():
-    assert dp.check({**GOOD, "why": ["Same guard as #42 for #7."]}, _src(), "close-dup")
+    assert dp.check({**GOOD, "how": ["Same guard as #42 for #7."]}, _src(), "close-dup")
 
 
-@pytest.mark.parametrize("why,disposition", [
+@pytest.mark.parametrize("how,disposition", [
     (["This is ready to merge."], "close-dup"),
     (["Should be merged as is."], "close-dup"),
     (["It is a duplicate."], "merge"),
 ])
-def test_check_rejects_a_changed_verdict(why, disposition):
-    assert dp.check({**GOOD, "why": why}, _src("Clean and tested."), disposition) is None
+def test_check_rejects_a_changed_verdict(how, disposition):
+    assert dp.check({**GOOD, "how": how}, _src("Clean and tested."), disposition) is None
 
 
 def test_check_keeps_a_verdict_phrase_the_rationale_uses():
     src = _src("Not a duplicate of #42: it touches a different command.")
-    assert dp.check({**GOOD, "why": ["Not a duplicate of #42."]}, src, "merge")
+    assert dp.check({**GOOD, "how": ["Not a duplicate of #42."]}, src, "merge")
 
 
-@pytest.mark.parametrize("reply", [None, "text", {**GOOD, "why": []}, {**GOOD, "fix": ""},
+@pytest.mark.parametrize("reply", [None, "text", {**GOOD, "how": []}, {**GOOD, "fix": ""},
                                    {**GOOD, "how": ["word " * 30]}])
 def test_check_rejects_malformed_replies(reply):
     assert dp.check(reply, _src(), "close-dup") is None

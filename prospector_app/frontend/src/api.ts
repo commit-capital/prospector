@@ -1263,7 +1263,7 @@ export interface ThreatStamp {
   cleared?: { "secret-leak"?: { by: string; at: string; evidence: string | null } };
 }
 
-export interface PRDisplay { problem: string; fix: string; why: string[]; how: string[] }
+export interface PRDisplay { problem: string; fix: string; how: string[] }
 
 export interface PRDetail extends PRRow {
   body?: string | null;
