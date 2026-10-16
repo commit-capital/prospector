@@ -419,3 +419,27 @@ def test_gh_bytes_is_none_on_failure_or_flag_path(monkeypatch):
                         subprocess.CompletedProcess(argv, 1, stdout=b"", stderr=b"404"))
     assert gh.gh_bytes("repos/o/r/compare/a...b", accept="x") is None
     assert gh.gh_bytes("--paginate", accept="x") is None
+
+
+_EXHAUSTED = "gh: API rate limit already exceeded for user ID 1245838."
+
+
+def test_gh_graphql_raises_rate_limited_when_asked(monkeypatch):
+    # A spent primary budget fails every call until it resets; a caller looping
+    # over many requests asks to hear about it so it can stop.
+    monkeypatch.setattr(gh.subprocess, "run", _scripted_run(
+        [(1, '{"errors": [{"type": "RATE_LIMIT"}]}', _EXHAUSTED)]))
+    with pytest.raises(gh.RateLimited, match="already exceeded"):
+        gh.gh_graphql("query {}", raise_on_rate_limit=True)
+
+
+def test_gh_graphql_still_none_on_rate_limit_by_default(monkeypatch):
+    monkeypatch.setattr(gh.subprocess, "run", _scripted_run(
+        [(1, '{"errors": [{"type": "RATE_LIMIT"}]}', _EXHAUSTED)]))
+    assert gh.gh_graphql("query {}") is None
+
+
+def test_gh_graphql_other_failures_stay_none_when_asked(monkeypatch):
+    monkeypatch.setattr(gh.subprocess, "run", _scripted_run(
+        [(1, '{"message": "Bad credentials"}', "gh: Bad credentials (HTTP 401)")]))
+    assert gh.gh_graphql("query {}", raise_on_rate_limit=True) is None

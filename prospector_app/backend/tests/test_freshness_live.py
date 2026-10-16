@@ -239,3 +239,21 @@ def test_live_states_not_found_ignores_a_repository_level_error(monkeypatch):
     facts, not_found = freshness_live.live_states([1, 2])
     assert facts == {}
     assert not_found == set()
+
+
+def test_live_states_stops_once_the_rate_limit_is_spent(monkeypatch, caplog):
+    """A spent GitHub budget fails every later request too, so the fetch stops
+    at the first one instead of sending (and logging) one per remaining chunk."""
+    calls = []
+
+    def spent(query, **kw):
+        calls.append(query)
+        assert kw.get("raise_on_rate_limit") is True
+        raise freshness_live.live_prs.RateLimited("API rate limit already exceeded")
+
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", spent)
+    with caplog.at_level(logging.WARNING, logger="pipeline.live_prs"):
+        out = freshness_live.live_states(list(range(1, 200)))
+    assert out == ({}, set())
+    assert len(calls) == 1
+    assert sum("rate limit" in r.message for r in caplog.records) == 1
