@@ -11,15 +11,15 @@ index bbe44698,b81c9fd8..00000000
 - function runProvision(baseCwd, { pathPrefix } = {}) {
 + function runProvision(baseCwd, { pathPrefix, publicUrl } = {}) {
     const worktreeCwd = makeTempDir();
- +  const paperclipHome = makeInstanceHome();
+ +  const appHome = makeInstanceHome();
 @@@ -116,5 -90,4 +116,12 @@@
-      PAPERCLIP_WORKTREES_DIR: worktreesHome,
+      APP_WORKTREES_DIR: worktreesHome,
 ++<<<<<<< HEAD
- +    PAPERCLIP_HOME: paperclipHome,
+ +    APP_HOME: appHome,
 ++||||||| parent of ecb183db (fix)
-++    PAPERCLIP_HOME: path.join(worktreesHome, "x"),
+++    APP_HOME: path.join(worktreesHome, "x"),
 ++=======
-+     PAPERCLIP_HOME: path.join(worktreesHome, "x"),
++     APP_HOME: path.join(worktreesHome, "x"),
 +     ...(publicUrl ? { URL: publicUrl } : {}),
 ++>>>>>>> ecb183db (fix)
     },`;
@@ -39,8 +39,8 @@ test("a cleanly merged change splits by side, numbered from the hunk header", ()
   assert.equal(mainOnly.kind, "change");
   if (mainOnly.kind !== "change") return;
   assert.deepEqual(mainOnly.pr, []);
-  assert.deepEqual(mainOnly.main, [{ num: 105, text: "  const paperclipHome = makeInstanceHome();", changed: true }]);
-  assert.deepEqual(mainOnly.merged, [{ kind: "line", line: { num: 105, text: "  const paperclipHome = makeInstanceHome();", changed: false } }]);
+  assert.deepEqual(mainOnly.main, [{ num: 105, text: "  const appHome = makeInstanceHome();", changed: true }]);
+  assert.deepEqual(mainOnly.merged, [{ kind: "line", line: { num: 105, text: "  const appHome = makeInstanceHome();", changed: false } }]);
 });
 
 test("a conflict region leaves each side its version and the merged cell the ancestor", () => {
@@ -49,12 +49,12 @@ test("a conflict region leaves each side its version and the merged cell the anc
   const change = second[1];
   assert.equal(change.kind, "change");
   if (change.kind !== "change") return;
-  assert.deepEqual(change.main.map((l) => l.text), ["    PAPERCLIP_HOME: paperclipHome,"]);
+  assert.deepEqual(change.main.map((l) => l.text), ["    APP_HOME: appHome,"]);
   assert.deepEqual(change.pr.map((l) => [l.num, l.text]), [
-    [91, "    PAPERCLIP_HOME: path.join(worktreesHome, \"x\"),"],
+    [91, "    APP_HOME: path.join(worktreesHome, \"x\"),"],
     [92, "    ...(publicUrl ? { URL: publicUrl } : {}),"],
   ]);
-  assert.deepEqual(change.merged, [{ kind: "conflict", base: ["    PAPERCLIP_HOME: path.join(worktreesHome, \"x\"),"] }]);
+  assert.deepEqual(change.merged, [{ kind: "conflict", base: ["    APP_HOME: path.join(worktreesHome, \"x\"),"] }]);
   assert.deepEqual(second[2], { kind: "context", text: "  },", main: 118, pr: 93, merged: 125 });
 });
 
