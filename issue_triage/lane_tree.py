@@ -123,6 +123,9 @@ def _parse_import(text: str) -> _Unit | None:
             names = _names(inner[:-1], _JS_NAME)
             if names is None:
                 return None
+            if typed and not head:
+                # `import type { A }` imports what `import { type A }` does.
+                names, typed = frozenset(f"type {n}" for n in names), ""
             return ("import", ("js", keyword, typed, module, head), names)
         # A default or namespace import names nothing to widen; it must stay as it is.
         return ("import", ("js", keyword, typed, module, clause), frozenset())

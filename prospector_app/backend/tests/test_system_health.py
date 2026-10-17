@@ -191,8 +191,10 @@ def test_trip_detail_carries_the_remedy():
 def test_status_reads_every_worker_registry_in_one_statement(store, monkeypatch):
     from sqlalchemy import event
 
-    from prospector_app.backend import alert_data, capacity_view, issues
+    from pipeline import schema
+    from prospector_app.backend import alert_data, capacity_view, issues, schema_gate
     monkeypatch.setattr(issues, "cached_runs", lambda: [])
+    monkeypatch.setattr(schema_gate, "store_version", lambda: schema.STORE_SCHEMA_VERSION)
     monkeypatch.setattr(alert_data, "runs", lambda: [])
     monkeypatch.setattr(capacity_view, "health_items", lambda: [])
     monkeypatch.setattr(threat_view, "summary",
