@@ -170,19 +170,16 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
         "__OUTPUT__": _OUTPUT[lens],
     })
     try:
-        text = headless_agent.run_agent(
+        verdict, _ = headless_agent.json_reply(lambda: headless_agent.run_agent(
             prompt, allow_gh=False, cwd=worktree, edit_root=None,
             read_root=worktree, env_allow=(), timeout=AGENT_TIMEOUT_SECONDS,
-            on_event=on_event)
+            on_event=on_event))
     except (headless_agent.AgentUnavailable, headless_agent.AgentDeclined):
         raise
+    except ValueError as e:
+        return _unsafe(lens, f"the reviewing agent gave no usable verdict: {e}", failed=True)
     except RuntimeError as e:
         return _unsafe(lens, f"the reviewing agent did not finish: {e}", failed=True)
-    try:
-        verdict = headless_agent.extract_json(text)
-    except ValueError:
-        return _unsafe(lens, f"the reviewing agent gave no usable verdict: {text[-300:]}",
-                       failed=True)
     raw = verdict.get("concerns")
     concerns = [str(c) for c in raw] if isinstance(raw, list) else []
     if verdict.get("verdict") != "safe":

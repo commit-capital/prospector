@@ -119,6 +119,15 @@ def test_unparseable_output_reads_as_unsafe_and_failed(monkeypatch):
     assert out["lens"] == "root-cause"
 
 
+def test_a_reply_cut_off_mid_string_is_asked_once_more(monkeypatch):
+    replies = iter(['{"verdict": "safe", "reason": "cures the ca',
+                    json.dumps({"verdict": "safe", "reason": "cures the cause"})])
+    monkeypatch.setattr(headless_agent, "run_agent", lambda prompt, **kw: next(replies))
+    out = review_issue_fix.review("/wt", PATCH, lens="root-cause", title="t", body="b",
+                                  root_cause="rc", test_paths=[], evidence="")
+    assert (out["verdict"], out["reason"]) == ("safe", "cures the cause")
+
+
 def test_the_per_lens_question_reaches_the_prompt(monkeypatch):
     root = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r"}),
                 lens="root-cause")["calls"]["prompt"]

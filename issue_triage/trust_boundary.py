@@ -127,17 +127,15 @@ def review(worktree: str, fix_patch: str, *, title: str, body: str,
         "__PATCH__": review_issue_fix.clip(fix_patch),
     })
     try:
-        text = headless_agent.run_agent(
+        verdict, _ = headless_agent.json_reply(lambda: headless_agent.run_agent(
             prompt, allow_gh=False, cwd=worktree, edit_root=None, read_root=worktree,
-            env_allow=(), timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event)
+            env_allow=(), timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event))
     except (headless_agent.AgentUnavailable, headless_agent.AgentDeclined):
         raise
+    except ValueError as e:
+        return _failed(f"the reviewing agent gave no usable answer: {e}")
     except RuntimeError as e:
         return _failed(f"the reviewing agent did not finish: {e}")
-    try:
-        verdict = headless_agent.extract_json(text)
-    except ValueError:
-        return _failed(f"the reviewing agent gave no usable answer: {text[-300:]}")
     crossings = _crossings(verdict.get("crossings"))
     if crossings is None:
         return _failed("the reviewing agent returned no usable list of crossings")

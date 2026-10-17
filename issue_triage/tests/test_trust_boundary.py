@@ -74,6 +74,14 @@ def test_a_reviewer_that_gives_no_usable_inventory_failed(monkeypatch, tmp_path,
     assert out["failed"] is True and out["crossings"] == []
 
 
+def test_a_reply_cut_off_mid_string_is_asked_once_more(monkeypatch, tmp_path):
+    replies = iter(['{"crossings": [], "reason": "no new rea',
+                    '{"crossings": [], "reason": "no new reach"}'])
+    monkeypatch.setattr(headless_agent, "run_agent", lambda prompt, **kw: next(replies))
+    out = REVIEW(str(tmp_path), _patch("x"), title="t", body="b")
+    assert out == {"crossings": [], "reason": "no new reach"}
+
+
 def test_an_agent_outage_propagates(monkeypatch, tmp_path):
     _answer(monkeypatch, headless_agent.AgentUnavailable("no CLI"))
     with pytest.raises(headless_agent.AgentUnavailable):
