@@ -837,6 +837,22 @@ class Collection(Generic[T]):
             return res.rowcount == 1
         return self._write(w)
 
+    def set_section(self, i: int, name: str, value: dict | None) -> bool:
+        """Replace record `i`'s `name` section (None removes it) and leave every
+        other section as the row holds it, retrying the compare-and-swap when
+        another writer lands first. False when the record is absent."""
+        while True:
+            got = self.stamped(i)
+            if got is None:
+                return False
+            rec, stamp = got
+            if value is None:
+                rec.pop(name, None)
+            else:
+                rec[name] = value
+            if self.save_if(rec, stamp):
+                return True
+
     def edit(self, i: int) -> T:
         v = self.load(i)
         if v is None:

@@ -723,21 +723,40 @@ class TestVerifyBaseRegistry:
         assert Store(tmp_path).load_verify_base("mac")["baseline_failing"] is None
 
 
-class TestResponseAcks:
-    """Which PRs' response signals operators have marked seen — shared, so one
-    operator's ack clears the signal from every app."""
+class TestSetPrSection:
+    def test_replaces_one_section_and_keeps_the_rest(self, store):
+        store.save_pr(_pr(summary={"one_liner": "x"}))
+        assert store.set_pr_section(1234, "response_ack", {"at": "2026-07-15T18:22:00+00:00",
+                                                           "by": "Taylor Example"})
+        rec = store.load_pr(1234)
+        assert rec.section("response_ack")["by"] == "Taylor Example"
+        assert rec.section("summary") == {"one_liner": "x"}
 
-    def test_defaults_to_empty(self, store):
-        assert store.load_response_acks() == {"acks": {}}
+    def test_none_removes_the_section(self, store):
+        store.save_pr(_pr(responses={"replied": True}))
+        assert store.set_pr_section(1234, "responses", None)
+        assert store.load_pr(1234).section("responses") is None
 
-    def test_round_trips(self, store):
-        store.save_response_acks({"acks": {"537": {"at": "2026-07-15T18:22:00+00:00",
-                                                   "by": "Taylor Example"}}})
-        assert store.load_response_acks()["acks"]["537"]["by"] == "Taylor Example"
+    def test_absent_pr(self, store):
+        assert store.set_pr_section(99, "response_ack", {"at": "t", "by": "b"}) is False
 
-    def test_rejects_non_dict_acks(self, store):
-        with pytest.raises(ValidationError):
-            store.save_response_acks({"acks": []})
+    def test_retries_when_another_writer_lands_first(self, store, monkeypatch):
+        store.save_pr(_pr())
+        real = store._prs.save_if
+        calls = []
+
+        def racing(rec, stamp):
+            if not calls:
+                store.save_pr(_pr(summary={"one_liner": "theirs"}))
+            calls.append(stamp)
+            return real(rec, stamp)
+
+        monkeypatch.setattr(store._prs, "save_if", racing)
+        assert store.set_pr_section(1234, "response_ack", {"at": "t", "by": "b"})
+        rec = store.load_pr(1234)
+        assert len(calls) == 2
+        assert rec.section("summary") == {"one_liner": "theirs"}
+        assert rec.section("response_ack") == {"at": "t", "by": "b"}
 
 
 def test_reviews_section_validates():

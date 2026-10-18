@@ -1,6 +1,6 @@
 """Authors who came back after we closed their PR or issue.
 
-Two signals, read from the store and the responses registry with no network:
+Two signals, read from the store's PR and issue snapshots with no network:
 
 - ``reopened``: our latest landed state action on the item is a close, and the
   store sees it open again. The store's state is live-maintained — our close
@@ -164,11 +164,11 @@ class OpenReturn(TypedDict):
 
 def current(prs: Mapping[int, Item] | None = None,
             events: list[dict] | None = None) -> list[AuthorReturn]:
-    """`author_returns` over the app's snapshots and the responses registry."""
+    """`author_returns` over the app's snapshots."""
     from prospector_app.backend import data, issue_data, responses
     named: dict[tuple[Kind, int], set[int]] = {
         (kind, n): {int(x) for x in [sig.get("resubmitted_pr"), *(sig.get("mentions") or [])] if x}
-        for kind, sigs in responses.load_all().items() for n, sig in sigs.items()}
+        for kind, sigs in responses.recorded().items() for n, sig in sigs.items()}
     return author_returns(data.prs() if prs is None else prs, issue_data.issues(), events,
                           pr_bodies=data.pr_bodies, named=named)
 

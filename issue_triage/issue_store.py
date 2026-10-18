@@ -38,7 +38,7 @@ TRIAGE_VERDICTS = ("go", "ask", "skip")
 FOLLOWUP_CLOSED_AS = ("merged", "closed")
 ISSUE_SECTIONS = ("meta", "summary", "repro", "cluster", "analysis", "links", "resolution",
                   "fix_scan", "fix_request", "fix_run", "fix_thread", "fix_followup",
-                  "fix_public", "fix_triage")
+                  "fix_public", "fix_triage", "responses")
 
 
 def validate_issue(rec: dict) -> None:
@@ -185,6 +185,11 @@ class IssueStore:
         `expected_saved_at`, and report whether the write landed. False means
         another writer got there first and this record is stale."""
         return self._issues.save_if(issue.raw, expected_saved_at)
+
+    def set_issue_section(self, n: int, name: str, value: dict | None) -> bool:
+        """Replace issue `n`'s `name` section (None removes it), keeping every
+        other section as stored. False when the issue is not in the store."""
+        return self._issues.set_section(n, name, value)
 
     def claim_fix_request(self, n: int, *, host: str,
                           hosts: frozenset[str] | None = None) -> dict | None:

@@ -132,3 +132,19 @@ class TestCli:
                          "--backup-dir", str(tmp_path / "bk")])
         assert store.load_pr(1).raw["meta"]["title"] == "FIX 1"
         assert list((tmp_path / "bk").glob("store-edit-_retitle-*.json"))
+
+
+def _retitle_issue(rec):
+    rec["meta"]["title"] = rec["meta"]["title"].upper()
+    return rec
+
+
+def test_live_issue_edit_applies_and_logs_to_the_issue_runs(tmp_path):
+    from issue_triage.issue_store import IssueStore
+    issues = IssueStore(tmp_path / "db")
+    issues.save_issue({"issue": 7, "meta": {"title": "bug", "state": "open",
+                                            "updated_at": "2026-07-09T00:00:00+00:00"}})
+    store_edit.main([f"{__name__}:_retitle_issue", "--table", "issues", "--live", "--yes",
+                     "--store", str(tmp_path / "db"), "--backup-dir", str(tmp_path / "bk")])
+    assert issues.load_issue(7).section("meta")["title"] == "BUG"
+    assert isinstance(issues.runs()[-1], storekit.StoreEdit)
