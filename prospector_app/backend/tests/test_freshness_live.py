@@ -190,6 +190,24 @@ def test_live_states_skips_failed_chunk(monkeypatch, caplog):
     assert any("live PR fetch failed" in r.message for r in caplog.records)
 
 
+def test_live_states_rereads_a_failed_batch_in_smaller_batches(monkeypatch):
+    sizes = []
+
+    def gh_graphql(query, **kw):
+        size = query.count("pullRequest(")
+        sizes.append(size)
+        if size == freshness_live.live_prs.CHUNK_SIZE:
+            return None
+        node = {"state": "OPEN", "headRefOid": HEAD, "additions": 1, "deletions": 0,
+                "changedFiles": 1, "files": {"nodes": []}, "commits": {"nodes": []}}
+        return {"data": {"repository": {f"p{i}": node for i in range(size)}}}
+
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", gh_graphql)
+    facts, _ = freshness_live.live_states(list(range(1, 51)))
+    assert sorted(facts) == list(range(1, 51))
+    assert sizes == [40, 10, 10, 10, 10, 10]
+
+
 def test_live_states_keeps_resolved_aliases_when_one_errors(monkeypatch, caplog):
     """One dead alias in a batch (a PR scrubbed from GitHub) nulls its own node
     and rides an `errors` array; every other alias in the batch still lands."""
