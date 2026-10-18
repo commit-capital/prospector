@@ -1,987 +1,201 @@
 # Prospector — agent operating rules
 
-This repo triages the open PRs and issues on the repository configured by
-`TRIAGE_REPO`, decides which PRs to **merge, ask-the-author-to-fix, or close**,
-and executes approved decisions upstream. The web app
-(`prospector_app/`) is the human surface; the pipeline (`pipeline/`) produces
-the data it shows. See `README.md` for the full workflow, and `ARCHITECTURE.md`
-for how state flows (SQL store → app snapshot → live overlay).
+Prospector triages the open PRs and issues of the repository named by
+`TRIAGE_REPO`: it decides which PRs to merge, send back, or close, fixes what it
+can, and carries out approved actions upstream. `pipeline/` produces the data,
+and the web app (`prospector_app/`) is where a human acts on it.
+
+This file holds the invariants an agent must not break and a map to the code.
+The code is the record of behavior: read the module before relying on a detail.
+For setup and commands see `README.md` and `docs/`, for how state flows see
+`ARCHITECTURE.md`, and for the phase command sequences see
+`pipeline/workflows/README.md`.
 
 ## Trust model (read this first)
 
-`TRIAGE_REPO` and `TRIAGE_BOT_LOGIN` are required deployment configuration.
-They live in the gitignored root `.env` (or the process environment), so a
-checkout has no implicit repository or bot identity. The app executes
-approved triage actions directly on `TRIAGE_REPO` as the configured GitHub App.
-The project `PreToolUse` hook in `.claude/settings.json` reads the same
-configuration and denies direct GitHub write commands targeting `TRIAGE_REPO`.
-A `gh` write names its own repository, so with no target configured every one
-of them fails closed. A `git push` is judged by the destination it resolves to
-— the named remote, else the branch's push remote, else `origin` — and an
-unresolvable destination fails closed; with no target configured a push is held
-to the checkout it runs in, which is how a fresh clone with no `.env` pushes its
-own branches while still being unable to reach the triage repository.
+`TRIAGE_REPO` and `TRIAGE_BOT_LOGIN` come from the gitignored root `.env` or the
+process environment. A checkout without them has no target and no bot identity.
+It boots into the setup wizard, and `app.py` answers every other `/api/*` route
+with `409 {"unconfigured": true}`.
 
-- **Reads** run as the operator's default local `gh` login. Do not set
-  `GH_CONFIG_DIR`.
-- **Pushes to contributor PR head branches** use one shared `resubmit` flow with
-  caller-selected identity. Interactive chat resubmits run as the confirming
-  operator after dropping the injected App token. The unattended autofix worker
-  explicitly selects the contributor-push user in `TRIAGE_PUSH_LOGIN` — a GitHub
-  *user* account, the operator's own or a dedicated one, authenticating by its
-  pinned SSH key alone (`TRIAGE_PUSH_SSH_KEY_FILE`), with no API token. The
-  Setup tab's push-identity card generates that key and accepts it only after
-  GitHub's `ssh -T` greeting names the login being written
-  (`prospector_app/backend/push_identity.py`). Pushing to a fork head branch
-  rides "Allow edits from maintainers", which grants push to maintainer
-  *users*, so an App installation token can never do it. `assert_push_target` refuses any ref that is not the open
-  PR's own head — a repository ruleset targets branches and grants bypass to
-  actors, so it cannot scope a restriction to one account, and this is where the
-  user's reach is actually bounded. With the worker identity unset every
-  unattended push refuses; it never falls back to the operator or the App.
-  What the push user commits is authored as the App's bot account
-  (`resubmit_identity.commit_identity`; the push user itself with no App), so a
-  pull request the App opens reads as one actor and a squash merge has no
-  machine user to credit.
-- **Writes** use a token minted from `TRIAGE_BOT_KEY_FILE` by
-  `pipeline/get-bot-token.sh`, and are attributed to `TRIAGE_BOT_LOGIN`. When a
-  bot token cannot be minted, the executor obtains no token and **every write is
-  forced to dry-run**. `executor.live_possible()` probes token minting and is the
-  single source of truth used by `identities()` and `caps.py`. Dry-run is a
-  per-machine fallback, not deployment policy: a machine that can mint the bot
-  token executes approved writes for real. The hard write-gate is unchanged:
-  `bot_run` and `bot_merge_run` refuse every write with an empty token, and the
-  bot subprocess environment never falls back to the operator's login.
-- **Merges are upstream squash-merges as the configured bot, gated per PR.**
-  The app calls `gh pr merge --squash` against `TRIAGE_REPO` through the
-  bot's installation token; it does not cherry-pick into a fork under a human
-  identity. The executor gates a human-initiated merge on
-  `pipeline/gates.py:merge_eligibility`: gate-clean ∧ security GREEN ∧ not
-  CODEOWNERS-gated. A head no security review has judged (no review, or a
-  GREEN one of an earlier head) waits on one, or on the operator's reason to
-  merge without it, which rides the merge's Activity entry
-  (`security_waiver`). A RED or YELLOW verdict blocks at any
-  age and across pushes until a GREEN review of the current head replaces it
-  (`gates.security_merge_block`). ANALYZE disposition is not required, so a
-  clean, reviewed PR the pipeline never analyzed is mergeable.
-  `merge_allowed` (disposition=merge ∧ gate-clean ∧ current GREEN security ∧
-  current verified-fix) is the stricter gate the pipeline uses to
-  auto-recommend merge. Every merge, dry-run or live, first scans the PR
-  again at the head it pins (`executor._threat_rescan` through
-  `threat_scan.scan`) and refuses on any block the fresh stamp carries
-  (`gates.threat_blocks`, the threat half of `pr_clean`), so a blocklist or
-  signature change since the last stamp stops it. A live merge also passes the
-  deterministic compile
-  preflight (`pipeline/compile_preflight.py` +
-  `gates.compile_preflight_gate`), which runs the profile's
-  `verify.compile_cmd` over the current default-branch HEAD plus the PR diff in
-  the sandbox. Anything but a clean pass blocks. A block that gives no verdict
-  on the PR — missing sandbox infrastructure, a default branch that will not
-  build (`gates.compile_preflight_waivable`) — clears on the operator's
-  reason, which rides the merge's Activity entry (`compile_waiver`); a compile
-  failure or a diff that no longer applies never does. The preflight runs only on a live merge; dry-run
-  previews never boot a container. `gh pr edit` is never allowed on the
-  executor path.
-- **The app chat agent** (`prospector_app/backend/chat.py`) has a separate,
-  curated upstream-write path. When token minting is available, conversational
-  confirmation unlocks PR edit/comment/close/reopen/review, issue
-  create/close/reopen/comment/edit, and workflow reruns against `TRIAGE_REPO`
-  as `TRIAGE_BOT_LOGIN`. Without a token those upstream writes are withheld;
-  they never fall back to the operator's login. A separate helper may always
-  file an issue only on `PROSPECTOR_FEEDBACK_REPO` as the operator, with
-  `PROSPECTOR_FEEDBACK_TOKEN` when `.env` sets one, else their stored `gh`
-  login. The agent's resubmit helper uses the confirming operator's identity for interactive
-  contributor-branch pushes and is advertised in every interactive session,
-  with or without a mintable bot token. On Claude that session's Edit and Write
-  tools reach the clones `resubmit prepare` makes and the `--body-file`
-  directory, and nothing else (`claude_backend._edit_rules`); each clone rule
-  names a path segment below `pr-*`, because the CLI lets a trailing `/**` match
-  the `pr-<n>.resubmit.json` that sits beside a clone and that `push` reads its
-  target from. On Codex the same session runs a permissions profile
-  (`codex_backend._write_profile`) that reads everywhere (issue #282) and writes
-  to those two directories and the temp directories; the profile grants whole directories, so
-  a clone's `.git` and the `pr-<n>.resubmit.json` beside it are inside its
-  reach. The worker opts into its configured
-  machine identity separately. On Claude the session's **reads** are held to the
-  checkout (`claude_backend._read_rules`), which holds the source it answers
-  questions about, its operating manual, and the clones and body files a
-  resubmit works in; the deployment's `.env` and the private keys
-  `TRIAGE_BOT_KEY_FILE` and `TRIAGE_PUSH_SSH_KEY_FILE` name are denied inside it
-  by `claude_backend._secret_denies`, because the CLI reads its working
-  directory whatever the allow rules say and a deny rule is what reaches the
-  Read and Grep tools and an allowlisted text filter's file argument alike. The
-  turn's environment is `safety_guard.agent_env` — the operator's, held to what
-  the CLI and the curated helpers need, with `TRIAGE_STORE_URL` and
-  `PROSPECTOR_FEEDBACK_TOKEN` withheld because `jq` is an allowlisted filter and
-  `jq -n env` prints the environment; helpers re-read them from the repo-root
-  `.env` that `pipeline.settings` loads on import, so a deployment configured by
-  process environment alone, with no `.env` on disk, has no `store-read` in chat
-  and files feedback with the stored `gh` login. These
-  paths do not use the per-PR merge gate. Chat PR close, reopen, and review
-  operations, plus issue closes, call their corresponding executor paths; other
-  upstream chat writes use `prospector_app/agent/gh-write`, which validates the
-  operation, pins the configured repository, and mints a token for each invocation.
-  Chat reads use the operator's `gh` login. The chat agent cannot merge.
+- **Reads** run as the operator's local `gh` login. Do not set `GH_CONFIG_DIR`.
+- **Writes to `TRIAGE_REPO` go only through `prospector_app/backend/safety_guard.py`**,
+  as the GitHub App named by `TRIAGE_BOT_LOGIN`, using a token
+  `pipeline/get-bot-token.sh` mints from `TRIAGE_BOT_KEY_FILE`. Each write path
+  there (`bot_run`, `bot_merge_run`, `chat_bot_run`, `alert_bot_run`,
+  `propose_bot_run`, `label_bot_run`) has its own allowlist. Every path refuses an
+  empty token or an empty bot login and never falls back to the operator's login.
+  A machine that cannot mint a token does all executor writes as dry-runs
+  (`executor.live_possible`). Executor writes, dry-runs included, go to the
+  Activity log. Widening any allowlist needs security-focused tests.
+- **Never hand-run `gh` writes against the triaged repository.** The
+  `PreToolUse` hook (`.claude/hooks/deny-triage-writes.py`) denies `gh pr`/`gh
+  issue` writes to `TRIAGE_REPO` and every mutating `gh api` call. It judges a
+  `git push` by the remote it resolves to and fails closed. Run `git push` as
+  its own command from the repo root.
+- **Merges** are `gh pr merge --squash` as the bot, one PR at a time. A
+  human-initiated merge must pass `gates.merge_eligibility`, then a fresh threat
+  scan at the pinned head (`executor._threat_rescan`), then, live only, the
+  compile preflight (`pipeline/compile_preflight.py`). The pipeline's own
+  merge recommendation is the stricter `gates.merge_allowed`. The chat agent
+  cannot merge.
+- **Pushes to contributor head branches** go through `resubmit`, and
+  `assert_push_target` refuses any ref that is not the open PR's own head.
+  Interactive pushes run as the confirming operator. Unattended pushes run as
+  `TRIAGE_PUSH_LOGIN` with its SSH key alone, and refuse when that is unset.
+  Commits are authored as the App's bot (`resubmit_identity.commit_identity`).
+- **Agents that read outsiders' text are locked down.** A headless agent
+  (`pipeline/headless_agent.run_agent`) reads only the roots it is handed, gets
+  only the environment variables its caller names, has no `git` rule beyond
+  `prospector_app/agent/git-read`, and runs contributor code only in the Docker
+  sandbox. The host decides every outcome from what it observed (sandbox
+  exits, gates). An agent's word never decides an outcome on its own.
+- **The chat agent** (`prospector_app/backend/chat.py`, manual
+  `prospector_app/agent/context.md`) writes upstream only through the curated
+  helpers after the operator confirms. Its environment is
+  `safety_guard.agent_env`, and its Claude read rules deny `.env` and the key
+  files (`claude_backend._secret_denies`).
+- **`.env` has two writers, each with an allowlist.**
+  `worker_control.set_flags` writes only the settings `settings_registry` marks
+  editable. `backend/onboarding.py` writes the wizard's keys step by step and
+  refuses `connect` and `join` once `settings.configured()` is true, so no HTTP
+  call can repoint a running deployment.
 
-Every executor write, including a dry-run, is appended to the app activity
-log. Resubmit pushes and branch updates append best-effort entries under the
-identity selected by their caller. Chat PR close, reopen, and review operations,
-plus issue closes, are executor writes and appear in the log; other
-bot-authenticated chat writes and feedback issue filing do not. Executor
-enforcement lives in
-`prospector_app/backend/safety_guard.py`: an allowlist that permits only
-comment/close/reopen/review as the configured bot plus the dedicated
-`bot_merge_run`, `propose_bot_run` (an issue-fix pull request) and
-`label_bot_run` (one of the issue-fix status labels) paths, and refuses any write with an empty token or an empty
-`TRIAGE_BOT_LOGIN` — a deployment configured without a GitHub App is legal,
-reads normally, and writes nothing.
+## The pipeline
 
-**Two writers touch `.env`, each with its own allowlist.**
-`worker_control.set_flags` writes the settings `pipeline/settings_registry.py`
-marks editable — the worker lane switches, `TRIAGE_WORKER_ID`, the automation's
-behavior (agent model, budgets, limits, caps, follow-up mode) and this machine's
-sandbox sizes — each validated as the code reads it, and nothing else: no
-editable setting names a credential, a path, or the store. `prospector_app/backend/onboarding.py` writes deployment configuration
-for the setup wizard, allowlisted per step: `connect` (`TRIAGE_REPO`,
-`TRIAGE_STORE_URL`, the profile path, and presentation/review config, plus
-`profile.json` itself), `join` (a pasted bundle: the `connect` keys plus the bot
-identity and the Slack alerts webhook, and, when the sharer opted in, the bot's private key — which the app
-files owner-only at `~/.config/prospector/<login>/private-key.pem` and names in
-`TRIAGE_BOT_KEY_FILE` itself — and the contributor-push identity with its SSH
-private key, filed the same way at `~/.config/prospector/<login>/push-key`; the
-key *paths* are never client-writable there), `writes` (the bot identity and
-key path), and `worker` (the contributor-push identity — the three values
-together or none, or a pasted bundle's `push` section together with its
-profile, so a machine that joined early adopts the sharer's current repository
-policy; the bundle's env is never taken there), and `profile` (a pasted
-bundle's profile alone — no env key is writable in it — so a configured
-machine whose push identity is already in place can still refresh its policy),
-and `agent` (`TRIAGE_AGENT_PROVIDER`, the machine-local Claude/Codex/none
-choice, which never travels in a bundle), and `notify`
-(`TRIAGE_SLACK_WEBHOOK_URL`, the Setup tab's Slack alerts card: a
-`https://hooks.slack.com/` URL, or empty to turn the alerts off; the onboarding
-state reports only whether one is set, and `/api/onboarding/notify/test` posts a
-test message). **`connect` and `join` are refused once
-`settings.configured()` is true**, so a working deployment cannot be pointed at
-another repository or another database through the HTTP surface; `writes` and
-`worker` stay open because the wizard reaches them after `connect` has already
-configured the app, and `agent` and `notify` stay open so an existing install
-can switch its local provider and set its Slack webhook. Both writers share `env_file.py`, which replaces the file
-whole from a temporary sibling. `settings` reads every deployment value from
-the environment on the call, so `onboarding.reconfigure` — the ONE adoption
-path — makes a write take effect in the running process by updating the
-environment and then resetting the store singleton and the two caches built
-from configuration at import.
+The PR pipeline runs these steps in order. Each step is idempotent and safe to
+re-run. A step marked *worker* also runs unattended on a machine with that lane
+switched on (Setup tab → worker switches, `TRIAGE_*_WORKER`).
 
-A checkout with no `TRIAGE_REPO` boots and serves the wizard: one middleware in
-`app.py` answers `409 {"unconfigured": true}` to every `/api/*` route except
-`/api/onboarding/*`, `/api/meta`, and `/api/health`, so an unconfigured process
-can never answer a list route with an empty result from the local SQLite
-fallback and read as a configured Prospector watching an empty repository.
+| Step | What it does | Code | Trigger |
+|---|---|---|---|
+| INGEST | Fetches open PRs and their issue links into the store | `pipeline/ingest.py` | `uv run prospector ingest` · Control `ingest` · *worker* `pr_watch` |
+| THREAT SCAN | Applies deterministic attack signatures and the actor blocklist; no agents | `pipeline/threat_scan.py`, `threats.py` | `uv run prospector threat-scan` · Control `threat-scan` · *worker* `threat_refresh` |
+| CLUSTER | Summarizes diffs and groups related PRs | `pipeline/cluster_driver.py`, `cluster_pass.py` | workflows README (full pass) · Control `cluster-new` · *worker* `TRIAGE_CLUSTER_WORKER` |
+| ANALYZE | Proposes a disposition for each PR in a cluster | `pipeline/analyze_driver.py` | Control `analyze-clusters` · `uv run prospector triage-cluster --cluster <id>` |
+| GATE | Decides which candidates are clean enough to review further | `pipeline/gates.py` | evaluated on read |
+| SECURITY | Adversarial review of clean PRs → RED / YELLOW / GREEN | `pipeline/security_review.py`, `security_driver.py` | `uv run prospector security-review --pr <n>` · *worker* verify hunter |
+| VERIFY | Docker sandbox shows the PR's test failing before the fix and passing after | `pipeline/verify_driver.py`, `verify_pr.py` | PR page / Control `verify-pr` · *worker* `TRIAGE_VERIFY_WORKER` |
+| RESOLVE | A human approves; the executor acts upstream as the bot | `prospector_app/backend/executor.py` | the app |
 
-## The pipeline (`pipeline/`)
+Lanes alongside the pipeline:
 
-One canonical store, seven phases plus a deterministic threat-scan backstop. **The store is the only source of truth** — all markdown (`STATUS.md`, briefings) is generated output, never parsed back.
+- **Design review** (`pipeline/design_review.py`): a Prospector-run reviewer of
+  reuse, layering, conventions and test strength. It runs in the verify
+  hunter's rotation, or via Control `design-review`.
+- **Autofix** (`backend/fix_queue.py`, `fix_worker.py`): update, rebase,
+  agent-written fixes, conflict resolves and description rewrites, pushed to
+  contributor branches. Eligibility is `gates.fix_eligibility`, and a change
+  parks for approval unless `TRIAGE_FIX_AUTOPUSH` names its action.
+- **Issues** (`issue_triage/`): issue ingest, analyze and find-fixed (Control
+  jobs), and the issue-fix factory, which reproduces, fixes, proves, reviews
+  and proposes a PR (`python -m issue_triage.fix_lane` /
+  `python -m issue_triage.propose`, *worker* `TRIAGE_ISSUE_FIX_WORKER`).
+- **Alerts and advisories** (`alert_triage/`): GitHub code-scanning,
+  Dependabot, secret-scanning alerts and repository advisories (Control
+  `security-sweep`).
 
-- **Store** (`store.py` over `storekit.py`): a SQL database — one row per PR (its sections `meta / signals / reviews / drift / summary / cluster / analysis / security / issues / threat / greptile_review / verify / verify_request / fix_request / display` carried in a JSON `data` column, alongside mirror columns and a `saved_at` write-stamp), one row per cluster, a `runs` ledger table (every row naming the machine that wrote it, `host` — `storekit.stamp_host`; an import of another machine's rows keeps theirs), and singleton `registries` rows (the durable threat registry, action items, the `reviewers` activity registry). The backend is `TRIAGE_STORE_URL` (a shared SQL database) or a local SQLite default under `pipeline/store/`. **Validated on write; `storekit`/`store.py` is the ONLY accessor** — never hand-write rows.
-- **Freshness** (`freshness.py`): every fact section is stamped `against_head_sha`. When a PR head moves, its analysis/security/signals go stale **automatically** — `is_current()` is the single check. No manual invalidation. A security verdict has no age limit: it holds for as long as the head it judged is the PR's head. A verification's age limit is `TRIAGE_VERIFY_MAX_AGE_DAYS` (default 30, editable on the Setup page), and it applies only to outcomes for the PR or inconclusive ones (`gates.VERIFY_AGES_OUT`), since the default branch moving can overturn them; an outcome against the PR blocks at its head until a re-verify replaces it. An issue's facts are stamped `against_updated_at` and read through `issue_triage/issue_freshness.is_current`: current while the stamp is at or after the issue's `meta.content_updated_at`, which ingest sets to its last material change (creation, a title or body edit, a reopen, or a comment by someone other than `TRIAGE_BOT_LOGIN` or another GitHub App), so labels, assignments, reactions and the bot's own comments leave them current; a record with no content time is held to the exact `updated_at` match.
-- **Reviewers** (`reviewers.py` + `review_fetch.py` + `review_policy.py`): the ONE registry of automated PR reviewers — code reviewers (Greptile, CodeRabbit) and security scanners (Superagent, Socket). Ingest fetches each PR's bot feed (reviews, review threads with resolution, comments, the head's check runs) in one GraphQL call per ten PRs, re-reading a PR's conversation only when GitHub's `updatedAt` or the head moved, and stores every reviewer's normalized entry under the PR's `reviews` section; each adapter's `bar` judges its entry `pass | fail | stale | pending | na`. `review_policy` decides which reviewers gate: it reads the `reviewers` registry ingest recomputes and gates on every reviewer seen within `TRIAGE_REVIEWER_ACTIVE_DAYS`, so every machine on one store gates alike. `ci_signal.py` derives CI from check runs minus the reviewers' own, so a reviewer's verdict reads under its name and CI reflects the repository's workflows. A check the base branch's rulesets or branch protection require that the head carries no result for, with nothing still running, reads `unreported` (`awaiting-approval` when a
-check suite at the head waits on a maintainer's approval to run): not passing, so not clean, and the merge pre-flight reads it live and names the checks (`executor._live_ci_block`). Both CI readers finish every page of check contexts at the pinned head; an incomplete check or requirements read records `unknown`, and an unconfirmed live CI read blocks the merge.
-- **Gates** (`gates.py`): the ONE policy module. `pr_clean` (not-malicious ∧ threat-scanned at the current head ∧ every active reviewer's and scanner's bar ∧ CI passing ∧ mergeable ∧ fresh), `security_eligible`, `verify_eligible`, `merge_allowed` (pipeline auto-recommend — requires a current `verified-fix` alongside GREEN security), `merge_eligibility` (human-initiated app merge — drops the disposition requirement; treats never-run, pending, and unverifiable verification, a verification taken at an earlier head, and one for the PR that has aged past the window as non-blocking; requires no reason for those merges; blocks actual negative verification evidence at the current head whatever its age; permits an explicit `escalate` only with a logged reason; blocks on any recorded RED or YELLOW security verdict until a GREEN review of the current head replaces it; and blocks a head no security review has judged — no review, or a GREEN one of an earlier head — unless the operator gives a reason), the derived `cluster_state` (computed on read, never stored), and `merge_demotion` — the ONE merge-pick consequence (security verdict + verify outcome + quality-gate bar), derived at read time by `Pr.disposition`/`rationale`/`asks` over a stored-verbatim ANALYZE verdict, so nothing derived is ever stored and a cleared fact heals the read in place. **Every active reviewer's bar is a hard merge requirement** — which reviewers gate is detected from the repository (`pipeline/review_policy.py`). A merge pick any active reviewer or scanner blocks reads as `request-changes`, with that reviewer's own ask. A repository running no reviewer requires no external review. A `threat` verdict of `malicious` is a sticky hard block (fails closed, no staleness exemption). A **stacked** PR — its base (`meta.base`, `Pr.base_ref`) is not the default branch, usually another PR's head — is judged by nothing that assumes the default branch: `gates.stacked_block` fails both merge gates, and `security_eligible`, `verify_eligible`, `blocked_on_security`, `fix_huntable` and `design_review.huntable` all refuse it, until its base merges and GitHub retargets it. A PR may belong to several clusters (straddlers, #196); each cluster proposes a disposition for its members and `reconcile_disposition` picks the PR's single disposition by severity precedence (`needs-human > close-dup > close-fixed > close-wontfix > close-stale > request-changes > merge` — most-blocking wins).
-- **Threats** (`threats.py`): the ONE threat-detection policy — attack-pattern signatures (obfuscated self-decoders, capability smuggles, build-config require-injection, EOL-churn camouflage, and code after a form feed, U+2028 or another line-breaking character inside an added line, `embedded-line-break`, suspicious) scanned over a PR's whole diff, read into lines on newline alone by the scan and by the cache (`diffpaths.diff_blocks`) — the capped cache copy (`diff_cache.is_complete`) is never the input; a capped PR's whole diff is read from GitHub for the scan alone (`diff_cache.fetch_complete`), and a file GitHub returns no whole patch for reads `unscannable-diff` (suspicious) — plus the durable actor blocklist + incident log in the store's `threats` registry. `threat_scan.py` is the deterministic driver (Phase 0.5). Code reviewers/CI are quality signals, **not** a security verdict — this is the supply-chain backstop; scanner findings (Superagent, Socket) reach the SECURITY agents as evidence to confirm or refute, never as a verdict.
-- **Threat evidence** (`threat_evidence.py`): every head the threat scan flags `malicious` gets an append-only capture in the store's `threat_evidence` table (schema 30), taken after the verdict is stamped and from read-only GitHub reads alone — the diff pinned to the flagged SHA (`compare/<base>...<head>`), the PR's diff at the head before it (the one the force-push that produced it replaced, else — GitHub hides a blocked actor's force-pushes — the newest earlier head in the shared `diffs` cache, whose copy also stands in when GitHub no longer serves it), the PR, commit (author/committer dates, signatures), actor (stable user id) and force-push metadata, and where each signature matched. The diffs are gzip-compressed in binary columns with their SHA-256; the JSON record holds match locations, never payload text. A head gets at most one incomplete capture and one complete one, and the store has no update or delete for them. `export` and the PR page's download (`/api/prs/{n}/evidence/{id}/bundle.zip`) write inert files with `SHA256SUMS`, re-hashing first; `export` refuses a destination inside a git work tree. Captures and exports are runs-ledger phases (`threat-evidence:capture`, `threat-evidence:export`). No agent prompt and no `store-read` subcommand carries the evidence, and the Tables tab shows a binary column as its byte count.
-- **Display** (`display_pass.py`): the PR page's plain-language card — `{problem, fix, how}` a cheap model writes from the title, the description's problem section, linked issues, the summary and the effective rationale, asks and merge blockers. Presentation only: `check` refuses a reply citing a PR or issue number the inputs never name or naming another verdict, and the section counts only while its head and `source_hash` (verdict, rationale, asks, one-liner) match (`display_pass.current`), so it is not in `freshness.SHA_BOUND`. A clustering worker writes it unattended (`prospector_app/backend/display_refresh.py`, merge picks first, `TRIAGE_DISPLAY_DAILY` per UTC day, ledger phase `display:write`); the page's Summary offers "Write summary" for one PR.
-- **Profile** (`profile.py`): the ONE repository-policy profile — repository-specific vocabulary as validated JSON data (`TRIAGE_PROFILE` path; strict parse, hard error on unknown/malformed fields). Owns the subsystem taxonomy, the path→risk-tier glob map, the CODEOWNERS gating policy (gated globs + owners), trusted/automation authors, dependency manifests, the test/artifact path rules, the contributor docs code-authoring agents are handed (`authoring.contributor_docs`, default the agent-instruction files the common coding agents read — `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md`, `CONVENTIONS.md` — then `CONTRIBUTING.md` in each place GitHub looks for it), and the review-harness PR-template policy (`review-new-pr/harness` reads the same JSON standalone via stdlib `json`, never importing `pipeline`).
-- **Authoring** (`authoring.py`): the ONE account of how an agent that writes a change bound for `TRIAGE_REPO` fits it to the repository — the house-style rules (`HOUSE_STYLE`: reuse an existing helper before adding one, put the change in the layer that owns the behavior, match the neighbouring code and tests, refactor nothing the change does not need) and the repository's own contributor docs, read from a tree only its maintainers change: the lane's base for the issue-fix agents (`docs_from_tree`), the default branch on GitHub for the PR autofix agent, whose checkout is the contributor's (`docs_from_upstream`). The prompt ranks the docs below its own rules and tells the agent their workflow instructions are not its job. PR autofix (`author_fix`) and the issue-fix reproduction, fix, and solo/cross agents all take them; the reproduction agent, which writes tests alone, takes the docs without `HOUSE_STYLE`. When the profile names `verify.lint_cmd` — the repository's mechanical convention checks — every one of those agents is offered it as a `lint` lane of its sandbox check (`lint_note`), and the host holds every agent-authored change to it (`gates.lint_block`): the lint runs in the sandbox over the tree the change produces, and a failure the tree without the change shares (the default branch, `error_kind` `base-lint`; the PR's own diff or a replay's pre-fix tree, `tree_fails`) is the repository's and does not count against the change. A fix that brings in a lint failure is refused (autofix) or ends `fix-unproven` (issue fix); a lint sandbox that cannot run is the machine's failure. Human-authored PRs and their merges are not held to it.
-- **Taxonomy** (`taxonomy.py`): the ONE subsystem-classification accessor; the vocabulary itself is repository policy in the active profile (`profile.py`, selected by `TRIAGE_PROFILE`, generic default = everything `other`); `issue_triage` imports it.
-- **Issue links** (`issue_triage/issue_links.py`): an issue's linked PRs are read through `linked_prs` — the ONE accessor merging the issue's stored links with GitHub's own closing references and an index of the PR store's `issues.linked` sections (`issue_triage/pr_index.py`), so the Issues tab, the ANALYZE and FIND-FIXED bundles, and the close-as-fixed gate all see a PR opened after the issue's last ingest.
+Unattended agent work is metered by `pipeline/capacity.py`. A failing machine
+trips its lanes via `pipeline/worker_health.py`. Every phase and lane appends
+to the runs ledger in the store.
 
-Phases (each idempotent; drivers own the deterministic half, Workflow scripts the agentic half):
-- **0 INGEST** (`ingest.py`) — fetch open non-draft PRs + issue links into the store, each PR's `meta` carrying its base ref and its head ref and repository (which find a stacked PR's base PR). Cheap, re-runnable.
-- **0.5 THREAT SCAN** (`threat_scan.py` + `threats.py`) — scan each PR's whole diff for attack signatures + check authors against the blocklist; stamp `threat`, block actors, log incidents, then preserve each malicious head's evidence (`threat_evidence.py`; a run that makes no GitHub read captures nothing). Deterministic, no agents. A `malicious` flag removes the PR from the gate permanently. An operator starts the full run (the Control-tab `threat-scan` job or the CLI); a worker machine also runs the same `threat_scan.scan` every ten minutes over the open PRs `threat_scan.unscanned` names — a head INGEST or `refresh_prs` recorded without a verdict, a new arrival, a verdict an older signature revision stamped (`threats.REVISION`, raised with any change to what a signature fires on), or a blocked author's PR still reading clear — so a force-pushed payload is flagged soon after its head is ingested (`prospector_app/backend/threat_refresh.py`, ledger phase `threat-scan:heads`, woken early by the stale merge-candidate refresh and the PR watch). The same machine records those heads without an operator's INGEST: every fifteen minutes `prospector_app/backend/pr_watch.py` lists the PRs GitHub reports updated since the later of its last pass and the last full ingest (less five minutes), upserts each new arrival, moved head and reopen through `ingest.upsert_listed`, records each close (`ingest.select_changed`, `ingest.record_closed`), books the pass as `ingest:watch`, skips a pass another machine finished within the interval, and wakes the threat refresh (`TRIAGE_PR_WATCH`, default on). What the scan finds is loud in the app: a red banner atop every page (`threat_view.summarize` on the system-health poll) names the open PRs flagged malicious and the PRs holding a live-looking credential a maintainer leaked (`gates.maintainer_leak`, the Slack alert's test too; a contributor's leak of their own deployment's secrets stays quiet) until those PRs close and those items are handled (a rescan of the head that no longer finds a leak withdraws its open item, and a finding with other evidence reopens a handled one), each phrase opening Security → Threats narrowed to the PRs it names (`?show=malicious | credentials`), Home leads with a Flagged malicious card (`automation` bucket `malicious`, checked before every other standing), Security → Threats (`/api/threats`, `threat_view.detail`) lists the flagged PRs, the maintainers' credential leaks apart from every other open one, the blocked authors and the incident log (each incident keeping the day it was first noticed), and the PR list marks a malicious row, offers a Threat column, and filters on `malicious | suspicious | clear | unscanned` (the row's `threat`: a verdict at any head, `clear` only at the current head). `threat` is head-bound (`freshness.SHA_BOUND`): `gates.pr_clean` — and with it both merge gates and the security and verify hunters' eligibility — refuses a head without a verdict of its own (`gates.THREAT_SCAN_STALE`, never a demotion; Home reads such a merge pick as waiting on the worker), while a malicious verdict blocks at any head. An operator who judges a secret-leak finding no credential clears it from the PR page's merge-block box (`threat_scan.clear_secret_leak`, ledger phase `threat-scan:clear`): its item is dismissed on that evidence, and `gates.secret_leak_blocks` lifts the block for that evidence at that head. A genuine dependency bump is never fetched or signature-scanned but has its head stamped `clear` with `threat_scan.EXEMPT`'s detail, so it passes that requirement. A head the pass cannot judge (no diff, or a capped copy whose whole diff it could not read) waits six hours before another try; a verdict is stamped only while the stored head is still the one scanned, and the run's blocks, incidents and action items land on a fresh read of their registry.
-- **1 CLUSTER** (`cluster_driver.py` + `workflows/summarize.js`) — diff-grounded summaries → semantic clusters with stable IDs. Identical heads get identical memberships, and open PRs with direct (`explicit` / lower-confidence `body-ref`) links to the same issue are deterministically given a common cluster even when semantic summaries diverge. A PR's `cluster` backref is a list (`cluster.ids`); a straddler can belong to more than one cluster, and each cluster retains its per-member proposed dispositions in `cluster.proposals`. New PRs are folded in incrementally — existing clusters stay frozen and only gain members — by the assign workflow or headlessly by `cluster_pass.py`.
-- **2 ANALYZE** (`analyze_driver.py` + the analyze workflow) — per-cluster dispositions + outcome, stored verbatim; a merge pick's blockers (below-bar review, a security verdict, a verify outcome) derive its effective disposition at read time (`gates.merge_demotion` via `Pr.disposition`), so a re-run or signal refresh that clears the blocker heals the read with nothing re-stored.
-- **3 GATE** (`gates.py`) — which merge candidates are clean enough for security review.
-- **4 SECURITY** (`security_driver.py` + `workflows/security.js`) — 3-lens adversarial review + refuting verifier on gated merge candidates only; RED flips the PR to needs-human and reopens every cluster it belongs to.
-- **6 VERIFY** (`verify_driver.py` + `verify_pr.py`) — run the PR's test in a secretless Docker sandbox against the machine's own pinned default branch: red before the fix, green after, each phase in its own container. Dynamic verification never runs against a credentialed deployment. The launcher announces the sha256 of every patch it mounts and `run-phase.sh` waits for the mount to match before applying, exiting `SENTINEL_PATCH_UNREADABLE` (40) when it never does, as it does for any apply failure that is the harness's rather than the patch's (a corrupt patch file, a full disk) — a worker fault, never a verdict; only git's own does-not-apply family of messages reads as the conflict (30); every sandbox test run (red, green, repro, coverage, and the autofix and issue-fix test checks) first runs the profile's `verify.test_setup`, and a setup that fails exits `SENTINEL_SETUP_FAIL` (60), a harness fault; red and green failing on the same test-file load error (`gates.shared_load_error`) hold the run like a non-sentinel exit, so the hunter retries it; the harness canary runs before any real PR, caches only a pass, and carries the sandbox's own output in its failure; every base-image build step keeps its output tail in the failure it raises (`verify_driver.BuildFailure`), which the pin-refresh ledger entry, the pin's `refresh_error`, and the compile preflight record carry verbatim. On macOS the Setup tab's "Docker file sharing" row reports Colima's mount type and blocks on anything but virtiofs. A merge-gate lane command the PR fails is re-run once per image over the pristine base (`sandbox-run.sh --pristine`, `verify_driver.base_command_failure`); a base that fails it too is the command's fault, never the PR's: the compile preflight records it as `error` (kind `base-compile`), a verify lane records `base_fails` on the entry and the run ends `base-lane` (a system fault), and `gates._lanes_verdict` reads such a lane as escalate rather than regressed. A parked `resolve` whose related-tests run finds its patch no longer applies onto the current default branch is cancelled with a `reclaimed` stamp and re-armed for the hunter. A green that exits failing is accepted only when its parsed failing set is contamination the red run already carried and none is named by the PR's test hunks (`gates.green_accepted`); that partial evidence never auto-recommends merge. A blind adequacy verdict commits before any run, and `gates.verify_outcome` computes the outcome from agent judgments plus host-observed exits. For a PR without tests, an agent may author new test files through a fail-closed validator; a confirmed red→green records `agent-verified`, which supports human `merge_eligibility` but never automatic `merge_allowed`. Configured compile/build lanes run over the patched tree; failures become `regressed`, infrastructure errors become `escalate`, and missing lane evidence is surfaced as incomplete. Any number of machines run this phase: the queue claim is a compare-and-swap, each machine holds its own base pin (`verify_base` is keyed by `settings.worker_id()`) and refreshes it daily after the default branch moves, and every result records the base it was proven against. Every base image build — the daily pin's and the compile preflight's per-head one alike — is followed by `verify_gc.collect`, which keeps the machine's pin, the newest other generation, and every generation the held list names (`verify_gc.HELD_FILE`, the evaluation set's bases), removes the stopped containers a failed classic-builder step leaves holding its parent layer, and clears the BuildKit cache whole once it passes `BUILD_CACHE_KEEP_BYTES` (a partial or size-bounded builder prune reclaims nothing there). The pin refresh and the compile preflight both build default-branch HEAD, so one SHA's builds take its generation lock (`verify_gc.generation_lock`) in turn, a build that finds the SHA's image and finished build directory returns it, and a sweep skips a generation a build holds. The hardened sandbox image every base is built FROM is tagged by the profile's pnpm pin and a hash of `sandbox/Dockerfile` (`verify_driver.sandbox_image`), a base build builds it first when the machine lacks it, and a finished base is reused only when it was built FROM that image. The idle hunter claims a PR's security review the same way, so two machines never both spend one; its security pool is every clean PR with no verdict at its current head that no current analysis routes to a close (`gates.blocked_on_security`), analyzed merge picks first, so a PR is reviewed before a human merge needs it; its security and verify lanes alternate picks while both have work. A worker machine also re-ingests stale merge candidates every half hour (`prospector_app/backend/stale_refresh.py`, one machine at a time under the `stale-refresh` lease), so a candidate whose head moved is not left waiting on a human to notice. A backend that starts first ends the verify, security and clustering runs a backend before it on that checkout left running (`prospector_app/backend/worker_children.py`), so a run never outlives the request its recovery re-queues. A run claimed by a worker whose heartbeat has been silent an hour is reclaimed by any worker's `recover_orphans` (re-queued at a resumable step, else errored `interrupted`), and an errored request whose fault is the harness's (`gates.VERIFY_REQUEST_FAULT`) is re-queued by the hunter under `gates.verify_retry_allowed`: when the head moved, when a different worker is picking, or six hours later on the same one, three runs per head; the PR's own refusals and cancels wait for an operator.
-- **7 RESOLVE** — human approves in the app; the executor acts upstream as `TRIAGE_BOT_LOGIN`.
+## Where policy lives
 
-**CLUSTERING LANE** (`pipeline/cluster_pass.py` + `prospector_app/backend/cluster_refresh.py`)
-runs CLUSTER and ANALYZE unattended. One pass re-homes PRs whose head moved
-since they were clustered (`cluster_driver.reset_stale_memberships`), summarizes
-PRs lacking a current summary in batches of ten, places summarized
-never-clustered PRs into the existing clusters, new ones, or standalone (one
-agent per subsystem chunk of `ASSIGN_CHUNK`, in rounds built against the
-clusters the round before committed, each answer held to its unit by
-`cluster_pass.restrict`), then analyzes pending clusters through
-`analyze_clusters.run`. Every stage takes the PRs nearest a merge first, and a
-cluster ranks by its best member (`gates.merge_rank`: merge-eligible, then
-clean, then the rest). The SUMMARIZE and ASSIGN prompts each have one copy in
-`cluster_driver.py`, shipped to the Workflow scripts in their index files. On a
-machine with `TRIAGE_CLUSTER_WORKER=1` the lane runs a pass every hour in a
-child process under `PROSPECTOR_UNATTENDED=cluster`, so every agent call is
-gated by the AI capacity policy and booked as the lane's spend; a pass takes at
-most 50 PRs and 10 clusters, and a UTC day's passes at most
-`TRIAGE_CLUSTER_DAILY_PRS` (default 150) and `TRIAGE_CLUSTER_DAILY_CLUSTERS`
-(default 30), counted from the ledger rows the passes stamp `trigger: worker`.
-A pass starts only when the store shows clustering work and the machine holds
-the `cluster-lane` lease (`Store.claim_lease`), so one machine runs it at a
-time. The Control tab's `cluster-new` job runs the same pass for an operator,
-ungated. The pass exits `EXIT_AGENT_UNAVAILABLE` on an agent outage (which
-trips every agent lane), `EXIT_LIMIT` on a spent usage limit (which books
-nothing), and `EXIT_FAULT` when a stage's every agent failed.
+Each decision has one owner. Change the decision there, call it from everywhere
+else, and never re-derive it at a call site.
 
-**AUTOFIX** (`prospector_app/backend/fix_queue.py` + `fix_worker.py`) sits beside
-the phases rather than in them: a per-PR `fix_request` section any app queues and
-the worker on `TRIAGE_FIX_WORKER=1` drains, pushing to the contributor's head
-branch as the machine user. Actions are `update` (merge the base in), `rebase`
-(replay onto current base behind a pinned lease), `fix` (an agent authors a
-change), and `describe` (an agent rewrites the PR description to the
-repository's `.github/PULL_REQUEST_TEMPLATE.md` — `pipeline/describe_pr.py` —
-for a PR whose every open review finding is about the description; the body is
-held to the profile's required sections and to the author's text kept verbatim,
-parks for approval, and is posted as the bot through the curated `gh pr edit`
-write, Activity-logged, with no push at all). An **objection**
-(`pipeline/objections.py`) is a machine judgment that names a defect an agent
-may fix: a resolve reviewer's judged rejection, a compile excerpt the pristine
-base passes, the fix reviewer's rejection, or a current YELLOW security finding
-(behind `TRIAGE_FIX_HUNT_SECURITY=1`). It is never human authorization: the
-profile must name `objection` in `autofix.fixable_gates`, every other block
-applies unchanged, one continuation runs per PR, head, and objection signature,
-and `TRIAGE_FIX_OBJECTION_BUDGET` (default 20) bounds continuations per worker
-per UTC day. A push records the head it created
-(`fix_request.result.pushed_head_sha`); when CI fails at that head, the
-hunter's first pick for the PR is a `fix` from the `ci` objection naming the
-failing checks (the reviewers' own excluded), so the bot repairs what it broke
-before anything else. A reviewer verdict a head never got is not a fix target:
-`prospector_app/backend/rereview_hunt.py` runs on a worker machine every half
-hour and, for an open, mergeable, CI-green PR whose active reviewer's bar is
-stale or pending at a head at least six hours old, posts that reviewer's
-mention as the bot through `executor.retrigger_review` (Activity-logged), at
-most five per pass and `TRIAGE_REREVIEW_BUDGET` (default 40) per UTC day,
-once per head (ledger phase `rereview:request`), and starts the ingest wait
-for the verdict; `TRIAGE_FIX_HUNT_REREVIEW=0` turns it off. A rejected resolve is continued inside its kept merge worktree
-(`resubmit commit` lands the follow-up on the merge) and re-judged under
-`resolve_autopush_bar` with both rounds kept on the request; a rejected fix is
-retried once; a hunted mechanical action that fails to compile queues a `fix`
-with source `objection`. A `fix` pushes unattended only when `TRIAGE_FIX_AUTOPUSH`
-names it and `gates.fix_autopush_bar` clears it: reviewer `safe`, compile clean,
-a clean sandbox run of the test files related to the touched paths when any
-exist (the same related-tests run a resolve gets; a sandbox that cannot run
-ends the request `failed` for the hunter to retry), every touched path at or
-above `TRIAGE_FIX_AUTOPUSH_MIN_TIER` (default 2), and at most
-`TRIAGE_FIX_AUTOPUSH_MAX_LINES` (default 300) changed lines. A `fix` runs two agents inside a `resubmit prepare` clone:
-`pipeline/author_fix.py` writes the change against a goal — the operator's own
-typed guidance, else the profile's fixable gates read off every active code
-reviewer's open findings and its own summary (Greptile's reasons for a sub-bar
-score, CodeRabbit's walkthrough — each names defects even when it left no inline
-comment) and the failing checks; scanner findings are never a fix goal — and
-`pipeline/review_fix.py` then tries to refute the finished patch from a fresh
-context with read-only tools. A `fix` with no guidance, no
-findings, no summary and no failing check refuses before any agent runs, and so
-does an unguided one whose every finding names a path the bot may not author
-on (`gates.fix_withheld_paths`: the CODEOWNERS-gated globs plus
-`autofix.deny_globs`); the same globs reach the author's prompt as a do-not-edit
-rule, while the re-gate over the finished patch stays the guarantee. The
-clone is the head commit alone, so the agent is handed the PR's diff against its
-base as a host file, and it may run exactly one host command,
-`prospector_app/agent/sandbox-check` (`typecheck`, `lint`, or `test <test files>`), which
-runs the profile's compile command, lint command, or test runner inside the verify sandbox over
-current default-branch HEAD + the PR diff + the agent's current edits
-(`prospector_app/backend/sandbox_check.py`, pins read from `PROSPECTOR_CHECK_*`
-set by `author_fix`, never argv); the host runs none of the contributor's code,
-and the agent's only other Bash is `prospector_app/agent/git-read`, read-only git
-pinned to that clone. Every headless agent's Read/Grep/Glob is held to the
-directories and files it is handed (`headless_agent.run_agent`'s `read_root`:
-its worktree, a private directory made for the run, the one diff file, the
-pinned base clone), its cwd lies inside them because the CLI reads its cwd
-whatever the rules say, and its environment is the CLI's own needs plus the
-variables its caller names (`env_allow`), so no key, `.env`, or deployment
-variable is in reach of text an outsider wrote. No agent carries a `git`
-prefix rule: `git diff` reads any host file through `--no-index` and
-`--output=<path>` writes one. Every run the agent makes leaves a bounded
-record (the lane, the files, the exit, and why it could not run when it did
-not) in `<verify scratch>/autofix/pr-<n>.checks.jsonl`, which the worker
-collects after the agent returns and stores as `fix_request.result.checks` on
-every ending; the queue row and the PR's fix panel show it, and the autopush
-bar does not consult it. The compile preflight and the lint
-(`fix_worker._lint`, `gates.lint_block`) on the finished patch measure that
-same composed tree. Only an explicit
-`safe` passes; a malformed, timed-out, or crashed reviewer reads as unsafe. In
-between, the patch is held to the files the agent reported
-(`author_fix.assert_disclosed`) and re-gated on the paths it really touched, so
-an agent cannot author its way onto a withheld path. A mechanical `rebase` that pauses on real
-conflicts escalates — for operator-clicked requests, and for the hunter's
-under `TRIAGE_FIX_HUNT_RESOLVE=1` — to a fourth action, `resolve`: a locked-down agent resolves the conflicted
-paths inside a merge of current base into the head (`resubmit prepare --merge`
-+ `pipeline/resolve_conflicts.py`), the result passes the compile preflight,
-and it parks as `awaiting-review` with a per-file rationale, keeping its
-worktree — the only action that does, and so the only one whose approval its
-own machine must push. `gates.fix_eligibility` holds `resolve` to the CODEOWNERS
-and deny-glob bar over the conflicted paths, with no profile opt-in; every
-resolve parks first, and approval pushes the
-kept merge commit with no history rewrite. A deployment that names `resolve` in
-`TRIAGE_FIX_AUTOPUSH` lets the authoring machine's worker approve its own
-parked resolves through `gates.resolve_autopush_bar` — the ONE unattended-push
-policy: conflicted paths below risk tier 0 (`pipeline/risktier.py`), two
-independent refuting reviewers (`pipeline/review_resolve.py`, behavior and
-history lenses over evidence from `pipeline/resolve_evidence.py` — per-side
-`git log`, store summaries, linked issues) both affirmatively `safe`
-(fail-closed on any malfunction), and a clean sandbox run of the test files
-related to the conflicted paths. The verdict is stamped into
-`fix_request.result.auto_review`; a pass records `approved` and the normal
-push path takes it, anything less stays parked with the reason for the
-operator, whose manual Push never consults the bar. A parked resolve whose
-head moved is cancelled instead of judged — the hunter re-arms on the new
-head. A parked resolve whose authoring worker has been offline a day, and that
-no reviewer rejected, is cancelled by any other worker
-(`fix_worker.reclaim_stranded_resolves`) with a `reclaimed` stamp that re-arms
-the head for the hunter; a reviewer-rejected one stays for the operator. A
-`running` fix request whose worker's heartbeat has been silent an hour is
-marked `failed` by any worker's `recover_orphans`, which the hunter retries
-after its cooldown. `gates.fix_eligibility` is the ONE
-policy —
-fail-closed on a malicious threat verdict, any recorded RED security verdict, a
-CODEOWNERS-gated path, a path the profile's `autofix.deny_globs` names, a
-non-open PR, a head the push user cannot reach for any action but `describe`
-(a branch on `TRIAGE_REPO` itself, or a fork with "Allow edits from
-maintainers" off — ingest records `head_repo` and `maintainer_can_modify` in
-the PR's meta; an unread one does not block), and (for an unguided `fix`) a profile naming no
-`autofix.fixable_gates`. Operator guidance is its own opt-in: a named human
-typing the goal authorizes the fix where the profile does not, and the change
-still parks for that same human's approval. Guidance chooses the job only —
-every other block answers identically whatever was typed, so it can never widen
-the bot's reach. That reach is what these blocks bound, not the merge boundary:
-an autofixed PR still faces `merge_eligibility` unchanged. Every action is probed before it is pushed —
-the mechanics run in full (`resubmit update --probe` for a base merge, `prepare
---rebase` for a replay), the resulting tree goes through
-`compile_preflight.run_for_patch`, and the request parks as `awaiting-review`
-with its evidence unless `TRIAGE_FIX_AUTOPUSH` names the action. A parked
-request keeps no worktree: `push_approved` rebuilds one. A mechanical request
-re-derives against current base and refuses if that no longer resolves, so an
-approval means "push this against base as it stands now" rather than replaying
-an older verdict; an agent-authored `fix` parks its whole reviewed patch and the
-approval clones the head and re-applies those exact bytes (`resubmit apply`),
-never a fresh agent attempt. Both can therefore be pushed by any autofix
-machine, not only the one that produced them. `TRIAGE_FIX_AUTOHUNT=1` lets an idle worker queue the mechanical actions
-itself (a hunted `rebase` whose history holds merge commits becomes an
-`update` instead of refusing, and a head whose CI reads `unreported` takes an
-`update`, which re-runs CI under the names the base branch requires), gated by `gates.fix_huntable` — the review provider's bar on top of
-`fix_eligibility`, and deliberately not `mergeable`, CI, or a GREEN security
-verdict, none of which a PR that needs updating can have. Every hunted action
-gets one unattended attempt per head SHA — a verdict ending (`pushed`,
-`refused`, `cancelled`) rests the PR until the author pushes, and only an
-operator's re-queue retries the same head; a `failed` ending is the machine's
-(a diff GitHub did not answer, a restart mid-run, an agent that never
-finished, a sandbox that could not run, a `resubmit` that crashed — its
-traceback names the exception) and rests the PR only for
-`fix_worker.FAILED_RETRY_COOLDOWN_SECONDS`, so a recovered machine picks it
-back up unprompted. A hunted rebase that pauses on conflicts and fails short of
-a resolve (the AI capacity gate is shut, the sandbox could not run) keeps the
-conflicted paths on its ending; under `TRIAGE_FIX_HUNT_RESOLVE=1` the hunter
-then ranks that head's rebase as an agent pick (`fix_worker._needs_resolve`),
-which waits for the capacity gate like every other, so the rebase is not re-run
-only to pause on the same conflicts. `TRIAGE_FIX_HUNT_FIX=1`
-additionally lets the hunter queue unguided `fix` actions, on the inverse
-population — CI passing, mergeable, review score below the bar and scored at
-the current head — at most `TRIAGE_FIX_HUNT_LIMIT`
-(default 3) in flight, and only where the profile names `autofix.fixable_gates`.
-A hunted request the agents judged and turned down — a resolve or fix
-reviewer's rejection, a continuation that declined, a compile, lint or
-related-tests failure, an agent that would not guess at a conflict — is handed
-back to its author (`prospector_app/backend/handback.py`, the ONE policy for
-it): it ends `refused`, and the bot comments once per head asking the author to
-fix the conflicts, the build or the review findings, or closes the PR with a
-note when its author is not a maintainer and has not pushed, commented or
-reviewed on it in 30 days. A risk-tier-0 hold, a withheld path and a machine
-fault stay with the operator, as do an operator's own request and a fix for CI
-the bot broke. `TRIAGE_FIX_HANDBACK` is `live`, `dry-run` (the default: logged
-to Activity, nothing written) or `off`; while live, the worker also hands back
-this host's judged parked resolves and the dry-run refusals still at their
-head, ten a pass. `uv run python -m prospector_app.backend.handback` lists what
-a live hand-back would do now.
-A pushed `fix` re-triggers the review provider as the bot (Activity-logged) and
-starts the backend wait that ingests the fresh score. Every action that ends —
-refused, failed, parked for review, or pushed — appends a `fix:single` entry to
-the runs ledger carrying its action, its one-line reason, the head it was pinned
-against, a failed one its failure kind, and a refusal or cancel whether it
-`judged` a change the automation prepared (a gate or reviewer refusing it — a
-refusal with nothing to judge goes through `fix_worker._decline` — or an
-operator discarding a parked change; the worker's own cancels are re-arms),
-which is where an outcome outlives the `fix_request` the next queue click
-overwrites; the trust ladder counts only judged outcomes, once per PR, action
-and head; the app's fix run history and each machine's Recent activity read
-that lane, a failure of kind `capacity.PAUSED_KIND` (a hunted item the
-closed AI capacity gate stopped short of an agent) reading as waiting for
-capacity rather than failed, and `fix_history_backfill.py` seeds it from the
-endings a store already holds. The queue view itself holds an ending for half an
-hour, so a run that starts and finishes between two polls is still readable.
+- `pipeline/gates.py`: PR cleanliness, the merge bars, security and
+  verify eligibility, autofix eligibility, disposition reconciliation.
+- `issue_triage/issue_gates.py`: the issue-fix bars. `alert_triage/alert_gates.py`:
+  alert dismissal.
+- `pipeline/threats.py`: attack signatures and the blocklist.
+- `pipeline/review_policy.py` + `reviewers.py`: which automated reviewers
+  gate, and each one's bar.
+- `pipeline/freshness.py`: whether a fact is current. Facts are stamped with
+  the head SHA (PRs) or update time (issues) they were computed against, and go
+  stale on their own.
+- `pipeline/profile.py`: repository-specific policy as validated JSON
+  (`TRIAGE_PROFILE`): taxonomy, risk tiers, CODEOWNERS gating, trusted authors,
+  sandbox commands.
+- `pipeline/settings_registry.py`: every environment variable, its default,
+  and whether the Setup page may edit it.
 
-**ISSUE FIX** (`issue_triage/fix_lane.py`) drives one reported issue through
-reproduce → judge → fix → prove → review over single-commit clones of a base
-this machine already holds; only its separate propose step writes upstream. Every
-agent reads the report as GitHub shows it (`reproduce_issue.report_block` through
-`intake_audit.visible`: no HTML comment outside a code fence, no invisible
-character). `run` is the
-integrator: each locked-down agent (`allow_gh=False`, its own clone as
-`read_root`) authors or judges, and only host-observed sandbox exits and
-`issue_gates` name the ending — a reproduction outcome from
-`issue_gates.reproduction_outcome` over the two red legs `prove` observed, a
-fix's fate from `issue_gates.fix_proof_bar` over the green legs, the compile
-preflight, the lint, the related-tests run, and two refuting reviews (root-cause,
-scope-safety). The reproduction agent's authored tests are held to the host's
-rules: the reproduction must prove red on the base, and the preservation tests
-it writes beside it — the neighbouring behavior a fix must keep — must prove
-green there. The fix agent then opens on a clone whose one commit already
-carries both frozen sets, and its change is re-gated
-(`issue_gates.fix_patch_regate`, capped at `settings.issue_fix_max_lines()`
-changed lines) on the paths it really touched before the reproduction must turn
-green and the preservation tests stay green. A fix that clears its checks then
-runs the full suite (`prove.suite_regress`, `TRIAGE_ISSUE_FIX_SUITE`, on by
-default) over the lane's tree against that tree's own failing set, cached per
-tree (`prove.suite_baseline`); a failure a second container confirms re-runs
-the tree's baseline under the same load, files it now fails join the tree's
-exclusions, and a third run's exit decides — a failure that survives refuses
-the fix. The suite runner (`sandbox/verify-suite.mjs`) plans through the
-tree's stabilized wrapper, and plans a tree whose wrapper cannot answer from
-vitest's own file listing; a tree neither can plan (`gates.SENTINEL_NO_PLAN`)
-records the suite as skipped. `TRIAGE_SANDBOX_LARGE_SLOTS` and
-`TRIAGE_SANDBOX_LARGE_CPUS` size how many large phases run at once and the CPUs
-each gets. The one-agent lane
-(`issue_triage/solo_lane.py`) runs the same suite check through its
-`host_checks`, and the cross-tested lane (`issue_triage/cross_lane.py`) runs
-several such agents at once (`TRIAGE_ISSUE_FIX_MODELS`, one candidate per
-model), proves each candidate's tests red on the unfixed tree, runs every fix
-against every reproduction, and judges only a fix that passes each of them and
-at least two, shipping it with the tests of every reproduction it passed:
-candidates whose reproductions pin different behavior, each with a fix that
-passes its own, end `fix-disputed`; fixes that would agree but for existing
-tests they all fail end `fix-pinned`, naming those tests, since the lane never
-rewrites a repository's tests. A run with no agreed fix and one reproduction,
-passed by its own fix, judges that fix (`cross_lane.lone_reproduction`) unless
-a candidate called the report no defect; the run records `agreement.single`,
-and a fixed attempt so marked waits for an operator's Propose
-(`trust_boundary.held`) and says so under the proposal's risks.
-Agreement proves a fix does what the report asks, never that it does nothing
-more, so a cross-lane fix that clears the host's checks faces the scope-safety
-reviewer too and ends `fixed` only on its explicit `safe`. A rejected pick is
-revised by its own model, told the reviewer's reason, in up to
-`cross_lane.REVISIONS` rounds of the one-agent lane, each with every check and a
-fresh review, and counts only while it still passes the shipped reproductions
-as they were. The reviewer's inventory of
-unasked changes to inputs that worked vetoes that `safe` only on tier-0 paths,
-and elsewhere is listed under the proposal's risks. The scope-safety
-reviewer returns an inventory of every behavior the change alters, each marked
-asked-for or not and as working before or not, and `review_issue_fix` reads an
-unasked change to an input that worked as unsafe. A fix that clears every other
-check then has its trust boundaries recorded (`issue_triage/trust_boundary.py`,
-the ONE policy for them): a locked-down reviewer lists each crossing — network,
-remote code, process, auth, secrets, a loosened check, data exposure — marked
-asked for by the report or not, and every URL host on the fix's added lines
-that the base tree never names is a network crossing whatever the reviewer
-says. The run's `boundary` never changes its ending; `trust_boundary.hold`
-reads it: only a maintainer-filed issue whose report asks for a crossing
-authorizes it, so any other crossing, a review that did not finish, or a run
-with no record on someone else's issue holds the fix for an operator's
-Propose, and the pull request body warns of every crossing under Risks. All
-proof runs on the pinned base's image — `prove.pinned` reads the verify pin,
-`prove.held(sha, tier)` names a base by hand — and neither builds one; every
-fault (an agent outage, a sandbox that could not run, a base that fails the
-compile, an agent that gave up when every sandbox check it ran faulted —
-`issue_gates.checks_fault`) is a machine condition, never a verdict, and the clones are removed on
-the way out. The command `python -m issue_triage.fix_lane --issue N
-[--lane staged|solo|cross] [--reproduce-only] [--base-sha SHA --tier T]`
-resolves the report from the issue store or a live fetch, cancels when the issue
-closed or its report was edited under the run, writes
-`<verify scratch>/issue-fix/issue-<n>/result.json` (with the lane and its
-models), and appends one `issue-fix:run` row to the issue runs ledger. It makes
-no upstream write. `python -m issue_triage.propose --issue N [--live]` proposes
-that result for a maintainer's review through `executor.propose_issue_fix`: the
-run must pass `issue_gates.propose_gate` (ended `fixed`, issue still open, report
-unedited, patch scans clear) and its rendering `fix_pr_body.problems` (the
-profile's required sections, each filled by its heading; exactly `Fixes #N`;
-agent text held to inert plain text; a tier-0 change carries a warning); the push user commits the exact patch on
-the proven base, authored as the App, and pushes it to its own fork of `TRIAGE_REPO`, fenced by
-`propose.assert_propose_target` to branch `prospector/issue-<n>-<report sha[:8]>`
-(suffixed `-<k>`, 2 to `propose.MAX_ATTEMPTS`, for the report's k-th proposal),
-never overwriting one (a branch already holding the same change on the same base,
-left by an opening that failed after its push, is reused) and never re-sending
-the code an earlier proposal's branch holds; and the bot opens the pull request through
-`safety_guard.propose_bot_run`, whose payload may name only that head, the
-default branch, a title and a body, declining maintainer edits (only a fork's
-owner may grant them, and GitHub grants them by default). A branch with an open
-pull request is reported and one whose pull request merged is refused; a pull
-request closed without merging is never reopened — the report's next proposal
-opens from the next numbered branch; with no token every run is a dry-run
-that stops before the push; every outcome is an `issue-propose` Activity entry.
-A proposal never merges: it faces `merge_eligibility` like any other PR. A
-cross-lane run that ends `fix-disputed` records its readings (groups of
-candidates whose fixes pass every reproduction in the group, their own
-included, `cross_lane.readings`)
-and every candidate's patches and verdict. `python -m issue_triage.question
---issue N --ask [--live]` asks the issue one question through
-`executor.ask_issue_question`: `issue_gates.question_gate` (disputed, open,
-unedited), a locked-down agent with no tools drafting one lettered option per
-reading and a default (`dispute_question.draft`, kept beside the result so a
-dry-run's draft is the one posted), the host's framing with the agent text held
-inert and `dispute_question.problems`, then a bot `gh issue comment`,
-Activity-logged (`issue-question`), asked once, holding the run's base against
-the verify sweep. `--resume` reads the first reply after the question from the
-issue's author or a maintainer whose first line names an option, or takes the
-default after a week, and resumes the run on that reading
-(`cross_lane.judge_reading`, the recorded cross-test results read back, the
-pick through the host's checks and the scope-safety review), writing the new
-ending over `result.json` (the disputed one kept as `disputed.json`) for
-`propose`.
+## The store
 
-**ISSUE FIX REVIEW** (`issue_triage/fix_review.py` + `fix_review_runner.py` +
-`prospector_app/backend/issue_fix_worker.py`) brings the factory into the app.
-Each issue carries three sections (schema 26): `fix_request`, the one pending
-action (`solve`, `send-back`, `answer`, `ask-reporter`, `propose`), which
-`fix_review.queue` admits only when it fits the latest attempt and nothing is
-in flight; `fix_run`, that attempt distilled for display (`fix_review.distill`:
-each candidate's own account, the agreement, the picked change, the checks, the
-reviewers, the question, the proposal — no transcripts); and `fix_thread`, the
-operator's words and the worker's notes. `fix_review.fix_status` derives on
-read whose move it is (`review`, `question`, `running`, `reporter`, `pr-open`,
-`pr-closed`, `failed`, `declined`, `pr-merged`; a proposal's
-`fix_followup` counts only while it follows that pull request, and `pr-closed`
-takes a new `solve`); the Issues query filters and sorts on it. The worker
-lane (`TRIAGE_ISSUE_FIX_WORKER=1`, health lane `issue-fix`) claims one request at
-a time by compare-and-swap (`IssueStore.claim_fix_request`) — a `solve` on any
-issue-fix worker, every follow-up only on the host its run names, since it needs
-that run's files and held base — and `fix_review_runner.run_request` carries it
-out: `solve` runs the cross lane with the request's guidance — an operator's or
-maintainer's words, ranked above the agent's own reading (`solo_lane.GUIDANCE`)
-— and its notes — anyone else's words (the issue's author, the code reviewers,
-CI), framed as data like the report (`solo_lane.NOTES`) — and drafts a
-dispute's question at once. Before the lane, an issue a maintainer did not file
-gets its `intake` judged (`issue_triage/intake_audit.py`, the ONE policy for
-issue text as input): a reviewer with no tools reads the raw report and notes
-as data and calls it `clear`, `suspicious` or `malicious`, an author on the
-threat blocklist reads `malicious` unread, and hidden content, a report longer
-than the review reads, or a review that gave no verdict reads at least
-`suspicious`. A hunted or public solve of a
-malicious report ends `refused` with no lane run — no label, no comment, no
-restart on a reply; an operator's own solve runs. A fix whose intake is short of
-clear is held like a trust-boundary crossing (`trust_boundary.held`); `send-back` has a small agent read the comments (`route`), then either one
-agent revises the current change on a clone that holds it
-(`solo_lane.run(start_patch=…, review=True)`) or the cross lane restarts with the
-comments as guidance. While the attempt is open as a pull request
-(`fix_review.open_pr`: proposed, and the follow-up has not seen it merged or
-closed), a revision goes onto that pull request the way the follow-up's own do
-(below), honoring the request's dry run, and a restart — the routed one or a
-`solve` — is refused, since the pull request and its reviews belong to the
-approach it discards; `answer` resumes a dispute on the chosen reading or
-re-solves with a written answer; `ask-reporter` and `propose` take the executor's
-bot paths. Between requests the lane reads replies to questions asked on GitHub
-every half hour, and `TRIAGE_ISSUE_FIX_HUNT=1` lets it queue `solve`s, up to
-`TRIAGE_ISSUE_FIX_HUNT_BUDGET` a UTC day, only for a fresh issue the
-fixability triage judged `go` at its current content, a maintainer's first,
-then the most fixable (`fixability.hunt_key`). The triage
-(`issue_triage/fixability.py`, the ONE policy for whether an issue is worth an
-attempt; section `fix_triage`, schema 34) runs one issue at a time ahead of the
-hunter, on this machine's pinned base: another author's open pull request that
-claims the issue and moved within `RIVAL_ACTIVE_DAYS` (14) makes it `skip`
-with no agent, and the same claim holds a finished fix from proposing
-(`public_loop._rival_claim`); otherwise a read-only Sonnet agent reads the
-report, the author's and maintainers' replies, and the code, and answers `go`,
-`ask` or `skip` with a fixability estimate, the host keeping only cited paths
-the clone holds. An `ask` posts its one question on the issue as the bot
-(`public_loop.ask_triage`, under the public loop's mode and scope, at most
-`MAX_ASKS` an issue); the section is stamped against the issue's content, so
-the author's reply restales it and the next pass reads the answer, which rides
-to the `solve` as guidance (a maintainer's) and notes (anyone else's). Another
-author's pull request that does not hold the issue is evidence
-(`issue_triage/second_opinion.py`, the ONE policy for it). Once a solve
-ends `fixed`, the open pull requests by others that claim to fix the issue — at
-most three with tests, none whose author is blocklisted or whose diff reads
-malicious — have their test files run in the sandbox on the base (they must
-fail twice), with their own change (they must pass twice), and with our fix.
-Tests that clear the first two and fail with ours are a gap, and so is any case
-the report asks for that a judge with no tools (`second_opinion.compare`) finds
-their change handles and ours misses, named in words. The runner revises the
-fix once with notes naming the failing tests, quoting their code as data, and
-listing the judge's cases, never the other author's change; the revision faces every check a fix
-does and replaces the fix only when it ends `fixed`. Each rival's entry
-(`covered`, `gap-closed`, `gap-open`, `skipped`) rides the run as
-`second_opinion`; a gap left open holds the fix (`trust_boundary.held`), and a
-gap closed credits that pull request's author as a co-author of the proposal's
-commit and in its body. The lane beats its own heartbeat (the
-`issue_fix_worker` registry) while its drain loop runs, and on start and every
-five minutes `issue_fix_worker.recover_orphans` ends `failed` (reason
-`interrupted: …`) each `running` request this host claimed before its process
-started, or whose host's heartbeat has been silent an hour; the hunter re-queues
-a failed `solve` that carried no guidance once it has rested an hour, three
-tries an issue (`fix_request.attempts`). `POST /api/issues/{n}/fix` queues an
-action as the operator; `/fix/cancel` cancels a queued one. In the app the Issues
-explorer filters and sorts on the status (`?fix=` in the URL, `needs-you` for
-review and question), Home counts `review` and `question`, and the issue flyout's
-Auto-fix section (`components/IssueFixPanel.tsx`) shows the attempt — each agent's
-account and the agreement between them, the change in `DiffView`, the checks, the
-reviewer, the question with its options, the thread — with the actions that fit
-it, dry-run aware. The detail endpoint reads the one issue's row, so it is current
-after a click. `python -m issue_triage.fix_review_backfill [--draft-questions]
-[--live]` records the results a machine already holds on their issues.
-
-**ISSUE FIX FOLLOW-UP** (`issue_triage/followup.py`) is the ONE policy for a
-pull request the factory proposed, from opening until it is green or a person
-must decide. A proposal's body lists the pull requests that name the issue
-(`issue_triage/related_prs.py`, GitHub search as the operator) and answers the
-repository template's
-checklist, ticking only what the pipeline did (`fix_pr_body._checklist`). Every
-ten minutes the idle issue-fix worker reads each open proposal live
-(`followup.read`: state, head, the repository's own CI checks with their
-workflow run and job, and every code reviewer that gates it — the policy's
-active ones plus any that reviewed this pull request) and `followup.decide`
-names one step: `done` (merged or closed, recorded as `closed_as`; a `done`
-record without one is read once more to fill it in), `hand-back` (`MAX_REVISIONS`
-spent, or CI still failing after a re-run with no failing log naming a changed
-file), `describe`
-(the description re-rendered once per head and posted only when it differs),
-`rerun` (failed jobs re-run once per head), `revise` (a reviewer below its bar,
-or CI failing after a re-run in a job whose log names a changed file — the
-findings or log lines go to the agent as quoted evidence), `second-opinion`
-(another author's pull request with tests that opened since, each judged once:
-a `send-back` carrying `rivals` that the runner judges like a solve's second
-opinion, pushing a revision only when it closes a gap they find and handing the
-pull request back when none does), `wait`, or `ready`; a new rival releases a
-ready hold.
-Ahead of every bot signal, new maintainer feedback on the pull request (their
-reviews with words, unresolved inline comments and comments, read from the
-same feed with `authorAssociation`) that `issue_triage/reply_router.py` — one
-locked-down agent with no tools — reads as asking for a change is a `revise`
-carrying their words, on its own budget of `MAX_MAINTAINER_REVISIONS` (3); one
-that leaves the head where it was hands the pull request back with the reason.
-Feedback routed to a step, read as asking nothing, refused by the safeguards,
-or unreadable three times running is marked handled; a record that predates
-feedback routing starts from its first routing pass.
-A hand-back or ready holds until the head moves or a maintainer asks for a
-change, and either one surfaces the issue as `review`; it is recorded with the
-head and reason it was judged at (`judged`), and any other step at a new head
-reads `watching`. `TRIAGE_ISSUE_FIX_FOLLOWUP` is `live` (the default), `dry-run`
-(each step is noted on the issue and nothing is written upstream or spent on an
-agent), or `off`. Live, the executor edits the description
-(`executor.update_issue_fix_proposal`) and re-runs jobs
-(`executor.rerun_issue_fix_checks`) as the bot through the chat write
-allowlist, Activity-logged, and a revision is a `send-back` with source
-`followup` that `fix_review_runner._revise_proposal` runs on the attempt's base, or
-the current pin when this machine no longer holds it. A revision that ends
-`fixed` goes onto the same branch as one more commit leased on the head the
-pull request shows (`propose.push_revision`; a merge of the newer base when it
-was proven on one), the run it records keeps the proposal, and the follow-up
-watches the new head; any other ending leaves the pull request, its run and the
-result on disk as they were. An operator's send-back takes the same path and
-does not count against `MAX_REVISIONS`, which bounds the follow-up's own.
-The issue carries the follow-up as `fix_followup` (schema 27).
-
-**ISSUE FIX PUBLIC LOOP** (`issue_triage/public_loop.py` +
-`public_comments.py`) is the ONE policy for what GitHub shows of an issue's fix
-attempt, for the issues in scope: the ones a maintainer filed
-(`gates.priority_author`), or every attempted issue under
-`TRIAGE_ISSUE_FIX_PUBLIC_SCOPE=all`; `all-dry-run` serves every issue too, and
-runs a live loop as dry-run for the ones a maintainer did not file
-(`public_loop.issue_mode`). The store stays the state machine:
-`label_for` derives one status label (`fix in progress`, `needs answer`,
-`iterating on PR`, `ready for review`) from
-`fix_review.fix_status`, the attempt and the follow-up, carried by the issue and
-by the pull request it proposed; an attempt that ends without a fix gets no
-label and no comment, since the fault may be the pipeline's rather than the
-report's (`couldn't fix` is kept only to take off a label set earlier);
-`comments_due` names the comments the attempt calls for — the opened pull
-request on the issue, and the follow-up's ready or hand-back on the pull
-request, once per head — each rendered by the host with an agent's
-words held inert, gated by `public_comments.problems`, and marked so it posts
-once. Every ten minutes the issue-fix worker follows up its proposals, then
-`refresh` ingests the in-scope issues GitHub reports updated (listed over REST,
-read through the full ingest's GraphQL selection, candidate links left as
-stored, so a new maintainer issue reaches the hunter without a full ingest and
-the loop's own labels and comments leave its facts current), then `sync` compares each in-scope issue's derived label and
-comments with its `fix_public` record (schema 28) and makes only the missing
-writes as the bot — `executor.set_fix_label` through `safety_guard.label_bot_run`
-(the status labels only, created on first use) and `executor.post_fix_comment` —
-Activity-logged, under a short per-issue lease, a failure retried after thirty
-minutes. It never reads a label back. `sync` also queues, once per attempt with
-source `public`, what an operator's click queues in the app: `propose` for a
-fixed attempt that `trust_boundary.held` does not hold (a held one reads
-`ready for review` and waits for the operator) and `ask-reporter` for a drafted
-question, for an attempt that
-finished within `QUEUE_MAX_AGE` (3 days); a request it or the hunter queued that
-a machine fault ended is queued again after an hour, at most `MAX_RETRIES` (3)
-times per issue, reading `fix in progress` meanwhile. Each pass decides from the
-issue as its lease found it, and an issue that leaves scope only has its
-recorded labels taken off. Agent words in a comment lose HTML comment markers
-and their issue references are defused. The ready and hand-back comments name
-the head and reason the follow-up judged them at (`fix_followup.judged`). Before
-it, `answer_replies` reads back an issue the attempt concluded on (a question
-asked, or an ending without a fix that was not refused) when its `updated_at` moved: the comments since the
-attempt started by the issue's author or a maintainer, never the bot's — a
-letter answer stays `poll_replies`' — go to `reply_router`, and words it reads
-as actionable queue `answer` (a written answer to the question) or `solve`, a
-maintainer's words as guidance and the issue author's as notes; an edit to the
-report queues `solve` too, carrying any replies. An attempt that concluded over a day before the loop first read it
-starts from that read. Replies start at most `MAX_REATTEMPTS` (3) attempts per
-issue, then one comment leaves it to a maintainer. An agent outage in the pass
-trips the worker's agent lanes. `TRIAGE_ISSUE_FIX_PUBLIC` is
-`live` (the default), `dry-run` (each write logged as a dry-run and noted once on
-the issue, its record kept apart in `fix_public.dry`), or `off`.
-
-**DESIGN REVIEW** (`pipeline/design_review.py`) is a reviewer Prospector runs
-itself (`reviewers.DESIGN`, source `prospector`): one locked-down agent per PR
-head (no `gh`, no edits, `env_allow=()`, reads only this machine's pinned base
-clone and the head's diff) judges reuse — every finding cites the base file it
-duplicates — layering, drift from the repository's contributor docs and
-`rules/*.mdc`, and tests that would survive a broken implementation. The host
-keeps only findings on a file the diff touches (and, for reuse, an existing base
-file) and has each `blocking` or `major` one judged by a refuting verifier
-(`pipeline/design_verify.py`): one agent per finding, in the reviewer's sandbox
-and from a fresh context, told to refute it — for reuse, that the cited helper
-is reachable from the PR's file and behaves identically on every input the
-PR's code handles, with the PR's tests still passing; for layering, how many
-callers the move would change; for a test or convention claim, the test code or
-the rule itself. Its verdict rides the finding as `verification`: `confirmed`,
-`refuted` (kept, struck through on the PR page with the reason), `unsure`
-(downgraded to minor, `claimed_severity` kept), or `unverified` when the
-verifier gave no answer (shown, advisory); an agent outage or a closed capacity
-gate fails the whole review. The host writes `reviews["design"]` through
-`Store.save_design_review`, which refuses a head that moved; ingest's
-`parse_all` carries the entry over (schema 31). Its bar fails on any open
-`blocking` or `major` finding a verifier confirmed (`reviewers.design_standing`),
-so minor findings leave it green, and only those are autofix goals; a review
-stamped with an earlier `reviewers.DESIGN_RUBRIC` (the rubric's revision) reads
-stale and is taken again. Auto-detection plays no part: under
-`TRIAGE_DESIGN_REVIEW=gate` (default) it is a merge requirement and a PR waits
-on its review; `advisory` shows it on the PR page's Design review row and gates
-nothing; `off` stops the lane. A verify worker runs it as a third idle-hunt lane (`design`, taking turns
-with security and verify) under a per-PR `design_run` claim, the capacity gate
-and lane health, booking each ending as `design-review:run`. Autofix aims at
-its blocking and major findings only when the profile names `design` in
-`autofix.fixable_gates`, gating or not. Before the agent, the lane measures the
-head's **changed-line coverage** (`pipeline/coverage.py`,
-`TRIAGE_DESIGN_COVERAGE`, default on): the PR's added and modified tests plus
-`resolve_evidence.related_tests` over its changed JS/TS source run in the
-sandbox's `coverage` phase on this machine's pinned image, after the profile's
-`verify.test_setup` (what the repository's test scripts run before vitest), with
-`@vitest/coverage-v8` at the base lockfile's root vitest version — fetched once
-per version into `<verify scratch>/coverage-tool/`, `--ignore-scripts`, and
-mounted read-only — and the trusted `sandbox/verify-coverage.mjs` reports which
-changed lines are executable (a statement starts on the line, or it continues
-a statement holding no other) and which ran, with the run's test counts. The record
-(`measured | untested | skipped | error | fault`) rides the entry as `extra.coverage`,
-fills the prompt's evidence block, and shows on the Design review row; a
-`fault` — a run this machine could not carry out (a missing image, a harness
-exit, a full disk) — reads there as a worker fault and books the design lane's
-health. The
-container runs the PR's code, which can forge what it reports, so the figure is
-never a gate; a failed measurement is recorded and the review runs.
-
-**SLACK ALERTS** (`pipeline/notify.py`) is the ONE path by which a threat-scan
-finding reaches the team outside the app. At the end of every
-`threat_scan.scan` (the worker's pass, the Control-tab job, the CLI, the
-pre-merge rescan) `notify.send_due` posts, through the incoming webhook
-`TRIAGE_SLACK_WEBHOOK_URL` names, an alert for each open PR flagged malicious
-and for each open, non-fixture rotate-secret item on an open PR a maintainer
-wrote (`gates.maintainer_leak` — a contributor's leak of their own deployment's
-secrets stays in Action items), each first seen within `WINDOW_DAYS` (2) — a
-credential from the day the scan found the item's current evidence, so one that
-reopens a handled item (`actions.upsert`) posts too. Each alert is claimed once
-in the shared store before it is posted (`Store.claim_notification`, registry
-row `notify:<key>`, a credential's key carrying a digest of its evidence), so
-two machines post one message and a failed post is retried by later passes,
-`MAX_TRIES` (3) in all; a post never fails the scan. Outside-written text is mrkdwn-escaped and
-a credential alert names the file, never the value. Worker outages and lane
-trips are not posted. The chat agent's environment drops the URL. With no URL
-set nothing is read or posted. The Setup tab's Slack alerts card saves, clears
-and tests the webhook (onboarding step `notify`), and a teammate's copied setup
-bundle carries it; `uv run python -m pipeline.notify --test` posts a test
-message from the CLI.
-
-**WORKER HEALTH** (`pipeline/worker_health.py` + `prospector_app/backend/lane_health.py`
-+ `escalation.py`) is the ONE policy for a worker that is failing rather than
-the PRs. Every ending a worker writes is booked per lane (`security`, `verify`,
-`fix`, `issue-fix`, `cluster`) on that worker's `worker_health` registry record: a machine-fault ending
-(a `failed` fix run, a system-fault verify error per `gates.VERIFY_REQUEST_FAULT`,
-a security run that exited non-zero or held its verdict) extends a run of
-consecutive failures, any other ending resets it. Three in a row trip the lane;
-an agent outage (`headless_agent.AgentUnavailable`: the CLI is missing or not
-authenticated — `security_review.py` exits `EXIT_AGENT_UNAVAILABLE`, `verify_pr`
-ends the request `agent-unavailable`, the fix worker ends the run `failed`)
-trips every lane the machine runs at once; three consecutive base-pin refresh
-failures trip `verify`, and so does a pin no refresh has brought current within
-`TRIAGE_VERIFY_PIN_MAX_AGE_DAYS` (default 2; `verify_driver.pin_stale`, kind
-`pin-stale`, the Control tab's stale pin too), so a machine whose pin has
-stopped tracking the default branch claims no verification. A prompt the API's
-safeguards refuse (`headless_agent.AgentDeclined`) is a verdict on that request's text: the fix
-worker ends it `refused`, and it counts toward no trip. Every headless run is
-pinned to `TRIAGE_AGENT_MODEL` (default `opus`; empty leaves the CLI's default). A
-`codex:<model>` entry in `TRIAGE_ISSUE_FIX_MODELS` runs that cross-lane candidate on the
-Codex CLI (`pipeline/headless_codex.py`) under the same boundary: a permissions profile
-that reads the system and its roots, writes its clone and a private temp directory, and
-denies the operator's home, the deployment's credentials and the network; escalation
-off and the runners that would execute the repository's code forbidden; the sandbox
-check run by the host on the agent's behalf (a stand-in inside the profile files its
-arguments, `headless_codex._Broker` runs the tool with them); and a private Codex home
-per run. Its usage books under the `codex`
-account, which the AI capacity policy does not cap. A tripped lane picks nothing (a lane tripped on the
-agent alone still pushes what an operator approved). A lane tripped on the
-agent or the sandbox retests itself every fifteen minutes
-(`worker_selftest.py`: the CLI probe, or the daemon, pinned image and clone,
-and for a pin trip a pin that is current again) and reopens on a pass; one
-tripped on anything else (crashed runs, held verdicts) opens once after a six-hour cool-down; the Control tab's banner
-offers Resume. Every trip appends a `worker:trip` ledger entry. The operator
-hears of a tripped lane, or of a worker whose heartbeat has been silent an
-hour, through the app alone: the health strip atop every page reads both live
-and clears when the condition does, and a worker stopping on purpose drops its
-heartbeat so it never reads as offline. Every five minutes a verify, autofix or
-issue-fix machine reads the free space on Docker's own disk (`df` inside the
-sandbox image, so the Colima or Docker Desktop VM's; `disk_watch.py`) onto its
-health record, and the strip warns, without tripping a lane, while it is below
-`TRIAGE_DOCKER_MIN_FREE_GB` (default 20) or full. No issue is filed for either. A machine whose code is behind the store's
-schema, and so cannot write, sits out every worker loop (`schema_gate.paused`);
-each heartbeat records its code's schema version, so the strip on every machine
-names a worker a schema bump left behind as needing an update, not offline. Each
-worker's health is its own `worker_health:<id>` registry row. Worker stdout
-is mirrored to `<verify scratch>/logs/worker-<id>.log` (`worker_log.py`).
-The security lane's skip set carries a reason per PR
-and expires after six hours.
-
-**AI CAPACITY** (`pipeline/capacity.py` + `prospector_app/backend/capacity_view.py`) is
-the ONE policy for how much of each AI account unattended agent work may
-spend. A machine's account is what `claude auth status --json` reports (kept an
-hour; keyed by a hash of org and email, so machines on one account share it;
-the label masks the email). Every headless run (`headless_agent.run_agent`)
-parses the CLI's `rate_limit_event` — the account's 5-hour and 7-day window
-utilization — and records the newest reading in the store's `ai_capacity:<key>`
-row (each half replaced only by a newer one), and its usage and cost as an
-`agent:run` record in the `agent` ledger kind. That cost is the CLI's
-`total_cost_usd`, the run priced at API rates: a real charge only on an API-key
-account, notional on a subscription. `Store.agent_cost` sums it in SQL per lane
-or host, and an API-key account's daily budget is held to `Store.capacity_cost`. The policy lives in
-`ai_account:<key>`, set on the Setup tab's AI capacity card for this machine's
-own account (`PUT /api/capacity/policy`): for a subscription, a time zone,
-daytime hours, a daytime and an overnight cap (defaults 08:00–23:00, 50% /
-90%) and weekly pacing (weekly use may run at most 5 points ahead of the
-elapsed share of the account's own week); for an API key, a daily budget,
-without which no unattended agent work runs. `capacity.check` answers whether
-unattended work may start an agent now; a window past its reset reads as
-started over, a reading older than ten minutes is refreshed by one Haiku probe
-(`headless_agent.probe_reading`), and a failed probe waits ten minutes. Workers
-ask `lane_health.capacity_open(lane)` — one cached decision per machine — only
-with an unattended item in hand and before claiming it (the hunters' picks,
-automation-sourced requests, the parked-resolve auto-review, reply routing);
-an item started under the cap runs to completion, and an operator's work is
-never gated. Their unattended items run under `capacity.metered(lane)` (or
-`PROSPECTOR_AGENT_LANE` for a subprocess), which books them to the lane; a process
-started with `PROSPECTOR_UNATTENDED` is a batch whose every agent call is
-gated (`capacity.CapacityPaused`), and `pipeline/agent_wave.py` stops a
-multi-agent job at the first such refusal or usage-limit hit. A usage-limit
-refusal raises `headless_agent.CapacityExhausted` and pauses the account's
-unattended work until the reset; lane health trips no lane for it, and books no
-failure for a service overload (`AgentTransient`). The Control tab's AI
-capacity panel and the health strip show each account's windows, the cap in
-effect, whether unattended work may start, and the cost of today's background
-runs at API prices.
-
-**AUTHOR RESPONSES** (`prospector_app/backend/responses.py` +
-`responses_sweep.py`) reads, as the operator, how authors answered us: for each
-PR's latest landed action and each issue we closed, the human replies, reopens,
-new commits and same-author resubmissions since, and the `#N`/URL mentions in
-the author's own comments. The signals live in each PR's and issue's `responses`
-section (schema 35), and an operator's mark that they have seen a PR's in its
-`response_ack` section, which the sweep never touches; a worker machine
-(`TRIAGE_RESPONSES_SWEEP`, default on) rewrites the sections that changed every
-half hour under the `responses-sweep` lease, ledger phase
-`responses:scan`, and the Control tab's Scan responses runs the same sweep.
-`author_returns.py` reads the mentions to find an author's follow-up to a close.
-
-**HOME** (`prospector_app/backend/automation.py` + `prospector_app/frontend/src/views/homeCards.ts`)
-shows every open PR by whose move it is. `automation.classify` is the ONE
-derivation, computed on read into each PR row as `automation`
-(`{column, bucket, owner, reason}`) from the same gates and hunter predicates
-the workers decide by, with no network: `act` (flagged malicious by the
-threat scan — close it — ahead of every other standing; merge-eligible; a
-parked change awaiting approval; or a head whose workflow runs wait on your
-approval on GitHub — a click of yours), `auto` (in a worker queue, the
-hunter's next pick, or waiting on a reviewer, CI, or a retry — nothing for a
-person to do), and `handed` (the automation gave it back — to the author for
-conflicts, red CI, a failed verification, or an agent's reasoned decline, and
-a stacked PR — bucket `stacked`, ahead of everything but a malicious flag,
-naming the open PR whose head is its base (`service.stacked_on`); to
-you for needs-human, a security verdict, the analysis's asks, or a gated
-path). The Explorer filters on `automation_column` / `automation_bucket` /
-`automation_owner`, and every Home card, its count, and its link read that
-one field, so a card's number is the row count its link opens.
-
-**ALERTS** (`alert_triage/`) is a parallel family beside PRs and issues:
-GitHub code-scanning / Dependabot / secret-scanning alerts for `TRIAGE_REPO`,
-stored in the shared SQL store's `alerts` table (keyed by
-`alert_store.alert_id(source, number)`), stamped `against_updated_at`. Reads
-AND writes authenticate as the bot App — the App needs the three alert
-read/write permissions granted upstream; a missing permission just marks that
-source unavailable. `alert_ingest.py` fetches all states and computes
-deterministic PR links (`link_prs.py`); `alert_fixed_driver.py` +
-`find_fixed.py` run the tiered already-fixed pass (GitHub state → deterministic
-manifest/diff/text matching → headless-agent wave) writing `links`/`fix_scan`.
-`alert_gates.dismiss_eligibility` is the ONE dismissal policy (fixed-evidence
-reasons need a current fixed/likely-fixed verdict; judgment reasons need an
-operator note); the executor's `dismiss_alert` runs it through the
-`ALERT_WRITE_ALLOW` safety-guard path, Activity-logged, dry-run forced with no
-token. Secret values are never fetched or stored — only type + file locations.
-GitHub secret scanning (secrets already in the repo) is deliberately separate
-from `threats.py` (incoming PR diffs); they are never coupled. The app 🛡️
-Alerts tab projects this store.
-
-**Advisories** are the family's second collection: GitHub repository security
-advisories (`advisory_store.py` / `advisory_model.py`, table `advisories` keyed
-by `advisory_id(ghsa)`, the GHSA's twelve symbols as one base-21 integer, stamped
-`against_updated_at`; states `triage / draft / published / closed / withdrawn`,
-with `OPEN_STATES = {triage, draft}` the ones find-fixed judges).
-`advisory_ingest.py` lists every state as the bot and leaves out any advisory
-that was only ever a draft (closed without being published) — the App needs the
-repository-security-advisories read permission, and a missing one marks the
-source unavailable like any alert source. `advisory_find_fixed.py` applies one
-deterministic tier-0 rule (a summary reading "CVE ID follow-up for existing
-GHSA-…" is a `duplicate` of that GHSA) and then headless-agent waves that
-receive a roster of every advisory for duplicate detection and return `fixed`
-(with a named default-branch commit), `likely-fixed`, `duplicate` (with
-`duplicate_of`, never itself), or `not-fixed`. There is no upstream write path
-for advisories. `security_sweep.py` runs alert ingest → alert find-fixed →
-advisory ingest → advisory find-fixed as the one Control-tab `security-sweep`
-job. The 🛡️ Alerts tab opens on its Advisories sub-view.
-
-See `pipeline/workflows/README.md` for the exact run commands. Run phases from the CLI or the app Control tab; `views.py` regenerates `STATUS.md` from the store.
+- One SQL database is the only source of truth: `TRIAGE_STORE_URL`, or a local
+  SQLite file under `pipeline/store/`. Markdown such as `STATUS.md` is generated
+  output and is never parsed back.
+- Access PR, cluster, run and registry rows only through `pipeline/store.py` /
+  `storekit.py` (issues: `issue_triage/issue_store.py`, alerts:
+  `alert_triage/alert_store.py`). Rows are validated on write. Bulk or
+  destructive edits go through `pipeline/store_edit.py`. Never use ad-hoc
+  scripts.
+- A change to record shape that older code would mishandle bumps
+  `schema.STORE_SCHEMA_VERSION`. Code behind the store's version can read but
+  not write.
+- Store facts, not conclusions. Derived values such as a PR's effective
+  disposition are computed on read, so a fixed upstream fact corrects the
+  reading without a re-store.
 
 ## Vocabulary
 
-Per-PR **disposition**: `merge | request-changes | close-dup | close-fixed | close-wontfix | close-stale | needs-human` (`close-wontfix`: the change itself is the wrong approach). A PR has exactly one disposition even when it belongs to several clusters — it is reconciled from each cluster's proposal by severity precedence (most-blocking wins), and `analysis.from_cluster` records which cluster's proposal won.
-Cluster **outcome / state**: `merge-ready | awaiting-authors | needs-first-party-work | close-out | blocked-on-decision`, plus derived `security-pending`, `ready`, `done`, `needs-analysis`. ("Synthesize" → `needs-first-party-work`; "Stack" is gone — complementary PRs are just coordinated merges noted in rationale.)
+- **Disposition** (per PR): `merge | request-changes | close-dup | close-fixed |
+  close-wontfix | close-stale | needs-human`. A PR in several clusters takes the
+  most blocking of their proposals (`gates.reconcile_disposition`).
+- **Cluster outcome**: `merge-ready | awaiting-authors | needs-first-party-work |
+  close-out | blocked-on-decision`. Derived states add `security-pending`,
+  `ready`, `done`, and `needs-analysis`.
+- **Security verdict**: `RED | YELLOW | GREEN`.
 
 ## Conventions
 
-- **Simplicity first, in code and prose alike.** Text is inventory: every line
-  costs every later reader, human or agent. Write the shortest code, comment,
-  doc, or prompt that does the job, and say each thing once. Every change is a
-  chance to cut as well as add: delete what it makes redundant, and a cleanup
-  should leave the file shorter.
-- **Comments and docstrings describe the code as it is now.** The test: every comment must be true of the code *as it stands alone* — no comparison to any other version, whether past, future, or hypothetical. If a clause only makes sense by contrast, cut it. This rules out not just temporal references ("previously…", "this used to…", "now does X", forward-references to unbuilt features) but also **counterfactual rationale** — "would otherwise…", "instead of X", "rather than Y", "doing X here would be blocked". Just say what the code does, plus the bare present reason if it's non-obvious ("synchronous so the popup blocker allows it"), never the contrast against a rejected alternative. If the code no longer does something, its comment goes too. The git history is the record of change; the source is the record of the present.
-- **A docstring earns its place only when the body isn't self-evident**, and it is as short as it can be. Match the comment density of the code around it: a one-line accessor sitting beside undocumented siblings takes none, and neither does a test whose name already says what it asserts. Never restate the signature, the function name, or the test name in prose.
-- **Type every function signature as precisely as the value allows.** Annotate every parameter and the return — and use the *most specific* type that's true: `list[Cluster]`, not `list`; `dict[int, Pr]`, not `dict`; `str | None`, not bare `str` when it can be None. When you change what a function returns or accepts, update its annotation in the same edit — never leave a stale type, and never weaken a precise type to a bare `list`/`dict`/untyped just to silence it (that's a regression). `uv run pyright pipeline issue_triage alert_triage prospector_app/backend review-new-pr/harness` (the command in `.github/workflows/pipeline-tests.yml`) must stay at **0 errors** — it's a CI gate; run it when you touch the domain model. The gate checks each tree as a whole directory, not a hand-maintained file list, so every new source module is covered automatically; `test_*.py` is excluded via `pyrightconfig.json` since tests deliberately do `None`-unsafe things.
-- **No quoted / string type annotations.** Every module has `from __future__ import annotations`, so all annotations are already lazy strings at runtime — never write `-> "model.Cluster"` or `x: "Pr"`. Write them bare (`-> model.Cluster`, `x: Pr`). For a type that can't be imported at runtime (the `store ↔ model` cycle: `pipeline/store.py` ↔ `pipeline/model.py`, or `gates`/`freshness`/app modules referencing `model`), make the name resolvable to the checker with an `if TYPE_CHECKING:` import (`if TYPE_CHECKING: from pipeline import model` / `from pipeline.model import Pr, Cluster`) — the `__future__` import means the annotation is never evaluated at runtime, so there is no cycle and the quotes are unnecessary.
-- **Imports are qualified — `from pipeline import …`, `from prospector_app.backend import …`, `from issue_triage import …`.** The installed source packages live at `pipeline/`, `issue_triage/`, `alert_triage/`, and `prospector_app/`, registered in `pyproject.toml` `[tool.setuptools]`. Import them qualified everywhere. **Never add a `sys.path.insert`, and never import a sibling by bare name** (`import store`). The standalone tools under `review-new-pr/harness/` and `prospector_app/agent/*` are the exceptions; their entry scripts bootstrap their package roots for bare `python3` execution.
-- **Name tools for what they do, standalone** — not for the workflow that happens to invoke them. A tool that processes one cluster or reviews one PR is `triage_cluster` / `security_review`, not `rerun_*` (it may be the first run, not a re-run).
-- **Reads are fine anywhere; writes to `TRIAGE_REPO` go through the app's sanctioned paths only** so they are gated, bot-identified, and logged. Do not hand-run `gh pr merge/close/comment/review` against the triaged repository.
-- The store is SQL (`TRIAGE_STORE_URL` — a shared SQL database — or a local SQLite default under `pipeline/store/`), not committed files. `pipeline/cache/` (diffs, raw gh) is gitignored. Bulk or destructive record edits go through `pipeline/store_edit.py` (dry-run default, automatic pre-image snapshot, runs-ledger entry) — never ad-hoc scripts against `TRIAGE_STORE_URL`.
-- **`schema.STORE_SCHEMA_VERSION` guards stale writers.** Any PR that changes store record shape in a way older code mishandles must bump it. The store stamps the version on first write; a checkout whose constant is behind the store's stamp can read but not write (`storekit.assert_writable`, escape hatch `TRIAGE_STORE_ALLOW_STALE=1`).
-- **Dev-env config lives in three parallel files — keep them in sync.** `.conductor/settings.toml` (Conductor), `.superset/config.json` (Superset), and `.claude/launch.example.json` (Claude Code desktop run configurations) all wire up the same dev entry points — `setup.sh` and `uv run prospector serve --dev` (the launch config runs the backend and the Vite dev server as two separate configurations, resolving the frontend toolchain via `frontend-toolchain.sh`). A change to any one's setup/run commands must be mirrored in the others. Edit the **example**: a launch configuration names the port its preview opens on, which is per-checkout, so `setup.sh` generates the gitignored `.claude/launch.json` from that template with this checkout's ports (`dev-ports.sh`), and a regenerate overwrites hand edits to it. `dev-ports.sh` also owns the port claim itself — a worktree's `.env` arrives as a copy of the checkout it was made from, so it starts out naming ports that already belong to another one.
-- **Every environment variable the code reads is registered** in
-  `pipeline/settings_registry.py` — an operator setting in `SETTINGS` (label,
-  default, help, whether the Setup page may edit it) or a plumbing variable in
-  `INTERNAL`. `test_settings_registry.py` scans the tree and fails on any read
-  of an unregistered name. The Setup page's Settings card shows every setting
-  with its value in effect and where it came from; prefer a sensible default or
-  a Setup-page control over a variable an operator has to know about.
-- **Keep `pyproject.toml` dependency lists sorted** — `[project].dependencies` and every `[dependency-groups]` list stay alphabetical (case-insensitive). When you add a dep, insert it in order rather than appending, so the lists never drift.
-- Tests: `uv run pytest` from the repo root runs all four suites (`pipeline/tests`, `issue_triage/tests`, `alert_triage/tests`, and `prospector_app/backend/tests`). The environment is uv-locked to Python 3.14.6 (`.python-version` + `uv.lock`); `uv run <cmd>` auto-syncs it — no manual venv activation. `source ./activate` is optional convenience.
-- **Ruff is a CI gate (`uv run ruff check .`) and the tree is clean — keep it clean** (unlike the frontend's baseline, the bar here is **zero** findings). Config is in `pyproject.toml` `[tool.ruff]`: pyflakes (F), pycodestyle (E/W), pyupgrade (UP), and `N999` — the invalid-module-name rule that keeps every package directory importable (a hyphenated name is not). Several UP rules enforce conventions pyright can't (no quoted annotations, `X | None` over `Optional`). `uv run ruff check --fix` auto-fixes most; naming rules beyond N999 are intentionally off.
-- **The TS frontend (`prospector_app/frontend/`) has its own gate, separate from pyright/pytest — run it after any frontend change.** From `prospector_app/frontend/`: `pnpm run build` (`tsc -b && vite build`) — the `tsc` step is the type gate and must pass with **0 errors** — and `pnpm run lint`. ESLint carries a repo-wide baseline of pre-existing errors, so the bar is **add no new lint errors** (lint just your files with `pnpm exec eslint <files>`), not a clean repo. Use **pnpm**, never npm (install marker `.modules.yaml`).
-- **Type the TypeScript as precisely as the Python.** The signature-typing rule above applies to the frontend too: annotate params and returns, parameterize generics (`useState<Pr | null>`, not bare), and prefer `unknown` + narrowing over `any`. Match each file's surrounding style — the app uses inline prop types and double-quoted strings; don't refactor those to named prop interfaces.
+- **Simplicity first, in code and prose.** Write the shortest code, comment,
+  doc or prompt that does the job, and say each thing once. A cleanup leaves
+  the file shorter.
+- **Comments describe the code as it is now.** No history ("previously", "now
+  does") and no contrast with rejected alternatives ("instead of", "would
+  otherwise"). Give only the bare present reason when the reason isn't obvious.
+  Git history is the record of change.
+- **A docstring earns its place only when the body isn't self-evident.** Match
+  the comment density of the surrounding code, and never restate a signature or
+  test name.
+- **Type every signature as precisely as the value allows**, in Python and
+  TypeScript alike: `list[Cluster]`, not `list`; `str | None` when it can be
+  None; `unknown` plus narrowing, not `any`. Update the annotation in the same
+  edit that changes the value. Start every module with
+  `from __future__ import annotations` and never quote an annotation. A type
+  that would cause an import cycle goes under `if TYPE_CHECKING:`.
+- **Imports are qualified** (`from pipeline import store`). Never add
+  `sys.path.insert` or import a sibling by bare name. The exceptions are scripts
+  run outside the installed environment (`review-new-pr/harness/`,
+  `prospector_app/agent/`, the frontend e2e server), which bootstrap their own
+  roots.
+- **Name tools for what they do**, not for the workflow that calls them
+  (`security_review`, not `rerun_security`).
+- **Register every environment variable** in `pipeline/settings_registry.py`.
+  `test_settings_registry.py` catches literal reads that aren't registered.
+  Prefer a sensible default or a Setup-page control to a variable an operator
+  has to know about.
+- **Keep the dev-env files in sync:** `.conductor/settings.toml`,
+  `.superset/config.json`, and `.claude/launch.example.json` all wire up
+  `setup.sh` and `uv run prospector serve --dev`. Edit the launch *example*;
+  `setup.sh` generates `.claude/launch.json` from it.
+- **Keep `pyproject.toml` dependency lists alphabetical.**
+- **Use pnpm, never npm**, in `prospector_app/frontend/`.
+
+### Gates (CI enforces the first three)
+
+```bash
+uv run pytest                     # all four suites; Python is uv-locked, no venv activation
+uv run ruff check .               # zero findings
+uv run pyright pipeline issue_triage alert_triage prospector_app/backend review-new-pr/harness   # zero errors
+cd prospector_app/frontend && pnpm run build && pnpm exec eslint <changed files>   # tsc 0 errors; add no lint errors
+```
+
+## Editing this file
+
+Edit this file only when an invariant above changes: a new upstream write path,
+identity, gate owner, or pipeline step. Don't add a section for a feature, and
+don't restate a constant, default, cadence, threshold, or gate condition. Name
+the module that owns it. Feature documentation lives in the module's docstring,
+in `docs/`, or in the PR description.
