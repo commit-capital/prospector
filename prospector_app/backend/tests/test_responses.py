@@ -1,16 +1,21 @@
 """Community response classification + the PR-queue widening that surfaces
-pushback on PRs we already closed. classify() is pure; list_prs is exercised
-with the registry + store monkeypatched."""
+pushback on PRs we already closed. classify() is pure; scan and ack run
+against throwaway stores."""
 import json
 import logging
 import subprocess
 import types
+from collections.abc import Iterator
 
+import pytest
+
+from issue_triage.issue_store import IssueStore
 from pipeline import model
 from pipeline.store import Store
 from prospector_app.backend import responses
 from prospector_app.backend import service
 from prospector_app.backend import data
+from prospector_app.backend import issue_data
 from pipeline import settings
 
 ACT = "2026-06-10T00:00:00+00:00"          # when we acted
@@ -196,22 +201,24 @@ class TestClassify:
         assert sig["resubmitted_pr"] is None
 
 
+def _closed_pr(sig: dict) -> model.Pr:
+    return model.Pr(None, {
+        "pr": 42, "meta": {"title": "t", "author": "a", "state": "closed",
+                           "draft": False, "head_sha": "h", "url": "x",
+                           "created_at": ACT, "updated_at": AFTER, "checked_at": ACT},
+        "signals": {"checked_at": ACT, "against_head_sha": "h"},
+        "drift": {"state": "applicable", "checked_at": ACT, "against_head_sha": "h"},
+        "responses": {"pr": 42, **sig}})
+
+
 class TestQueueWidening:
     def test_responses_filter_surfaces_a_closed_pr(self, monkeypatch):
         # A PR we closed, with a reply — normally excluded (closed), but the
         # responses filter widens to any state.
-        rec = model.Pr(None, {
-            "pr": 42, "meta": {"title": "t", "author": "a", "state": "closed",
-                               "draft": False, "head_sha": "h", "url": "x",
-                               "created_at": ACT, "updated_at": AFTER, "checked_at": ACT},
-            "signals": {"checked_at": ACT, "against_head_sha": "h"},
-            "drift": {"state": "applicable", "checked_at": ACT, "against_head_sha": "h"}})
+        rec = _closed_pr({"reopened": False, "new_commits": False, "replied": True,
+                          "last_response_at": AFTER, "snippet": "why?", "by": "a"})
         monkeypatch.setattr(data, "prs", lambda: {42: rec})
         monkeypatch.setattr(data, "pr_to_clusters", lambda: {})
-        reg = {42: {"pr": 42, "reopened": False, "new_commits": False, "replied": True,
-                    "last_response_at": AFTER, "snippet": "why?", "by": "a"}}
-        monkeypatch.setattr(responses, "load", lambda: reg)
-        monkeypatch.setattr(responses, "for_pr", lambda n: reg.get(int(n)))
 
         # without the filter the closed PR is absent
         assert service.query_prs({})["total"] == 0
@@ -222,36 +229,20 @@ class TestQueueWidening:
         assert out["items"][0]["responses"]["replied"] is True
 
     def test_responses_filter_excludes_non_matching_signal(self, monkeypatch):
-        rec = model.Pr(None, {
-            "pr": 42, "meta": {"title": "t", "author": "a", "state": "closed",
-                               "draft": False, "head_sha": "h", "url": "x",
-                               "created_at": ACT, "updated_at": AFTER, "checked_at": ACT},
-            "signals": {"checked_at": ACT, "against_head_sha": "h"},
-            "drift": {"state": "applicable", "checked_at": ACT, "against_head_sha": "h"}})
+        rec = _closed_pr({"reopened": False, "new_commits": False, "replied": True,
+                          "resubmitted": False, "resubmitted_pr": None,
+                          "last_response_at": AFTER, "snippet": "why?", "by": "a"})
         monkeypatch.setattr(data, "prs", lambda: {42: rec})
         monkeypatch.setattr(data, "pr_to_clusters", lambda: {})
-        reg = {42: {"pr": 42, "reopened": False, "new_commits": False, "replied": True,
-                    "resubmitted": False, "resubmitted_pr": None,
-                    "last_response_at": AFTER, "snippet": "why?", "by": "a"}}
-        monkeypatch.setattr(responses, "load", lambda: reg)
-        monkeypatch.setattr(responses, "for_pr", lambda n: reg.get(int(n)))
         # filtering for reopened (which this PR lacks) yields nothing
         assert service.query_prs({"responses": "reopened"})["total"] == 0
 
     def test_resubmitted_filter_surfaces_closed_pr(self, monkeypatch):
-        rec = model.Pr(None, {
-            "pr": 42, "meta": {"title": "t", "author": "a", "state": "closed",
-                               "draft": False, "head_sha": "h", "url": "x",
-                               "created_at": ACT, "updated_at": AFTER, "checked_at": ACT},
-            "signals": {"checked_at": ACT, "against_head_sha": "h"},
-            "drift": {"state": "applicable", "checked_at": ACT, "against_head_sha": "h"}})
+        rec = _closed_pr({"reopened": False, "new_commits": False, "replied": False,
+                          "resubmitted": True, "resubmitted_pr": 99,
+                          "last_response_at": AFTER, "snippet": None, "by": None})
         monkeypatch.setattr(data, "prs", lambda: {42: rec})
         monkeypatch.setattr(data, "pr_to_clusters", lambda: {})
-        reg = {42: {"pr": 42, "reopened": False, "new_commits": False, "replied": False,
-                    "resubmitted": True, "resubmitted_pr": 99,
-                    "last_response_at": AFTER, "snippet": None, "by": None}}
-        monkeypatch.setattr(responses, "load", lambda: reg)
-        monkeypatch.setattr(responses, "for_pr", lambda n: reg.get(int(n)))
         # resubmitted filter surfaces the closed PR
         out = service.query_prs({"responses": "resubmitted"})
         assert out["total"] == 1
@@ -364,26 +355,42 @@ class TestFetchResilience:
         assert failed == []
 
 
-def _isolate(monkeypatch, tmp_path) -> Store:
+@pytest.fixture
+def stores(monkeypatch, tmp_path) -> Iterator[tuple[Store, IssueStore]]:
+    """Throwaway PR and issue stores behind the app's snapshots."""
     store = Store(tmp_path)          # Store takes a root *directory*, not a db path
-    monkeypatch.setattr(responses.data, "store", lambda: store)
-    monkeypatch.setattr(responses, "_cache", None)
-    return store
+    monkeypatch.setattr(data, "_store", store)
+    monkeypatch.setattr(responses.activity, "operator", lambda: {"name": "Ada"})
+    issue_data.set_store_root(tmp_path)
+    yield store, issue_data.store()
+    issue_data.set_store_root(None)
+
+
+def _seed_pr(store: Store, n: int, sig: dict | None = None) -> None:
+    rec: dict = {"pr": n, "meta": {"title": "t", "state": "closed", "head_sha": "h"}}
+    if sig is not None:
+        rec["responses"] = {"pr": n, **sig}
+    store.save_pr(rec)
+
+
+def _seed_issue(store: IssueStore, n: int, sig: dict | None = None) -> None:
+    rec: dict = {"issue": n, "meta": {"title": "t", "state": "closed", "updated_at": ACT}}
+    if sig is not None:
+        rec["responses"] = {"issue": n, **sig}
+    store.save_issue(rec)
 
 
 class TestScanFailureResilience:
     """scan() must not erase a PR's previously-detected response just because
     this sweep's gh call for its chunk failed (#537)."""
 
-    def _prior_entry(self, n=99):
-        return {n: {"pr": n, "reopened": False, "new_commits": False, "replied": True,
-                    "resubmitted": False, "resubmitted_pr": None,
-                    "last_response_at": AFTER, "snippet": "why?", "by": "alice",
-                    "our_action": {"kind": "close", "at": ACT}, "detected_at": ACT}}
+    PRIOR = {"reopened": False, "new_commits": False, "replied": True,
+             "resubmitted": False, "resubmitted_pr": None,
+             "last_response_at": AFTER, "snippet": "why?", "by": "alice",
+             "our_action": {"kind": "close", "at": ACT}, "detected_at": ACT}
 
-    def test_scan_preserves_prior_entry_when_chunk_fetch_fails(self, monkeypatch, tmp_path):
-        _isolate(monkeypatch, tmp_path)
-        responses._save({"pr": self._prior_entry(), "issue": {}})
+    def test_scan_preserves_prior_entry_when_chunk_fetch_fails(self, monkeypatch, stores):
+        _seed_pr(stores[0], 99, self.PRIOR)
         monkeypatch.setattr(responses, "_acted_baseline",
                             lambda: {"pr": {99: {"at": ACT, "kind": "close"}}, "issue": {}})
         monkeypatch.setattr(responses, "_fetch", lambda prs, kind: ({}, [99] if kind == "pr" else []))
@@ -392,13 +399,12 @@ class TestScanFailureResilience:
 
         assert out == {"checked": 1, "with_response": 1, "prs": [99], "issues": [],
                        "failed": [99], "failed_issues": []}
-        assert responses.load()[99]["replied"] is True  # carried forward untouched
+        assert responses.recorded()["pr"][99]["replied"] is True  # carried forward untouched
 
-    def test_scan_drops_entry_when_chunk_succeeds_with_no_signal(self, monkeypatch, tmp_path):
+    def test_scan_drops_entry_when_chunk_succeeds_with_no_signal(self, monkeypatch, stores):
         # Regression guard: only a *failed* chunk preserves stale data — a
         # successful re-check that finds nothing still clears the entry.
-        _isolate(monkeypatch, tmp_path)
-        responses._save({"pr": self._prior_entry(), "issue": {}})
+        _seed_pr(stores[0], 99, self.PRIOR)
         monkeypatch.setattr(responses, "_acted_baseline",
                             lambda: {"pr": {99: {"at": ACT, "kind": "close"}}, "issue": {}})
         node = {"number": 99, "state": "closed", "author": {"login": "alice"},
@@ -408,86 +414,74 @@ class TestScanFailureResilience:
         out = responses.scan()
 
         assert out["failed"] == []
-        assert 99 not in responses.load()
+        assert stores[0].load_pr(99).section("responses") is None
+
+    def test_a_full_scan_clears_an_item_we_no_longer_measure(self, monkeypatch, stores):
+        _seed_pr(stores[0], 99, self.PRIOR)
+        monkeypatch.setattr(responses, "_acted_baseline", lambda: {"pr": {}, "issue": {}})
+        monkeypatch.setattr(responses, "_fetch", lambda prs, kind: ({}, []))
+        responses.scan()
+        assert stores[0].load_pr(99).section("responses") is None
+
+    def test_a_rescan_keeps_the_ack(self, monkeypatch, stores):
+        _seed_pr(stores[0], 99, self.PRIOR)
+        responses.ack(99, at=LATER)
+        monkeypatch.setattr(responses, "_acted_baseline",
+                            lambda: {"pr": {99: {"at": ACT, "kind": "close"}}, "issue": {}})
+        node = {"number": 99, "state": "closed", "author": {"login": "alice"},
+                "comments": {"nodes": [_comment("bob", LATER)]},
+                "timelineItems": {"nodes": []}, "commits": {"nodes": []}}
+        monkeypatch.setattr(responses, "_fetch", lambda prs, kind: ({99: node} if kind == "pr" else {}, []))
+        responses.scan()
+        rec = stores[0].load_pr(99)
+        assert rec.section("responses")["by"] == "bob"
+        assert rec.section("response_ack") == {"at": LATER, "by": "Ada"}
 
 
 class TestAck:
     """A marker that an operator has seen a PR's response, shared across
     operators, until a newer response supersedes it (#537)."""
 
-    def _seed(self, monkeypatch, tmp_path, reg):
-        """An isolated store holding the response registry and the acks."""
-        store = _isolate(monkeypatch, tmp_path)
-        monkeypatch.setattr(responses, "_acks_cache", None)
-        monkeypatch.setattr(responses.activity, "operator", lambda: {"name": "Ada"})
-        responses._save({"pr": reg, "issue": {}})
-        return store
-
-    def test_unacked_signal_has_no_ack(self, monkeypatch, tmp_path):
-        self._seed(monkeypatch, tmp_path, {42: {"pr": 42, "replied": True, "last_response_at": AFTER}})
-        sig = responses.for_pr(42)
+    def test_unacked_signal_has_no_ack(self, stores):
+        _seed_pr(stores[0], 42, {"replied": True, "last_response_at": AFTER})
+        sig = responses.signal(data.prs()[42])
         assert sig["replied"] is True
         assert sig["ack"] is None
 
-    def test_ack_attaches_who_and_when(self, monkeypatch, tmp_path):
-        self._seed(monkeypatch, tmp_path, {42: {"pr": 42, "replied": True, "last_response_at": AFTER}})
+    def test_ack_attaches_who_and_when(self, stores):
+        _seed_pr(stores[0], 42, {"replied": True, "last_response_at": AFTER})
         responses.ack(42, at=LATER)
-        sig = responses.for_pr(42)
+        sig = responses.signal(data.prs()[42])
         assert sig["replied"] is True          # the signal still renders
         assert sig["ack"] == {"at": LATER, "by": "Ada"}
 
-    def test_a_newer_response_supersedes_the_ack(self, monkeypatch, tmp_path):
-        self._seed(monkeypatch, tmp_path, {42: {"pr": 42, "replied": True, "last_response_at": LATER}})
+    def test_a_newer_response_supersedes_the_ack(self, stores):
+        _seed_pr(stores[0], 42, {"replied": True, "last_response_at": LATER})
         responses.ack(42, at=AFTER)
-        assert responses.for_pr(42)["ack"] is None
+        assert responses.signal(data.prs()[42])["ack"] is None
 
-    def test_ack_is_scoped_to_its_own_pr(self, monkeypatch, tmp_path):
-        self._seed(monkeypatch, tmp_path, {
-            1: {"pr": 1, "replied": True, "last_response_at": AFTER},
-            2: {"pr": 2, "replied": True, "last_response_at": AFTER}})
+    def test_ack_is_scoped_to_its_own_pr(self, stores):
+        for n in (1, 2):
+            _seed_pr(stores[0], n, {"replied": True, "last_response_at": AFTER})
         responses.ack(1, at=LATER)
-        assert responses.for_pr(1)["ack"] is not None
-        assert responses.for_pr(2)["ack"] is None
+        assert responses.signal(data.prs()[1])["ack"] is not None
+        assert responses.signal(data.prs()[2])["ack"] is None
 
-    def test_ack_defaults_to_now_and_records_the_operator(self, monkeypatch, tmp_path):
-        self._seed(monkeypatch, tmp_path, {42: {"pr": 42, "replied": True, "last_response_at": AFTER}})
+    def test_ack_defaults_to_now_and_records_the_operator(self, stores):
+        _seed_pr(stores[0], 42, {"replied": True, "last_response_at": AFTER})
         rec = responses.ack(42)
-        assert responses.load_acks()[42] == rec
         assert rec["by"] == "Ada"
-        assert responses.for_pr(42)["ack"] == rec  # "now" is well after AFTER (2026-06-11)
+        assert responses.signal(data.prs()[42])["ack"] == rec  # "now" is well after AFTER
 
-    def test_another_operators_ack_is_visible(self, monkeypatch, tmp_path):
-        """The point of storing acks centrally: B sees what A cleared."""
-        store = self._seed(monkeypatch, tmp_path, {42: {"pr": 42, "replied": True, "last_response_at": AFTER}})
-        store.save_response_acks({"acks": {"42": {"at": LATER, "by": "Taylor"}}})
-        monkeypatch.setattr(responses, "_acks_cache", None)  # B's app, cold cache
-        assert responses.for_pr(42)["ack"] == {"at": LATER, "by": "Taylor"}
+    def test_an_ack_takes_the_pr_out_of_the_responses_queue(self, stores):
+        stores[0].save_pr(_closed_pr({"replied": True, "last_response_at": AFTER}).raw)
+        assert service.query_prs({"responses": "replied"})["total"] == 1
+        responses.ack(42, at=LATER)
+        assert service.query_prs({"responses": "replied"})["total"] == 0
 
-    def test_store_read_failure_shows_signals_unacked(self, monkeypatch, tmp_path):
-        """Fails soft: a wobbly store must not 500 the explorer."""
-        self._seed(monkeypatch, tmp_path, {42: {"pr": 42, "replied": True, "last_response_at": AFTER}})
-
-        def boom():
-            raise RuntimeError("store down")
-
-        monkeypatch.setattr(responses.data, "store", boom)
-        assert responses.for_pr(42)["ack"] is None
-
-    def test_store_read_failure_is_cached(self, monkeypatch, tmp_path):
-        """The failure itself is cached, not just successes — service.list_prs
-        calls for_pr once per PR in the snapshot (~3,000), so an unreachable
-        store must cost one connect attempt per TTL window, not one per row."""
-        self._seed(monkeypatch, tmp_path, {42: {"pr": 42, "replied": True, "last_response_at": AFTER}})
-        calls = {"n": 0}
-
-        def boom():
-            calls["n"] += 1
-            raise RuntimeError("store down")
-
-        monkeypatch.setattr(responses.data, "store", boom)
-        responses.for_pr(42)
-        responses.for_pr(42)
-        assert calls["n"] == 1
+    def test_ack_of_a_pr_not_in_the_store(self, stores):
+        with pytest.raises(KeyError):
+            responses.ack(42)
 
 
 class TestIssues:
@@ -515,8 +509,9 @@ class TestIssues:
         assert sig is not None and sig["reopened"] is True
 
     def test_scan_records_an_issue_authors_mentions_without_touching_the_same_pr_number(
-            self, monkeypatch, tmp_path):
-        _isolate(monkeypatch, tmp_path)
+            self, monkeypatch, stores):
+        _seed_pr(stores[0], 7)
+        _seed_issue(stores[1], 7)
         monkeypatch.setattr(responses, "_acted_baseline", lambda: {
             "pr": {7: {"at": ACT, "kind": "close"}},
             "issue": {7: {"at": ACT, "kind": "issue-close"}}})
@@ -533,17 +528,18 @@ class TestIssues:
         out = responses.scan()
         assert asked == [([7], "pr"), ([7], "issue")]
         assert (out["prs"], out["issues"]) == ([], [7])
-        reg = responses.load_all()
-        assert reg["issue"][7]["mentions"] == [12] and reg["issue"][7]["issue"] == 7
-        assert responses.for_pr(7) is None
+        sig = stores[1].load_issue(7).section("responses")
+        assert sig["mentions"] == [12] and sig["issue"] == 7
+        assert stores[0].load_pr(7).section("responses") is None
 
-    def test_a_partial_scan_keeps_every_other_entry(self, monkeypatch, tmp_path):
-        _isolate(monkeypatch, tmp_path)
-        responses._save({"pr": {1: {"pr": 1}, 2: {"pr": 2}}, "issue": {3: {"issue": 3}}})
+    def test_a_partial_scan_keeps_every_other_entry(self, monkeypatch, stores):
+        for n in (1, 2):
+            _seed_pr(stores[0], n, {"replied": True})
+        _seed_issue(stores[1], 3, {"replied": True})
         monkeypatch.setattr(responses, "_acted_baseline", lambda: {
             "pr": {1: {"at": ACT, "kind": "close"}, 2: {"at": ACT, "kind": "close"}},
             "issue": {3: {"at": ACT, "kind": "issue-close"}}})
         monkeypatch.setattr(responses, "_fetch", lambda numbers, kind: ({}, []))
         responses.scan(prs=[1])
-        reg = responses.load_all()
+        reg = responses.recorded()
         assert sorted(reg["pr"]) == [2] and sorted(reg["issue"]) == [3]

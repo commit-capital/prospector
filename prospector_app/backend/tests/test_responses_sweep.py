@@ -1,4 +1,4 @@
-"""responses_sweep: a worker keeps the responses registry current, one
+"""responses_sweep: a worker keeps the stored author responses current, one
 machine at a time, and books each pass in the runs ledger."""
 from __future__ import annotations
 

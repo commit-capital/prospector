@@ -14,7 +14,6 @@ from pipeline import profile
 from pipeline import review_policy
 from pipeline import storekit
 from prospector_app.backend import data
-from prospector_app.backend import responses
 from prospector_app.backend import service
 
 
@@ -307,27 +306,6 @@ def test_concurrent_queries_build_each_row_once(monkeypatch):
         t.join()
 
     assert sorted(built) == [1, 2, 3]
-
-
-def test_responses_overlay_stays_live_on_cached_rows(monkeypatch):
-    snap = {42: _rec(42, state="closed")}
-    monkeypatch.setattr(data, "prs", lambda: snap)
-    monkeypatch.setattr(data, "pr_to_clusters", lambda: {})
-    monkeypatch.setattr(data, "author_stats", lambda handle: None)
-    sig = {"pr": 42, "reopened": False, "new_commits": False, "replied": True,
-           "resubmitted": False, "resubmitted_pr": None,
-           "last_response_at": "2026-02-01T00:00:00+00:00", "snippet": "why?",
-           "by": "al", "ack": None}
-    live: dict[int, dict] = {42: sig}
-    monkeypatch.setattr(responses, "for_pr", lambda n: live.get(int(n)))
-
-    out = service.query_prs({"responses": "replied"})
-    assert out["total"] == 1 and out["items"][0]["responses"]["ack"] is None
-
-    # An ack lands between two queries over the same snapshot: the cached row
-    # must not shadow it — the PR leaves the responses queue immediately.
-    live[42] = {**sig, "ack": {"at": "2026-02-02T00:00:00+00:00", "by": "op"}}
-    assert service.query_prs({"responses": "replied"})["total"] == 0
 
 
 def test_freshen_keeps_identity_and_generation_when_nothing_changed(monkeypatch):

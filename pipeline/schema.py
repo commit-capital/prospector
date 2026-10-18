@@ -105,7 +105,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 34 — issues carry `fix_triage` (whether an issue is worth a fix attempt); an
 #      older issue validator warns on it as unknown and an older hunter queues
 #      the issues it skips.
-STORE_SCHEMA_VERSION = 34
+# 35 — PR and issue records carry `responses` (how the author answered our last
+#      action) and PRs `response_ack` (an operator marked it seen), replacing
+#      the `responses` and `response_acks` registries an older app reads.
+STORE_SCHEMA_VERSION = 35
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
@@ -215,7 +218,7 @@ runs = Table(
 
 registries = Table(
     "registries", METADATA,
-    # "threats" | "action_items" | "response_acks" | "schema" | "repo"
+    # "threats" | "action_items" | "schema" | "repo"
     #   | "schema_fingerprint"
     Column("name", String, primary_key=True),
     Column("data", _JSON, nullable=False),
