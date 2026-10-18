@@ -107,7 +107,8 @@ FIX_REQUEST_SOURCES = {"operator", "auto", "objection"}
 # round-trips newer records without loss
 PR_SECTIONS = ("meta", "signals", "reviews", "drift", "summary", "cluster", "analysis",
                "security", "issues", "threat", "greptile_review", "verify", "verify_request",
-               "fix_request", "security_run", "design_run", "display")
+               "fix_request", "security_run", "design_run", "display", "responses",
+               "response_ack")
 
 
 def run_claim_held_elsewhere(run: dict | None, *, host: str,
@@ -1009,29 +1010,10 @@ class Store:
             raise ValidationError("action_items.items: required list")
         self._save_registry("action_items", registry)
 
-    def load_response_acks(self) -> dict:
-        """Which PRs' community-response signals an operator has marked seen
-        (`{acks: {"<pr>": {at, by}}}`), shared across operators — an ack clears
-        the signal from every instance's queue until a response newer than the
-        ack's `at` supersedes it."""
-        return self._load_registry("response_acks", {"acks": {}})
-
-    def save_response_acks(self, registry: dict) -> None:
-        if not isinstance(registry.get("acks"), dict):
-            raise ValidationError("response_acks.acks: required dict")
-        self._save_registry("response_acks", registry)
-
-    def load_responses(self) -> dict:
-        """How authors responded after our latest action on each PR and issue
-        (`{pr: {"<n>": signals}, issue: {"<n>": signals}}`), rebuilt by the
-        responses sweep and read by every app."""
-        return self._load_registry("responses", {"pr": {}, "issue": {}})
-
-    def save_responses(self, registry: dict) -> None:
-        for kind in ("pr", "issue"):
-            if not isinstance(registry.get(kind), dict):
-                raise ValidationError(f"responses.{kind}: required dict")
-        self._save_registry("responses", registry)
+    def set_pr_section(self, n: int, name: str, value: dict | None) -> bool:
+        """Replace PR `n`'s `name` section (None removes it), keeping every other
+        section as stored. False when the PR is not in the store."""
+        return self._prs.set_section(n, name, value)
 
     def load_live_sweep(self) -> dict:
         """When the app's live sweep last ran (`{swept_at}`), shared across

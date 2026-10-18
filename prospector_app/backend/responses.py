@@ -11,24 +11,29 @@ names in a comment.
 
 Read-only upstream (one batched GraphQL request per ~20 items, the
 freshness_live pattern). The classified signals are a derived cache — `scan`
-rebuilds them from upstream — kept in the shared store's `responses` registry,
-keyed by kind (PRs and issues share GitHub's number space but are read apart),
-so one machine's sweep (`responses_sweep`) serves every app. Operator acks are
-human input that exists nowhere else, in the store's `response_acks` registry.
+rebuilds them from upstream — kept as each PR's and issue's `responses` section,
+so one machine's sweep (`responses_sweep`) serves every app through the
+snapshots. An operator's ack is human input that exists nowhere else, kept as
+the PR's `response_ack` section, which the sweep never touches.
 """
 from __future__ import annotations
 
 import logging
 import re
-import time
-from typing import Literal
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Literal
 
 from prospector_app.backend import activity
 from prospector_app.backend import data
+from prospector_app.backend import issue_data
 from pipeline import gh
 from pipeline import settings
 from pipeline.storekit import now as _now
 from pipeline.storekit import parse_ts as _dt
+
+if TYPE_CHECKING:
+    from issue_triage.issue_model import Issue
+    from pipeline.model import Pr
 
 _log = logging.getLogger(__name__)
 
@@ -259,7 +264,7 @@ def _fetch(prs: list[int], kind: Kind = "pr") -> tuple[dict[int, dict], list[int
     call yields nothing usable (a `gh` timeout, or a response with no
     ``data.repository``; `gh.gh_graphql` logs why), and — when the response
     carries GraphQL errors — the PRs whose alias came back empty without a
-    NOT_FOUND to explain it. `scan` leaves those PRs' prior registry entries
+    NOT_FOUND to explain it. `scan` leaves those PRs' stored signals
     untouched, so "couldn't check" is never recorded as "no response".
 
     One PR deleted from the repository puts an error in its whole chunk's
@@ -316,7 +321,7 @@ def _node_signals(node: dict, base: dict) -> dict | None:
 
 def _sweep(kind: Kind, baseline: dict[int, dict], targets: list[int],
            prior: dict[int, dict], now: str) -> tuple[dict[int, dict], list[int]]:
-    """The fresh registry entries for `targets` of `kind`, and the ones that
+    """The fresh signals for `targets` of `kind`, and the ones that
     could not be read — each of those keeps its prior entry."""
     nodes, failed = _fetch(targets, kind)
     failed_set = set(failed)
@@ -341,18 +346,20 @@ def _sweep(kind: Kind, baseline: dict[int, dict], targets: list[int],
 
 def scan(prs: list[int] | None = None, issues: list[int] | None = None) -> dict:
     """Sweep the PRs we've acted on and the issues we closed, classify each
-    one's response, and rewrite the registry. With `prs` or `issues`, sweep
-    just those and keep every other entry. Returns {checked, with_response,
-    prs, issues, failed, failed_issues}.
+    one's response, and write each changed `responses` section. With `prs` or
+    `issues`, sweep just those and leave every other section. Returns {checked,
+    with_response, prs, issues, failed, failed_issues}.
 
-    Every fetched item is recomputed from scratch (the registry is current
+    Every fetched item is recomputed from scratch (its section is current
     truth for it) but keeps its first `detected_at`; an item whose fetch failed
-    (`failed`, `failed_issues`) carries its prior entry forward unchanged
-    rather than treating "couldn't check" as "no response"."""
+    (`failed`, `failed_issues`) keeps its section unchanged rather than
+    treating "couldn't check" as "no response"."""
     baseline = _acted_baseline()
     partial = prs is not None or issues is not None
     wanted: dict[Kind, list[int] | None] = {"pr": prs, "issue": issues}
-    prior = load_all()
+    data.refresh()
+    issue_data.refresh()
+    prior = recorded()
     now = _now()
     reg: dict[Kind, dict[int, dict]] = {"pr": {}, "issue": {}}
     failed: dict[Kind, list[int]] = {"pr": [], "issue": []}
@@ -368,102 +375,59 @@ def scan(prs: list[int] | None = None, issues: list[int] | None = None) -> dict:
         fresh, failed[kind] = _sweep(kind, base, targets, prior[kind], now)
         kept = {n: v for n, v in prior[kind].items() if n not in targets} if partial else {}
         reg[kind] = {**kept, **fresh}
-    _save(reg)
+    _write(prior, reg)
     return {"checked": checked, "with_response": len(reg["pr"]) + len(reg["issue"]),
             "prs": sorted(reg["pr"]), "issues": sorted(reg["issue"]),
             "failed": failed["pr"], "failed_issues": failed["issue"]}
 
 
-# --- registry persistence (shared store, TTL-cached read) -------------------
-# `for_pr` runs once per row of a list request while the store is a network
-# round-trip; the TTL bounds how long another machine's sweep takes to appear.
-_REG_TTL_SEC = 30.0
-_cache: tuple[float, dict[Kind, dict[int, dict]]] | None = None
+def _sections(recs: Mapping[int, Pr] | Mapping[int, Issue]) -> dict[int, dict]:
+    return {n: sig for n, rec in recs.items() if (sig := rec.section("responses"))}
 
 
-def _save(reg: dict[Kind, dict[int, dict]]) -> None:
-    global _cache
-    data.store().save_responses(
-        {kind: {str(k): v for k, v in sorted(reg[kind].items())} for kind in KINDS})
-    _cache = (time.monotonic(), reg)
+def recorded() -> dict[Kind, dict[int, dict]]:
+    """Every stored response signal, {kind: {number: signals}}."""
+    return {"pr": _sections(data.prs()), "issue": _sections(issue_data.issues())}
 
 
-def load_all() -> dict[Kind, dict[int, dict]]:
-    """The response registry, {kind: {number: signals}}. Fails soft: an
-    unreadable store reads as no responses, cached like a read."""
-    global _cache
-    now = time.monotonic()
-    if _cache and now - _cache[0] < _REG_TTL_SEC:
-        return _cache[1]
-    try:
-        raw = data.store().load_responses()
-    except Exception:
-        _log.warning("responses.load_all: store read failed", exc_info=True)
-        raw = {}
-    reg: dict[Kind, dict[int, dict]] = {
-        kind: {int(k): v for k, v in (raw.get(kind) or {}).items()} for kind in KINDS}
-    _cache = (now, reg)
-    return reg
+def _write(prior: dict[Kind, dict[int, dict]], reg: dict[Kind, dict[int, dict]]) -> None:
+    """Save each item whose signals moved from `prior` to `reg`."""
+    store, issue_store = data.store(), issue_data.store()
+    with store.batch(), issue_store.batch():
+        for kind in KINDS:
+            for n in sorted(set(prior[kind]) | set(reg[kind])):
+                sig = reg[kind].get(n)
+                if sig == prior[kind].get(n):
+                    continue
+                if kind == "pr":
+                    store.set_pr_section(n, "responses", sig)
+                else:
+                    issue_store.set_issue_section(n, "responses", sig)
+    data.refresh()
+    issue_data.refresh()
 
 
-def load() -> dict[int, dict]:
-    """The PRs' response signals, {pr: signals}."""
-    return load_all()["pr"]
-
-
-def for_pr(n: int) -> dict | None:
-    """The response signal for PR `n`, or None when there's been no response
+def signal(rec: Pr) -> dict | None:
+    """PR `rec`'s response signal, or None when there's been no response
     since our action. `ack` carries {at, by} once an operator has marked the
     signal seen, and is None when no ack covers it — a response newer than the
     ack's `at` supersedes the ack."""
-    sig = load().get(int(n))
+    sig = rec.section("responses")
     if sig is None:
         return None
-    rec = load_acks().get(int(n))
-    acked = _dt((rec or {}).get("at"))
+    ack = rec.section("response_ack")
+    acked = _dt((ack or {}).get("at"))
     last = _dt(sig.get("last_response_at"))
-    return {**sig, "ack": rec if (acked and last and acked >= last) else None}
-
-
-# --- acknowledgment persistence (shared store, TTL-cached read) -------------
-# "I've seen every response on this PR as of this instant" (#537), recorded in
-# the store's `response_acks` registry so one operator's ack clears the signal
-# from every instance's queue until a newer response supersedes it.
-_ACK_TTL_SEC = 5.0
-_acks_cache: tuple[float, dict[int, dict[str, str]]] | None = None
-
-
-def load_acks() -> dict[int, dict[str, str]]:
-    """Every operator's acks, {pr: {at, by}}. Cached for _ACK_TTL_SEC because
-    `for_pr` runs once per row of a list request while the store is a network
-    round-trip; the TTL bounds how long another operator's ack takes to appear.
-    Fails soft — an unreadable store shows signals unacked rather than failing
-    the request. A failure is cached too, so a request over ~3,000 rows costs one
-    store attempt per TTL window rather than one per row."""
-    global _acks_cache
-    now = time.monotonic()
-    if _acks_cache and now - _acks_cache[0] < _ACK_TTL_SEC:
-        return _acks_cache[1]
-    try:
-        raw = (data.store().load_response_acks() or {}).get("acks") or {}
-    except Exception:
-        _log.warning("responses.load_acks: store read failed", exc_info=True)
-        _acks_cache = (now, {})
-        return {}
-    acks = {int(k): v for k, v in raw.items()}
-    _acks_cache = (now, acks)
-    return acks
+    return {**sig, "ack": ack if (acked and last and acked >= last) else None}
 
 
 def ack(pr: int, *, at: str | None = None, by: str | None = None) -> dict[str, str]:
     """Record that `by` (the current operator by default) has seen PR `pr`'s
-    responses as of `at` (now by default). Returns the record stored."""
-    global _acks_cache
+    responses as of `at` (now by default). Returns the record stored; raises
+    KeyError when the PR is not in the store."""
     rec = {"at": at or _now(),
            "by": by or activity.operator()["name"]}
-    store = data.store()
-    reg = store.load_response_acks()
-    reg.setdefault("acks", {})[str(int(pr))] = rec
-    store.save_response_acks(reg)
-    _acks_cache = None
+    if not data.store().set_pr_section(int(pr), "response_ack", rec):
+        raise KeyError(f"PR {pr} is not in the store")
+    data.refresh()
     return rec

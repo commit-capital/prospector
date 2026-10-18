@@ -84,9 +84,9 @@ def test_follow_up_named_from_the_closed_issue_side():
     assert [(f["kind"], f["number"]) for f in r["follow_ups"]] == [("issue", 21)]
 
 
-def test_current_reads_issue_mentions_from_the_registry(monkeypatch):
+def test_current_reads_issue_mentions_from_the_stored_responses(monkeypatch):
     from prospector_app.backend import data, issue_data
-    monkeypatch.setattr(responses, "load_all", lambda: {
+    monkeypatch.setattr(responses, "recorded", lambda: {
         "pr": {}, "issue": {20: {"mentions": [21], "resubmitted_pr": None}}})
     monkeypatch.setattr(data, "pr_bodies", lambda ns: {})
     monkeypatch.setattr(issue_data, "issues", lambda: {

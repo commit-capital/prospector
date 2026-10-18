@@ -1,4 +1,4 @@
-"""Keeping the responses registry current without an operator's click.
+"""Keeping the stored author responses current without an operator's click.
 
 A worker machine runs `responses.scan` on a cadence, under a lease so one
 machine sweeps at a time, and skips a pass another machine finished within

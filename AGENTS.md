@@ -886,9 +886,11 @@ runs at API prices.
 `responses_sweep.py`) reads, as the operator, how authors answered us: for each
 PR's latest landed action and each issue we closed, the human replies, reopens,
 new commits and same-author resubmissions since, and the `#N`/URL mentions in
-the author's own comments. The signals live in the store's `responses` registry,
-keyed by kind; a worker machine (`TRIAGE_RESPONSES_SWEEP`, default on) rebuilds
-it every half hour under the `responses-sweep` lease, ledger phase
+the author's own comments. The signals live in each PR's and issue's `responses`
+section (schema 35), and an operator's mark that they have seen a PR's in its
+`response_ack` section, which the sweep never touches; a worker machine
+(`TRIAGE_RESPONSES_SWEEP`, default on) rewrites the sections that changed every
+half hour under the `responses-sweep` lease, ledger phase
 `responses:scan`, and the Control tab's Scan responses runs the same sweep.
 `author_returns.py` reads the mentions to find an author's follow-up to a close.
 

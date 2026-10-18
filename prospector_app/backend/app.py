@@ -915,7 +915,7 @@ def live_status():
 def responses_scan(payload: dict = Body(default={})):
     """Sweep the PRs we've acted on and the issues we closed, and classify how
     the community responded since (replies, reopens, new commits). Read-only
-    upstream (GraphQL timeline) + a store registry write. With a `prs` or
+    upstream (GraphQL timeline) + a write to each changed record. With a `prs` or
     `issues` list, scan just those."""
     def numbers(key: str) -> list[int] | None:
         arg = payload.get(key)
@@ -927,7 +927,10 @@ def responses_scan(payload: dict = Body(default={})):
 def responses_ack(n: int):
     """Mark PR `n`'s community-response signal as seen (#537) — for every
     operator, until a newer response supersedes it."""
-    return {"pr": n, "ack": responses_mod.ack(n)}
+    try:
+        return {"pr": n, "ack": responses_mod.ack(n)}
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
 
 
 @app.get("/api/suggest/pr/{n}")
