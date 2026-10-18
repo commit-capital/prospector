@@ -8,6 +8,7 @@ CLI:
     uv run python -m pipeline.store_edit mypkg.mymod:my_transform
     uv run python -m pipeline.store_edit mypkg.mymod:my_transform --live
     uv run python -m pipeline.store_edit ... --table clusters --store /dir
+    uv run python -m pipeline.store_edit ... --table issues
 
 The transform receives a deep copy of one record dict at a time and returns:
     a dict  -> saved (validated) in place of the record
@@ -26,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from issue_triage.issue_store import IssueStore
 from pipeline import storekit
 from pipeline.store import DEFAULT_ROOT, Store
 from pipeline.storekit import ValidationError
@@ -57,15 +59,17 @@ class EditReport:
     applied: bool = False
 
 
-def _collection(store: Store, table: str) -> storekit.Collection:
-    if table == "prs":
+def _collection(store: Store | IssueStore, table: str) -> storekit.Collection:
+    if isinstance(store, IssueStore) and table == "issues":
+        return store._issues
+    if isinstance(store, Store) and table == "prs":
         return store._prs
-    if table == "clusters":
+    if isinstance(store, Store) and table == "clusters":
         return store._clusters
     raise ValueError(f"unknown table {table!r}")
 
 
-def plan_edit(store: Store, transform: Transform, table: str) -> EditReport:
+def plan_edit(store: Store | IssueStore, transform: Transform, table: str) -> EditReport:
     """Run `transform` over every full record of `table` (no meta.body strip —
     a bulk edit must never save body-less records back) and collect, without
     applying, what would change. Each transformed record is validated here so a
@@ -105,7 +109,7 @@ def _write_backup(report: EditReport, name: str, backup_dir: Path) -> Path:
     return path
 
 
-def apply_edit(store: Store, report: EditReport, name: str,
+def apply_edit(store: Store | IssueStore, report: EditReport, name: str,
                backup_dir: Path = BACKUP_DIR) -> EditReport:
     """Apply a planned edit: snapshot pre-images to `backup_dir`, save/delete
     the records, and append a runs-ledger entry. A report with nothing to do
@@ -151,7 +155,7 @@ def main(argv: list[str]) -> None:
         prog="store_edit",
         description="Bulk-edit store records via a named transform; dry-run by default.")
     ap.add_argument("transform", help="module.path:function")
-    ap.add_argument("--table", choices=("prs", "clusters"), default="prs")
+    ap.add_argument("--table", choices=("prs", "clusters", "issues"), default="prs")
     ap.add_argument("--live", action="store_true",
                     help="apply the edit (snapshots pre-images first)")
     ap.add_argument("--yes", action="store_true",
@@ -161,7 +165,8 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--backup-dir", type=Path, default=BACKUP_DIR)
     args = ap.parse_args(argv)
     name, fn = _load_transform(args.transform)
-    store = Store() if args.store == "@env" else Store(args.store)
+    root = None if args.store == "@env" else args.store
+    store = IssueStore(root) if args.table == "issues" else Store(root)
     report = plan_edit(store, fn, args.table)
     _print_report(report)
     if not args.live:
