@@ -65,6 +65,14 @@ class AnalyzeRun:
     stop: agent_wave.Stop | None
 
 
+def _post_steps(store: Store) -> tuple[int, int]:
+    _say("  dispositioning standalone PRs…")
+    orphans = analyze_driver.disposition_orphans(store)
+    _say("  refreshing salvage-fix action items…")
+    salvage = analyze_driver.backfill_salvage_items(store, today=_now()[:10])
+    return orphans, salvage
+
+
 def run(store: Store, *, limit: int, concurrency: int,
         trigger: str | None = None) -> AnalyzeRun:
     """Analyze up to `limit` pending clusters, `concurrency` agents at a time,
@@ -80,6 +88,7 @@ def run(store: Store, *, limit: int, concurrency: int,
          f"up to {conc} at a time.")
     if not todo:
         _say("✓ nothing pending — analysis is current.")
+        _post_steps(store)
         return AnalyzeRun(0, 0, 0, 0, None)
 
     # One store read + shared redundancy-tree cache up front; workers see only
@@ -135,10 +144,7 @@ def run(store: Store, *, limit: int, concurrency: int,
                 _say(f"    ✓ cluster {cid} committed  ({done}/{len(todo)})")
 
     _say("④ Wrapping up — each step reads every PR from the store:")
-    _say("  dispositioning standalone PRs…")
-    orphans = analyze_driver.disposition_orphans(store)
-    _say("  refreshing salvage-fix action items…")
-    salvage = analyze_driver.backfill_salvage_items(store, today=_now()[:10])
+    orphans, salvage = _post_steps(store)
     _say("  counting the clusters still pending (reads the clusters too)…")
     remaining = len(analyze_driver.pending(store))
     _say(f"✓ committed {committed}/{len(todo)} clusters ({failed} failed); "

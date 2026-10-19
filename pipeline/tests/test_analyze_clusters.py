@@ -1,8 +1,15 @@
 """Headless bulk per-cluster ANALYZE: cluster selection, concurrency, and
 store commits, with the agent stubbed — no claude subprocess, no GitHub."""
+from __future__ import annotations
+
 import json
 import threading
+from collections.abc import Iterable, Iterator
+from concurrent.futures import Future
 from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
 
 from pipeline import analyze_clusters
 from pipeline import analyze_driver as ad
@@ -155,6 +162,57 @@ def test_main_nothing_pending(tmp_path, monkeypatch, capsys):
     rc = analyze_clusters.main(["--store", str(tmp_path)])
     assert rc == 0
     assert "nothing pending" in capsys.readouterr().out
+
+
+def test_resume_after_last_cluster_commit_finishes_post_steps(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    st = _seed(tmp_path, 1)
+    assert ad.commit_analysis(st, json.loads(_fenced(1)[len("```json\n"):-len("\n```")])) == []
+    _pr(st, 9)
+    st.edit_pr(9).mark_standalone()
+    salvage: list[str] = []
+    monkeypatch.setattr(ad, "backfill_salvage_items",
+                        lambda store, today: salvage.append(today) or 0)
+    monkeypatch.setattr(analyze_clusters, "run_cluster_agent",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("already committed")))
+    result = analyze_clusters.run(Store(tmp_path), limit=20, concurrency=1)
+    assert result.attempted == 0
+    assert Store(tmp_path).load_pr(9).section("analysis") is not None
+    assert len(salvage) == 1
+
+
+def test_interrupted_analysis_keeps_committed_clusters_and_resumes(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    st = _seed(tmp_path, 3)
+    calls: list[int] = []
+
+    def agent(cid: int, bundle: dict) -> dict:
+        calls.append(cid)
+        return json.loads(_fenced(cid).removeprefix("```json\n").removesuffix("\n```"))
+
+    completed = analyze_clusters.as_completed
+
+    def interrupt(futures: Iterable[Future[dict]]) -> Iterator[Future[dict]]:
+        yield next(completed(futures))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(analyze_clusters, "run_cluster_agent", agent)
+    monkeypatch.setattr(analyze_clusters, "as_completed", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        analyze_clusters.run(st, limit=20, concurrency=2)
+
+    reopened = Store(tmp_path)
+    pending = {c.id for c in ad.pending(reopened)}
+    assert len(pending) == 2
+    saved = ({1, 2, 3} - pending).pop()
+    assert reopened.load_pr(saved).disposition == "merge"
+
+    calls.clear()
+    monkeypatch.setattr(analyze_clusters, "as_completed", completed)
+    result = analyze_clusters.run(reopened, limit=20, concurrency=2)
+    assert set(calls) == pending
+    assert result.committed == 2
+    assert ad.pending(Store(tmp_path)) == []
 
 
 def test_invalid_payload_is_not_committed(tmp_path, monkeypatch, capsys):

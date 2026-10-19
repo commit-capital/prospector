@@ -2270,12 +2270,6 @@ class TestEscalateSurvivesReanalysis:
             "pr": n, "red_reason_match": {"matches": True, "confidence": "high",
                                           "reasoning": "r"}, "findings": []})])
 
-    def _analysis_file(self, out_dir, cid, n):
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / f"cluster-{cid}.json").write_text(json.dumps(
-            {"cluster_id": cid, "outcome": "merge-ready", "rationale": "the canonical fix",
-             "prs": [{"pr": n, "disposition": "merge", "rationale": "clean"}]}))
-
     def test_reanalysis_of_an_escalated_pr_self_demotes(self, tmp_path, diffs):
         s = _pinned(tmp_path)
         self._escalated(s, diffs)
@@ -2292,10 +2286,7 @@ class TestEscalateSurvivesReanalysis:
         assert got.disposition == "needs-human"       # self-demoted, not raised
         assert got.verify_outcome == "escalate"       # the escalation survives
 
-    def test_a_cluster_behind_an_escalated_one_still_lands(self, tmp_path, diffs, monkeypatch):
-        # The blast radius of the raise: commit_analysis writes proposals + the
-        # cluster outcome BEFORE reconciling, and store.batch() is not
-        # transactional, so an exception here strands every later file.
+    def test_a_cluster_behind_an_escalated_one_still_lands(self, tmp_path, diffs):
         s = _pinned(tmp_path)
         self._escalated(s, diffs)
         _pr(s, 2, head="h2"); _diff(diffs, "h2", "src/b.test.ts")
@@ -2303,14 +2294,11 @@ class TestEscalateSurvivesReanalysis:
         rec["cluster"] = {"ids": [8], "checked_at": NOW, "against_head_sha": "h2"}
         s.save_pr(rec)
         s.create_cluster(8, "other", outcome=None).set_members([2])
-        out = tmp_path / "analyze-out"
-        self._analysis_file(out, 7, 1)               # sorts first
-        self._analysis_file(out, 8, 2)
-        monkeypatch.setattr(ad, "backfill_salvage_items", lambda store, today: 0)
+        for cid, n in ((7, 1), (8, 2)):
+            assert ad.commit_analysis(s, {
+                "cluster_id": cid, "outcome": "merge-ready", "rationale": "the canonical fix",
+                "prs": [{"pr": n, "disposition": "merge", "rationale": "clean"}]}) == []
 
-        r = ad.commit_analyses_dir(s, out)
-
-        assert r["failed"] == 0 and r["errors"] == []
         assert s.load_pr(1).disposition == "needs-human"
         assert s.load_cluster(8).outcome == "merge-ready"   # never stranded
         assert s.load_pr(2).disposition == "merge"

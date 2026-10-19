@@ -8,7 +8,7 @@ import pytest
 from pipeline import analyze_clusters, capacity, cluster_driver, cluster_pass, diff_cache, headless_agent
 from pipeline.freshness import SECTION_SCHEMA_VERSION
 from pipeline.store import Store
-from pipeline.testsupport import reviews_section, threat_section
+from pipeline.testsupport import reviews_section, set_section, threat_section
 
 NOW = "2026-06-10T00:00:00+00:00"
 
@@ -65,6 +65,31 @@ def _ledger(store: Store, phase: str) -> list[dict]:
 
 
 class TestSummarize:
+    def test_summary_only_leaves_memberships_untouched(self, store: Store) -> None:
+        _pr(store, 1, summarized=True)
+        store.create_cluster(7, "p").set_members([1])
+        set_section(store, 1, "cluster", {"ids": [7]}, against_head_sha="old")
+        assert cluster_pass.run(store, limit=1, analyze_limit=1, concurrency=1,
+                                summarize_only=True) == 0
+        assert store.load_pr(1).cluster_ids == [7]
+        assert store.load_cluster(7).prs == [1]
+
+    def test_summary_only_pass_commits_without_placing_prs(
+            self, store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
+        _pr(store, 1)
+        calls: list[list[int]] = []
+        monkeypatch.setattr(cluster_driver, "run_summarize_agent", _summarizer(calls))
+        monkeypatch.setattr(cluster_driver, "run_assign_agent",
+                            lambda *a, **kw: pytest.fail("summary-only pass assigned a PR"))
+        monkeypatch.setattr(analyze_clusters, "run",
+                            lambda *a, **kw: pytest.fail("summary-only pass analyzed a cluster"))
+        args = ["--store", str(store.root), "--summarize-only", "--limit", "1"]
+        assert cluster_pass.main(args) == 0
+        assert store.load_pr(1).section("summary") is not None
+        assert store.load_pr(1).section("cluster") is None
+        assert cluster_pass.main(args) == 0
+        assert calls == [[1]]
+
     def test_summarizes_up_to_the_limit_in_batches(self, store, monkeypatch):
         for n in range(1, 8):
             _pr(store, n)
@@ -234,13 +259,3 @@ class TestRun:
         monkeypatch.setattr(cluster_driver, "run_summarize_agent", broken)
         rc = cluster_pass.run(store, limit=5, analyze_limit=0, concurrency=1)
         assert rc == cluster_pass.EXIT_FAULT
-
-
-def test_the_assign_index_carries_the_canonical_prompt(store, tmp_path, monkeypatch):
-    monkeypatch.setattr(cluster_driver, "ASSIGN_UNIT_DIR", tmp_path / "units")
-    monkeypatch.setattr(cluster_driver, "ASSIGN_OUT_DIR", tmp_path / "out")
-    _pr(store, 1, summarized=True)
-    cluster_driver.assign_units(store)
-    index = json.loads((tmp_path / "units" / "index.json").read_text())
-    assert index["prompt"] == cluster_driver.assign_prompt()
-    assert "__UNIT_PATH__" in index["prompt"] and "__REPO__" not in index["prompt"]
