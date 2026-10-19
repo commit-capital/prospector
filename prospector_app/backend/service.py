@@ -339,6 +339,8 @@ def pr_row(n: int, rec: Pr | None = None) -> dict | None:
         "out_of_scope": sug.get("action") == "OUT_OF_SCOPE",
         # how the community responded to our triage since we acted (#community-signals)
         "responses": responses.signal(rec),
+        # the close this open PR's author came back to (author_returns)
+        "author_return": author_returns.latest(rec),
         # Where the PR stands with the automation (automation.classify): the
         # Home columns and the automation_* filters read this one derivation.
         "automation": automation.classify(rec),
@@ -568,11 +570,9 @@ def query_prs(spec: dict, sort: str | None = None, direction: str | None = None,
         row = cache.get(n)
         if row is None:
             continue
-        # Author returns and the author table live outside the PR record (each
-        # folded from several snapshots with its own cache), so overlay them
-        # fresh on the cached row.
-        row = {**row, "author_return": author_returns.open_returns()["pr"].get(n),
-               "author_stats": data.author_stats(rec.author)}
+        # The author table is folded from every PR, so overlay it fresh on the
+        # cached row.
+        row = {**row, "author_stats": data.author_stats(rec.author)}
         if filters.matches(row, eff):
             rows.append(row)
     key = _SORT_KEYS.get(sort or "", _SORT_KEYS["pr"])

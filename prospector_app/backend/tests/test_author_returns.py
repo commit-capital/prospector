@@ -1,128 +1,114 @@
-from dataclasses import dataclass
+from collections.abc import Iterator
 
-from prospector_app.backend import author_returns, filters, responses
+import pytest
+
+from issue_triage.issue_store import IssueStore
+from pipeline.store import Store
+from prospector_app.backend import activity, author_returns, data, filters, issue_data
+from prospector_app.backend import issues as issues_mod
+from prospector_app.backend import responses, service
 
 REPO = "o/r"
+CLOSED = "2026-06-20T10:00:00+00:00"
+AFTER = "2026-06-22T00:00:00Z"
+BEFORE = "2026-06-01T00:00:00Z"
 
 
-@dataclass
-class Item:
-    state: str | None = "open"
-    author: str | None = "alice"
-    title: str | None = "t"
-    url: str | None = None
-    created_at: str | None = "2026-01-01T00:00:00Z"
-    body: str | None = None
+def _xref(number: int, author: str, typename: str = "PullRequest", repo: str = REPO,
+          created: str = AFTER) -> dict:
+    return {"__typename": "CrossReferencedEvent", "createdAt": created,
+            "source": {"__typename": typename, "number": number, "createdAt": created,
+                       "author": {"login": author}, "repository": {"nameWithOwner": repo}}}
 
 
-def _ev(at: str, kind: str, **extra) -> dict:
-    return {"at": at, "kind": kind, "status": "executed", "dry_run": False, **extra}
-
-
-CLOSE_PR = _ev("2026-06-20T10:00:00+00:00", "close", pr=10, reason="stale")
-CLOSE_ISSUE = _ev("2026-06-20T10:00:00+00:00", "issue-close", issue=20, action="CLOSE_ISSUE_DUP")
-
-
-def _run(prs, issues=None, events=None, **kw):
-    return author_returns.author_returns(prs, issues or {}, events or [CLOSE_PR], repo=REPO, **kw)
-
-
-def test_reopened_pr():
-    [r] = _run({10: Item()})
-    assert (r["kind"], r["number"], r["signal"], r["reason"]) == ("pr", 10, "reopened", "stale")
-
-
-def test_still_closed_without_follow_up_is_not_a_return():
-    assert _run({10: Item(state="closed")}) == []
-
-
-def test_our_reopen_or_merge_after_the_close_wins():
-    for kind in ("reopen", "merge"):
-        assert _run({10: Item()}, events=[_ev("2026-06-21T00:00:00+00:00", kind, pr=10), CLOSE_PR]) == []
-
-
-def test_dry_run_close_does_not_count():
-    assert _run({10: Item()}, events=[{**CLOSE_PR, "dry_run": True}]) == []
-
-
-def test_follow_up_pr_linking_the_closed_pr_by_body():
-    prs = {10: Item(state="closed"),
-           11: Item(created_at="2026-06-22T00:00:00Z", body="Narrower redo of #10 as asked.")}
-    [r] = _run(prs)
-    assert r["signal"] == "follow-up" and [f["number"] for f in r["follow_ups"]] == [11]
-    assert r["last_at"] == "2026-06-22T00:00:00Z"
-
-
-def test_follow_up_by_url_and_through_pr_bodies():
-    prs = {10: Item(state="closed"), 11: Item(created_at="2026-06-22T00:00:00Z")}
-    bodies = {11: "see https://github.com/o/r/pull/10"}
-    [r] = _run(prs, pr_bodies=lambda ns: {n: bodies.get(n) for n in ns})
-    assert [f["number"] for f in r["follow_ups"]] == [11]
-
-
-def test_follow_up_requires_same_author_later_open_and_exact_number():
-    prs = {10: Item(state="closed"),
-           11: Item(author="bob", created_at="2026-06-22T00:00:00Z", body="#10"),
-           12: Item(created_at="2026-06-19T00:00:00Z", body="#10"),
-           13: Item(state="closed", created_at="2026-06-22T00:00:00Z", body="#10"),
-           14: Item(created_at="2026-06-22T00:00:00Z", body="#100 and o/r#10x"),
-           15: Item(created_at="2026-06-22T00:00:00Z", body="other/repo#10")}
-    assert _run(prs) == []
-
-
-def test_follow_up_named_from_the_closed_pr_side():
-    prs = {10: Item(state="closed"), 11: Item(created_at="2026-06-22T00:00:00Z")}
-    [r] = _run(prs, named={("pr", 10): {11}})
-    assert [f["number"] for f in r["follow_ups"]] == [11]
-    assert _run(prs, named={("issue", 10): {11}}) == []
-
-
-def test_follow_up_named_from_the_closed_issue_side():
-    issues = {20: Item(state="closed"), 21: Item(created_at="2026-06-22T00:00:00Z")}
-    [r] = _run({}, issues, [CLOSE_ISSUE], named={("issue", 20): {21}})
-    assert (r["kind"], r["number"]) == ("issue", 20)
-    assert [(f["kind"], f["number"]) for f in r["follow_ups"]] == [("issue", 21)]
-
-
-def test_current_reads_issue_mentions_from_the_stored_responses(monkeypatch):
-    from prospector_app.backend import data, issue_data
-    monkeypatch.setattr(responses, "recorded", lambda: {
-        "pr": {}, "issue": {20: {"mentions": [21], "resubmitted_pr": None}}})
-    monkeypatch.setattr(data, "pr_bodies", lambda ns: {})
-    monkeypatch.setattr(issue_data, "issues", lambda: {
-        20: Item(state="closed"), 21: Item(created_at="2026-06-22T00:00:00Z")})
-    [r] = author_returns.current(prs={}, events=[CLOSE_ISSUE])
-    assert [f["number"] for f in r["follow_ups"]] == [21]
-
-
-def test_issues_reopened_and_followed_up():
-    [r] = _run({}, {20: Item()}, [CLOSE_ISSUE])
-    assert (r["kind"], r["signal"], r["reason"]) == ("issue", "reopened", "duplicate")
-    issues = {20: Item(state="closed")}
-    prs = {30: Item(created_at="2026-06-22T00:00:00Z", body="Fixes #20")}
-    [r] = _run(prs, issues, [CLOSE_ISSUE])
-    assert r["follow_ups"][0]["kind"] == "pr" and r["follow_ups"][0]["number"] == 30
-
-
-def test_newest_return_first():
-    prs = {10: Item(), 11: Item()}
-    events = [_ev("2026-06-21T00:00:00+00:00", "close", pr=11), CLOSE_PR]
-    assert [r["number"] for r in _run(prs, events=events)] == [11, 10]
-
-
-def test_classify_records_the_authors_own_mentions():
+def test_follow_ups_are_the_authors_own_cross_references_and_named_numbers():
     comments = [
-        {"author": {"login": "alice", "__typename": "User"}, "createdAt": "2026-06-21T00:00:00Z",
+        {"author": {"login": "alice", "__typename": "User"}, "createdAt": AFTER,
          "bodyText": "Opened a new PR at #15428 and https://github.com/o/r/pull/77"},
-        {"author": {"login": "bob", "__typename": "User"}, "createdAt": "2026-06-21T00:00:00Z",
-         "bodyText": "see #99"},
-        {"author": {"login": "alice", "__typename": "User"}, "createdAt": "2026-06-19T00:00:00Z",
+        {"author": {"login": "bob", "__typename": "User"}, "createdAt": AFTER, "bodyText": "see #99"},
+        {"author": {"login": "alice", "__typename": "User"}, "createdAt": BEFORE,
          "bodyText": "before our close #55"},
     ]
-    sig = responses.classify("2026-06-20T10:00:00+00:00", "close", state="closed",
-                             comments=comments, reopens=[], commit_dates=[],
-                             pr_author="alice", repo=REPO)
-    assert sig is not None and sig["mentions"] == [77, 15428]
+    refs = [_xref(30, "alice", "Issue"), _xref(31, "alice"), _xref(32, "bob"),
+            _xref(33, "alice", repo="alice/fork"), _xref(34, "alice", created=BEFORE)]
+    sig = responses.classify(CLOSED, "close", state="closed", comments=comments, reopens=[],
+                             commit_dates=[], cross_refs=refs, pr_author="alice", repo=REPO)
+    assert sig is not None and sig["follow_ups"] == [30, 31, 77, 15428]
+    assert (sig["resubmitted"], sig["resubmitted_pr"]) == (True, 31)
+
+
+@pytest.fixture
+def stores(monkeypatch, tmp_path) -> Iterator[tuple[Store, IssueStore]]:
+    """Throwaway PR and issue stores behind the app's snapshots: PR 10 closed,
+    PR 30 open and issue 40 open by its author after the close, PR 31 open by
+    someone else, PR 32 open by the author before the close."""
+    store = Store(tmp_path)
+    monkeypatch.setattr(data, "_store", store)
+    issue_data.set_store_root(tmp_path)
+    for n, state, author, created in ((10, "closed", "alice", BEFORE), (30, "open", "alice", AFTER),
+                                      (31, "open", "bob", AFTER), (32, "open", "alice", BEFORE),
+                                      (11, "open", "carol", BEFORE)):
+        store.save_pr({"pr": n, "meta": {"title": f"t{n}", "state": state, "head_sha": "h",
+                                         "author": author, "created_at": created}})
+    issues = issue_data.store()
+    issues.save_issue({"issue": 40, "meta": {"title": "t40", "state": "open", "author": "alice",
+                                             "created_at": AFTER, "updated_at": AFTER}})
+    yield store, issues
+    issue_data.set_store_root(None)
+
+
+def _signals(**pr: dict) -> dict:
+    return {"pr": {int(n.lstrip("_")): sig for n, sig in pr.items()}, "issue": {}}
+
+
+CLOSE = {"kind": "close", "at": CLOSED, "reason": "stale", "by": "Ada"}
+
+
+class TestLinks:
+    def test_the_authors_later_open_submissions_follow_up_the_close(self, stores):
+        out = author_returns.links(_signals(_10={"our_action": CLOSE, "follow_ups": [30, 31, 32, 40]}),
+                                   data.prs(), issue_data.issues())
+        assert sorted(out["pr"]) == [30] and sorted(out["issue"]) == [40]
+        link = out["pr"][30][0]
+        assert (link["signal"], link["closed"]["number"], link["reason"], link["closed_by"]) == (
+            "follow-up", 10, "stale", "Ada")
+
+    def test_an_open_item_we_closed_is_its_own_reopened_return(self, stores):
+        out = author_returns.links(_signals(_11={"our_action": CLOSE, "reopened": True}),
+                                   data.prs(), issue_data.issues())
+        assert out["pr"][11][0]["signal"] == "reopened"
+
+    def test_only_our_closes_count(self, stores):
+        comment = {**CLOSE, "kind": "comment"}
+        out = author_returns.links(_signals(_10={"our_action": comment, "follow_ups": [30]}),
+                                   data.prs(), issue_data.issues())
+        assert out == {"pr": {}, "issue": {}}
+
+
+class TestRecorded:
+    SIGNALS = _signals(_10={"our_action": CLOSE, "follow_ups": [30]})
+
+    def test_record_writes_and_clears_the_link(self, stores):
+        author_returns.record(self.SIGNALS)
+        link = author_returns.latest(stores[0].load_pr(30))
+        assert link is not None and link["closed"]["number"] == 10
+        author_returns.record(_signals())
+        assert stores[0].load_pr(30).section("author_return") is None
+
+    def test_the_lists_read_the_recorded_link(self, stores):
+        author_returns.record(self.SIGNALS)
+        rows = service.query_prs({"author_return": "follow-up"})["items"]
+        assert [r["number"] for r in rows] == [30]
+        assert issues_mod.query_issues(author_return=True)["total"] == 0
+
+    def test_the_activity_tab_groups_by_close_and_honors_its_scope(self, stores):
+        author_returns.record(self.SIGNALS)
+        prs, issues = data.prs(), issue_data.issues()
+        [r] = author_returns.recorded(prs, issues, activity.ActivityScope())
+        assert (r["number"], [f["number"] for f in r["follow_ups"]], r["last_at"]) == (10, [30], AFTER)
+        assert author_returns.recorded(prs, issues, activity.ActivityScope(operator="Bo")) == []
+        assert author_returns.recorded(
+            prs, issues, activity.ActivityScope(pr_numbers=frozenset({30}))) == []
 
 
 def test_filter_matches_signal():

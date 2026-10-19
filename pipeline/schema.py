@@ -108,7 +108,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 35 — PR and issue records carry `responses` (how the author answered our last
 #      action) and PRs `response_ack` (an operator marked it seen), replacing
 #      the `responses` and `response_acks` registries an older app reads.
-STORE_SCHEMA_VERSION = 35
+# 36 — open PRs and issues carry `author_return` (the closes their author came
+#      back to, recorded by the responses sweep); an older app computes them
+#      itself and never reads the section.
+STORE_SCHEMA_VERSION = 36
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

@@ -492,12 +492,13 @@ class TestIssues:
         ev = lambda at, kind, **k: {"at": at, "kind": kind, "status": "executed",
                                     "dry_run": False, **k}
         events = [ev(LATER, "issue-reopen", issue=8),
-                  ev(AFTER, "issue-close", issue=7),
-                  ev(AFTER, "close", pr=7),
+                  ev(AFTER, "issue-close", issue=7, action="CLOSE_ISSUE_DUP", operator="Ada"),
+                  ev(AFTER, "close", pr=7, reason="stale", operator="Ada"),
                   ev(ACT, "issue-close", issue=8)]
         base = responses._acted_baseline(events)
-        assert base["pr"] == {7: {"at": AFTER, "kind": "close"}}
-        assert base["issue"] == {7: {"at": AFTER, "kind": "issue-close"}}
+        assert base["pr"] == {7: {"at": AFTER, "kind": "close", "by": "Ada", "reason": "stale"}}
+        assert base["issue"] == {7: {"at": AFTER, "kind": "issue-close", "by": "Ada",
+                                     "reason": "duplicate"}}
 
     def test_issue_query_reads_issue_aliases_without_commits(self):
         q = responses._query([5, 6], "issue")
@@ -509,7 +510,7 @@ class TestIssues:
                                  commit_dates=[])
         assert sig is not None and sig["reopened"] is True
 
-    def test_scan_records_an_issue_authors_mentions_without_touching_the_same_pr_number(
+    def test_scan_records_an_issue_authors_follow_ups_without_touching_the_same_pr_number(
             self, monkeypatch, stores):
         _seed_pr(stores[0], 7)
         _seed_issue(stores[1], 7)
@@ -530,7 +531,7 @@ class TestIssues:
         assert asked == [([7], "pr"), ([7], "issue")]
         assert (out["prs"], out["issues"]) == ([], [7])
         sig = stores[1].load_issue(7).section("responses")
-        assert sig["mentions"] == [12] and sig["issue"] == 7
+        assert sig["follow_ups"] == [12] and sig["issue"] == 7
         assert stores[0].load_pr(7).section("responses") is None
 
     def test_a_partial_scan_keeps_every_other_entry(self, monkeypatch, stores):
