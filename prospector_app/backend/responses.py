@@ -344,21 +344,56 @@ def _sweep(kind: Kind, baseline: dict[int, dict], targets: list[int],
     return out, sorted(failed_set)
 
 
-def scan(prs: list[int] | None = None, issues: list[int] | None = None) -> dict:
+def changed_since(since: str, baseline: dict[Kind, dict[int, dict]]) -> dict[Kind, list[int]]:
+    """The swept items whose response may have moved since `since`: each one
+    GitHub lists as updated, each we acted on since, and each whose author
+    has a PR in that listing — a resubmission's cross-reference leaves the
+    closed item's update time alone. Raises RuntimeError when GitHub does not
+    answer the listing."""
+    listed = gh.gh_list(f"repos/{settings.repo()}/issues?state=all&since={since}&per_page=100",
+                        paginate=True)
+    if listed is None:
+        raise RuntimeError(f"GitHub did not list the items updated since {since}")
+    updated: dict[Kind, set[int]] = {"pr": set(), "issue": set()}
+    authors: set[str] = set()
+    for raw in listed:
+        kind: Kind = "pr" if "pull_request" in raw else "issue"
+        updated[kind].add(int(raw["number"]))
+        if kind == "pr" and (login := (raw.get("user") or {}).get("login")):
+            authors.add(login.lower())
+    cut = _dt(since)
+    records: dict[Kind, Mapping[int, Pr] | Mapping[int, Issue]] = {
+        "pr": data.prs(), "issue": issue_data.issues()}
+    out: dict[Kind, list[int]] = {}
+    for kind in KINDS:
+        recs = records[kind]
+        out[kind] = sorted(
+            n for n, base in baseline[kind].items()
+            if n in updated[kind]
+            or ((at := _dt(base.get("at"))) is not None and cut is not None and at >= cut)
+            or ((rec := recs.get(n)) is not None and (rec.author or "").lower() in authors))
+    return out
+
+
+def scan(prs: list[int] | None = None, issues: list[int] | None = None, *,
+         since: str | None = None) -> dict:
     """Sweep the PRs we've acted on and the issues we closed, classify each
     one's response, and write each changed `responses` section. With `prs` or
-    `issues`, sweep just those and leave every other section. Returns {checked,
-    with_response, prs, issues, failed, failed_issues}.
+    `issues`, sweep just those, and with `since` just the items
+    `changed_since` names; either way every other section stays. Returns
+    {checked, with_response, prs, issues, failed, failed_issues}.
 
     Every fetched item is recomputed from scratch (its section is current
     truth for it) but keeps its first `detected_at`; an item whose fetch failed
     (`failed`, `failed_issues`) keeps its section unchanged rather than
     treating "couldn't check" as "no response"."""
     baseline = _acted_baseline()
-    partial = prs is not None or issues is not None
-    wanted: dict[Kind, list[int] | None] = {"pr": prs, "issue": issues}
     data.refresh()
     issue_data.refresh()
+    wanted: dict[Kind, list[int] | None] = (
+        {"pr": prs, "issue": issues} if since is None
+        else {**changed_since(since, baseline)})
+    partial = any(names is not None for names in wanted.values())
     prior = recorded()
     now = _now()
     reg: dict[Kind, dict[int, dict]] = {"pr": {}, "issue": {}}
@@ -373,7 +408,8 @@ def scan(prs: list[int] | None = None, issues: list[int] | None = None) -> dict:
         targets = [int(n) for n in (names if names is not None else base) if int(n) in base]
         checked += len(targets)
         fresh, failed[kind] = _sweep(kind, base, targets, prior[kind], now)
-        kept = {n: v for n, v in prior[kind].items() if n not in targets} if partial else {}
+        kept = ({n: v for n, v in prior[kind].items() if n not in targets and n in base}
+                if partial else {})
         reg[kind] = {**kept, **fresh}
     _write(prior, reg)
     return {"checked": checked, "with_response": len(reg["pr"]) + len(reg["issue"]),
