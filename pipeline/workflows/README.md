@@ -1,279 +1,137 @@
 # Agentic phases — how the workflows run
 
 Drivers own wave selection, validation, store writes, and stable IDs. CLUSTER,
-ANALYZE, and SECURITY use schema-validated Claude Workflows; VERIFY uses
-locked-down per-PR agents. Agent output always returns through a driver.
+ANALYZE, and SECURITY use schema-validated Claude Workflows (`*.js` here);
+VERIFY uses locked-down per-PR agents. Agent output always returns through a
+driver. Every wave is durable: each agent writes its result to disk as it
+finishes, so after an interrupted run the driver's commit step lands the
+finished work and a re-run picks up only what is missing.
 
-## Phase 1 — CLUSTER (two stages)
+## Phase 1 — CLUSTER
 
 ```
-# stage A: summaries (re-runnable; only PRs lacking a current summary)
+# stage A: summaries (only PRs lacking a current summary)
 uv run python pipeline/cluster_driver.py fetch-diffs --max 200
-uv run python pipeline/cluster_driver.py write-batches --max 200   # pre-splits the wave + resets /tmp/pipeline-out
-#   → run the summarize-pr-diffs workflow (reads /tmp/pipeline-batches/index.json)
-#     each batch agent writes its slice to /tmp/pipeline-out/ as it finishes
-uv run python pipeline/cluster_driver.py commit-summaries-dir       # commits every batch file on disk
-# Durable at batch granularity: if the run dies mid-pass, re-running commit-summaries-dir
-# lands the finished batches, then re-run the wave for the rest (committed PRs are skipped).
+uv run python pipeline/cluster_driver.py write-batches --max 200
+#   → run summarize.js (reads /tmp/pipeline-batches/index.json)
+uv run python pipeline/cluster_driver.py commit-summaries-dir
 
-# stage B: clusters (over ALL current summaries, grouped by subsystem)
-# (fresh slate first: `reset-clusters` drops old clusters + PR backrefs before re-clustering)
-# RE-INGEST + RE-SUMMARIZE FIRST: a full recluster clusters the store snapshot, which is
-# only as fresh as the last INGEST. write-cluster-units prints a `stale-input warning` (and
-# returns it as `stale_input_warning`) when the last INGEST is more than 12h old — heed it
-# and re-ingest, or you'll group heads the author has since moved (issue #253).
-uv run python pipeline/cluster_driver.py write-cluster-units   # [--chunk N]: large N = one unit per subsystem
-#   → run the propose-clusters workflow (reads /tmp/pipeline-cluster-units/index.json)
-#     each unit agent writes its proposals to /tmp/pipeline-cluster-out/ as it finishes
-uv run python pipeline/cluster_driver.py commit-clusters-dir   # commits every unit's proposals on disk
-uv run python pipeline/views.py
-# Durable per unit. Don't commit a PARTIAL pass — mark_standalone would wrongly stamp the
-# un-processed subsystems' PRs as standalone; resume the missing units first.
-```
-
-`commit-clusters-dir` finishes by stamping every considered-but-unplaced PR
-standalone (`mark_standalone`), so a full pass leaves the store consistent — no
-separate step.
-
-### Incremental: assigning new PRs without re-clustering
-
-A from-scratch re-cluster re-runs the granularity lottery over the whole corpus
-and churns ~23% of the existing (already analyzed/reviewed) clusters. To fold in
-PRs that arrived *after* a clustering pass — without disturbing the reviewed
-clusters — use the assignment mode:
-
-```
-uv run python pipeline/cluster_driver.py reset-stale-memberships  # detach PRs whose head moved since clustering
-uv run python pipeline/cluster_driver.py write-assign-units   # one unit per subsystem with new PRs
-#   → run the assign-new-prs-to-clusters workflow (reads /tmp/pipeline-assign-units/index.json)
-#     each agent sees its subsystem's existing clusters as FROZEN anchors and only
-#     decides, per new PR: join an existing cluster / form a new one / standalone
-uv run python pipeline/cluster_driver.py commit-assign-dir    # applies every unit's assignment on disk
+# stage B: clusters over all current summaries, grouped by subsystem
+# Re-ingest first: heed write-cluster-units' stale-input warning.
+# `reset-clusters` gives a fresh slate.
+uv run python pipeline/cluster_driver.py write-cluster-units   # [--chunk N]
+#   → run cluster.js (reads /tmp/pipeline-cluster-units/index.json)
+uv run python pipeline/cluster_driver.py commit-clusters-dir
 uv run python pipeline/views.py
 ```
 
-The same incremental pass runs headless, summaries and analysis included, as
-`uv run python pipeline/cluster_pass.py [--limit N] [--analyze N]` — the
-Control tab's "Cluster new PRs" job, and hourly on a machine with
-`TRIAGE_CLUSTER_WORKER=1` within the daily limits.
+`commit-clusters-dir` stamps every considered-but-unplaced PR standalone, so
+never commit a partial stage B: resume the missing units first. A standalone PR
+has a current `cluster` section with no `id`, which distinguishes "considered"
+from "not reached yet".
 
-Existing clusters are **append-only** here — a join reopens just that cluster
-(`outcome=None`) so ANALYZE re-runs on it alone; clusters that gain nothing are
-untouched. "New PRs" are the never-clustered ones (no `cluster` section);
-already-standalone PRs are left as-is. Durable per unit, same as the full pass.
+### Incremental: new PRs without re-clustering
 
-`reset-stale-memberships` runs first because membership is otherwise sticky across
-head moves: a PR force-pushed to unrelated content after it was clustered stays in
-a cluster whose root problem its new diff no longer addresses. It resets **only**
-the PRs whose head actually moved (clearing their `cluster` section so the assign
-pass that follows re-homes them on their current diff) — not a full re-cluster, so
-reviewed clusters that kept their members are untouched. Stale *standalone* stamps
-are cleared the same way, returning those PRs to the assign pass's candidate pool.
-A cluster emptied by a detach is dropped. Run SUMMARIZE first so the re-homing
-sees a current summary.
-
-### Backfill: straddlers (a PR that belongs to more than one cluster, #196)
-
-The assign pass above already lets a NEW PR straddle (a secondary-concern join).
-To backfill the EXISTING clustered corpus — additively, without re-partitioning —
-run the straddle pass:
+A full re-cluster churns existing, already-reviewed clusters. To fold in PRs
+that arrived since, treat existing clusters as frozen anchors:
 
 ```
-uv run python pipeline/cluster_driver.py write-straddle-units   # one+ unit per subsystem of clustered PRs
-#   → run the straddle-clustered-prs workflow (reads /tmp/pipeline-straddle-units/index.json)
-#     each agent proposes, per PR, ADDITIONAL existing clusters a secondary concern advances
-uv run python pipeline/cluster_driver.py commit-assign-dir      # same additive commit path as assign
+uv run python pipeline/cluster_driver.py reset-stale-memberships  # detach PRs whose head moved
+uv run python pipeline/cluster_driver.py write-assign-units
+#   → run assign.js (reads /tmp/pipeline-assign-units/index.json)
+uv run python pipeline/cluster_driver.py commit-assign-dir
 uv run python pipeline/views.py
 ```
 
-A gained membership reopens just that cluster (`outcome=None`) so ANALYZE re-runs
-on it alone (Phase 2). Purely additive — a straddle pass never removes a PR from
-a cluster it already belongs to.
+Each new PR joins a cluster, forms a new one, or stays standalone. A join
+reopens only that cluster for ANALYZE. Run summaries first so a detached PR is
+re-homed on its current diff. The same pass runs headless as
+`uv run python pipeline/cluster_pass.py [--limit N] [--analyze N]` (Control
+`cluster-new`, and the `TRIAGE_CLUSTER_WORKER` lane).
 
-Waves are idempotent: summaries are stamped `against_head_sha`, so re-running a
-wave only touches PRs whose head moved or that were never summarized. Cluster
-IDs are stable across re-runs (member-overlap matching in the driver).
-
-Singletons are NOT clusters: a PR with no ≥2-member group stays unclustered, but
-a pass stamps it standalone — a `cluster` section with no `id`, freshly stamped
-against the head. That distinguishes "considered, left standalone" from "no pass
-has reached it yet" via `is_current(rec, "cluster")`, and the app card
-reflects the difference. Standalone PRs are still handled through the PR Queue /
-Easy / Stale lanes.
+To let already-clustered PRs join additional clusters (a PR may belong to
+several), run `write-straddle-units` → `straddle.js` → `commit-assign-dir`. It
+only adds memberships.
 
 ## Phase 2 — ANALYZE
 
 ```bash
 uv run python pipeline/analyze_driver.py write-bundles --max 200
-# run analyze.js; it writes one result per cluster to /tmp/pipeline-analyze-out
+#   → run analyze.js (writes /tmp/pipeline-analyze-out)
 uv run python pipeline/analyze_driver.py commit-dir
 uv run python pipeline/views.py
 ```
 
-The driver selects stale or unanalyzed clusters, validates every disposition,
-and reconciles a PR that belongs to several clusters to its most-blocking
-proposal. Completed cluster files are durable and can be committed after an
-interrupted Workflow run.
+The driver picks stale or unanalyzed clusters and validates every disposition.
+A PR in several clusters takes the most blocking proposal.
 
-## Phase 0.5 — THREAT SCAN (deterministic, no agents)
+## THREAT SCAN (deterministic, no agents)
 
-Runs after INGEST and after diffs are fetched (the CLUSTER `fetch-diffs` step).
-Cheap and idempotent — no Workflow, no metered tokens. A worker machine (verify
-or fix lane on) also runs the same scan every ten minutes over each open PR
-whose current head has no verdict, so a head that INGEST records is scanned
-without an operator starting this run (`prospector_app/backend/threat_refresh.py`,
-ledger phase `threat-scan:heads`). The same machine records new and pushed-to
-PRs from GitHub every fifteen minutes (`prospector_app/backend/pr_watch.py`,
-ledger phase `ingest:watch`), so a fresh head reaches that scan without an
-operator's INGEST.
+Runs after diffs are fetched; worker machines also scan new heads on their own
+(`prospector_app/backend/threat_refresh.py`, `pr_watch.py`). The signatures and
+blocklist live in `threats.py`; the scan's rules are in `threat_scan.py`'s
+docstring.
 
 ```
-uv run python pipeline/threat_scan.py            # scan every open PR with a cached diff
-uv run python pipeline/threat_scan.py --only 5174,5270   # rescan specific PRs
-uv run python pipeline/views.py
+uv run python pipeline/threat_scan.py                   # every open PR
+uv run python pipeline/threat_scan.py --only 5174,5270  # specific PRs
+uv run python -m pipeline.threat_evidence capture --backfill
+uv run python -m pipeline.threat_evidence export --pr <n> --out <dir>
+uv run python -m pipeline.threat_evidence verify        # re-hash stored artifacts
 ```
 
-It scans each PR's whole diff against the signatures in `threats.py` (the ONE
-threat policy: obfuscated self-decoders, capability smuggles, build-config
-require-injection, EOL-churn camouflage, and code after a form feed, U+2028 or
-another line-breaking character inside an added line, which reads as
-`embedded-line-break`, suspicious) and checks the author against the
-durable actor blocklist in the store's `threats` registry. A `malicious` verdict stamps the
-PR's `threat` section and, on first detection, blocks the author and logs the
-incident. `gates.pr_clean` then refuses the PR forever (fail-closed, no
-staleness exemption), so a flagged PR can never reach security review or merge —
-even if Greptile scores it 5/5 and CI is green. A clear verdict counts only at
-the head it judged: `pr_clean` refuses a head the scan has not reached, so a
-force-push waits on the next scan before it can merge. A genuine dependency
-bump is stamped clear as exempt without its diff being fetched. A blocked author's *future* PRs
-are flagged on sight, before any diff is fetched. Repository maintainers (the
-profile's `trusted_authors`) are never flagged: their PRs always stamp `clear`,
-though a leaked credential still raises a rotate-secret action item.
+A `malicious` verdict blocks the PR at every head and blocks its author.
+`threat_evidence` keeps an append-only, read-only capture of each malicious head.
 
-The diff cache holds each diff capped at 200 KB, with every file past the cap
-and every artifact-category file (a built `dist/*.js`, say) reduced to a
-one-line stub. A cached copy that is not whole is therefore never the scan's
-input: the scan reads the whole diff from GitHub for that scan alone (it is not
-cached), and a file GitHub itself returns no whole patch for — past the 20k-line
-`.diff` limit, the per-file listing omits large patches and lists at most 3,000
-files — reads as `unscannable-diff` (suspicious, never clear). With `--no-fetch`,
-or GitHub unreachable, a capped copy decides only a malicious verdict; anything
-else leaves the PR unjudged and counted `incomplete` in the run ledger. The
-scan and the cache both split a diff into lines on newline alone, so a header-
-or payload-shaped run of text after a carriage return or form feed stays part
-of the added line it sits in.
+## GREPTILE READ
 
-Each malicious head then has its evidence preserved in the store's
-`threat_evidence` table (`pipeline/threat_evidence.py`): the SHA-pinned diff,
-the diff before the force-push that produced the head, and the PR, commit,
-actor and force-push metadata, all from read-only GitHub reads. `--no-fetch`
-skips the capture with every other GitHub read; the worker's ten-minute
-pass captures too.
-
-```
-uv run python -m pipeline.threat_evidence capture --backfill   # every registry incident without a complete capture
-uv run python -m pipeline.threat_evidence list --author LOGIN
-uv run python -m pipeline.threat_evidence export --pr 11987 --out ~/Downloads/pr-11987-evidence
-uv run python -m pipeline.threat_evidence verify               # re-hash every stored artifact
-```
-
-### GREPTILE READ
-
-Reads the Greptile entry the ingest stored for each below-bar PR (its summary
-comment and inline findings) and classifies every finding substantive-vs-nitpick.
+Classifies each below-bar PR's stored Greptile findings as substantive or nitpick.
 
 ```
 uv run python pipeline/greptile_read_driver.py write-batches
-# run the workflow: greptile_read.js  (writes /tmp/pipeline-greptile-out)
+#   → run greptile_read.js (writes /tmp/pipeline-greptile-out)
 uv run python pipeline/greptile_read_driver.py commit-dir
 ```
 
 ## Phase 4 — SECURITY
 
-Always estimate before launching the Fable Workflow:
+Estimate before launching the workflow. The usage log is a prior Claude
+Workflow directory with `agent-*.jsonl` transcripts, and
+`--require-calibration` refuses to fall back to heuristic constants:
 
 ```
-uv run python pipeline/security_driver.py usage <PAST_WORKFLOW_LOG_DIR>
 uv run python pipeline/security_driver.py estimate --max 25 \
-  --usage-log <PAST_WORKFLOW_LOG_DIR> \
-  --require-calibration \
-  --usage-percentile p90 \
-  --verify-chunk-size 4 \
-  --max-metered-tokens <TOKEN_LIMIT>
-uv run python pipeline/security_driver.py eligible --max 25 > /tmp/security-wave.json   # resets /tmp/security-out
-#   → run the pr-security-review workflow (reads /tmp/security-wave.json)
-#     each PR's verdict is written to /tmp/security-out/ the moment it's computed
-uv run python pipeline/security_driver.py commit-dir   # commits every verdict on disk
-# Durable per PR: kill the run anytime, commit-dir lands the finished PRs, then
-# re-run eligible (only PRs still lacking a current verdict re-queue).
+  --usage-log <PAST_WORKFLOW_LOG_DIR> --require-calibration \
+  --usage-percentile p90 --verify-chunk-size 4 --max-metered-tokens <LIMIT>
+uv run python pipeline/security_driver.py eligible --max 25 > /tmp/security-wave.json
+#   → run security.js (reads /tmp/security-wave.json)
+uv run python pipeline/security_driver.py commit-dir
 ```
 
-Use a prior Claude Workflow directory with `agent-*.jsonl` transcripts as the
-usage log. `estimate --usage-log` derives findings-per-PR and p50/p90/p95/max
-per-agent usage from real review/verifier runs; `--require-calibration` fails
-closed instead of silently falling back to heuristic constants.
-
-The security Workflow keeps Fable on both review and verification, but verifier
-fan-out is chunked, not per finding. A PR with 12 non-green findings gets three
-focused verifier agents at `--verify-chunk-size 4`, instead of 12 verifier
-agents that each reread the same diff. Review/verifier prompts also tell agents
-to use cached diffs first and only fetch live upstream source when a concrete
-finding needs more context.
+Verifiers check findings in chunks of `--verify-chunk-size`, not one agent per
+finding. Unattended review runs through `uv run prospector security-review`.
 
 ## Phase 6 — VERIFY
 
-Dynamic verification: prove the claimed bug is real on a pinned `main`, apply the
-fix, and prove it resolves. Runs on GATE-clean merge candidates (the same
-GATE-clean rule as SECURITY) and adds `verified-fix` as a fifth merge-bar element.
-
-Needs Docker (`colima start` on macOS or `sudo systemctl start docker` on Linux
-if it is down). A fresh machine first builds the hardened image (`uv run python
-pipeline/verify_driver.py build-image` — bakes the profile's pnpm pin);
-sandbox/README.md carries the full machine checklist.
-
-Pin and prepare the base image once per default-branch revision:
+Prove the claimed bug on a pinned default branch, apply the fix, and prove it
+resolves. Needs Docker; `sandbox/README.md` has the machine checklist. Build
+the image once, then pin a base per default-branch revision:
 
 ```
+uv run python pipeline/verify_driver.py build-image
 uv run python pipeline/verify_driver.py prepare-base --tier 1
-#   pins the default branch + tier, clones it, asserts no secrets, and builds
-#   pr-verify-base:<sha12>-t1, then runs the full suite ONCE against that
-#   pristine tree (the baseline phase, ~6-15+ min — measured on the first run,
-#   see sandbox/README.md's measurement checkpoint) and refuses to pin without
-#   a captured baseline: no pin means no exclusion set, so the regress phase
-#   cannot tell a pre-existing failure from a regression. A profile without a
-#   verify.suite contract pins without a baseline run and the regress leg is
-#   skipped for that repository.
-uv run python pipeline/views.py
 ```
 
-With a base pinned, verification runs per-PR from the app: the operator
-clicks **Queue for verification** on a PR, and the verification worker
-(`TRIAGE_VERIFY_WORKER=1`, the machine with the sandbox) drains the queue by
-running `pipeline/verify_pr.py` for one PR at a time. That runner:
+`prepare-base` also runs the suite once on the pristine tree, so a regression
+can be told from a pre-existing failure. The operator queues a PR from the app,
+and the `TRIAGE_VERIFY_WORKER` machine runs `pipeline/verify_pr.py` for one PR
+at a time:
 
-- commits Signal 1 (blind adequacy) to the store BEFORE any sandbox boots, so it
-  cannot be rationalized backward from a green result;
-- runs apply-check → [repro] → red → green, each its own container, reading each
-  result from the exit code; the tier comes from the pin, so it always boots the
-  image prepare-base built. On a clean red→green only, it also runs the regress
-  phase against the pinned baseline's exclusion set, plus one confirming
-  fresh-container re-run when that first regress run fails;
-- judges the run (Signal 3, and Signal 4 when a repro ran) and lets
-  `gates.verify_outcome` compute the outcome.
+- the blind adequacy verdict is committed before any sandbox boots;
+- apply-check → [repro] → red → green run in separate containers, then the
+  regress phase on a clean red→green;
+- the judge's ratings and the host-observed exit codes go to
+  `gates.verify_outcome`, which computes the outcome.
 
-The blind and judge agents run as locked-down headless `claude -p` subprocesses;
-their evidence stays in memory, so nothing is staged on disk. A run that errors
-is HELD with no verdict — re-queue the PR to run it again.
-
-**The agent never picks the outcome.** The judge rates whether the red failed for
-the claimed reason, and — when an independent repro ran — whether it did too;
-`gates.verify_outcome` computes the outcome from the four signals (the repro's
-reason-match is recorded but does not itself change the outcome — Signal 4 stays
-corroborating evidence, not a gate). The escalation rule — blind says the test is
-unfaithful, yet it goes clean red→green → `needs-human` — is therefore
-unreachable from a prompt. That escalation is the highest-value output of the
-phase.
-
-**The host owns the verdict.** Each phase is its own `docker run`; a red is
-accepted only on the exact sentinel exit code 20. Anything the test prints is
-advisory evidence for the judge, never a verdict.
+The agent never picks the outcome, and a red counts only on the sandbox's
+sentinel exit code. A run that errors is held with no verdict; re-queue it.
