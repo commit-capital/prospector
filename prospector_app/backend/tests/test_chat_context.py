@@ -1,6 +1,8 @@
 """The agent's injected context must not leak the pipeline's verdict (so its
 'do you agree?' judgment is unbiased). It gets neutral member signals; it reads
 the actual disposition/rationale from the store itself, afterwards."""
+from __future__ import annotations
+
 import asyncio
 from unittest import mock
 
@@ -58,6 +60,9 @@ def test_verdict_does_not_leak():
 _PR_DETAIL = {
     "title": "Fix the parser", "author": "alice", "clusters": [12, 15],
     "safety": "GREEN", "drift_state": "current",
+    "security_detail": {"findings": [
+        {"severity": "yellow", "title": "Unchecked input", "location": "parser.py:42"},
+    ]},
     "disposition": "merge",                                     # must NOT leak
     "proposed_action": {"rationale": "PR_VERDICT_RATIONALE"},   # must NOT leak
 }
@@ -65,11 +70,11 @@ _PR_DETAIL = {
 
 def test_pr_context_does_not_leak_disposition(temp_store):
     with mock.patch.object(chat.service, "pr_detail", return_value=_PR_DETAIL), \
-         mock.patch.object(chat.data, "safety_by_pr", return_value={}), \
          mock.patch.object(chat.service, "get_diff", return_value={"diff": ""}):
         out = chat._pr_context(101, None, None)
     assert "Fix the parser" in out and "alice" in out   # neutral facts present
     assert "12,15" in out                                # straddler's clusters render
+    assert "[yellow] Unchecked input @ parser.py:42" in out
     assert "PR_VERDICT_RATIONALE" not in out             # rationale withheld
     assert "disposition" not in out.lower()
 
@@ -139,7 +144,6 @@ def test_pr_context_shows_executed_actions(temp_store):
          "identity": "test-bot", "operator": "Casey", "pr": 101, "dry_run": True},
     ])
     with mock.patch.object(chat.service, "pr_detail", return_value=_PR_DETAIL), \
-         mock.patch.object(chat.data, "safety_by_pr", return_value={}), \
          mock.patch.object(chat.service, "get_diff", return_value={"diff": ""}):
         out = chat._pr_context(101, None, None)
     assert "Actions already executed" in out
