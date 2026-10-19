@@ -410,9 +410,11 @@ def run(spec: LaneSpec, *, workdir: Path,
             contributor_docs=contributor_docs)
         fix_checks = check_records.collect(
             lane_check.records_path(workdir, "fix"), CHECKS_LIMIT)
+        fault = issue_gates.checks_fault(fix_checks)
+        if fault:
+            return finish("sandbox", fault)
         if "give_up" in fix_verdict:
-            return finish(*issue_gates.give_up_ending(fix_checks, "no-fix",
-                                                      str(fix_verdict["give_up"])))
+            return finish("no-fix", str(fix_verdict["give_up"]))
 
         on_step("re-gating the fix")
         fix_patch = lane_tree.authored_patch(fix_clone)

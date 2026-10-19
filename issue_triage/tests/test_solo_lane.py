@@ -119,6 +119,18 @@ def test_a_give_up_after_every_check_faulted_ends_sandbox(solo):
     assert res.ending == "sandbox" and res.fault is True
 
 
+def test_a_patch_submitted_after_every_check_faulted_ends_sandbox(solo):
+    def submits(wt):
+        (solo["workdir"] / "solo.checks.jsonl").write_text(json.dumps(
+            {"kind": "typecheck", "exit": None, "error_kind": "infrastructure",
+             "error": "No space left on device"}) + "\n")
+        return _writes_test_and_fix(wt)
+
+    solo["agent"] = submits
+    res = solo["run"]()
+    assert res.ending == "sandbox" and res.fault is True
+
+
 def test_a_test_that_is_not_green_with_the_fix_ends_fix_unproven(solo):
     solo["green"] = _legs(gates.SENTINEL_TEST_FAIL, None)
     assert solo["run"]().ending == "fix-unproven"

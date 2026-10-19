@@ -362,6 +362,21 @@ def test_fix_giving_up_after_every_check_faulted_ends_sandbox(lane):
     assert res.ending == "sandbox" and res.fault is True
 
 
+def test_a_fix_submitted_after_every_check_faulted_ends_sandbox(lane):
+    def submits(wt):
+        (lane.workdir / "fix.checks.jsonl").write_text(json.dumps(
+            {"kind": "test", "exit": None, "error_kind": "infrastructure",
+             "error": "No space left on device"}) + "\n")
+        (Path(wt) / "src" / "x.ts").write_text("export const x = 2;\n")
+        return {"summary": "s", "root_cause": "rc",
+                "changes": [{"path": "src/x.ts", "rationale": "a"}]}
+
+    lane.scripts.fix = submits
+    res = lane.run()
+    assert res.ending == "sandbox" and res.fault is True
+    assert lane.calls["green"] == 0
+
+
 def test_a_fix_touching_a_test_file_ends_fix_untrusted(lane):
     def fix_touches_test(wt: str) -> dict:
         (Path(wt) / "src" / "x.ts").write_text("export const x = 2;\n")

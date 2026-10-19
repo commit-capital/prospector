@@ -317,9 +317,12 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                          guidance=spec.guidance, notes=spec.notes, attempt=attempt,
                          contributor_docs=authoring.docs_from_tree(spec.base.clone))
         checks = check_records.collect(lane_check.records_path(workdir, "solo"), MAX_RUNS)
+        fault = issue_gates.checks_fault(checks)
+        if fault:
+            return finish("sandbox", fault)
         if "give_up" in verdict:
-            ending = "not-a-defect" if verdict["kind"] == "not-a-defect" else "no-fix"
-            return finish(*issue_gates.give_up_ending(checks, ending, verdict["give_up"]))
+            return finish("not-a-defect" if verdict["kind"] == "not-a-defect" else "no-fix",
+                          verdict["give_up"])
 
         on_step("re-gating the fix")
         patch = lane_tree.authored_patch(clone)

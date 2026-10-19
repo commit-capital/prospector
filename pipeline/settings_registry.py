@@ -273,7 +273,7 @@ RETIRED: dict[str, str] = {
 }
 
 BY_NAME = {s.name: s for s in SETTINGS}
-_LIST_TOKEN = re.compile(r"^[A-Za-z0-9._-]+$")
+_LIST_TOKEN = re.compile(r"^[A-Za-z0-9._:-]+$")
 
 
 def editable() -> tuple[str, ...]:
