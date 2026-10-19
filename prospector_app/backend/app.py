@@ -1644,17 +1644,10 @@ def activity_firehose(days: int = Query(30, le=400), all_time: bool = False,
         if dates:
             start_date = min(dates)
     stats = activity.firehose_stats(scoped_prs, all_issues, days, events, start_date=start_date)
-    stats["author_returns"] = author_returns.current(scoped_prs, events)
+    stats["author_returns"] = author_returns.recorded(prs, issue_data.issues(), scope)
     stats["iss_action_counts"] = activity.issue_action_counts(events)
     stats.update(activity.ingest_as_of(data.runs(), issues_mod.cached_runs()))
     return stats
-
-
-@app.get("/api/activity/author-returns")
-def activity_author_returns():
-    """PRs and issues we closed that their author came back to — reopened, or
-    answered with a new PR or issue linking the closed one."""
-    return {"items": author_returns.current()}
 
 
 @app.get("/api/activity/pr-authors")

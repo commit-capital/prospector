@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal
 
 from prospector_app.backend import activity
+from prospector_app.backend import author_returns
 from prospector_app.backend import data
 from prospector_app.backend import issue_data
 from pipeline import gh
@@ -411,7 +412,8 @@ def scan(prs: list[int] | None = None, issues: list[int] | None = None, *,
         kept = ({n: v for n, v in prior[kind].items() if n not in targets and n in base}
                 if partial else {})
         reg[kind] = {**kept, **fresh}
-    _write(prior, reg)
+    save_sections("responses", prior, reg)
+    author_returns.record()
     return {"checked": checked, "with_response": len(reg["pr"]) + len(reg["issue"]),
             "prs": sorted(reg["pr"]), "issues": sorted(reg["issue"]),
             "failed": failed["pr"], "failed_issues": failed["issue"]}
@@ -426,19 +428,23 @@ def recorded() -> dict[Kind, dict[int, dict]]:
     return {"pr": _sections(data.prs()), "issue": _sections(issue_data.issues())}
 
 
-def _write(prior: dict[Kind, dict[int, dict]], reg: dict[Kind, dict[int, dict]]) -> None:
-    """Save each item whose signals moved from `prior` to `reg`."""
+def save_sections(name: str, prior: Mapping[Kind, Mapping[int, dict]],
+                  fresh: Mapping[Kind, Mapping[int, dict]]) -> None:
+    """Save section `name` on each PR and issue where it moved from `prior` to
+    `fresh` (absent from `fresh` removes it), then bring both snapshots
+    current. Nothing moved touches nothing."""
+    moved = [(kind, n, fresh[kind].get(n)) for kind in KINDS
+             for n in sorted(set(prior[kind]) | set(fresh[kind]))
+             if fresh[kind].get(n) != prior[kind].get(n)]
+    if not moved:
+        return
     store, issue_store = data.store(), issue_data.store()
     with store.batch(), issue_store.batch():
-        for kind in KINDS:
-            for n in sorted(set(prior[kind]) | set(reg[kind])):
-                sig = reg[kind].get(n)
-                if sig == prior[kind].get(n):
-                    continue
-                if kind == "pr":
-                    store.set_pr_section(n, "responses", sig)
-                else:
-                    issue_store.set_issue_section(n, "responses", sig)
+        for kind, n, section in moved:
+            if kind == "pr":
+                store.set_pr_section(n, name, section)
+            else:
+                issue_store.set_issue_section(n, name, section)
     data.refresh()
     issue_data.refresh()
 

@@ -1,6 +1,13 @@
+from collections.abc import Iterator
 from dataclasses import dataclass
 
-from prospector_app.backend import author_returns, filters, responses
+import pytest
+
+from issue_triage.issue_store import IssueStore
+from pipeline.store import Store
+from prospector_app.backend import activity, author_returns, data, filters, issue_data
+from prospector_app.backend import issues as issues_mod
+from prospector_app.backend import responses, service
 
 REPO = "o/r"
 
@@ -84,14 +91,16 @@ def test_follow_up_named_from_the_closed_issue_side():
     assert [(f["kind"], f["number"]) for f in r["follow_ups"]] == [("issue", 21)]
 
 
-def test_current_reads_issue_mentions_from_the_stored_responses(monkeypatch):
-    from prospector_app.backend import data, issue_data
+def test_compute_reads_issue_mentions_from_the_stored_responses(monkeypatch):
+    from prospector_app.backend import activity, data, issue_data
     monkeypatch.setattr(responses, "recorded", lambda: {
         "pr": {}, "issue": {20: {"mentions": [21], "resubmitted_pr": None}}})
+    monkeypatch.setattr(data, "prs", lambda: {})
     monkeypatch.setattr(data, "pr_bodies", lambda ns: {})
+    monkeypatch.setattr(activity, "all_events", lambda: [CLOSE_ISSUE])
     monkeypatch.setattr(issue_data, "issues", lambda: {
         20: Item(state="closed"), 21: Item(created_at="2026-06-22T00:00:00Z")})
-    [r] = author_returns.current(prs={}, events=[CLOSE_ISSUE])
+    [r] = author_returns.compute()
     assert [f["number"] for f in r["follow_ups"]] == [21]
 
 
@@ -131,3 +140,52 @@ def test_filter_matches_signal():
     assert filters.matches(row, {"author_return": "follow-up"})
     assert not filters.matches(row, {"author_return": "reopened"})
     assert not filters.matches({}, {"author_return": True})
+
+
+@pytest.fixture
+def stores(monkeypatch, tmp_path) -> Iterator[tuple[Store, IssueStore]]:
+    """Throwaway PR and issue stores behind the app's snapshots, with PR 10
+    closed by Ada and PR 30 its author's follow-up linking it."""
+    store = Store(tmp_path)
+    monkeypatch.setattr(data, "_store", store)
+    issue_data.set_store_root(tmp_path)
+    monkeypatch.setattr(activity, "all_events", lambda: [{**CLOSE_PR, "operator": "Ada"}])
+    for n, state, created, body in ((10, "closed", "2026-06-01T00:00:00Z", None),
+                                    (30, "open", "2026-06-22T00:00:00Z", "Redo of #10")):
+        store.save_pr({"pr": n, "meta": {"title": f"t{n}", "state": state, "head_sha": "h",
+                                         "author": "alice", "created_at": created,
+                                         "body": body}})
+    yield store, issue_data.store()
+    issue_data.set_store_root(None)
+
+
+class TestRecorded:
+    def test_record_links_the_follow_up_to_the_close(self, stores):
+        author_returns.record()
+        link = author_returns.latest(stores[0].load_pr(30))
+        assert link is not None and link["signal"] == "follow-up"
+        assert (link["closed"]["number"], link["closed_by"]) == (10, "Ada")
+        assert stores[0].load_pr(10).section("author_return") is None
+
+    def test_record_clears_a_link_that_no_longer_holds(self, stores, monkeypatch):
+        author_returns.record()
+        monkeypatch.setattr(activity, "all_events", lambda: [])
+        author_returns.record()
+        assert stores[0].load_pr(30).section("author_return") is None
+
+    def test_the_lists_read_the_recorded_link(self, stores):
+        author_returns.record()
+        rows = service.query_prs({"author_return": "follow-up"})["items"]
+        assert [r["number"] for r in rows] == [30]
+        assert rows[0]["author_return"]["closed"]["number"] == 10
+        assert issues_mod.query_issues(author_return=True)["total"] == 0
+
+    def test_the_activity_tab_groups_by_close_and_honors_its_scope(self, stores):
+        author_returns.record()
+        prs, issues = data.prs(), issue_data.issues()
+        [r] = author_returns.recorded(prs, issues, activity.ActivityScope())
+        assert (r["number"], [f["number"] for f in r["follow_ups"]]) == (10, [30])
+        assert r["last_at"] == "2026-06-22T00:00:00Z"
+        assert author_returns.recorded(prs, issues, activity.ActivityScope(operator="Bo")) == []
+        assert author_returns.recorded(
+            prs, issues, activity.ActivityScope(pr_numbers=frozenset({30}))) == []

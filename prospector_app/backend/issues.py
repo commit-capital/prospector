@@ -284,6 +284,7 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
             if issue_links.referenced(c) and c.get("state") == "merged"),
         "fix_status": fix[0] if fix else None,
         "fix_reason": fix[1] if fix else None,
+        "author_return": author_returns.latest(iss),
     }
 
 
@@ -476,8 +477,7 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
     if maintainer is not None:
         rows = [r for r in rows if r["maintainer"] == maintainer]
     if author_return:
-        returns = author_returns.open_returns()["issue"]
-        rows = [r for r in rows if r["number"] in returns]
+        rows = [r for r in rows if r["author_return"] is not None]
     if labels:
         needle_label = labels.strip().lower()
         if needle_label:
@@ -502,7 +502,6 @@ def query_issues(q: str = "", sort: str | None = None, direction: str | None = N
         row = _hydrate(r, full.get(r["number"]), clusters, store_states, pr_states_loading)
         if collapse_dups and row is not r:
             row["dup_rows"] = r["dup_rows"]
-        row["author_return"] = author_returns.open_returns()["issue"].get(r["number"])
         hydrated.append(row)
     return {"items": hydrated, "total": total, "offset": offset, "limit": limit,
             "pr_states_loading": pr_states_loading}
