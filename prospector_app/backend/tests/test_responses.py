@@ -366,8 +366,9 @@ def stores(monkeypatch, tmp_path) -> Iterator[tuple[Store, IssueStore]]:
     issue_data.set_store_root(None)
 
 
-def _seed_pr(store: Store, n: int, sig: dict | None = None) -> None:
-    rec: dict = {"pr": n, "meta": {"title": "t", "state": "closed", "head_sha": "h"}}
+def _seed_pr(store: Store, n: int, sig: dict | None = None, *, author: str = "a") -> None:
+    rec: dict = {"pr": n, "meta": {"title": "t", "state": "closed", "head_sha": "h",
+                                   "author": author}}
     if sig is not None:
         rec["responses"] = {"pr": n, **sig}
     store.save_pr(rec)
@@ -543,3 +544,43 @@ class TestIssues:
         responses.scan(prs=[1])
         reg = responses.recorded()
         assert sorted(reg["pr"]) == [2] and sorted(reg["issue"]) == [3]
+
+
+class TestChangedSince:
+    """An incremental pass reads only what may have moved since the last one."""
+
+    BASE = {"pr": {1: {"at": ACT, "kind": "close"}, 2: {"at": ACT, "kind": "close"},
+                   3: {"at": LATER, "kind": "close"}, 4: {"at": ACT, "kind": "close"}},
+            "issue": {}}
+
+    @pytest.fixture
+    def listed(self, monkeypatch, stores) -> list[dict]:
+        for n, author in ((1, "a"), (2, "b"), (3, "c"), (4, "d")):
+            _seed_pr(stores[0], n, author=author)
+        data.refresh()
+        out: list[dict] = []
+        monkeypatch.setattr(responses.gh, "gh_list", lambda path, **kw: out)
+        return out
+
+    def test_reads_what_changed_we_acted_on_or_its_author_resubmitted(self, listed):
+        listed += [{"number": 1, "pull_request": {}, "user": {"login": "a"}},
+                   {"number": 99, "pull_request": {}, "user": {"login": "D"}}]
+        assert responses.changed_since(AFTER, self.BASE) == {"pr": [1, 3, 4], "issue": []}
+
+    def test_an_issue_listed_is_not_the_pr_of_the_same_number(self, listed):
+        listed.append({"number": 2, "user": {"login": "z"}})
+        assert responses.changed_since(AFTER, self.BASE)["pr"] == [3]
+
+    def test_an_unanswered_listing_raises(self, monkeypatch, stores):
+        monkeypatch.setattr(responses.gh, "gh_list", lambda path, **kw: None)
+        with pytest.raises(RuntimeError):
+            responses.changed_since(AFTER, self.BASE)
+
+    def test_a_pass_keeps_what_it_did_not_read(self, monkeypatch, stores):
+        _seed_pr(stores[0], 1, {"replied": True})
+        _seed_pr(stores[0], 2, {"replied": True})
+        monkeypatch.setattr(responses, "_acted_baseline",
+                            lambda: {"pr": {1: {"at": ACT, "kind": "close"}}, "issue": {}})
+        monkeypatch.setattr(responses, "changed_since", lambda since, base: {"pr": [], "issue": []})
+        responses.scan(since=AFTER)
+        assert sorted(responses.recorded()["pr"]) == [1]  # 2 is no longer one we measure
