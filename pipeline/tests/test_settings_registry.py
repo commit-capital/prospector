@@ -74,6 +74,7 @@ def test_nothing_editable_names_a_credential_a_path_or_the_deployment():
     ("TRIAGE_FIX_HUNT_REREVIEW", "0", "0"),
     ("TRIAGE_FIX_HUNT_SECURITY", "", ""),
     ("TRIAGE_ISSUE_FIX_MODELS", "opus, sonnet", "opus,sonnet"),
+    ("TRIAGE_ISSUE_FIX_MODELS", "opus,sonnet,codex:gpt-6.1-sol", "opus,sonnet,codex:gpt-6.1-sol"),
 ])
 def test_a_written_value_reads_back_as_meant(name, value, want):
     assert reg.validate(name, value) == want

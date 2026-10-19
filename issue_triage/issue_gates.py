@@ -218,11 +218,11 @@ def sandbox_fault(record: dict | None) -> str | None:
 
 
 def checks_fault(checks: list[dict]) -> str | None:
-    """The machine fault behind an agent's give-up, or None: every sandbox run
+    """The machine fault behind an agent's answer, or None: every sandbox run
     the agent made (`check_records.CheckRecord`) that the check tool did not
     refuse failed before its command concluded, and at least one did — so the
-    agent never saw a verdict and its give-up is the machine's, not a judgment
-    on the issue."""
+    agent never saw a verdict, and its give-up or its unchecked patch is the
+    machine's, not a judgment on the issue."""
     runs = [c for c in checks if c.get("error_kind") != "refused"]
     if not runs or any(c.get("error_kind") != "infrastructure" for c in runs):
         return None

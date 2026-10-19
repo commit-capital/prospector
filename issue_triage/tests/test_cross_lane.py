@@ -308,6 +308,17 @@ def test_candidates_that_give_up_on_a_faulted_sandbox_end_the_run_sandbox(cross)
     assert [c["ending"] for c in res.result["candidates"]] == ["sandbox", "no-fix", "sandbox"]
 
 
+def test_a_candidate_that_submits_after_every_check_faulted_drops_out_as_sandbox(cross):
+    def submits_on_a_full_disk(wt: str) -> dict:
+        _gives_up_on_a_full_disk(wt)
+        return _writes("a.test.ts", 2)(wt)
+
+    cross["agents"][2] = submits_on_a_full_disk
+    res = cross["run"]()
+    assert res.ending == "fixed"
+    assert res.result["candidates"][2]["ending"] == "sandbox"
+
+
 def test_a_reproduction_leg_the_harness_cannot_run_ends_the_run_sandbox(cross, monkeypatch):
     def faults(*a, **k):
         raise prove.SandboxFault("the sandbox red leg exited 40: No space left on device")

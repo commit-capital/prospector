@@ -121,10 +121,13 @@ def _author(spec: fix_lane.LaneSpec, workdir: Path, cand: Candidate,
                                    model=cand.model, guidance=spec.guidance, notes=spec.notes,
                                    contributor_docs=authoring.docs_from_tree(spec.base.clone))
         cand.checks = check_records.collect(records, solo_lane.MAX_RUNS)
+        fault = issue_gates.checks_fault(cand.checks)
+        if fault:
+            cand.ending, cand.detail = "sandbox", fault
+            return cand
         if "give_up" in verdict:
-            cand.ending, cand.detail = issue_gates.give_up_ending(
-                cand.checks, "not-a-defect" if verdict["kind"] == "not-a-defect" else "no-fix",
-                verdict["give_up"])
+            cand.ending = "not-a-defect" if verdict["kind"] == "not-a-defect" else "no-fix"
+            cand.detail = verdict["give_up"]
             return cand
         cand.verdict = verdict
         patch = lane_tree.authored_patch(clone)
