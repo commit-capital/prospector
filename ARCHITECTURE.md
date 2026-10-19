@@ -1,14 +1,9 @@
 # Architecture — the data layer
 
-How a fact gets from GitHub into the store and out to an API request. This is
-the part that isn't obvious from any single file: the SQL store, the app's
-in-memory snapshot, and the live sweep. For *what the system does* and the
-trust model see `README.md` and `AGENTS.md`; for the phase run-commands see
-`pipeline/workflows/README.md`. This doc is the map of *where state lives and how
-it flows* — it points at the source files that are the detail-of-record rather
-than restating them.
-
-## One picture
+How a fact gets from GitHub into the store and out to an API request: the SQL
+store, the app's in-memory snapshot, and the live sweep. The trust model is in
+`AGENTS.md`, and the phase commands are in `pipeline/workflows/README.md`. The
+source files named here hold the detail.
 
 ```
  GitHub ──INGEST/phases──►  SQL store  ──watermark sync──►  app snapshot  ──►  /api/* reads
@@ -17,166 +12,68 @@ than restating them.
    │    └ (freshness_live) ─────┤  persists PR closed/merged/mergeable
    │      GraphQL, read-only    │  drift straight into meta.state / signals
    └──────── executor / chat write upstream as configured bot ◄────┘
-              (separate controlled write paths; executor actions logged)
 ```
 
 ## 1. The store is SQL
 
-One database is the single source of truth. There is no committed store data or
-JSON-file store. Status and briefing Markdown is **generated output, never parsed
-back**.
+One database is the source of truth. Status and briefing Markdown is generated
+output, never parsed back.
 
-- **Accessor:** `pipeline/store.py` over `pipeline/storekit.py`. This is the
-  ONLY accessor — never hand-write rows. `issue_triage/issue_store.py` mirrors it
-  for issues, and `alert_triage/alert_store.py` for GitHub security alerts, over
-  the same `storekit` core.
-- **Schema** (`pipeline/schema.py`): a row per PR and per cluster (the fact
-  sections `meta / signals / drift / summary / cluster / analysis / security /
-  issues / threat` ride in a JSON `data` column alongside mirror
-  columns and a `saved_at` write-stamp), a `runs` ledger, singleton `registries`
-  rows (durable threat blocklist + incident log, action items, the live-sweep
-  timestamp), and the app's own `activity` and `chat_messages` tables. Issues
-  add `issues` / `issue_clusters`; security alerts add `alerts` (one row per
-  code-scanning / Dependabot / secret-scanning alert, keyed by a synthetic
-  source+number id, read and actioned as the bot App).
-- **Backend selection** (`storekit.resolve_url`): an explicit `--store DIR`
-  (tests, CLI) → `sqlite:///DIR/store.db`; else `TRIAGE_STORE_URL` (a shared
-  SQL database) verbatim; else a local SQLite default under the store's own
-  directory (`pipeline/store/`, `issue_triage/store/`). All three resolve to a
-  SQLAlchemy URL — there is no non-SQL path.
-- **Supabase note:** use the **transaction pooler (port 6543)**, not the session
-  pooler (5432) — see `.env.example`. The engine is configured to match:
-  `NullPool` + prepared statements disabled for the pooler, 10s connect timeout
-  (`storekit.get_engine`).
-- **Freshness** (`pipeline/freshness.py`): every fact section is stamped with the
-  `against_head_sha` (PRs) / `against_updated_at` (issues) it was computed
-  against, so it goes stale **automatically** when the PR head moves, or when an
-  issue changes materially (`meta.content_updated_at` passes the stamp: an edit
-  to the title or body, a reopen, or a comment by someone other than automation;
-  `issue_triage/issue_freshness.py`) — `is_current()` is the single check, no
-  manual invalidation. The row's `saved_at`
-  column is a separate write-stamp that drives the watermark sync below.
+- **Accessor:** `pipeline/store.py` over `pipeline/storekit.py`;
+  `issue_triage/issue_store.py` and `alert_triage/alert_store.py` sit on the same
+  core.
+- **Schema** (`pipeline/schema.py`): a row per PR and per cluster, with fact
+  sections in a JSON `data` column beside mirror columns and a `saved_at`
+  write-stamp; a `runs` ledger; singleton `registries` rows; the app's
+  `activity` and `chat_messages` tables; and the issue and alert tables.
+- **Backend** (`storekit.resolve_url`): `--store DIR` → SQLite in `DIR`; else
+  `TRIAGE_STORE_URL`; else a local SQLite file under the store's directory. On
+  Supabase use the transaction pooler (port 6543); `storekit.get_engine` is
+  configured for it.
+- **Freshness** (`pipeline/freshness.py`, `issue_triage/issue_freshness.py`):
+  each fact section is stamped with the head SHA or issue update time it was
+  computed against, and `is_current()` decides whether it still holds. There is
+  no manual invalidation.
 
 ## 2. The app reads from an in-memory snapshot
 
-`prospector_app/backend/data.py` is the read side. It never does per-request DB
-I/O — every board/list read serves from module-level dicts (`_prs`, `_clusters`,
-`_pr_to_clusters_idx`).
+`prospector_app/backend/data.py` serves every read from module-level dicts and
+never touches the database on the request path.
 
-- **Watermark sync** (`_freshen`): refetches only rows written at or after the
-  last `saved_at` watermark, via `store.prs_since` / `store.clusters_since`, and
-  atomically rebinds the module globals (a GIL-protected swap — readers never see
-  a half-mutated snapshot).
-- **Off the request path** (`_ensure`): one blocking cold load on first call,
-  started at boot (`app._launch_snapshot_load`); after that a background daemon
-  thread refreshes at most once per `CHECK_DEBOUNCE` (10s). A slow store can
-  never block or wedge a request — it only lets the snapshot lag by up to
-  `CHECK_DEBOUNCE` seconds. `refresh()` (and `POST /api/refresh`) freshen now.
-  `/api/health` answers `loading` during the cold load without waiting on it,
-  and the page shows a loading banner.
-- **The cold load** (`_cold_load`) starts from this machine's disk copy
-  (`snapshot_cache`, under `~/.cache/prospector`, keyed by store, repository and
-  schema version), drops ids the store no longer has, and reads `since` the
-  copy's watermark. With no usable copy it reads every PR as its light copy
-  (`store.prs_light` / `store.light_pr`: each reviewer's summary and a parked
-  resolve's conflict diff cut to 200 characters, each review finding's body cut
-  to its first line — cut server-side on Postgres), in pages of
-  `storekit.BULK_PAGE_ROWS` rows. Every gate, digest, filter and Home
-  classification reads the same from a light copy as from the whole record. A
-  background read (`store.pr_long_text`) then restores each light record still
-  unchanged since it was read, and the copy is written once every record is
-  whole, then at most every `CACHE_EVERY` after a change. The detail view reads
-  a light PR whole from the store (`pr_whole`). Every cut string is a
-  `storekit.Clipped`, and the store refuses to save a record holding one. The
-  issue snapshot (`issue_data`) keeps a disk copy the same way.
-- **The PR run ledger** is held in memory by rowid (`data.runs`); each read
-  fetches only the rows past the last one seen, less a small overlap for an
-  insert that commits after a higher rowid's. It keeps a disk copy beside the
-  snapshot's (`snapshot_cache.LedgerFile`: each row's rowid, `ts` and record),
-  so a restarted process's first read starts from the copy and fetches only the
-  rows past it. That read also asks for the copy's newest row and takes the copy
-  only when the store still has it with the same `ts`, so a store wiped and
-  reseeded at the same address is read whole. The copy is rewritten on a
-  background thread when the ledger has grown, at most every
-  `run_ledger.COPY_EVERY`. The issue and alert run ledgers (`issue_data.runs`,
-  `alert_data.runs`) are held and copied the same way, each copy under its own
-  name, since all three ledgers live in the one store.
-- **The activity log** (`activity.py`, the append-only `activity` table) is held
-  the same way, through the same `run_ledger.RunLedger` and disk copy, with its
-  events sorted by true instant. It loads at boot beside the snapshots; after
-  that a read serves from memory and brings it current on a background thread
-  at most once per `CHECK_DEBOUNCE`, except that a read after this process
-  recorded an event brings it current first, so an operator's own action is in
-  the feed they read next. `POST /api/refresh` brings it current now.
-- **Cluster removals ride the watermark:** a watermark sees inserts/updates but
-  not hard-deletes, so `store.delete_cluster` instead **soft-deletes** — it
-  tombstones the cluster (a `deleted` flag with a bumped `saved_at`). The tombstone
-  flows through the same `store.clusters_since` channel every backend polls, so a
-  recluster's removed clusters drop from each operator's snapshot on the next
-  freshen, no server bounce. `clusters_since` returns the tombstoned ids
-  separately; `_freshen` drops them. Reaping (`store.reap_cluster_tombstones`, run
-  at the top of each recluster) hard-removes tombstones long after every reader has
-  observed them.
+- **Watermark sync** (`_freshen`): fetches only rows saved since the last
+  `saved_at` watermark (`store.prs_since`, `store.clusters_since`) and swaps the
+  dicts atomically.
+- **Off the request path** (`_ensure`): one cold load at boot, then a
+  background refresh at most every `CHECK_DEBOUNCE`. A slow store only lets the
+  snapshot lag; `/api/health` answers `loading` during the cold load.
+- **Cold load** (`_cold_load`): starts from this machine's disk copy
+  (`snapshot_cache`) and reads only what changed since it. Without a copy it
+  reads light records (`store.prs_light`), then fills in the long text in the
+  background. A cut string is a `storekit.Clipped`, which the store refuses to
+  save.
+- **Ledgers** (`run_ledger.RunLedger`): the run ledgers and the activity log
+  are held in memory, read incrementally by rowid, and copied to disk the same
+  way.
+- **Cluster removals** are soft deletes, so they ride the watermark:
+  `store.delete_cluster` tombstones the row, `_freshen` drops it, and
+  `store.reap_cluster_tombstones` removes old tombstones at each recluster.
 
-Every `/api/*` response carries `Cache-Control: no-store` so the browser never
-caches a stale board on top of an already-debounced snapshot.
+Every `/api/*` response carries `Cache-Control: no-store`.
 
 ## 3. The live sweep reconciles the store with GitHub
 
-The store's PR state is only as fresh as the last phase run, but a PR may have
-been closed, merged, reopened, or made conflicting upstream since —
-GitHub-owned facts that are the same for every operator.
-`prospector_app/backend/freshness_live.py` fetches them live and **persists any
-drift into the shared store**, so all operators converge on GitHub's truth by
-reading the store, not a per-machine cache:
+`prospector_app/backend/freshness_live.py` reads PR state from GitHub (batched
+GraphQL) and persists drift in `meta.state` and `signals.mergeable` into the
+shared store through `model.Pr.record_live_state`, the same method the executor
+uses after its own writes. It runs at app launch when the last sweep is older
+than `PROSPECTOR_LIVE_TTL_MIN`, and on the "Refresh live state" button. That is
+why the app can show a PR closed before the next INGEST.
 
-- Read-only upstream (batched GraphQL); the only write is to *our own* store —
-  `sweep()` → `persist_live()` writes divergent `meta.state` (open/closed/merged)
-  and `signals.mergeable` via `model.Pr.record_live_state`. The executor's own
-  merge/close/reopen persist through the same method.
-- **Cadence:** on app launch when the last sweep is missing or older than
-  `PROSPECTOR_LIVE_TTL_MIN` (default 60), and on the manual "Refresh live state"
-  button. The `live_sweep` singleton row records when it last ran — shared, so one
-  operator's sweep gates every instance's launch re-sweep and drives the
-  "live as of …" UI.
-- This is why a PR shown as closed/merged in the app can be fresher than the
-  last phase run: the sweep moved it ahead of INGEST, and the next INGEST simply
-  re-confirms the same `meta.state`.
+## Before you touch the backend
 
-## 4. Writes use the configured GitHub App
-
-Reads use the operator's local GitHub login. Two controlled write paths use the
-GitHub App named by `TRIAGE_BOT_LOGIN` and mint its token through
-`pipeline/get-bot-token.sh`:
-
-- The **executor** (`executor.py` + `safety_guard.py`) uses an explicit command
-  allowlist, records every live attempt and dry-run in the SQL `activity` table,
-  and routes merges through the dedicated, per-PR-gated `bot_merge_run` path.
-- The **chat agent** (`chat.py`) runs a narrower, non-merge `gh` command allowlist
-  under `--permission-mode dontAsk` after conversational confirmation.
-  Its issue-close helper calls the executor and records Activity; other
-  bot-authenticated chat writes and feedback issue filing are not recorded in the
-  executor activity table. Resubmit pushes and branch updates run as the operator
-  and append best-effort activity entries.
-
-Neither path can write as the app when token minting fails. The trust model in
-`AGENTS.md` is authoritative — read it before anything that writes.
-
-## Gotchas worth knowing before you touch the backend
-
-- **One import mechanism: installed packages.** The source roots are packages —
-  `pipeline`, `issue_triage`, and `prospector_app` —
-  installed (editable) via stock setuptools (`pyproject.toml` `[tool.setuptools]`).
-  Code imports them qualified: `from pipeline import store`,
-  `from prospector_app.backend import data`, `from issue_triage import issue_store`.
-  The same install backs runtime, pytest, and the CLI, so **green tests imply
-  `prospector_app.backend.app:app` boots**. A backend-only
-  `import prospector_app.backend.app` is the quickest boot check. (Standalone tools
-  that run under a bare `python3` — `review-new-pr/harness/`, `prospector_app/agent/*`
-  — bootstrap their own package roots instead.)
-- **The store is the joined view.** There is no markdown parsing and no artifact
-  joining — read facts from the store, never reconstruct them from `STATUS.md`.
-- **JSON only as an escape hatch.** `pipeline/store_migrate.py` /
-  `issue_triage/issue_store_migrate.py` `dump`/`import` export and reload the SQL
-  store as a tree of JSON files for backup or inspection. They are never on the
-  runtime path; nothing in production reads those files.
+- A backend-only `import prospector_app.backend.app` is the quickest boot
+  check, and green tests imply the app boots: runtime, pytest and the CLI share
+  one editable install.
+- `pipeline/store_migrate.py` and `issue_triage/issue_store_migrate.py` dump and
+  reload the store as JSON for backup or inspection. Nothing at runtime reads
+  those files.
