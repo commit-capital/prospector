@@ -1,25 +1,13 @@
-"""Run the deep SECURITY review on ONE pull request.
+"""SECURITY review for a single PR or a wave of eligible merge candidates.
 
-The automated wave (security_driver.eligible + workflows/security.js) reviews
-every gated merge candidate lacking a current verdict. This is the per-PR entry
-point: review a single PR — e.g. when its head moved and freshness invalidated
-the old verdict, or to vet a PR before the wave reaches it.
+Each PR runs three concurrent lenses and a refuting verifier through locked-down
+headless agents. The host commits its verdict before starting the next PR, so a
+rerun skips completed, current reviews. Outages and service overload stop a wave.
+An explicit --pr reviews any disposition; --pending uses security_driver.eligible
+and rechecks eligibility before each review. RED reopens only merge candidates.
 
-The Workflow sandbox (security.js) has no filesystem access and is driven by the
-operator in Claude, so the app cannot invoke it. This module runs the same
-3-lens-then-refute shape via concurrent headless `claude -p` agents and commits
-via security_driver.commit_verdicts.
-
-The review ENGINE (review_pr) is gate-free — it reviews whatever PR it's handed,
-ignorant of disposition/mergeability. WHICH PRs the automated wave reviews is the
-gate's job (security_driver.eligible: clean merge candidates only); this entry
-point bypasses it so you can vet a close-fixed / request-changes PR before
-deciding to re-route it to merge. A RED verdict only un-routes a PR that was
-actually headed to merge (commit_verdicts/_flip_red is disposition-aware).
-
-  uv run python security_review.py --pr N [--store DIR]
-
-Progress is printed to stdout one line per step; the app streams it as SSE.
+  uv run prospector security-review --pr N
+  uv run prospector security-review --pending --limit 25
 """
 from __future__ import annotations
 
@@ -32,6 +20,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
+from pipeline import agent_wave
 from pipeline import diff_cache
 from pipeline import headless_agent
 from pipeline import progress
@@ -46,12 +35,6 @@ from pipeline.wire import Finding, VerdictItem
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
-
-# The lenses and review/verify prompts are the canonical copies owned by
-# security_driver.py and shipped to the workflow (security.js) via the manifest —
-# consumed here, never restated. This headless path only differs in the per-call
-# placeholder fills and the fenced-block output tail; the coverage/refute rules below
-# re-implement the same gate the workflow applies (two runtimes, one policy).
 
 
 def _say(msg: str) -> None:
@@ -132,6 +115,8 @@ def _call_agent_json(prompt: str, step: str, diff_path: str,
                                             read_root=[tmp, diff_path], env_allow=(),
                                             on_event=on_event)
         return headless_agent.extract_json(text)
+    except agent_wave.STOPS:
+        raise
     except headless_agent.AgentUnavailable as e:
         _say(f"    ! {step} could not run: {e}")
         _outages.append(str(e))
@@ -156,7 +141,10 @@ def _review_lens(pr: int, title: str, diff_path: str, lens: str, lens_prompt: st
         "__BOT_EVIDENCE__": json.dumps(bot_evidence) if bot_evidence else "none"}) + REVIEW_FENCED_TAIL
     data = _call_agent_json(prompt, f"{lens} lens", diff_path, on_event)
     findings = data.get("findings") if data else None
-    if not isinstance(findings, list):
+    if not isinstance(findings, list) or any(
+            not isinstance(f, dict) or f.get("severity") not in ("red", "yellow", "green")
+            or not isinstance(f.get("title"), str) or not isinstance(f.get("detail"), str)
+            for f in findings):
         return {"ok": False, "findings": []}
     return {"ok": True, "findings": [f for f in findings
                                      if (f.get("severity") or "").lower() != "green"]}
@@ -185,8 +173,23 @@ def _verify(pr: int, diff_path: str, flagged: list[Finding]) -> tuple[list[Findi
         if data is None:
             complete = False
             continue
-        results = data.get("results", [])
-        by_index = {r.get("index"): r for r in results if isinstance(r, dict)}
+        results = data.get("results")
+        if not isinstance(results, list):
+            complete = False
+            continue
+        by_index: dict[int, dict] = {}
+        expected = {f["index"] for f in chunk}
+        for result in results:
+            if (not isinstance(result, dict) or type(result.get("index")) is not int
+                    or result["index"] not in expected or result["index"] in by_index
+                    or type(result.get("upheld")) is not bool
+                    or result.get("adjusted_severity") not in ("red", "yellow", "green", "not-an-issue")
+                    or not isinstance(result.get("reasoning"), str)):
+                complete = False
+                continue
+            by_index[result["index"]] = result
+        if by_index.keys() != expected:
+            complete = False
         for f in chunk:
             v = by_index.get(f["index"])
             if not v or not v.get("upheld"):
@@ -234,6 +237,7 @@ def review_pr(pr: int, title: str, head: str,
     lenses_started = time.monotonic()
     prog = _LensProgress([f"  · {lens['key']} lens" for lens in LENSES])
     results: list[dict | None] = [None] * len(LENSES)
+    stops: list[Exception] = []
 
     def run_lens(i: int, lens: dict) -> None:
         def on_event(ev: tuple) -> None:
@@ -244,6 +248,8 @@ def review_pr(pr: int, title: str, head: str,
             results[i] = _review_lens(pr, title, diff_path,
                                       lens["key"], lens["prompt"], on_event,
                                       bot_evidence=bot_evidence)
+        except agent_wave.STOPS as e:
+            stops.append(e)
         finally:
             prog.finish(i)
 
@@ -253,6 +259,8 @@ def review_pr(pr: int, title: str, head: str,
         t.start()
     for t in threads:
         t.join()
+    if stops:
+        raise stops[0]
     # An unexpected crash (not caught inside _review_lens) leaves a None → treat as
     # a failed lens (ok=False) so it can't masquerade as clean GREEN.
     lens_results = [r if r is not None else {"ok": False, "findings": []}
@@ -295,6 +303,8 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
 
     trigger stamps the runs-ledger entry with who fired the review (the idle
     auto-hunter passes "autohunt"; an unset trigger records none)."""
+    _outages.clear()
+    _transients.clear()
     started = _now()
     rec: Pr | None = store.load_pr(pr)
     if rec is None:
@@ -351,15 +361,43 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
     return 0
 
 
+def run_pending(store: Store, *, limit: int, trigger: str | None = None) -> int:
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    failed = False
+    for item in security_driver.eligible(store, max_n=limit):
+        rec = store.load_pr(item.pr)
+        if rec is None or not security_driver.eligible(store, prs={item.pr: rec}):
+            continue
+        try:
+            rc = run(store, item.pr, trigger=trigger)
+        except agent_wave.STOPS as e:
+            stop = agent_wave.stop_reason(e, 0)
+            assert stop is not None
+            _say(stop.line)
+            return stop.exit_code
+        if rc in (EXIT_AGENT_UNAVAILABLE, EXIT_TRANSIENT):
+            return rc
+        failed |= rc != 0
+    return int(failed)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--pr", type=int, required=True)
+    target = ap.add_mutually_exclusive_group(required=True)
+    target.add_argument("--pr", type=int)
+    target.add_argument("--pending", action="store_true", help="review eligible merge candidates")
+    ap.add_argument("--limit", type=int, default=25, help="maximum pending PRs (default 25)")
     ap.add_argument("--store", default=None)
     ap.add_argument("--trigger", default=None,
                     help="provenance stamp for the runs-ledger entry (the idle "
                          "auto-hunter passes 'autohunt')")
     args = ap.parse_args(argv)
+    if args.limit < 1:
+        ap.error("--limit must be positive")
     store = Store(args.store) if args.store else Store()
+    if args.pending:
+        return run_pending(store, limit=args.limit, trigger=args.trigger)
     return run(store, args.pr, trigger=args.trigger)
 
 

@@ -1,20 +1,16 @@
 # Agentic phases — how the workflows run
 
-Drivers own wave selection, validation, store writes, and stable IDs. CLUSTER,
-ANALYZE, and SECURITY use schema-validated Claude Workflows (`*.js` here);
-VERIFY uses locked-down per-PR agents. Agent output always returns through a
-driver. Every wave is durable: each agent writes its result to disk as it
-finishes, so after an interrupted run the driver's commit step lands the
-finished work and a re-run picks up only what is missing.
+Python runners own summaries, incremental assignment, analysis, and security
+review. They run locked-down headless agents and validate and commit completed
+results as they arrive. After interruption, rerun the command: current results
+are skipped. Full reclustering, straddle assignment, and Greptile classification
+use the three JavaScript workflows here, with explicit driver commit steps.
 
 ## Phase 1 — CLUSTER
 
 ```
 # stage A: summaries (only PRs lacking a current summary)
-uv run python pipeline/cluster_driver.py fetch-diffs --max 200
-uv run python pipeline/cluster_driver.py write-batches --max 200
-#   → run summarize.js (reads /tmp/pipeline-batches/index.json)
-uv run python pipeline/cluster_driver.py commit-summaries-dir
+uv run python pipeline/cluster_pass.py --summarize-only --limit 200
 
 # stage B: clusters over all current summaries, grouped by subsystem
 # Re-ingest first: heed write-cluster-units' stale-input warning.
@@ -36,18 +32,15 @@ A full re-cluster churns existing, already-reviewed clusters. To fold in PRs
 that arrived since, treat existing clusters as frozen anchors:
 
 ```
-uv run python pipeline/cluster_driver.py reset-stale-memberships  # detach PRs whose head moved
-uv run python pipeline/cluster_driver.py write-assign-units
-#   → run assign.js (reads /tmp/pipeline-assign-units/index.json)
-uv run python pipeline/cluster_driver.py commit-assign-dir
+uv run python pipeline/cluster_pass.py --limit 200 --analyze 20
 uv run python pipeline/views.py
 ```
 
-Each new PR joins a cluster, forms a new one, or stays standalone. A join
-reopens only that cluster for ANALYZE. Run summaries first so a detached PR is
-re-homed on its current diff. The same pass runs headless as
-`uv run python pipeline/cluster_pass.py [--limit N] [--analyze N]` (Control
-`cluster-new`, and the `TRIAGE_CLUSTER_WORKER` lane).
+The pass refreshes summaries and places new PRs into existing clusters, new
+ones, or standalone. A join reopens only that cluster for ANALYZE. It also
+detaches stale memberships once their summaries are current; another pass
+re-homes a PR whose summary was stale at the start. Control `cluster-new` and
+the `TRIAGE_CLUSTER_WORKER` lane use this same runner.
 
 To let already-clustered PRs join additional clusters (a PR may belong to
 several), run `write-straddle-units` → `straddle.js` → `commit-assign-dir`. It
@@ -56,9 +49,7 @@ only adds memberships.
 ## Phase 2 — ANALYZE
 
 ```bash
-uv run python pipeline/analyze_driver.py write-bundles --max 200
-#   → run analyze.js (writes /tmp/pipeline-analyze-out)
-uv run python pipeline/analyze_driver.py commit-dir
+uv run python pipeline/analyze_clusters.py --limit 200 --concurrency 4
 uv run python pipeline/views.py
 ```
 
@@ -95,7 +86,7 @@ uv run python pipeline/greptile_read_driver.py commit-dir
 
 ## Phase 4 — SECURITY
 
-Estimate before launching the workflow. The usage log is a prior Claude
+Estimate before launching a wave. The optional usage log is a prior Claude
 Workflow directory with `agent-*.jsonl` transcripts, and
 `--require-calibration` refuses to fall back to heuristic constants:
 
@@ -103,13 +94,16 @@ Workflow directory with `agent-*.jsonl` transcripts, and
 uv run python pipeline/security_driver.py estimate --max 25 \
   --usage-log <PAST_WORKFLOW_LOG_DIR> --require-calibration \
   --usage-percentile p90 --verify-chunk-size 4 --max-metered-tokens <LIMIT>
-uv run python pipeline/security_driver.py eligible --max 25 > /tmp/security-wave.json
-#   → run security.js (reads /tmp/security-wave.json)
-uv run python pipeline/security_driver.py commit-dir
+uv run prospector security-review --pending --limit 25
 ```
 
-Verifiers check findings in chunks of `--verify-chunk-size`, not one agent per
-finding. Unattended review runs through `uv run prospector security-review`.
+The wave rechecks eligibility before each PR, then uses the same review engine
+as `uv run prospector security-review --pr N` and the verify hunter. Each PR's
+three lenses run concurrently; findings are refuted in chunks. Service outages,
+overload, and capacity stops end the wave without discarding committed reviews.
+Incomplete reviews remain eligible on the next run. The estimator's
+`--verify-chunk-size` changes its projection only; the engine's chunk size is
+owned by `security_driver.VERIFY_CHUNK_SIZE`.
 
 ## Phase 6 — VERIFY
 

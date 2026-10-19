@@ -30,7 +30,7 @@ def _isolate_cluster_unit_dirs(tmp_path, monkeypatch):
     unit files back through the glob-based readers."""
     from pipeline import cluster_driver as cd
 
-    for name in ("CLUSTER_UNIT_DIR", "CLUSTER_OUT_DIR", "ASSIGN_UNIT_DIR",
+    for name in ("CLUSTER_UNIT_DIR", "CLUSTER_OUT_DIR",
                  "ASSIGN_OUT_DIR", "STRADDLE_UNIT_DIR"):
         d = tmp_path / name.lower().replace("_", "-")
         d.mkdir()

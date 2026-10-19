@@ -621,69 +621,6 @@ class TestOrphansSkipsDependabotBumps:
         assert s.load_pr(11).section("analysis")["disposition"] == "merge"
 
 
-class TestCommitAnalysesDir:
-    def test_commits_every_cluster_file_and_runs_post_steps(self, tmp_path):
-        import json
-        s = Store(tmp_path)
-        for n in (1, 2, 3, 4):
-            _pr(s, n)
-        _cluster(s, 1, [1, 2]); _cluster(s, 2, [3, 4])
-        # a confirmed-standalone PR — disposition_orphans (a post-step) must dispatch it
-        _pr(s, 9)
-        set_section(s, 9, "cluster", {})   # standalone stamp (no id), current
-        outdir = tmp_path / "aout"
-        outdir.mkdir()
-        (outdir / "cluster-001.json").write_text(json.dumps({"cluster_id": 1, "outcome": "merge-ready",
-            "rationale": "1 wins", "prs": [
-                {"pr": 1, "disposition": "merge", "rationale": "best", "head_sha": "h1"},
-                {"pr": 2, "disposition": "close-dup", "canonical": 1, "rationale": "dup", "head_sha": "h1",
-                 "concerns": [{"label": "the fix", "coverage": "pr", "covered_by": 1}]}]}))
-        (outdir / "cluster-002.json").write_text(json.dumps({"cluster_id": 2, "outcome": "awaiting-authors",
-            "rationale": "needs work", "prs": [
-                {"pr": 3, "disposition": "request-changes", "asks": ["add a test"], "rationale": "x", "head_sha": "h1"},
-                {"pr": 4, "disposition": "close-stale", "rationale": "old", "head_sha": "h1"}]}))
-        res = ad.commit_analyses_dir(s, outdir)
-        assert res["committed"] == 2 and res["failed"] == 0
-        assert s.load_pr(1).section("analysis")["disposition"] == "merge"
-        assert s.load_cluster(2).outcome == "awaiting-authors"
-        # post-step ran: the standalone PR got a deterministic disposition
-        assert res["orphans"] == 1 and s.load_pr(9).section("analysis") is not None
-
-    def test_stray_non_payload_file_is_ignored(self, tmp_path):
-        # an ANALYZE agent's failed API call can save a non-JSON page into the
-        # out-dir (seen: a 502 Bad Gateway HTML saved as blame.json). The commit
-        # reads only its own cluster-NNN.json payloads, so the stray is skipped.
-        import json
-        s = Store(tmp_path)
-        _pr(s, 1); _pr(s, 2)
-        _cluster(s, 1, [1, 2])
-        outdir = tmp_path / "aout"; outdir.mkdir()
-        (outdir / "cluster-001.json").write_text(json.dumps({"cluster_id": 1, "outcome": "close-out",
-            "rationale": "all stale", "prs": [
-                {"pr": 1, "disposition": "close-stale", "rationale": "x", "head_sha": "h1"},
-                {"pr": 2, "disposition": "close-stale", "rationale": "x", "head_sha": "h1"}]}))
-        (outdir / "blame.json").write_text("<html><body>502 Bad Gateway</body></html>")
-        res = ad.commit_analyses_dir(s, outdir)
-        assert res["committed"] == 1 and res["failed"] == 0
-
-    def test_partial_dir_commits_finished_clusters(self, tmp_path):
-        import json
-        s = Store(tmp_path)
-        _pr(s, 1); _pr(s, 2)
-        _cluster(s, 1, [1, 2])
-        outdir = tmp_path / "aout"; outdir.mkdir()
-        (outdir / "cluster-001.json").write_text(json.dumps({"cluster_id": 1, "outcome": "close-out",
-            "rationale": "all stale", "prs": [
-                {"pr": 1, "disposition": "close-stale", "rationale": "x", "head_sha": "h1"},
-                {"pr": 2, "disposition": "close-stale", "rationale": "x", "head_sha": "h1"}]}))
-        assert ad.commit_analyses_dir(s, outdir)["committed"] == 1
-
-    def test_missing_dir_is_noop(self, tmp_path):
-        s = Store(tmp_path)
-        res = ad.commit_analyses_dir(s, tmp_path / "nope")
-        assert res["committed"] == 0 and res["failed"] == 0
-
-
 def test_reconcile_pr_picks_most_blocking_across_clusters(tmp_path):
     s = Store(tmp_path)
     _pr(s, 1)

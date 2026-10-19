@@ -164,7 +164,7 @@ def fill(template: str, subs: dict[str, object]) -> str:
     substituted value that itself contains another token is never re-substituted
     (token order is irrelevant — safe even when a value is untrusted PR text). The
     canonical agent prompts are shipped as templates; consumers fill the per-call
-    placeholders with this. Mirrors the `fill` helper in pipeline/workflows/*.js."""
+    placeholders with this."""
     pattern = re.compile("|".join(re.escape(k) for k in subs))
     return pattern.sub(lambda m: str(subs[m.group(0)]), template)
 

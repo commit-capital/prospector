@@ -1,13 +1,19 @@
 """Per-PR SECURITY review: the gate-free review engine, 3-lens + refute
 orchestration, coverage hold, and the disposition-aware RED flip — all with
 headless claude mocked out."""
+from __future__ import annotations
+
 import json
 import threading
+from pathlib import Path
+
+import pytest
 
 from pipeline import security_review as rs
 from pipeline.testsupport import set_section
 from pipeline.store import Store
-from pipeline.testsupport import reviews_section
+from pipeline import capacity, headless_agent
+from pipeline.testsupport import reviews_section, threat_section
 
 NOW = "2026-06-10T00:00:00+00:00"
 
@@ -21,6 +27,7 @@ def _eligible_pr(store, n=100, head="h1", cluster=1):
         "signals": {"ci": "passing", "mergeable": True,
                     "checked_at": NOW, "against_head_sha": head},
         "reviews": reviews_section(head, NOW),
+        "threat": threat_section(head, NOW),
         "drift": {"state": "applicable", "checked_at": NOW, "against_head_sha": head},
         "analysis": {"disposition": "merge", "rationale": "best",
                      "checked_at": NOW, "against_head_sha": head},
@@ -87,8 +94,9 @@ def test_refuted_finding_yields_green(tmp_path, monkeypatch):
     _eligible_pr(store)
     finding = {"severity": "red", "category": "authz", "title": "maybe", "detail": "d"}
     _mock_agents(monkeypatch, lens_findings=[finding],
-                 verify_results=[{"index": 0, "upheld": False,
-                                  "adjusted_severity": "not-an-issue", "reasoning": "fp"}])
+                 verify_results=[{"index": i, "upheld": False,
+                                  "adjusted_severity": "not-an-issue", "reasoning": "fp"}
+                                 for i in range(len(rs.LENSES))])
     assert rs.run(store, 100) == 0
     assert store.load_pr(100).section("security")["verdict"] == "GREEN"
 
@@ -262,3 +270,104 @@ def test_every_security_agent_reads_only_a_private_directory_and_the_prs_diff(
     for k in runs:
         assert k["read_root"] == [k["cwd"], diff] and k["allow_gh"] is True
         assert list(k["env_allow"]) == [] and k["cwd"].startswith(os.path.realpath(os.environ.get("TMPDIR", "/tmp")))
+
+
+@pytest.mark.parametrize("results", [
+    None, [], [{"index": 0, "upheld": False,
+                "adjusted_severity": "not-an-issue", "reasoning": "only one answered"}],
+    [{"index": i, "upheld": "false", "adjusted_severity": "not-an-issue", "reasoning": "bad bool"}
+     for i in range(3)],
+    [{"index": i, "upheld": False, "adjusted_severity": "unknown", "reasoning": "bad severity"}
+     for i in range(3)],
+])
+def test_incomplete_verifier_never_records_green(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, results: object) -> None:
+    store = Store(tmp_path)
+    _eligible_pr(store)
+    _mock_agents(monkeypatch, lens_findings=[{"severity": "red", "title": "t", "detail": "d"}],
+                 verify_results=results)
+    assert rs.run(store, 100) == 0
+    assert store.load_pr(100).security_verdict is None
+
+
+def test_pending_commits_before_interruption_and_resumes(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = Store(tmp_path)
+    for n in (100, 101, 102):
+        _eligible_pr(store, n, cluster=n)
+    _mock_agents(monkeypatch, lens_findings=[])
+    review = rs.run
+    visited: list[int] = []
+
+    def interrupt(store: Store, pr: int, *, trigger: str | None = None) -> int:
+        visited.append(pr)
+        if pr == 101:
+            assert Store(tmp_path).load_pr(100).security_verdict == "GREEN"
+            raise KeyboardInterrupt
+        return review(store, pr, trigger=trigger)
+
+    monkeypatch.setattr(rs, "run", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        rs.run_pending(store, limit=3)
+    assert visited == [100, 101]
+    assert Store(tmp_path).load_pr(101).security_verdict is None
+    monkeypatch.setattr(rs, "run", review)
+    assert rs.main(["--pending", "--limit", "1", "--store", str(tmp_path),
+                    "--trigger", "operator"]) == 0
+    assert Store(tmp_path).load_pr(101).security_verdict == "GREEN"
+    assert Store(tmp_path).load_pr(102).security_verdict is None
+    assert len(Store(tmp_path).runs()) == 2
+    assert Store(tmp_path).runs()[-1].raw["trigger"] == "operator"
+
+
+def test_pending_rechecks_eligibility_between_reviews(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = Store(tmp_path)
+    for n in (100, 101, 102):
+        _eligible_pr(store, n, cluster=n)
+    set_section(store, 102, "analysis", {"disposition": "request-changes", "rationale": "r",
+                                        "asks": ["tests"]}, against_head_sha="h1")
+    visited: list[int] = []
+
+    def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
+        visited.append(pr)
+        set_section(store, 101, "analysis", {"disposition": "request-changes", "rationale": "r",
+                                            "asks": ["tests"]}, against_head_sha="h1")
+        return 0
+
+    monkeypatch.setattr(rs, "run", run)
+    assert rs.run_pending(store, limit=3) == 0
+    assert visited == [100]
+
+
+@pytest.mark.parametrize("failure,code", [
+    (headless_agent.AgentUnavailable("not logged in"), rs.EXIT_AGENT_UNAVAILABLE),
+    (headless_agent.AgentTransient("overloaded"), rs.EXIT_TRANSIENT),
+    (headless_agent.CapacityExhausted("limit", None), 1),
+    (capacity.CapacityPaused(capacity.Decision(False, "paused", None)), 0),
+])
+def test_pending_stops_on_service_or_capacity_failure(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception, code: int) -> None:
+    store = Store(tmp_path)
+    for n in (100, 101):
+        _eligible_pr(store, n, cluster=n)
+    fetched: list[int] = []
+    monkeypatch.setattr(rs.diff_cache, "fetch_diff", lambda n, *a, **kw: fetched.append(n) or True)
+
+    def fail(*args: object, **kwargs: object) -> str:
+        raise failure
+
+    monkeypatch.setattr(rs.headless_agent, "run_agent", fail)
+    assert rs.run_pending(store, limit=2) == code
+    assert fetched == [100]
+    assert not store.runs()
+    _mock_agents(monkeypatch, lens_findings=[])
+    assert rs.run_pending(store, limit=2) == 0
+    assert Store(tmp_path).load_pr(101).security_verdict == "GREEN"
+
+
+@pytest.mark.parametrize("args", [[], ["--pr", "100", "--pending"], ["--pending", "--limit", "0"]])
+def test_cli_requires_an_explicit_valid_target(args: list[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        rs.main(args)
+    assert exc.value.code == 2

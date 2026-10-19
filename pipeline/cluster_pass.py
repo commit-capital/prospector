@@ -257,32 +257,33 @@ def assign(store: Store, limit: int, concurrency: int, outage: _Outage,
 
 
 def run(store: Store, *, limit: int, analyze_limit: int, concurrency: int,
-        trigger: str | None = None) -> int:
+        trigger: str | None = None, summarize_only: bool = False) -> int:
     with store.holding():
         return _run(store, limit=limit, analyze_limit=analyze_limit,
-                    concurrency=concurrency, trigger=trigger)
+                    concurrency=concurrency, trigger=trigger, summarize_only=summarize_only)
 
 
 def _run(store: Store, *, limit: int, analyze_limit: int, concurrency: int,
-         trigger: str | None) -> int:
+         trigger: str | None, summarize_only: bool) -> int:
     outage = _Outage()
-    _say("① Re-homing PRs whose head moved since they were clustered…")
-    reset = cluster_driver.reset_stale_memberships(store)
-    if any(reset.values()):
-        _record(store, "cluster:reset-stale", _now(),
-                {"detached": len(reset["detached"]),
-                 "emptied_clusters": len(reset["emptied_clusters"]),
-                 "standalone_cleared": len(reset["standalone_cleared"])}, trigger)
-    _say(f"  {len(reset['detached'])} detached, {len(reset['standalone_cleared'])} "
-         "standalone stamp(s) cleared.")
+    if not summarize_only:
+        _say("① Re-homing PRs whose head moved since they were clustered…")
+        reset = cluster_driver.reset_stale_memberships(store)
+        if any(reset.values()):
+            _record(store, "cluster:reset-stale", _now(),
+                    {"detached": len(reset["detached"]),
+                     "emptied_clusters": len(reset["emptied_clusters"]),
+                     "standalone_cleared": len(reset["standalone_cleared"])}, trigger)
+        _say(f"  {len(reset['detached'])} detached, {len(reset['standalone_cleared'])} "
+             "standalone stamp(s) cleared.")
 
     stages: list[Stage] = []
     _say(f"② Summarizing up to {limit} PR(s)…")
     stages.append(summarize(store, limit, concurrency, outage, trigger))
-    if outage.reason is None and stages[-1].stop is None:
+    if not summarize_only and outage.reason is None and stages[-1].stop is None:
         _say(f"③ Placing up to {limit} new PR(s) into clusters…")
         stages.append(assign(store, limit, concurrency, outage, trigger))
-    if outage.reason is None and stages[-1].stop is None and analyze_limit > 0:
+    if not summarize_only and outage.reason is None and stages[-1].stop is None and analyze_limit > 0:
         _say(f"④ Analyzing up to {analyze_limit} pending cluster(s)…")
         result = analyze_clusters.run(store, limit=analyze_limit, concurrency=concurrency,
                                       trigger=trigger)
@@ -310,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="max pending clusters to analyze (default 10)")
     ap.add_argument("--concurrency", type=int, default=3,
                     help="agent calls to run at once (default 3)")
+    ap.add_argument("--summarize-only", action="store_true",
+                    help="prepare summaries for a full recluster without assigning or analyzing")
     ap.add_argument("--trigger", default=None,
                     help="what started the pass, stamped on its ledger rows")
     ap.add_argument("--store", type=Path, default=None,
@@ -317,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     store = Store(args.store) if args.store else Store()
     return run(store, limit=args.limit, analyze_limit=args.analyze,
-               concurrency=args.concurrency, trigger=args.trigger)
+               concurrency=args.concurrency, trigger=args.trigger, summarize_only=args.summarize_only)
 
 
 if __name__ == "__main__":

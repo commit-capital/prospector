@@ -32,7 +32,7 @@ class TestDiffManifestItem:
 
     def test_to_dict_matches_the_legacy_wire_shape(self, tmp_path):
         """to_dict() must reproduce the bare dict the drivers used to build, key
-        order included — summarize.js reads {pr, head_sha, title, diff_path}."""
+        order included — the summarize agent reads {pr, head_sha, title, diff_path}."""
         rec = _pr(Store(tmp_path), 7, head="abc", title="fix lock leak")
         diffs = Path("/diffs")
         item = DiffManifestItem.for_pr(7, rec, diffs)

@@ -224,43 +224,6 @@ class TestCommit:
         assert n_ok == 0 and held == [] and len(errs) == 1
 
 
-class TestCommitDir:
-    def test_commits_per_pr_verdict_files(self, tmp_path):
-        import json
-        s = Store(tmp_path)
-        _pr(s, 1)
-        _pr(s, 2, cluster=7)
-        s.save_cluster({"id": 7, "root_problem": "x", "prs": [2],
-                        "outcome": "merge-ready", "checked_at": NOW})
-        outdir = tmp_path / "secout"
-        outdir.mkdir()
-        (outdir / "pr-1.json").write_text(json.dumps(
-            {"pr": 1, "head_sha": "h1", "verdict": "GREEN", "findings": []}))
-        (outdir / "pr-2.json").write_text(json.dumps(
-            {"pr": 2, "head_sha": "h1", "verdict": "RED", "findings": [
-                {"severity": "red", "lens": "security", "category": "authz",
-                 "title": "t", "detail": "d", "location": "x"}]}))
-        ok, held, errs = sd.commit_verdicts_dir(s, outdir)
-        assert (ok, held, errs) == (2, [], [])
-        assert s.load_pr(1).section("security")["verdict"] == "GREEN"
-        assert s.load_pr(2).disposition == "needs-human"  # RED flipped the read
-
-    def test_partial_dir_commits_finished(self, tmp_path):
-        import json
-        s = Store(tmp_path)
-        _pr(s, 1)
-        outdir = tmp_path / "secout"
-        outdir.mkdir()
-        (outdir / "pr-1.json").write_text(json.dumps(
-            {"pr": 1, "head_sha": "h1", "verdict": "YELLOW", "findings": []}))
-        ok, _, _ = sd.commit_verdicts_dir(s, outdir)
-        assert ok == 1 and s.load_pr(1).section("security")["verdict"] == "YELLOW"
-
-    def test_missing_dir_is_noop(self, tmp_path):
-        s = Store(tmp_path)
-        assert sd.commit_verdicts_dir(s, tmp_path / "nope") == (0, [], [])
-
-
 def test_red_reopens_all_member_clusters(tmp_path):
     from pipeline import store as S
     from pipeline import security_driver

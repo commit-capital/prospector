@@ -1,17 +1,13 @@
 """Phase 2 — ANALYZE: deterministic driver around the per-cluster workflow.
 
-The workflow's agents decide WHAT to do with each PR (disposition + cluster
-outcome); this module decides WHICH clusters need analysis, hands agents a
-complete evidence bundle, and validates everything before it touches the store.
+analyze_clusters and triage_cluster run the shared headless agent. This module
+owns selection, evidence bundles, prompts, and validation of its dispositions.
 
 CLI:
   pending                 print cluster ids needing (re-)analysis
   bundle <cid>            print the evidence bundle for one cluster
   bundles [--max N]       print bundles for all pending clusters
-  write-bundles [--max N] write per-cluster bundle files + index (resets the out-dir)
   commit F.json           validate + write one analysis payload (or a list)
-  commit-dir [D]          commit the per-cluster analyses the workflow wrote to the
-                          out-dir, then run the merge-bar / orphan / salvage post-steps
 """
 from __future__ import annotations
 
@@ -261,16 +257,6 @@ def bundle(store: Store, cid: int, prs: dict[int, Pr] | None = None,
             "bound": [sorted(g) for g in cluster_driver.bound_together(active)]}
 
 
-BUNDLE_DIR = Path("/tmp/pipeline-analyze")          # driver writes per-cluster bundles here
-ANALYZE_OUT_DIR = Path("/tmp/pipeline-analyze-out")  # agents write per-cluster analyses here
-
-# The ONE copy of the ANALYZE agent's decision criteria. write_bundles ships it to
-# the analyze workflow via index.json["prompt"]; triage_cluster.py imports it for the
-# single-cluster headless path. `__BUNDLE_PATH__` (the bundle file path) and
-# `__BRANCH__` (settings.default_branch()) are per-call placeholders each
-# consumer fills at use time. The output-delivery instruction differs
-# per channel — structured output + a durable file in the workflow, a fenced ```json
-# block for the headless path — so it is appended by each consumer, not shared text.
 ANALYZE_PROMPT = """# Background
 
 You are the triage analyst for ONE cluster of pull requests on the open-source repo __REPO__ (default branch: __BRANCH__). Decide the cluster's plan of record.
@@ -339,9 +325,6 @@ Risk multipliers — check each one for every member you keep open (merge or req
 
 Prefer the tested, narrowest correct implementation with the stronger configured review signal. Use `trusted` only as a tiebreaker after correctness, tests, and review quality. Then prefer clean mergeability and recent maintenance. Pick one winner among competing implementations and close the rest as duplicates; state close tie-breakers. Before crediting a superset, use `already_on_master` and read-only source checks to confirm its extra work has not landed already. Unconfirmed extra work is not an advantage. Copy each member's head_sha from the bundle into the output.""".replace("__REPO__", settings.repo()).replace("__MERGE_BAR__", merge_bar_sentence()).replace("__GH_READ__", headless_agent.GH_READ)
 
-# The headless (run_agent/extract_json) output instruction the single-cluster triage
-# path appends to ANALYZE_PROMPT — the fenced-block analogue of the workflow's
-# structured-output + durable-file tail.
 ANALYZE_FENCED_TAIL = """
 
 # Output
@@ -382,31 +365,6 @@ def _split_collapses(bundle: dict, text: str) -> bool:
         return False
     bound = [set(g) for g in bundle.get("bound") or []]
     return bool(parts) and len(cluster_driver.merge_bound(parts, bound)) < 2
-
-
-def write_bundles(store: Store, max_n: int | None = None) -> dict:
-    """Write one bundle file per pending cluster + an index, so each analyze
-    agent reads only its own cluster (no shared-file re-reads). The index also
-    carries the canonical ANALYZE_PROMPT so the workflow consumes it rather than
-    restating it."""
-    # reset both the bundle inputs and the agents' analysis outputs so a previous
-    # pass can't leak into this one's commit
-    for d, pat in ((BUNDLE_DIR, "cluster-*.json"), (ANALYZE_OUT_DIR, "*.json")):
-        d.mkdir(parents=True, exist_ok=True)
-        for old in d.glob(pat):
-            old.unlink()
-    ids = [c.id for c in pending(store)][:max_n or None]
-    prs = store.all_prs()
-    master = redundancy.MasterTree()  # one shared cache of upstream file reads
-    entries = []
-    for cid in ids:
-        p = BUNDLE_DIR / f"cluster-{cid:03d}.json"
-        p.write_text(json.dumps(bundle(store, cid, prs, master=master)))
-        entries.append({"cluster_id": cid, "path": str(p)})
-    (BUNDLE_DIR / "index.json").write_text(json.dumps(
-        {"count": len(entries), "clusters": entries,
-         "prompt": ANALYZE_PROMPT.replace("__BRANCH__", settings.default_branch())}))
-    return {"count": len(entries)}
 
 
 def reconcile_pr(store: Store, n: int) -> None:
@@ -521,38 +479,9 @@ def commit_analysis(store: Store, payload: dict) -> list[str]:
     return []
 
 
-def commit_analyses_dir(store: Store, out_dir: Path | str = ANALYZE_OUT_DIR) -> dict:
-    """Commit the per-cluster analyses the analyze workflow wrote to a directory,
-    then run the whole-store post-steps (standalone dispositioning, salvage).
-    Each agent writes its cluster's analysis as it finishes, so a run
-    that dies mid-pass leaves the completed clusters on disk and committing the
-    dir lands them — same durability as commit_summaries_dir / commit_clusters_dir.
-    The post-steps are idempotent and partial-safe (disposition_orphans only
-    touches confirmed-standalone PRs), so committing a partial pass is fine."""
-    out_dir = Path(out_dir)
-    committed = failed = 0
-    errors: list[str] = []
-    with store.batch():
-        if out_dir.exists():
-            for f in sorted(out_dir.glob("cluster-*.json")):
-                loaded = json.loads(f.read_text())
-                for payload in (loaded if isinstance(loaded, list) else [loaded]):
-                    errs = commit_analysis(store, payload)
-                    if errs:
-                        failed += 1
-                        errors.extend(f"cluster {payload.get('cluster_id')}: {e}" for e in errs)
-                    else:
-                        committed += 1
-        orphans = disposition_orphans(store)
-        salvage = backfill_salvage_items(store, today=_now()[:10])
-    return {"committed": committed, "failed": failed,
-            "orphans": orphans, "salvage_items": salvage, "errors": errors}
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("cmd", choices=["pending", "bundle", "bundles", "write-bundles", "backfill-salvage",
-                                    "commit", "commit-dir"])
+    ap.add_argument("cmd", choices=["pending", "bundle", "bundles", "backfill-salvage", "commit"])
     ap.add_argument("arg", nargs="?")
     ap.add_argument("--max", type=int, default=None)
     ap.add_argument("--store", default=None)
@@ -568,8 +497,6 @@ def main(argv: list[str] | None = None) -> int:
         prs = store.all_prs()
         master = redundancy.MasterTree()
         print(json.dumps([bundle(store, cid, prs, master=master) for cid in ids]))
-    elif args.cmd == "write-bundles":
-        print(json.dumps(write_bundles(store, args.max)))
     elif args.cmd == "commit":
         data = json.loads(Path(args.arg).read_text())
         payloads = data if isinstance(data, list) else [data]
@@ -590,15 +517,6 @@ def main(argv: list[str] | None = None) -> int:
                           "stats": {"committed": committed, "failed": failed,
                                     "orphans": orphans, "salvage_items": salvage}})
         return 1 if failed and not committed else 0
-    elif args.cmd == "commit-dir":
-        r = commit_analyses_dir(store, args.arg or ANALYZE_OUT_DIR)
-        for e in r["errors"]:
-            print(f"  ! {e}", file=sys.stderr)
-        print(f"analysis committed: {r['committed']}; failed validation: {r['failed']}; "
-              f"orphans dispositioned: {r['orphans']}; salvage-fix items: {r['salvage_items']}")
-        store.append_run({"phase": "analyze:commit", "started": _now(), "finished": _now(),
-                          "stats": {k: r[k] for k in ("committed", "failed", "orphans", "salvage_items")}})
-        return 1 if r["failed"] and not r["committed"] else 0
     elif args.cmd == "backfill-salvage":
         n = backfill_salvage_items(store, today=_now()[:10])
         print(f"salvage-fix action items emitted/refreshed: {n}")

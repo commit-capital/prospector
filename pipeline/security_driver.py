@@ -1,9 +1,9 @@
 """Phase 4 — SECURITY: deterministic driver around the adversarial review workflow.
 
 Only PRs that pass the GATE run here (gates.security_eligible): clean merge
-candidates lacking a current verdict. The workflow (workflows/security.js)
-runs 3 adversarial lenses plus a batched refuting verifier per PR with
-non-green findings; this driver writes the verdicts and enforces the RED rule:
+candidates lacking a current verdict. security_review runs the shared
+3-lens review and batched refuting verifier for single PRs and waves. This
+driver writes the verdicts and enforces the RED rule:
 a RED merge candidate flips to needs-human and its cluster goes back to
 needs-analysis.
 
@@ -24,7 +24,6 @@ from pathlib import Path
 
 from pipeline import diffpaths
 from pipeline import gates
-from pipeline import reviewers
 from pipeline import risktier
 from pipeline import settings
 from pipeline.freshness import is_current
@@ -36,7 +35,6 @@ if TYPE_CHECKING:
     from pipeline.model import Pr
 
 DIFFS = Path(__file__).resolve().parent / "cache" / "diffs"
-SECURITY_OUT_DIR = Path("/tmp/security-out")   # agents write per-PR verdicts here
 USAGE_KEYS = (
     "input_tokens",
     "cache_creation_input_tokens",
@@ -52,13 +50,6 @@ VERIFY_PROMPT_TOKENS = 320
 VERIFY_FINDING_TOKENS = 140
 VERIFY_OUTPUT_TOKENS = 220
 
-# The ONE copy of the SECURITY review's lenses and agent prompts. wave_manifest ships
-# them to the security workflow (security.js) via the eligibility manifest; the per-PR
-# headless path (security_review.py) imports them. `__PR__` / `__TITLE__` / `__DIFF_PATH__`
-# / `__LENS__` / `__LENS_PROMPT__` / `__N__` / `__CHUNK__` are the per-call placeholders
-# each consumer fills. The output-delivery instruction differs per channel — structured
-# output in the workflow, a fenced ```json block for the headless path — so it is appended
-# by each consumer (the *_FENCED_TAIL constants), not part of the shared text.
 LENSES = [
     {"key": "security", "prompt": "authz/authn scoping (privilege escalation, weakened/missing permission or ownership checks, widened access, JWT/role), injection (SQL/command/path), SSRF/unsafe outbound, secret leakage/logging, insecure file perms, unsafe deserialization, ReDoS, info disclosure, new dependency/network/exec surface."},
     {"key": "correctness", "prompt": "logic errors, null/undefined, error handling, races & DB-transaction bugs, breaking API/contract changes, regressions, and whether the code does what its title claims."},
@@ -124,25 +115,6 @@ def eligible(store: Store, today: str | None = None, max_n: int | None = None,
     out.sort(key=lambda row: (row[0], *_tier_order(row[1])))
     ordered = [item for _, item in out]
     return ordered[:max_n] if max_n else ordered
-
-
-def wave_manifest(store: Store, max_n: int | None = None) -> dict:
-    """The full input the security workflow reads: the eligible PRs (each with
-    the open findings every automated reviewer and scanner left on it, as
-    `bot_evidence`) plus the canonical lenses and review/verify prompts, so
-    security.js consumes them rather than restating them."""
-    prs = store.all_prs()
-    items = []
-    for m in eligible(store, max_n=max_n, prs=prs):
-        rec = prs.get(m.pr)
-        items.append({**m.to_dict(),
-                      "bot_evidence": reviewers.evidence(rec.reviews, rec.head_sha) if rec else []})
-    return {
-        "items": items,
-        "lenses": LENSES,
-        "review_prompt": REVIEW_PROMPT,
-        "verify_prompt": VERIFY_PROMPT,
-    }
 
 
 def _diff_bytes(path: str) -> int:
@@ -429,7 +401,7 @@ def estimate_security_run(
 
 
 def commit_verdicts(store: Store, items: list[VerdictItem]) -> tuple[int, list[int], list[str]]:
-    """Write GREEN/YELLOW/RED verdicts. An INCOMPLETE verdict (the workflow's
+    """Write GREEN/YELLOW/RED verdicts. An INCOMPLETE verdict (the engine's
     signal that a lens failed to run, so a clean bill can't be trusted) is HELD:
     no section is written, so the PR stays security-eligible and re-runs. Returns
     (written, held_prs, errors)."""
@@ -454,19 +426,6 @@ def commit_verdicts(store: Store, items: list[VerdictItem]) -> tuple[int, list[i
     return ok, held, errs
 
 
-def commit_verdicts_dir(store: Store, out_dir: Path | str = SECURITY_OUT_DIR) -> tuple[int, list[int], list[str]]:
-    """Commit the per-PR verdicts the security workflow wrote to a directory. Each
-    PR's verdict is persisted as it's computed, so a run that dies mid-pass leaves
-    the finished PRs on disk and committing the dir lands them (re-running
-    `eligible` re-queues only the PRs still lacking a current verdict)."""
-    out_dir = Path(out_dir)
-    if not out_dir.exists():
-        return 0, [], []
-    items = [VerdictItem.from_dict(json.loads(f.read_text()))
-             for f in sorted(out_dir.glob("*.json"))]
-    return commit_verdicts(store, items)
-
-
 def _reset_cluster_on_red(store: Store, n: int, *, was_merge: bool) -> None:
     """A RED verdict on a merge-routed PR reopens its cluster so ANALYZE revisits
     it. The disposition route derives from the verdict at read time
@@ -489,7 +448,7 @@ def _reset_cluster_on_red(store: Store, n: int, *, was_merge: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("cmd", choices=["eligible", "usage", "estimate", "commit", "commit-dir"])
+    ap.add_argument("cmd", choices=["eligible", "usage", "estimate", "commit"])
     ap.add_argument("file", nargs="?")
     ap.add_argument("--max", type=int, default=None)
     ap.add_argument("--store", default=None)
@@ -512,11 +471,7 @@ def main(argv: list[str] | None = None) -> int:
     store = Store(args.store) if args.store else Store()
 
     if args.cmd == "eligible":
-        # prep the durable out-dir for this wave (agents write per-PR verdicts here)
-        SECURITY_OUT_DIR.mkdir(parents=True, exist_ok=True)
-        for old in SECURITY_OUT_DIR.glob("*.json"):
-            old.unlink()
-        print(json.dumps(wave_manifest(store, max_n=args.max), indent=1))
+        print(json.dumps([m.to_dict() for m in eligible(store, max_n=args.max)], indent=1))
     elif args.cmd == "usage":
         if not args.file:
             print("usage requires a workflow log dir or agent jsonl file", file=sys.stderr)
@@ -555,12 +510,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"estimated cost {estimate['cost']['estimated']} exceeds --max-cost "
                       f"{args.max_cost}", file=sys.stderr)
                 return 2
-    elif args.cmd in ("commit", "commit-dir"):
-        if args.cmd == "commit":
-            ok, held, errs = commit_verdicts(
-                store, [VerdictItem.from_dict(d) for d in json.loads(Path(args.file).read_text())])
-        else:
-            ok, held, errs = commit_verdicts_dir(store, args.file or SECURITY_OUT_DIR)
+    elif args.cmd == "commit":
+        ok, held, errs = commit_verdicts(
+            store, [VerdictItem.from_dict(d) for d in json.loads(Path(args.file).read_text())])
         print(f"verdicts written: {ok}; held (incomplete lens coverage, will re-run): "
               f"{len(held)}; errors: {len(errs)}")
         if held:

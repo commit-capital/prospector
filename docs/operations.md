@@ -1,17 +1,14 @@
 # Operations — who runs what
 
-Two kinds of operations: ones **you** run (a single self-contained command, or
-an app button), and ones **the agent** runs (an agent orchestrating a
-multi-stage phase). The dividing line is fan-out: a job that targets one PR or
-one cluster, or that's pure deterministic bookkeeping, is a command you run; a
-job that summarizes/clusters/analyzes the whole corpus interleaves an agentic
-`workflows/*.js` step and is agent-driven.
+Most operations are a command or an app button, including batch summaries,
+incremental clustering, analysis, and security review. Full reclustering,
+straddle assignment, and Greptile classification use the JavaScript workflows
+in `pipeline/workflows/`.
 
 ## Operations you run
 
-All from the repo root. The first three are deterministic and cheap; the last
-three spawn a single headless agent (they spend metered tokens, but are still
-one command you invoke). Most are also buttons on the app **Control** tab.
+All from the repo root. The first three are deterministic; the others run
+headless agents. Most are also buttons on the app **Control** tab.
 
 ```bash
 # refresh open PRs + issue links into the store (read-only gh; cheap)
@@ -31,6 +28,11 @@ uv run prospector recluster --cluster <cid>
 
 # one PR: 3-lens adversarial security review (also the ↻ Run button in the app)
 uv run prospector security-review --pr <n>
+
+# bounded waves; completed results are committed as they arrive
+uv run python pipeline/cluster_pass.py --limit 200 --analyze 20
+uv run python pipeline/analyze_clusters.py --limit 200
+uv run prospector security-review --pending --limit 25
 ```
 
 Triage itself is an app operation: open the Clusters board, approve a plan,
@@ -39,10 +41,10 @@ never hand-run `gh pr merge/close/comment` against the triaged repo.
 
 ## Operations the agent runs
 
-Full **CLUSTER**, **ANALYZE**, and **SECURITY** waves interleave deterministic
-drivers with the Workflow scripts in `pipeline/workflows/`. **VERIFY** instead
-runs per PR through the app queue and `verify_pr.py` worker. See
-`pipeline/workflows/README.md` for the current sequences.
+Full reclustering, straddle assignment, and Greptile classification interleave
+drivers with the three scripts in `pipeline/workflows/`. **VERIFY** runs per PR
+through the app queue and `verify_pr.py` worker. See `pipeline/workflows/README.md`
+for the command sequences.
 
 Deterministic drivers own selection, validation, and store writes. Agentic
 judgment runs through schema-validated batch Workflows or locked-down per-PR

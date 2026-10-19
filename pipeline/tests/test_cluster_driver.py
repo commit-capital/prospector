@@ -120,57 +120,6 @@ class TestCommitSummaries:
         assert sm["secondary_changes"] == []
 
 
-class TestCommitSummariesDir:
-    def test_commits_every_batch_file_in_dir(self, tmp_path):
-        import json
-        s = Store(tmp_path)
-        _pr(s, 1)
-        _pr(s, 2)
-        outdir = tmp_path / "out"
-        outdir.mkdir()
-        (outdir / "batch-000.json").write_text(json.dumps(
-            [{"pr": 1, "head_sha": "h1", "one_liner": "a", "subsystem": "ui"}]))
-        (outdir / "batch-001.json").write_text(json.dumps(
-            [{"pr": 2, "head_sha": "h1", "one_liner": "b", "subsystem": "cli"}]))
-        ok, errs = cd.commit_summaries_dir(s, outdir)
-        assert ok == 2 and errs == []
-        assert is_current(s.load_pr(1), "summary")
-        assert is_current(s.load_pr(2), "summary")
-
-    def test_stray_non_payload_file_is_ignored(self, tmp_path):
-        # a summarize agent's failed fetch can drop a non-JSON page into the
-        # out-dir; the commit reads only its own batch-NNN.json payloads.
-        import json
-        s = Store(tmp_path)
-        _pr(s, 1)
-        outdir = tmp_path / "out"
-        outdir.mkdir()
-        (outdir / "batch-000.json").write_text(json.dumps(
-            [{"pr": 1, "head_sha": "h1", "one_liner": "a", "subsystem": "ui"}]))
-        (outdir / "blame.json").write_text("<html><body>502 Bad Gateway</body></html>")
-        ok, errs = cd.commit_summaries_dir(s, outdir)
-        assert ok == 1 and errs == []
-        assert is_current(s.load_pr(1), "summary")
-
-    def test_partial_dir_still_commits_finished_batches(self, tmp_path):
-        # the durability guarantee: a run that died after batch 0 leaves batch-000
-        # on disk; committing the dir still lands those PRs.
-        import json
-        s = Store(tmp_path)
-        _pr(s, 1)
-        outdir = tmp_path / "out"
-        outdir.mkdir()
-        (outdir / "batch-000.json").write_text(json.dumps(
-            [{"pr": 1, "head_sha": "h1", "one_liner": "a", "subsystem": "ui"}]))
-        ok, errs = cd.commit_summaries_dir(s, outdir)
-        assert ok == 1 and is_current(s.load_pr(1), "summary")
-
-    def test_missing_dir_is_zero_not_error(self, tmp_path):
-        s = Store(tmp_path)
-        ok, errs = cd.commit_summaries_dir(s, tmp_path / "nope")
-        assert ok == 0 and errs == []
-
-
 class TestCommitClustersDir:
     def test_commits_proposals_from_every_unit_file(self, tmp_path):
         import json
@@ -853,8 +802,8 @@ class TestStraddleCLI:
         assert out["prs"] == 1 and out["count"] >= 1
 
 
-def test_assign_units_does_not_load_pr_per_member(tmp_path):
-    """assign_units() reads existing clusters' members from one bulk all_prs(),
+def test_assign_payloads_does_not_load_pr_per_member(tmp_path):
+    """assign_payloads() reads existing clusters' members from one bulk all_prs(),
     not a load_pr per member across every cluster."""
     import unittest.mock as mock
     s = Store(tmp_path)
@@ -865,6 +814,6 @@ def test_assign_units_does_not_load_pr_per_member(tmp_path):
     orig = s.load_pr
     calls: list[int] = []
     with mock.patch.object(s, "load_pr", side_effect=lambda n: (calls.append(n), orig(n))[1]):
-        res = cd.assign_units(s)
-    assert res["new_prs"] == 1                 # PR 3 is the lone candidate (behavior unchanged)
+        res = cd.assign_payloads(s)
+    assert [p["pr"] for u in res for p in u["new_prs"]] == [3]                 # PR 3 is the lone candidate (behavior unchanged)
     assert calls == []                          # no per-member load_pr
