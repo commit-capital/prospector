@@ -108,8 +108,9 @@ def classify(action_at: str, action_kind: str, *, state: str,
     - new_commits: a commit pushed after we acted
     - resubmitted: a new PR in this repository, by the same author, cross-referenced
       on this closed PR after our action (author opened a fresh PR as a redo)
-    - mentions: the PR/issue numbers the author names in their own comments
-      after our action (not a signal by itself; the author's comment is a reply)
+    - follow_ups: the PRs and issues the author opened after our action that
+      cross-reference this one, and the numbers they name in their own comments
+      since (not a signal by itself; such a comment is a reply)
     """
     _ = bots  # bot filtering is applied via _is_human (module-level BOTS)
     cut = _dt(action_at)
@@ -136,38 +137,28 @@ def classify(action_at: str, action_kind: str, *, state: str,
     commit_at = max(new_commit_dates, default=None)
     new_commits = bool(new_commit_dates)
 
-    # resubmitted — a cross-reference on this closed PR pointing to a different PR
-    # in this repository, by the same author, created after our action (author
-    # opened a fresh PR as redo). A cross-ref from another repository (e.g. the
-    # author's fork of an unrelated project) carries a bare, non-comparable PR
-    # number and is never a resubmission of this PR.
+    # The author's own PRs and issues in this repository, opened after our action
+    # and cross-referenced here since (GitHub records one for each mention in
+    # their title, body or comments). A cross-ref from another repository (e.g.
+    # the author's fork of an unrelated project) carries a bare, non-comparable
+    # number and is never one of these.
     this_repo = repo or f"{settings.repo_owner()}/{settings.repo_name()}"
-    resubmitted = False
-    resubmitted_pr: int | None = None
-    resubmitted_at: str | None = None
-    if cross_refs and pr_author:
-        for ref in cross_refs:
-            if (_dt(ref.get("createdAt")) or cut) <= cut:
-                continue
-            source = ref.get("source") or {}
-            if source.get("__typename") != "PullRequest":
-                continue
-            if (source.get("repository") or {}).get("nameWithOwner") != this_repo:
-                continue
-            ref_author = (source.get("author") or {}).get("login")
-            ref_number = source.get("number")
-            ref_created_at = source.get("createdAt")
-            if (ref_author == pr_author and ref_number
-                    and ref_created_at and (_dt(ref_created_at) or cut) > cut):
-                resubmitted = True
-                resubmitted_pr = int(ref_number)
-                resubmitted_at = ref.get("createdAt")
-                break
+    own_refs = [
+        (ref, source) for ref in cross_refs or []
+        if pr_author and (_dt(ref.get("createdAt")) or cut) > cut
+        and (source := ref.get("source") or {}).get("__typename") in ("PullRequest", "Issue")
+        and (source.get("repository") or {}).get("nameWithOwner") == this_repo
+        and (source.get("author") or {}).get("login") == pr_author
+        and source.get("number") and (_dt(source.get("createdAt")) or cut) > cut]
+    resubmission = next(((ref, source) for ref, source in own_refs
+                         if source["__typename"] == "PullRequest"), None)
+    resubmitted = resubmission is not None
+    resubmitted_pr = int(resubmission[1]["number"]) if resubmission else None
+    resubmitted_at = resubmission[0].get("createdAt") if resubmission else None
 
-    # mentions — the PRs or issues the author names in their own comments after
-    # our action ("opened a new PR at #N"), the link a resubmission's own body
-    # may never carry.
-    mentions = sorted({
+    # The author's comments since name a submission its own body may never link
+    # ("opened a new PR at #N").
+    follow_ups = sorted({int(source["number"]) for _, source in own_refs} | {
         int(m.group(1) or m.group(2))
         for c in human if pr_author and _login(c, "author") == pr_author
         for m in _mention_re(this_repo).finditer(c.get("bodyText") or "")})
@@ -182,7 +173,7 @@ def classify(action_at: str, action_kind: str, *, state: str,
         "replied": replied,
         "resubmitted": resubmitted,
         "resubmitted_pr": resubmitted_pr,
-        "mentions": mentions,
+        "follow_ups": follow_ups,
         "last_response_at": last,
         "snippet": _snippet(latest.get("bodyText")) if latest else None,
         "by": reply_login or (_login(reopen_after[-1], "actor") if reopen_after else None),
@@ -192,8 +183,8 @@ def classify(action_at: str, action_kind: str, *, state: str,
 def _acted_baseline(events: list[dict] | None = None) -> dict[Kind, dict[int, dict]]:
     """The cutoff a response is measured against, per kind: each PR's latest
     LANDED action — reopen too, we measure against whatever we last did — and
-    each issue whose latest landed state action is our close. A dry-run never
-    counts (is_landed)."""
+    each issue whose latest landed state action is our close, with who made it
+    and a close's reason. A dry-run never counts (is_landed)."""
     events = activity.all_events() if events is None else events
     prs: dict[int, dict] = {}
     issues: dict[int, dict] = {}
@@ -201,10 +192,12 @@ def _acted_baseline(events: list[dict] | None = None) -> dict[Kind, dict[int, di
         if not activity.is_landed(ev):
             continue
         kind = ev.get("kind")
+        action = {"at": ev.get("at"), "kind": kind, "by": ev.get("operator")}
         if kind in ("issue-close", "issue-reopen") and ev.get("issue") is not None:
-            issues.setdefault(int(ev["issue"]), {"at": ev.get("at"), "kind": kind})
+            issues.setdefault(int(ev["issue"]), {
+                **action, "reason": activity.issue_close_reason(ev) if kind == "issue-close" else None})
         elif ev.get("pr") is not None:
-            prs.setdefault(int(ev["pr"]), {"at": ev.get("at"), "kind": kind})
+            prs.setdefault(int(ev["pr"]), {**action, "reason": ev.get("reason")})
     return {"pr": prs,
             "issue": {n: b for n, b in issues.items() if b["kind"] == "issue-close"}}
 
@@ -221,6 +214,8 @@ _COMMON = ("number state "
            "... on CrossReferencedEvent { createdAt "
            "source { __typename "
            "... on PullRequest { number createdAt author { login } "
+           "repository { nameWithOwner } } "
+           "... on Issue { number createdAt author { login } "
            "repository { nameWithOwner } } } } } } ")
 _FIELDS: dict[Kind, tuple[str, str]] = {
     "pr": ("pullRequest", _COMMON + "headRefOid commits(last: 10) { nodes { commit { committedDate oid } } }"),
@@ -339,7 +334,7 @@ def _sweep(kind: Kind, baseline: dict[int, dict], targets: list[int],
         if not sig:
             continue
         sig[kind] = n
-        sig["our_action"] = {"kind": baseline[n]["kind"], "at": baseline[n]["at"]}
+        sig["our_action"] = baseline[n]
         sig["detected_at"] = (prior.get(n) or {}).get("detected_at") or now
         out[n] = sig
     return out, sorted(failed_set)
@@ -413,7 +408,7 @@ def scan(prs: list[int] | None = None, issues: list[int] | None = None, *,
                 if partial else {})
         reg[kind] = {**kept, **fresh}
     save_sections("responses", prior, reg)
-    author_returns.record()
+    author_returns.record(reg)
     return {"checked": checked, "with_response": len(reg["pr"]) + len(reg["issue"]),
             "prs": sorted(reg["pr"]), "issues": sorted(reg["issue"]),
             "failed": failed["pr"], "failed_issues": failed["issue"]}
