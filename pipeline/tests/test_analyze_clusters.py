@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Iterable, Iterator
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -177,6 +179,40 @@ def test_resume_after_last_cluster_commit_finishes_post_steps(
     assert result.attempted == 0
     assert Store(tmp_path).load_pr(9).section("analysis") is not None
     assert len(salvage) == 1
+
+
+def test_interrupted_analysis_keeps_committed_clusters_and_resumes(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    st = _seed(tmp_path, 3)
+    calls: list[int] = []
+
+    def agent(cid: int, bundle: dict) -> dict:
+        calls.append(cid)
+        return json.loads(_fenced(cid).removeprefix("```json\n").removesuffix("\n```"))
+
+    completed = analyze_clusters.as_completed
+
+    def interrupt(futures: Iterable[Future[dict]]) -> Iterator[Future[dict]]:
+        yield next(completed(futures))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(analyze_clusters, "run_cluster_agent", agent)
+    monkeypatch.setattr(analyze_clusters, "as_completed", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        analyze_clusters.run(st, limit=20, concurrency=2)
+
+    reopened = Store(tmp_path)
+    pending = {c.id for c in ad.pending(reopened)}
+    assert len(pending) == 2
+    saved = ({1, 2, 3} - pending).pop()
+    assert reopened.load_pr(saved).disposition == "merge"
+
+    calls.clear()
+    monkeypatch.setattr(analyze_clusters, "as_completed", completed)
+    result = analyze_clusters.run(reopened, limit=20, concurrency=2)
+    assert set(calls) == pending
+    assert result.committed == 2
+    assert ad.pending(Store(tmp_path)) == []
 
 
 def test_invalid_payload_is_not_committed(tmp_path, monkeypatch, capsys):
