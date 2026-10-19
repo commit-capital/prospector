@@ -4,6 +4,7 @@ reads it."""
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -16,12 +17,20 @@ _PY_READS = [re.compile(p) for p in (
     r'os\.environ\[\s*"([A-Z][A-Z0-9_]*)"\s*\]', r'positive_int\(\s*"([A-Z][A-Z0-9_]*)"',
     r'(?:source|env|environ)\.get\(\s*"([A-Z][A-Z0-9_]*)"')]
 _SH_READS = re.compile(r'\$\{?((?:TRIAGE|PROSPECTOR|PR_VERIFY|HARNESS)_[A-Z0-9_]+)')
-_SKIP = (".venv", "node_modules", "/tests/", "/e2e/", "__pycache__", "/dist/", "/.git/")
+_SKIP = ("/tests/", "/e2e/")
+
+
+def _checkout_files() -> list[Path]:
+    """This checkout's files: what git tracks plus new files it does not
+    ignore, so worktrees and caches inside the directory are never read."""
+    out = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                         cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    return [ROOT / line for line in out.splitlines()]
 
 
 def _reads() -> dict[str, str]:
     found: dict[str, str] = {}
-    for f in ROOT.rglob("*"):
+    for f in _checkout_files():
         path = str(f)
         if not f.is_file() or any(s in path for s in _SKIP) or f.name.startswith("test_"):
             continue
