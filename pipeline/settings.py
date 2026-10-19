@@ -22,21 +22,24 @@ from dotenv import load_dotenv
 
 # The repo-root .env is the single environment source for the whole system
 # (Python here, plus setup.sh and Vite). Load it before reading any value
-# so a CLI run picks up the same config the app does. Real environment
-# variables win over the file (override=False), and the path is resolved relative
-# to this file so it works regardless of the current working directory.
+# so a CLI run picks up the same config the app does. The file wins over the
+# inherited environment (override=True): the Setup page edits .env, and a
+# process restarted by `serve --dev`'s reloader inherits its launcher's stale
+# copy of the file, which must not mask what the file says now. The path is
+# resolved relative to this file so it works regardless of the current working
+# directory.
 # TRIAGE_SKIP_DOTENV (set by the test conftests) disables loading so the suite is
 # hermetic and never adopts a developer's real .env (e.g. a live database URL).
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_env_file(path: Path = REPO_ROOT / ".env") -> bool:
-    """Load `path` into os.environ without overriding already-set vars. Returns
+    """Load `path` into os.environ, overriding already-set vars. Returns
     True if the file was read, False if it was absent or skipped via
     TRIAGE_SKIP_DOTENV."""
     if os.environ.get("TRIAGE_SKIP_DOTENV"):
         return False
-    return load_dotenv(path, override=False, interpolate=False)
+    return load_dotenv(path, override=True, interpolate=False)
 
 
 load_env_file()

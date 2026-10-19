@@ -1,4 +1,4 @@
-"""settings loads the repo-root .env, real env wins, and pytest skips it."""
+"""settings loads the repo-root .env, the file wins, and pytest skips it."""
 import os
 
 from pipeline import settings
@@ -13,13 +13,15 @@ def test_load_env_file_fills_unset(tmp_path, monkeypatch):
     assert os.environ["TRIAGE_FROM_DOTENV"] == "yes"
 
 
-def test_real_env_wins_over_file(tmp_path, monkeypatch):
+def test_file_wins_over_a_stale_inherited_value(tmp_path, monkeypatch):
+    """A server restarted by `serve --dev`'s reloader inherits the blank its
+    launcher loaded; the lane switched on in .env since must read on."""
     env = tmp_path / ".env"
-    env.write_text("TRIAGE_FROM_DOTENV=fromfile\n")
-    monkeypatch.setenv("TRIAGE_FROM_DOTENV", "fromenv")
+    env.write_text("TRIAGE_ISSUE_FIX_WORKER=1\n")
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_WORKER", "")
     monkeypatch.delenv("TRIAGE_SKIP_DOTENV", raising=False)
     settings.load_env_file(env)
-    assert os.environ["TRIAGE_FROM_DOTENV"] == "fromenv"
+    assert settings.issue_fix_worker_enabled()
 
 
 def test_missing_file_is_noop(tmp_path, monkeypatch):
