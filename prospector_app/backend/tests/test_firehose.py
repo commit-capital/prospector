@@ -1,4 +1,6 @@
 """Tests for activity.firehose_stats() and activity.closed_by_us_prs() (#238)."""
+from __future__ import annotations
+
 from datetime import date, timedelta, timezone
 from prospector_app.backend import activity
 
@@ -72,10 +74,7 @@ def test_firehose_triaged_from_events():
     stats = activity.firehose_stats({}, [], n_days=30, events=events, today=_TODAY, tz=timezone.utc)
     day_idx = {d: i for i, d in enumerate(stats["days"])}
     three_ago = _days_ago(3)
-    # Only close+merge land; comment and dry-run are excluded
-    assert stats["pr_triaged"][day_idx[three_ago]] == 2
-    assert sum(stats["pr_triaged"]) == 2
-    # Granular breakdown: 1 close, 1 merge
+    # Only close+merge land; comment and dry-run are excluded.
     assert stats["pr_closed"][day_idx[three_ago]] == 1
     assert stats["pr_merged"][day_idx[three_ago]] == 1
     assert sum(stats["pr_closed"]) == 1
@@ -161,10 +160,8 @@ def test_firehose_7d_totals():
     stats = activity.firehose_stats(prs, [], n_days=30, events=events, today=_TODAY, tz=timezone.utc)
     totals = stats["totals"]
     assert totals["pr_incoming_7d"] == 6   # prs 1-6 (days ago 1-6) — day 7 is outside
-    assert totals["pr_triaged_7d"] == 3    # closes on days 1,2,3
-    assert totals["pr_closed_7d"] == 3     # same closes
+    assert totals["pr_closed_7d"] == 3    # closes on days 1,2,3
     assert totals["pr_merged_7d"] == 0
-    assert totals["pr_incoming_30d"] == 9  # prs 1-9 within 30 days
     # nd fields reflect the full n_days window
     assert totals["pr_incoming_nd"] == 9
     assert totals["pr_closed_nd"] == 3
@@ -177,7 +174,6 @@ def test_firehose_days_length_matches_n_days():
     assert len(stats["pr_closed"]) == 14
     assert len(stats["pr_merged"]) == 14
     assert len(stats["pr_reopened"]) == 14
-    assert len(stats["pr_triaged"]) == 14
     assert len(stats["iss_incoming"]) == 14
     assert len(stats["iss_closed"]) == 14
 
@@ -198,7 +194,6 @@ def test_firehose_errored_events_excluded():
         _ev(f"{_days_ago(1)}T11:00:00+00:00", "close", pr=2, status="executed"),
     ]
     stats = activity.firehose_stats({}, [], n_days=30, events=events, today=_TODAY, tz=timezone.utc)
-    assert sum(stats["pr_triaged"]) == 1  # only the executed one
     assert sum(stats["pr_closed"]) == 1
 
 
@@ -244,7 +239,6 @@ def test_firehose_pr_author_filters_triage_events():
     # Only the merge on pr=10 (upstream-dev's) should be counted; close on pr=20 (devin's) excluded.
     assert sum(stats["pr_merged"]) == 1
     assert sum(stats["pr_closed"]) == 0
-    assert sum(stats["pr_triaged"]) == 1
 
 
 def test_activity_scope_without_selection_returns_all():

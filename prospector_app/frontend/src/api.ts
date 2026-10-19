@@ -2497,10 +2497,6 @@ export const api = {
     return get<VerifyQueue>(`/api/verify/queue?${qs}`);
   },
   activity: (limit = 200) => get<{ items: ActivityItem[] }>(`/api/activity?limit=${limit}`),
-  syncActivity: async (limit = 500) => {
-    const r = await fetch(`/api/activity/sync?limit=${limit}`, { method: "POST" });
-    return r.json() as Promise<{ synced: boolean; items: ActivityItem[] }>;
-  },
   actionItems: (params: { status?: string; kind?: string; limit?: number; offset?: number } = {}) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) if (v) qs.set(k, String(v));
@@ -2634,7 +2630,6 @@ export interface FirehoseStats {
   pr_closed: number[];
   pr_merged: number[];
   pr_reopened: number[];
-  pr_triaged: number[];
   iss_incoming: number[];
   iss_closed: number[];
   totals: {
@@ -2642,20 +2637,14 @@ export interface FirehoseStats {
     pr_closed_7d: number;
     pr_merged_7d: number;
     pr_reopened_7d: number;
-    pr_triaged_7d: number;
     iss_incoming_7d: number;
     iss_closed_7d: number;
     pr_incoming_nd: number;
     pr_closed_nd: number;
     pr_merged_nd: number;
     pr_reopened_nd: number;
-    pr_triaged_nd: number;
     iss_incoming_nd: number;
     iss_closed_nd: number;
-    // backwards compat aliases
-    pr_incoming_30d: number;
-    pr_triaged_30d: number;
-    iss_incoming_30d: number;
   };
   author_returns: AuthorReturn[];
   iss_action_counts: Record<string, number>;

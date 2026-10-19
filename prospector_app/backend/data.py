@@ -445,17 +445,6 @@ def set_action_item_status(item_id: str, status: str) -> dict:
     return next(i for i in reg["items"] if i["id"] == item_id)
 
 
-def safety_by_pr() -> dict[int, dict]:
-    """Compat shim for modules that key off the old safety verdict shape
-    ({verdict, findings, override}). Backed by the store's security section."""
-    out: dict[int, dict] = {}
-    for n, rec in prs().items():
-        sec = rec.section("security")
-        if sec:
-            out[n] = sec
-    return out
-
-
 def refresh() -> None:
     """Freshen the snapshot synchronously now — used after a local pipeline phase,
     an executor action, or the live sweep changes the store, so the next read

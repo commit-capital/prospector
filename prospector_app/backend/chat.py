@@ -56,7 +56,6 @@ from prospector_app.backend import agent_memory
 from prospector_app.backend import alerts
 from prospector_app.backend import claude_backend
 from prospector_app.backend import codex_backend
-from prospector_app.backend import data
 from prospector_app.backend import executor
 from prospector_app.backend import issues
 from prospector_app.backend import issue_receipts
@@ -326,8 +325,7 @@ def _activity_lines(acts: list[dict]) -> list[str]:
 
 def _pr_context(pr: int, file: str | None, line: int | None) -> str:
     detail = service.pr_detail(pr) or {}
-    sv = data.safety_by_pr().get(int(pr))
-    findings = sv.get("findings", []) if sv else []
+    findings = (detail.get("security_detail") or {}).get("findings", [])
     lines = [
         f"CONTEXT: PR #{pr}: {detail.get('title')}",
         f"author @{detail.get('author')} · clusters {','.join(map(str, detail.get('clusters') or [])) or '—'} · "

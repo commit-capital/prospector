@@ -1568,13 +1568,6 @@ def get_table(request: Request, name: str,
         raise HTTPException(400, f"unknown column: {e}")
 
 
-@app.post("/api/activity/sync")
-def activity_sync(limit: int = 200):
-    """Return the current activity feed. The ``synced`` key is kept for frontend
-    compatibility; activity reads directly from the DB so no sync is needed."""
-    return {"synced": False, "items": activity.recent(limit)}
-
-
 @app.get("/api/activity/autonomous")
 def activity_autonomous(limit: int = Query(50, le=200)):
     """The Home "Done on its own" feed: landed upstream actions no person

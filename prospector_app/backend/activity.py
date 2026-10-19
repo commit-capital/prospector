@@ -639,8 +639,7 @@ def firehose_stats(
     Counts new PRs and issues opened on the upstream repo (by ``created_at``)
     against our landed triage actions broken down by kind (close / merge /
     reopen / issue-close) per day over the last ``n_days``, plus 7-day and
-    full-period totals. ``pr_triaged`` (close + merge combined) is kept
-    alongside the granular counts for backwards compatibility.
+    full-period totals.
 
     When ``start_date`` is provided it overrides ``n_days`` and spans from
     that date to today — use this for "all time" queries.
@@ -673,7 +672,6 @@ def firehose_stats(
 
     if events is None:
         events = all_events()
-    pr_triaged: dict[str, int] = {d: 0 for d in days}
     pr_closed: dict[str, int] = {d: 0 for d in days}
     pr_merged: dict[str, int] = {d: 0 for d in days}
     pr_reopened: dict[str, int] = {d: 0 for d in days}
@@ -689,10 +687,8 @@ def firehose_stats(
             continue
         if kind == "close" and day in pr_closed:
             pr_closed[day] += 1
-            pr_triaged[day] += 1
         elif kind == "merge" and day in pr_merged:
             pr_merged[day] += 1
-            pr_triaged[day] += 1
         elif kind == "reopen" and day in pr_reopened:
             pr_reopened[day] += 1
 
@@ -703,7 +699,6 @@ def firehose_stats(
         "pr_closed": [pr_closed[d] for d in days],
         "pr_merged": [pr_merged[d] for d in days],
         "pr_reopened": [pr_reopened[d] for d in days],
-        "pr_triaged": [pr_triaged[d] for d in days],
         "iss_incoming": [iss_incoming[d] for d in days],
         "iss_closed": [iss_closed[d] for d in days],
         "totals": {
@@ -711,20 +706,14 @@ def firehose_stats(
             "pr_closed_7d": sum(pr_closed[d] for d in last7),
             "pr_merged_7d": sum(pr_merged[d] for d in last7),
             "pr_reopened_7d": sum(pr_reopened[d] for d in last7),
-            "pr_triaged_7d": sum(pr_triaged[d] for d in last7),
             "iss_incoming_7d": sum(iss_incoming[d] for d in last7),
             "iss_closed_7d": sum(iss_closed[d] for d in last7),
             "pr_incoming_nd": sum(pr_incoming.values()),
             "pr_closed_nd": sum(pr_closed.values()),
             "pr_merged_nd": sum(pr_merged.values()),
             "pr_reopened_nd": sum(pr_reopened.values()),
-            "pr_triaged_nd": sum(pr_triaged.values()),
             "iss_incoming_nd": sum(iss_incoming.values()),
             "iss_closed_nd": sum(iss_closed.values()),
-            # kept for backwards compat
-            "pr_incoming_30d": sum(pr_incoming.values()),
-            "pr_triaged_30d": sum(pr_triaged.values()),
-            "iss_incoming_30d": sum(iss_incoming.values()),
         },
     }
 

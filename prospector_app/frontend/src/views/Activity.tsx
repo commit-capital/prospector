@@ -103,14 +103,7 @@ export default function Activity() {
   const [loading, setLoading] = useState(true);
   const tableRef = useRef<HTMLDivElement>(null);
 
-  const [syncing, setSyncing] = useState(false);
   const load = () => { setErr(undefined); return api.activity(FETCH_LIMIT).then((d) => setItems(d.items)).catch((e) => setErr(String(e))).finally(() => setLoading(false)); };
-  // fetch teammates' latest activity shards, then show the merged feed
-  const syncTeam = () => {
-    setSyncing(true);
-    api.syncActivity(FETCH_LIMIT).then((d) => setItems(d.items)).catch((e) => setErr(String(e)))
-      .finally(() => setSyncing(false));
-  };
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/set-state-in-effect -- load() fetches the activity feed on mount
 
   const handleQuickFilter = (filterKinds: string[], filterRange: string) => {
@@ -223,9 +216,6 @@ export default function Activity() {
           </div>
         </div>
         <button className="btn-secondary sm" onClick={load}>↻ refresh</button>
-        <button className="btn-secondary sm" onClick={syncTeam} disabled={syncing}
-          title="Fetch teammates' latest activity from the shared shards — no manual git pull.">
-          {syncing ? "syncing…" : "⟳ sync team"}</button>
       </div>
 
       {(!loading || items.length > 0) && (
