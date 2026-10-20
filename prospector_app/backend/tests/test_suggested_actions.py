@@ -51,9 +51,13 @@ def test_fresh_prs_suggest_nothing():
 
 
 def test_stale_ingest_suggests_a_refresh():
-    out = sa.pr_suggestions(make_status(ingest_ago_h=60), NOW)
+    out = sa.pr_suggestions(make_status(ingest_ago_h=100), NOW)
     assert [s["kind"] for s in out] == ["ingest"]
-    assert "last run 2d ago" in out[0]["reason"]
+    assert "last run 4d ago" in out[0]["reason"]
+
+
+def test_ingest_from_yesterday_is_not_stale():
+    assert sa.pr_suggestions(make_status(ingest_ago_h=30), NOW) == []
 
 
 def test_never_run_ingest_reads_never():
@@ -153,3 +157,25 @@ def test_merged_views_drop_a_repeated_kind():
 
 def test_unclustered_prs_the_lane_skips_suggest_nothing():
     assert sa.pr_suggestions(make_status(not_clustered=3, unclustered_work=0), NOW) == []
+
+
+def test_a_job_run_within_the_cooldown_is_not_suggested_again():
+    out = sa.issue_suggestions(make_status(), 444, NOW)
+    assert [s["kind"] for s in out] == ["issue-find-fixed"]
+    assert sa.rested(out, {"issue-find-fixed": stamp(5 / 60)}, NOW) == []
+    assert sa.rested(out, {"issue-find-fixed": stamp(3 * 24)}, NOW) == []
+
+
+def test_a_job_unrun_or_past_the_cooldown_stays_suggested():
+    out = sa.issue_suggestions(make_status(), 444, NOW)
+    assert sa.rested(out, {}, NOW) == out
+    assert sa.rested(out, {"issue-find-fixed": None}, NOW) == out
+    assert sa.rested(out, {"issue-find-fixed": stamp(sa.RECOMMEND_AFTER_HOURS + 1)}, NOW) == out
+
+
+def test_suggestions_drop_jobs_the_control_tab_shows_as_just_run(monkeypatch):
+    from prospector_app.backend import pipeline_status
+    monkeypatch.setattr(pipeline_status, "status", lambda: make_status(threat_uncovered=3))
+    monkeypatch.setattr(pipeline_status, "job_runtimes", lambda: {
+        "threat-scan": {"last_run": stamp(0.1), "typical_seconds": None, "typical_count": None}})
+    assert sa.suggestions("prs") == []
