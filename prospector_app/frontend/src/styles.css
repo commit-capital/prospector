@@ -473,13 +473,16 @@ a:hover { text-decoration: underline; }
 .fix-decision-or { align-self: center; font-weight: 700; color: var(--muted); }
 .fix-decision-check { display: block; line-height: 1.6; }
 .fix-decision-check input { margin: 0 6px 0 0; vertical-align: -1px; }
-/* The issue Summary's PRs that may fix it: one indented row each, its facts beneath. */
+/* The issue Summary's PRs that may fix it: one indented row each, its facts
+   beneath the title so they read as part of that PR. */
 .fix-prs { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 0 14px; }
-.fix-pr-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 13.5px; }
+.fix-pr-row { display: grid; grid-template-columns: auto 1fr; align-items: baseline; column-gap: 6px; font-size: 13.5px; }
+.fix-pr-head { display: flex; align-items: baseline; gap: 6px; }
+.fix-pr-body { min-width: 0; }
 .fix-pr-title { color: var(--text); }
-.fix-pr-facts { display: flex; gap: 4px; flex-wrap: wrap; margin: 3px 0 0 2px; }
+.fix-pr-facts { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
 .fix-pr-facts .chip, .fix-pr-head .chip { cursor: help; }
-.issue-analysis { display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; line-height: 1.5; }
+.issue-analysis { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 13.5px; line-height: 1.5; }
 .issue-asks { margin: 0 0 0 18px; }
 .issue-summary { gap: 14px; }
 
