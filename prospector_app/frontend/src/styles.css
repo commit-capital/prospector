@@ -6,6 +6,8 @@
   --term-bg: #0a0e14; --term-fg: #e6edf3;
   --ready-tint: rgba(9, 105, 218, 0.06);
   --reason-tint: rgba(207, 34, 46, 0.07);
+  --issues-tint: rgba(130, 80, 223, 0.06);
+  --prs-tint: rgba(9, 105, 218, 0.05);
 }
 :root[data-theme="dark"] {
   --bg: #0d1117; --panel: #161b22; --panel2: #1c2230; --border: #30363d;
@@ -14,6 +16,8 @@
   --term-bg: #0a0e14; --term-fg: #e6edf3;
   --ready-tint: rgba(47, 129, 247, 0.06);
   --reason-tint: rgba(248, 81, 73, 0.08);
+  --issues-tint: rgba(188, 140, 255, 0.07);
+  --prs-tint: rgba(47, 129, 247, 0.06);
 }
 /* Design tokens shared by both themes: the type scale and the 4px spacing
    scale. New CSS takes its font sizes and gaps from these variables. */
@@ -1652,10 +1656,19 @@ tr.row-done:hover > td { opacity: 1; }
 .home-tile-stale { fill: var(--muted); opacity: .18; }
 .home-tile-sub { line-height: 1.3; }
 .home-progress-stale { flex-basis: 100%; margin-top: -4px; }
-/* 300px columns fit all four side by side on a laptop-width window. */
-.home-columns {
+/* 300px columns fit all four side by side on a laptop-width window; a group
+   too narrow for its columns wraps below the other. */
+.home-columns { display: flex; flex-wrap: wrap; gap: 12px; align-items: start; margin-bottom: 10px; }
+.home-group {
+  flex: var(--home-group-cols) 1 calc(var(--home-group-cols) * 300px); min-width: 0;
+  padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: 8px;
+}
+.home-group-issues { background: var(--issues-tint); }
+.home-group-prs { background: var(--prs-tint); }
+.home-group-head { margin: 0 0 6px; font-size: var(--fs-lg); font-weight: 700; }
+.home-group-cols {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
-  gap: 12px; align-items: start; margin-bottom: 10px;
+  gap: 12px; align-items: start;
 }
 .home-col { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .home-col-head { text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; }
