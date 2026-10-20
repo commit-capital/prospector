@@ -19,7 +19,7 @@ from pipeline import gates, review_policy, reviewers, settings, storekit
 from pipeline.freshness import is_current
 from pipeline.reviewers import Reviewer
 from pipeline.storekit import now as _now
-from prospector_app.backend import data, executor, review_refresh, schema_gate, worker_loops
+from prospector_app.backend import data, executor, profile_gate, review_refresh, schema_gate, worker_loops
 
 REFRESH_SECONDS = 30 * 60
 # Mentions posted per pass, so one sweep never floods the repository.
@@ -125,7 +125,7 @@ def request_rereviews(limit: int = PER_PASS) -> list[int]:
 def _loop() -> None:
     while not _stop.is_set():
         try:
-            if not schema_gate.paused("rereview"):
+            if not (schema_gate.paused("rereview") or profile_gate.paused("rereview")):
                 request_rereviews()
         except Exception:
             traceback.print_exc()

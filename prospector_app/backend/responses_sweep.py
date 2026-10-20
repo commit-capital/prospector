@@ -13,7 +13,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 
 from pipeline import settings, storekit
-from prospector_app.backend import data, responses, schema_gate, worker_loops
+from prospector_app.backend import data, profile_gate, responses, schema_gate, worker_loops
 
 PHASE = "responses:scan"
 INTERVAL_SECONDS = 30 * 60
@@ -80,7 +80,7 @@ def sweep_once(now: datetime | None = None) -> dict | None:
 def _loop() -> None:
     while not _stop.is_set():
         try:
-            if not schema_gate.paused("responses"):
+            if not (schema_gate.paused("responses") or profile_gate.paused("responses")):
                 sweep_once()
         except Exception:
             traceback.print_exc()

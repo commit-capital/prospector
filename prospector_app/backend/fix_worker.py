@@ -58,8 +58,8 @@ from pipeline import (author_fix, capacity, ci_signal, compile_preflight, descri
                       reviewers, risktier, settings, storekit, verify_driver)
 from pipeline.storekit import now as _now
 from prospector_app.backend import (activity, data, executor, fix_queue, handback, lane_health,
-                                    lane_pause, review_refresh, safety_guard, sandbox_check,
-                                    schema_gate, service,
+                                    lane_pause, profile_gate, review_refresh, safety_guard,
+                                    sandbox_check, schema_gate, service,
                                     verify_worker, worker_log, worker_selftest)
 from prospector_app.backend.resubmit_identity import unattended_env, worker_env
 
@@ -2396,7 +2396,7 @@ def _drain_loop() -> None:
         traceback.print_exc()
     last_reclaim = time.monotonic()
     while not stop.is_set():
-        if schema_gate.paused("fix-worker"):
+        if schema_gate.paused("fix-worker") or profile_gate.paused("fix-worker"):
             stop.wait(POLL_SECONDS)
             continue
         try:

@@ -1141,7 +1141,7 @@ export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]
  *  account whose background work is paused.
  *  `detail` is the hover tooltip, shown inline on a capacity line. */
 export interface SystemHealthItem {
-  kind: "lanes" | "trip" | "offline" | "outdated" | "ingest" | "capacity" | "disk";
+  kind: "lanes" | "trip" | "offline" | "outdated" | "profile-drift" | "ingest" | "capacity" | "disk";
   severity: "amber" | "red";
   label: string;
   detail?: string | null;

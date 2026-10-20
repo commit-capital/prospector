@@ -46,7 +46,8 @@ from issue_triage.issue_model import Issue
 from issue_triage.issue_store import IssueStore
 from pipeline import capacity, gates, headless_agent, prove, settings, storekit
 from pipeline.store import Store
-from prospector_app.backend import data, lane_health, schema_gate, verify_worker, worker_log, worker_loops
+from prospector_app.backend import (data, lane_health, profile_gate, schema_gate, verify_worker, worker_log,
+                                    worker_loops)
 
 LANE = "issue-fix"
 POLL_SECONDS = 20.0
@@ -441,7 +442,7 @@ def _drain() -> None:
     last_reclaim = time.monotonic()
     while not stop.is_set():
         ran = False
-        if schema_gate.paused("issue-fix"):
+        if schema_gate.paused("issue-fix") or profile_gate.paused("issue-fix"):
             stop.wait(POLL_SECONDS)
             continue
         try:
