@@ -31,16 +31,15 @@ code review (`review_issue_fix.full_review`). What the reviewers ask
 (`issue_gates.review_comments`), with each trust-boundary crossing the report
 did not ask for (`trust_boundary.comments`), goes back to the pick's own model
 the way a code review goes back to its author (`_revise`, at most REVISIONS
-rounds): a
-defect the reviewers say the fix leaves is first put to a test
+rounds): a defect the reviewers say the fix leaves is first put to a test
 (`claim_test.prove_claim`), and a test that fails with the fix applied joins
 the tests the revision must pass. Each round is the one-agent lane over the
 current change, where the author changes the code or disputes a comment, with
 every check, a fresh review that reads the earlier rounds, and a fresh
-trust-boundary judgment; it counts only
-while the revision passes the shipped reproductions and every shown claim. A
-pick whose reviews reject it and that no round clears ends `fix-rejected`; one
-that only leaves part of the report ships as a partial fix. The reviewer's
+trust-boundary judgment; it counts only while the revision passes the shipped
+reproductions and every shown claim. A pick whose reviews reject it and that
+no round clears ends `fix-rejected`; one that only leaves part of the report
+ships as a partial fix. The reviewer's
 inventory of unasked changes to inputs that worked vetoes a `safe` only on
 tier-0 paths; elsewhere it is recorded beside the verdict for the maintainer
 who reviews the proposal.
@@ -481,8 +480,8 @@ def _answer_review(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
                    reproduction: dict, *, proof_patch: Callable[..., Path], label: str,
                    on_step: Callable[[str], None]) -> tuple[str | None, str, dict, int]:
     """`_judge_pick`'s ending, revised (`_revise`) when its reviews or its
-    unrequested trust-boundary crossings left any comment; the reproduction record of the change that stands, and the agent
-    runs the revision spent."""
+    unrequested trust-boundary crossings left any comment; the reproduction
+    record of the change that stands, and the agent runs the revision spent."""
     if ending not in (None, "fix-rejected") or not _comments(
             result.get("reviews"), result.get("boundary"))[1]:
         return ending, detail, reproduction, 0
