@@ -1467,6 +1467,8 @@ export interface IssueFixCandidate {
 }
 export interface IssueFixReview {
   lens: string | null;
+  /** The model that reviewed, e.g. `opus` or `codex:<model>`; absent on older runs. */
+  model?: string | null;
   verdict: string | null;
   failed?: boolean | null;
   reason: string | null;
@@ -1862,7 +1864,7 @@ export interface SettingRow {
   name: string;
   label: string;
   group: string;
-  kind: "bool" | "int" | "choice" | "list" | "text" | "path" | "secret";
+  kind: "bool" | "int" | "choice" | "list" | "model" | "text" | "path" | "secret";
   value: string;
   default: string;
   help: string;

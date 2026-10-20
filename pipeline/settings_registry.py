@@ -28,7 +28,7 @@ GROUPS = {
 class Setting:
     name: str
     group: str
-    kind: str  # bool | int | choice | list | text | path | secret
+    kind: str  # bool | int | choice | list | model | text | path | secret
     label: str
     default: str
     help: str
@@ -60,6 +60,11 @@ SETTINGS: tuple[Setting, ...] = (
             "opus,sonnet,opus",
             "One cross-tested issue-fix candidate per model, comma-separated; "
             "codex:<model> runs that candidate on the Codex CLI.", editable=True),
+    Setting("TRIAGE_ISSUE_FIX_REVIEW_MODEL", "behavior", "model", "Issue-fix reviewer model",
+            "(the agent model)",
+            "The model the issue-fix lane's reviewers, claim tests and reproduction judge "
+            "run on, apart from the fixers; codex:<model> runs them on the Codex CLI. "
+            "Empty takes the agent model.", editable=True),
     Setting("TRIAGE_ISSUE_FIX_FOLLOWUP", "behavior", "choice", "Follow up proposed PRs", "live",
             "What the issue-fix worker does with a pull request it opened that is not yet "
             "green: live, dry-run (notes only), or off.", editable=True,
@@ -315,4 +320,9 @@ def validate(name: str, value: str) -> str:
         if not parts or not all(_LIST_TOKEN.match(p) for p in parts):
             raise ValueError(f"{name} is a comma-separated list of names, not {v!r}")
         return ",".join(parts)
+    if s.kind == "model":
+        if not _LIST_TOKEN.match(v):
+            raise ValueError(f"{name} is one model name, such as opus or codex:<model>, "
+                             f"not {v!r}")
+        return v
     return v

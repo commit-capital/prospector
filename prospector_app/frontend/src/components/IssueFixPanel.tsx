@@ -349,7 +349,7 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
       )}
       {review && (
         <>
-          <h4>Reviewer ({review.lens})</h4>
+          <h4>Reviewer ({review.lens}{review.model ? ` · ${review.model}` : ""})</h4>
           <div className={`chip sm chip-${review.verdict === "safe" ? "green" : "red"}`}>
             {review.failed ? "didn't finish" : review.verdict}
           </div>

@@ -207,7 +207,7 @@ def test_the_distilled_run_carries_each_candidate_s_own_account(monkeypatch):
                       "summary": "Fix x", "root_cause": "rc",
                       "changes": [{"path": "src/x.ts", "rationale": "why"}]}}],
                   "reviews": [{"lens": "scope-safety", "verdict": "safe", "reason": "fine",
-                               "unasked": ["empty input"]}],
+                               "model": "codex:gpt-x", "unasked": ["empty input"]}],
                   "proof": {"compile": {"exit": 0}, "suite": {"excluded": 3, "confirmed": False},
                             "lint": {"exit": 20, "error": "fails on trunk itself",
                                      "error_kind": "base-lint", "error_excerpt": "raw hex"}}}}
@@ -219,6 +219,7 @@ def test_the_distilled_run_carries_each_candidate_s_own_account(monkeypatch):
     assert run["candidates"][0]["summary"] == "Fix x"
     assert run["candidates"][0]["changes"][0]["rationale"] == "why"
     assert run["reviews"][0]["unasked"] == ["empty input"]
+    assert run["reviews"][0]["model"] == "codex:gpt-x"
     assert run["proof"]["suite"]["excluded"] == 3
     assert run["question"]["labels"] == ["A", "B"]
 

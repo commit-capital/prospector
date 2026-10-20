@@ -75,6 +75,8 @@ def test_nothing_editable_names_a_credential_a_path_or_the_deployment():
     ("TRIAGE_FIX_HUNT_SECURITY", "", ""),
     ("TRIAGE_ISSUE_FIX_MODELS", "opus, sonnet", "opus,sonnet"),
     ("TRIAGE_ISSUE_FIX_MODELS", "opus,sonnet,codex:gpt-6.1-sol", "opus,sonnet,codex:gpt-6.1-sol"),
+    ("TRIAGE_ISSUE_FIX_REVIEW_MODEL", " codex:gpt-6.1-sol ", "codex:gpt-6.1-sol"),
+    ("TRIAGE_ISSUE_FIX_REVIEW_MODEL", "", ""),
 ])
 def test_a_written_value_reads_back_as_meant(name, value, want):
     assert reg.validate(name, value) == want
@@ -88,6 +90,8 @@ def test_a_written_value_reads_back_as_meant(name, value, want):
     ("TRIAGE_FIX_HUNT_SECURITY", "yes", "'1'"),
     ("TRIAGE_FIX_HUNT_REREVIEW", "yes", "'1' or '0'"),
     ("TRIAGE_ISSUE_FIX_MODELS", "opus; rm -rf", "comma-separated"),
+    ("TRIAGE_ISSUE_FIX_REVIEW_MODEL", "opus,sonnet", "one model"),
+    ("TRIAGE_ISSUE_FIX_REVIEW_MODEL", "opus; rm -rf", "one model"),
 ])
 def test_a_value_the_code_would_misread_is_refused(name, value, why):
     with pytest.raises(ValueError, match=why):
@@ -99,6 +103,9 @@ def test_a_value_the_code_would_misread_is_refused(name, value, why):
     ("TRIAGE_FIX_HUNT_REREVIEW", "0", settings.fix_hunt_rereview, False),
     ("TRIAGE_ISSUE_FIX_FOLLOWUP", "live", settings.issue_fix_followup, "live"),
     ("TRIAGE_AGENT_MODEL", "opus", settings.agent_model, "opus"),
+    ("TRIAGE_ISSUE_FIX_REVIEW_MODEL", "codex:gpt-x", settings.issue_fix_review_model,
+     "codex:gpt-x"),
+    ("TRIAGE_ISSUE_FIX_REVIEW_MODEL", "", settings.issue_fix_review_model, None),
     ("TRIAGE_REVIEWER_ACTIVE_DAYS", "", settings.reviewer_active_days, 14),
 ])
 def test_the_code_reads_a_validated_value_as_meant(monkeypatch, name, value, fn, want):
