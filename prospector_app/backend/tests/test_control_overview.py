@@ -133,6 +133,17 @@ def test_timeline_lists_endings_and_collapses_background():
     assert row["ended_24h"] == 1 and row["faults_24h"] == 1
 
 
+def test_issue_fix_faults_count_as_failed():
+    def run(minutes_ago: float, ending: str, fault: bool) -> tuple[str, dict]:
+        return ("issue", {"phase": "issue-fix:run", "issue": 7, "host": "studio",
+                          "finished": _iso(minutes_ago), "stats": {"ending": ending, "fault": fault}})
+    rows = [run(10, "sandbox", True), run(20, "not-reproduced", False), run(30, "fixed", False)]
+    out = co.build(_inputs(rows=rows), NOW)
+    assert [t["bad"] for t in out["timeline"] if t["lane"] == "issue-fix"] == [True, False, False]
+    row = next(r for r in out["lanes"] if r["lane"] == "issue-fix")
+    assert row["ended_24h"] == 3 and row["faults_24h"] == 1
+
+
 def test_loop_of_a_lane_turned_off_has_no_next():
     loops = {"studio": {"lanes": {**ALL_ON, "cluster": False}, "loops": {
         "cluster": {"last_at": _iso(10), "every_seconds": 3600}}}}

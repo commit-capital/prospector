@@ -200,7 +200,7 @@ def _outcome_bad(lane: str, stats: dict) -> bool:
     if lane == "autofix":
         return stats.get("status") == "failed" and stats.get("kind") != capacity.PAUSED_KIND
     if lane == "issue-fix":
-        return stats.get("ending") == "failed"
+        return stats.get("fault") is True
     return stats.get("status") == "failed"
 
 
