@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { LANES } from "../components/explorer/lanes.ts";
 import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
-  HOME_ISSUE_CARDS, ISSUE_ANALYZE_BATCH, issuesHref,
+  HOME_ISSUE_CARDS, HOME_SECTIONS, ISSUE_ANALYZE_BATCH, issuesHref,
   painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
   SECURITY_ADVISORIES_HREF, SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY,
   SECURITY_ALERTS_HREF, SECURITY_CARD,
@@ -24,6 +24,11 @@ test("cards run your move, then in motion, then handed back", () => {
     HOME_CARDS.map((c) => c.column),
     ["act", "act", "act", "act", "act", "auto", "auto", "auto", "handed", "handed"],
   );
+});
+
+test("the issues column leads Home, then every PR column once", () => {
+  assert.deepEqual(HOME_SECTIONS, ["issues", "act", "auto", "handed"]);
+  assert.deepEqual(new Set(HOME_SECTIONS.slice(1)), new Set(HOME_CARDS.map((c) => c.column)));
 });
 
 test("the malicious card leads Home as an alert and shows only while it has PRs", () => {

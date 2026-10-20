@@ -5,6 +5,10 @@ import type { FilterSpec } from "../api";
 // do), or `handed` (the automation gave them back, to their author or to you).
 export type HomeColumn = "act" | "auto" | "handed";
 
+// Home's columns left to right: the issue cards lead, then the PR columns.
+export type HomeSection = "issues" | HomeColumn;
+export const HOME_SECTIONS: readonly HomeSection[] = ["issues", "act", "auto", "handed"];
+
 // A per-sample-row job button on a PR card: the Control-tab job to run for
 // that row's PR, with the button's label and hover hint.
 export interface HomeRowAction {
