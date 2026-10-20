@@ -19,6 +19,7 @@ from issue_triage import (
     issue_gates,
     review_issue_fix,
     solo_lane,
+    trust_boundary,
 )
 from pipeline import authoring, gates, headless_agent, prove, resolve_evidence, verify_driver
 
@@ -289,6 +290,33 @@ def test_an_untrusted_candidate_drops_out_and_the_others_can_still_agree(cross):
     res = cross["run"]()
     assert res.ending == "fixed"
     assert res.result["candidates"][2]["ending"] == "fix-untrusted"
+
+
+def test_an_untrusted_candidate_s_new_tests_still_count_as_a_reproduction(cross):
+    (cross["base_dir"] / "src" / "x.test.ts").write_text(
+        "test('keeps x at 1', () => expect(x).toBe(1));\n")
+
+    def rewrites_a_test_and_adds_one(wt: str) -> dict:
+        out = _writes("c.test.ts", 2)(wt)
+        (Path(wt) / "src" / "x.test.ts").write_text(
+            "test('keeps x at 1', () => expect(x).toBe(2));\n")
+        return out
+
+    cross["agents"] = [_writes("a.test.ts", 2), _no_test, rewrites_a_test_and_adds_one]
+    res = cross["run"]()
+    assert res.ending == "fixed" and "single" not in res.result["agreement"]
+    assert res.result["candidates"][2]["ending"] == "fix-untrusted"
+    assert res.result["candidates"][2]["tests"] == ["src/c.test.ts"]
+    assert res.result["agreement"]["reproductions"] == [0, 2]
+    assert res.result["pick"] != 2
+    assert "src/c.test.ts" in res.result["patch"] and "src/x.test.ts" not in res.result["patch"]
+
+
+def test_an_untrusted_candidate_s_fix_is_never_taken_on_its_lone_reproduction(cross):
+    cross["agents"] = [_no_test, _no_test, _writes("c.test.ts", 2, extra_lines=400)]
+    res = cross["run"]()
+    assert res.ending == "fix-unproven" and not cross["reviewed"]
+    assert res.result["agreement"]["reproductions"] == [2]
 
 
 @pytest.mark.parametrize("kinds,ending", [
@@ -758,3 +786,45 @@ def test_a_complete_safe_review_asks_for_no_revision(answered):
     res = answered["run"]()
     assert res.ending == "fixed" and answered["claims"] == []
     assert res.result.get("revisions") is None
+
+
+# --- a trust-boundary crossing the report did not ask for (issue #15806's shape) -----
+
+IMAGES = {"kind": "network", "where": "src/x.ts:1", "what": "renders remote images",
+          "requested": False}
+
+
+@pytest.fixture
+def crossing(reviser, monkeypatch):
+    """The reviser lane whose trust-boundary reviewer answers in turn from
+    `crossing["boundaries"]`."""
+    def review(*a, **k):
+        return {"crossings": reviser["boundaries"].pop(0), "reason": "read it"}
+
+    monkeypatch.setattr(trust_boundary, "review", review)
+    return reviser
+
+
+def test_an_unrequested_crossing_is_revised_away_and_re_judged(crossing):
+    crossing.update(verdicts=[SAFE, SAFE], boundaries=[[IMAGES], []])
+    res = crossing["run"]()
+    assert res.ending == "fixed" and "after 1 round(s) of revision" in res.detail
+    [(_, brief)] = crossing["revised_with"]
+    assert "trust boundary: network at src/x.ts:1: renders remote images" in brief
+    assert res.result["boundary"]["crossings"] == []
+    assert trust_boundary.hold(res.result["boundary"], maintainer_filed=False) is None
+
+
+def test_a_crossing_a_revision_keeps_stays_an_operator_hold(crossing):
+    crossing.update(verdicts=[SAFE] * 3, boundaries=[[IMAGES]] * 3)
+    res = crossing["run"]()
+    assert res.ending == "fixed" and len(res.result["revisions"]) == cross_lane.REVISIONS
+    assert trust_boundary.hold(res.result["boundary"], maintainer_filed=True)
+
+
+def test_a_requested_crossing_asks_for_no_revision_and_holds_for_an_operator(crossing):
+    crossing.update(verdicts=[SAFE], boundaries=[[{**IMAGES, "requested": True}]])
+    res = crossing["run"]()
+    assert res.ending == "fixed" and res.result.get("revisions") is None
+    assert trust_boundary.hold(res.result["boundary"], maintainer_filed=True) is None
+    assert trust_boundary.hold(res.result["boundary"], maintainer_filed=False)
