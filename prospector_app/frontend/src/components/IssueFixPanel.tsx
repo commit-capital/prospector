@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  api, type IssueDetail, type IssueFixBody, type IssueFixBoundary, type IssueFixCandidate,
+  api, type IssueDetail, type IssueFixBody, type IssueFixBoundary, type IssueFixCandidate, type IssueFixCoverage,
   type IssueFixFollowup, type IssueFixIntake, type IssueFixRivalEntry,
   type IssueFixQuestion,
   type IssueFixRun, type IssueFixStatus, type IssueFixThreadEntry,
@@ -22,6 +22,12 @@ const STATUS_LABEL: Record<IssueFixStatus, string> = {
   failed: "Didn't finish",
   declined: "No fix",
   "pr-merged": "PR merged",
+};
+const COVERAGE_LABEL: Record<IssueFixCoverage["status"], string> = {
+  addressed: "addressed", "not-addressed": "not addressed", "already-fixed": "already handled",
+};
+const COVERAGE_TONE: Record<IssueFixCoverage["status"], string> = {
+  addressed: "green", "not-addressed": "red", "already-fixed": "muted",
 };
 const STATUS_TONE: Record<IssueFixStatus, string> = {
   review: "green", question: "yellow", running: "blue", reporter: "muted",
@@ -99,7 +105,9 @@ function FixBanner({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) 
     );
   }
   if (!status) return null;
-  const tone = status === "review" || status === "pr-open" || status === "pr-merged" ? "v-green"
+  const partial = d.fix_partial && (status === "review" || status === "pr-open");
+  const tone = partial ? "v-caution"
+    : status === "review" || status === "pr-open" || status === "pr-merged" ? "v-green"
     : status === "failed" ? "v-red" : status === "question" || status === "pr-closed" ? "v-caution"
     : "v-unknown";
   return (
@@ -110,7 +118,7 @@ function FixBanner({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) 
           : "⛔"}
       </span>
       <div>
-        <div className="vb-headline">{STATUS_LABEL[status]}</div>
+        <div className="vb-headline">{STATUS_LABEL[status]}{partial && " · partial fix"}</div>
         {status === "question"
           ? <div className="vb-detail">The agents read the report differently — the question is below.</div>
           : d.fix_reason && <div className="vb-detail">{d.fix_reason}</div>}
@@ -348,6 +356,19 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
           {review.reason && <div style={{ marginTop: 4 }}>{review.reason}</div>}
           {review.concerns.length > 0 && (
             <ul style={{ margin: "4px 0 0 18px" }}>{review.concerns.map((c, i) => <li key={i}>{c}</li>)}</ul>
+          )}
+          {(review.coverage?.length ?? 0) > 0 && (
+            <>
+              <div className="muted small" style={{ marginTop: 4 }}>What the report names:</div>
+              <ul style={{ margin: "2px 0 0 18px" }}>
+                {review.coverage?.map((c, i) => (
+                  <li key={i}>
+                    <span className={`chip sm chip-${COVERAGE_TONE[c.status]}`}>{COVERAGE_LABEL[c.status]}</span>{" "}
+                    {c.defect}{c.evidence && <span className="muted"> — {c.evidence}</span>}
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
           {review.unasked.length > 0 && (
             <>

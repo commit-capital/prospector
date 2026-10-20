@@ -10,13 +10,15 @@ on read, whose move the attempt waits on; a proposal's follow-up record
 (`fix_followup`) counts only while it follows the run's own pull request.
 `distill` turns a finished run's `result.json` record into the `fix_run` the app
 renders: each candidate's own account, the agreement, the picked change, the
-checks, the reviewers, and the question — never an agent's transcript.
+checks, the reviewers, and the question — never an agent's transcript. A fixed
+run that covers only part of its report (`issue_gates.fix_coverage`) reads as
+a partial fix wherever the attempt is named (`outcome`, `fix_status`).
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from issue_triage import dispute_question
+from issue_triage import dispute_question, issue_gates
 from pipeline import diffpaths, gates, settings, storekit
 
 if TYPE_CHECKING:
@@ -54,8 +56,39 @@ def _ended(proposal: dict, fu: dict) -> tuple[str, str] | None:
     return "pr-closed", str(fu.get("reason") or f"#{pr} is no longer open")
 
 
+def partial_note(run: dict) -> str | None:
+    """What a fixed run whose coverage is partial leaves of its report, or None
+    for any other run."""
+    if run.get("ending") != "fixed":
+        return None
+    coverage = issue_gates.fix_coverage(run.get("reviews"))
+    if coverage.state != "partial":
+        return None
+    left = coverage.having("not-addressed")
+    return (f"partial fix: {len(coverage.defects) - len(left)} of {len(coverage.defects)} "
+            f"reported defects addressed; not addressed: "
+            + "; ".join(d["defect"] for d in left))
+
+
+def outcome(record: dict) -> str:
+    """A finished run's ending in the words the thread uses: a partial fix
+    names itself."""
+    note = partial_note({**record, "reviews": (record.get("result") or {}).get("reviews")})
+    return f"{note} — {record['detail']}" if note else f"{record['ending']} — {record['detail']}"
+
+
 def fix_status(issue: Issue) -> tuple[str, str] | None:
-    """(status, reason) for issue's fix attempt, or None when it has none."""
+    """(status, reason) for issue's fix attempt, or None when it has none. The
+    reason of a partial fix's review or open pull request leads with what it
+    leaves (`partial_note`)."""
+    status = _fix_status(issue)
+    note = partial_note(issue.fix_run or {})
+    if status and note and status[0] in ("review", "pr-open"):
+        return status[0], f"{note} — {status[1]}"
+    return status
+
+
+def _fix_status(issue: Issue) -> tuple[str, str] | None:
     req, run = issue.fix_request, issue.fix_run
     if req and req.get("status") in IN_FLIGHT:
         return "running", f"{req.get('action')} {req.get('status')}"
@@ -261,7 +294,8 @@ def distill(record: dict, question: dict | None = None) -> dict:
     patch = str(res.get("patch") or "")
     reviews = [{"lens": r.get("lens"), "verdict": r.get("verdict"), "failed": r.get("failed"),
                 "reason": r.get("reason"), "concerns": r.get("concerns") or [],
-                "unasked": r.get("unasked") or []} for r in res.get("reviews") or []]
+                "unasked": r.get("unasked") or [], "coverage": r.get("coverage") or []}
+               for r in res.get("reviews") or []]
     out: dict = {
         "lane": record.get("lane"), "ending": record.get("ending"),
         "fault": bool(record.get("fault")), "detail": record.get("detail"),

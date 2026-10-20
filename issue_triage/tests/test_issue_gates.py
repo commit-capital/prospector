@@ -356,3 +356,37 @@ def test_a_give_up_is_the_machine_s_only_when_no_check_concluded(checks, faulted
     assert bool(fault) is faulted
     if faulted:
         assert "No space left on device" in fault
+
+
+# --- fix coverage ----------------------------------------------------------------
+
+def _cov(*statuses):
+    return [{"defect": f"defect {i}", "status": st, "evidence": "e"}
+            for i, st in enumerate(statuses)]
+
+
+@pytest.mark.parametrize("statuses,state", [
+    (("addressed",), "complete"),
+    (("addressed", "already-fixed"), "complete"),
+    # Issue #14777: logging fixed, cancel and startup reconcile left.
+    (("addressed", "not-addressed", "not-addressed"), "partial"),
+])
+def test_coverage_is_complete_only_when_no_reported_defect_is_left(statuses, state):
+    cov = issue_gates.fix_coverage([{"lens": "scope-safety", "coverage": _cov(*statuses)}])
+    assert cov.state == state and cov.closes == (state == "complete")
+    assert len(cov.having("not-addressed")) == statuses.count("not-addressed")
+
+
+@pytest.mark.parametrize("reviews", [
+    None, [], [{"lens": "scope-safety"}], [{"coverage": []}],
+    [{"coverage": [{"defect": "x", "status": "partly"}]}]])
+def test_coverage_without_a_usable_account_is_unchecked_and_does_not_close(reviews):
+    cov = issue_gates.fix_coverage(reviews)
+    assert cov.state == "unchecked" and not cov.closes
+
+
+def test_a_revision_s_coverage_supersedes_the_review_it_answered():
+    reviews = [{"coverage": _cov("addressed", "not-addressed")},
+               {"coverage": _cov("addressed", "addressed")}]
+    assert issue_gates.fix_coverage(reviews).state == "complete"
+    assert issue_gates.fix_coverage(reviews[::-1]).state == "partial"
