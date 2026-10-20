@@ -173,6 +173,7 @@ case "$PHASE" in
     # host refuses to pin on that.
     apply_pre_patch || exit "$SENTINEL_PATCH_CONFLICT"
     node /verify-suite.mjs plan > /tmp/verify-plan.json || exit "$SENTINEL_NO_PLAN"
+    run_test_setup
     node /verify-suite.mjs run --plan /tmp/verify-plan.json --mode baseline
     exit $?
     ;;
@@ -186,6 +187,7 @@ case "$PHASE" in
     node /verify-suite.mjs plan > /tmp/verify-plan.json || exit "$SENTINEL_NO_PLAN"
     apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
     [ -n "$EXCLUDE_FILE" ] || { echo "regress requires EXCLUDE_FILE" >&2; exit 1; }
+    run_test_setup
     node /verify-suite.mjs run --plan /tmp/verify-plan.json --mode regress \
       --exclude "$EXCLUDE_FILE"
     rc=$?

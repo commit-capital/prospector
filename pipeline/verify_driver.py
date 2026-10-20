@@ -1305,7 +1305,7 @@ def stop_orphaned_sandboxes() -> list[str]:
 
 
 # The phases whose command is a test run.
-TEST_PHASES = frozenset({"red", "green", "repro", "coverage"})
+TEST_PHASES = frozenset({"red", "green", "repro", "coverage", "baseline", "regress"})
 
 
 def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 0,
