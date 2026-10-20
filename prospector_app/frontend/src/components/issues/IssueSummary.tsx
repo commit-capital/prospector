@@ -115,9 +115,11 @@ function FixPRRow({ p, d }: { p: IssuePR; d: IssueDetail }) {
       <div className="fix-pr-head">
         {p.in_store ? <PRLink n={p.pr} className="pr-ref" /> : <GitHubPRLink n={p.pr} className="pr-ref" />}
         {kind && <FactChips facts={[AUTHOR[kind]]} />}
-        <span className="fix-pr-title" title={EVIDENCE[p.how ?? ""]}>{p.title}</span>
       </div>
-      {facts.length > 0 && <div className="fix-pr-facts"><FactChips facts={facts} /></div>}
+      <div className="fix-pr-body">
+        <span className="fix-pr-title" title={EVIDENCE[p.how ?? ""]}>{p.title}</span>
+        {facts.length > 0 && <div className="fix-pr-facts"><FactChips facts={facts} /></div>}
+      </div>
     </div>
   );
 }
