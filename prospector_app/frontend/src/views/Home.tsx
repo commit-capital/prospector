@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router";
 import {
   api, type AdvisoryQueryResult, type AlertQueryResult, type AutonomousItem,
@@ -16,7 +16,7 @@ import { useSystemHealth } from "../useSystemHealth";
 import { SkeletonRows } from "../components/SkeletonRows";
 import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
-  HOME_ISSUE_CARDS, HOME_SECTIONS, issuesHref, painLabel,
+  HOME_GROUPS, HOME_ISSUE_CARDS, issuesHref, painLabel,
   SAMPLE_ISSUE_LIMIT, SAMPLE_LIMIT, SAMPLE_QUERY,
   SECURITY_ADVISORIES_HREF, SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY,
   SECURITY_ALERTS_HREF, SECURITY_CARD,
@@ -538,7 +538,7 @@ export default function Home() {
   const sections: Record<HomeSection, ReactNode> = {
     issues: (
       <section key="issues" className="home-col">
-        <div className="home-col-head muted">Issues — triage picks to action</div>
+        <div className="home-col-head muted">Triage picks to action</div>
         {HOME_ISSUE_CARDS.map((c) => <HomeIssueCardRow key={c.key} card={c} />)}
       </section>
     ),
@@ -570,15 +570,21 @@ export default function Home() {
       <div className="home-head">
         <h2>Home</h2>
         <div className="muted small">
-          Every open PR, by whose move it is: yours, the workers&apos;, or a person&apos;s after the
-          automation handed it back. Each card samples its highest-pain members and opens the matching view.
+          Issues the triage picked to act on, then every open PR by whose move it is: yours, the
+          workers&apos;, or a person&apos;s after the automation handed it back. Each card samples its highest-pain members and opens the matching view.
         </div>
       </div>
       <HomeProgressRow />
       {err && <div className="error">Failed to load PRs: {err}</div>}
       {loading && <SkeletonRows label="Loading PR data…" />}
       <div className="home-columns">
-        {HOME_SECTIONS.map((key) => sections[key])}
+        {HOME_GROUPS.map((g) => (
+          <div key={g.key} className={`home-group home-group-${g.key}`}
+            style={{ "--home-group-cols": g.sections.length } as CSSProperties}>
+            <h3 className="home-group-head">{g.label}</h3>
+            <div className="home-group-cols">{g.sections.map((key) => sections[key])}</div>
+          </div>
+        ))}
       </div>
     </div>
   );

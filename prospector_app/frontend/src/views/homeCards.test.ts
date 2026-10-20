@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { LANES } from "../components/explorer/lanes.ts";
 import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
-  HOME_ISSUE_CARDS, HOME_SECTIONS, ISSUE_ANALYZE_BATCH, issuesHref,
+  HOME_GROUPS, HOME_ISSUE_CARDS, ISSUE_ANALYZE_BATCH, issuesHref,
   painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
   SECURITY_ADVISORIES_HREF, SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY,
   SECURITY_ALERTS_HREF, SECURITY_CARD,
@@ -26,9 +26,11 @@ test("cards run your move, then in motion, then handed back", () => {
   );
 });
 
-test("the issues column leads Home, then every PR column once", () => {
-  assert.deepEqual(HOME_SECTIONS, ["issues", "act", "auto", "handed"]);
-  assert.deepEqual(new Set(HOME_SECTIONS.slice(1)), new Set(HOME_CARDS.map((c) => c.column)));
+test("the Issues group leads Home, then a PRs group holding every PR column once", () => {
+  assert.deepEqual(HOME_GROUPS.map((g) => [g.key, g.label]), [["issues", "Issues"], ["prs", "PRs"]]);
+  assert.deepEqual(HOME_GROUPS[0].sections, ["issues"]);
+  assert.deepEqual(HOME_GROUPS[1].sections, ["act", "auto", "handed"]);
+  assert.deepEqual(new Set(HOME_GROUPS[1].sections), new Set(HOME_CARDS.map((c) => c.column)));
 });
 
 test("the malicious card leads Home as an alert and shows only while it has PRs", () => {
