@@ -28,6 +28,10 @@ it whole. A revised change is reviewed afresh with the earlier rounds in view:
 what the reviewers asked, the tests that showed a claim, and the fixer's answer
 to each comment, so a fixer can dispute a comment and a reviewer can hold or
 drop it on the code.
+
+The reviewers run on `settings.issue_fix_review_model()`, apart from the
+fixers' models, and each answer names the model that gave it (`model`), so the
+app and the pull request can say which family reviewed.
 """
 from __future__ import annotations
 
@@ -35,7 +39,7 @@ import os
 from collections.abc import Callable
 
 from issue_triage import issue_gates, reproduce_issue
-from pipeline import headless_agent
+from pipeline import headless_agent, settings
 
 # Reading a patch and its surrounding code, without writing any.
 AGENT_TIMEOUT_SECONDS = 900
@@ -146,6 +150,12 @@ def _unsafe(lens: str, reason: str, failed: bool = False) -> dict:
     return out
 
 
+def reviewer_model() -> str:
+    """The model a review runs on, as recorded on its answer: the configured
+    reviewer model, else the agent model, else the CLI's default."""
+    return settings.issue_fix_review_model() or settings.agent_model() or "default"
+
+
 def _broken(changes: object) -> list[str] | None:
     """The inputs that worked before whose change the report did not ask for,
     or None when the inventory is missing, empty, or malformed — a change alters
@@ -166,8 +176,8 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
            root_cause: str, test_paths: list[str], evidence: str,
            inventory_veto: bool = True, history: str | None = None,
            on_event: Callable[[tuple], None] | None = None) -> dict:
-    """Judge `patch` under one `lens`, returning
-    {"lens", "verdict": "safe"|"unsafe", "reason": str, "concerns": list[str]},
+    """Judge `patch` under one `lens`, returning {"lens", "model",
+    "verdict": "safe"|"unsafe", "reason": str, "concerns": list[str]},
     plus the scope-safety lens's `behavior_changes` and `coverage`. `evidence`
     is the host's account of the proof runs over the change, and `history` the
     earlier rounds of a revised change's review.
@@ -197,11 +207,18 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
         "__PATCH__": clip(patch),
         "__OUTPUT__": _OUTPUT[lens],
     })
+    return {**_judge(prompt, worktree, lens=lens, inventory_veto=inventory_veto,
+                     on_event=on_event), "model": reviewer_model()}
+
+
+def _judge(prompt: str, worktree: str, *, lens: str, inventory_veto: bool,
+           on_event: Callable[[tuple], None] | None) -> dict:
+    """Run the reviewer on `prompt` and read its answer, as `review` says."""
     try:
         verdict, _ = headless_agent.json_reply(lambda: headless_agent.run_agent(
             prompt, allow_gh=False, cwd=worktree, edit_root=None,
             read_root=worktree, env_allow=(), timeout=AGENT_TIMEOUT_SECONDS,
-            on_event=on_event))
+            model=settings.issue_fix_review_model(), on_event=on_event))
     except (headless_agent.AgentUnavailable, headless_agent.AgentDeclined):
         raise
     except ValueError as e:

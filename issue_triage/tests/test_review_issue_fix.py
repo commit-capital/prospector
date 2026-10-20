@@ -321,3 +321,38 @@ def test_a_full_review_reads_the_change_under_every_lens(monkeypatch):
                                            test_paths=[], evidence="", history="h")
     assert [r["lens"] for r in reviews] == list(issue_gates.REVIEW_LENSES)
     assert all("Earlier rounds" in p for p in seen)
+
+
+def _seen_model(monkeypatch) -> dict:
+    seen: dict = {}
+
+    def fake(prompt, **kw):
+        seen["model"] = kw.get("model")
+        return json.dumps({"verdict": "safe", "reason": "r"})
+
+    monkeypatch.setattr(headless_agent, "run_agent", fake)
+    return seen
+
+
+def test_the_reviewer_runs_on_the_review_model_and_names_it(monkeypatch):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODEL", "codex:gpt-x")
+    seen = _seen_model(monkeypatch)
+    out = review_issue_fix.review("/wt", PATCH, lens="root-cause", title="t", body="b",
+                                  root_cause="rc", test_paths=[], evidence="")
+    assert seen["model"] == "codex:gpt-x" and out["model"] == "codex:gpt-x"
+
+
+def test_an_unset_review_model_keeps_the_agent_model(monkeypatch):
+    monkeypatch.delenv("TRIAGE_ISSUE_FIX_REVIEW_MODEL", raising=False)
+    monkeypatch.setenv("TRIAGE_AGENT_MODEL", "sonnet")
+    seen = _seen_model(monkeypatch)
+    reviews = review_issue_fix.full_review("/wt", PATCH, title="t", body="b", root_cause="rc",
+                                           test_paths=[], evidence="")
+    assert seen["model"] is None
+    assert [r["model"] for r in reviews] == ["sonnet"] * len(issue_gates.REVIEW_LENSES)
+
+
+def test_a_failed_review_still_names_its_model(monkeypatch):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODEL", "opus")
+    out = _run(monkeypatch, RuntimeError("timed out"))["out"]
+    assert out["failed"] is True and out["model"] == "opus"

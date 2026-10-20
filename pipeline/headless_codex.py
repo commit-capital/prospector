@@ -58,6 +58,14 @@ CONTEXT = """
 Your shell runs in a sandbox: it reads and writes the worktree, reads the system's tools, and has no network. Read and search files with ordinary commands (`rg`, `sed -n`, `cat`, `ls`) and edit them with apply_patch. Do not run the project's code yourself (node, pnpm, a test runner): the check command above is the only way to run it, and it runs in an isolated container. It can take minutes; wait for it.
 """
 
+# The note for a run with no edit root and no host tool: a reviewer or judge.
+READ_ONLY_CONTEXT = """
+
+## Working in Codex
+
+Your shell runs in a sandbox: it reads the worktree and the system's tools, writes nothing, and has no network. Read and search files with ordinary commands (`rg`, `sed -n`, `cat`, `ls`). Do not edit any file, and do not run the project's code (node, pnpm, a test runner).
+"""
+
 _OUTPUT_HEADING = "\n# Output\n"
 
 # A stand-in for a host tool: it files its arguments, NUL-separated, and waits
@@ -157,16 +165,18 @@ def flags(fs: Mapping[str, str], cwd: str, model: str | None) -> list[str]:
     ]
 
 
-def with_context(prompt: str, stand_ins: Mapping[str, str] | None = None) -> str:
+def with_context(prompt: str, stand_ins: Mapping[str, str] | None = None, *,
+                 read_only: bool = False) -> str:
     """`prompt` with each brokered tool's path replaced by its stand-in's and
-    the Codex note ahead of its Output section, so the answer format stays
-    last."""
+    the Codex note — READ_ONLY_CONTEXT when `read_only` — ahead of its Output
+    section, so the answer format stays last."""
     for tool, stand_in in (stand_ins or {}).items():
         prompt = prompt.replace(tool, stand_in)
+    note = READ_ONLY_CONTEXT if read_only else CONTEXT
     behavior, heading, output = prompt.rpartition(_OUTPUT_HEADING)
     if not heading:
-        return prompt + CONTEXT
-    return behavior + CONTEXT + heading + output
+        return prompt + note
+    return behavior + note + heading + output
 
 
 def _prepare_home(home: Path) -> None:
@@ -304,7 +314,8 @@ def run(prompt: str, *, model: str | None, cwd: str, read_root: str | Sequence[s
 
         def feed(stdin=proc.stdin) -> None:
             try:
-                stdin.write(with_context(prompt, broker.paths))
+                stdin.write(with_context(prompt, broker.paths,
+                                         read_only=not edit_root and not tools))
             except BrokenPipeError:
                 pass
             finally:
