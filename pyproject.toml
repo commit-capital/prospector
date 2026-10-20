@@ -33,7 +33,7 @@ dev = [
   "pyright==1.1.414",  # type-checks the typed Pr/Cluster domain model; reads pyrightconfig.json
   "pytest==9.1.1",
   "pytest-xdist==3.8.0",  # `-n auto` fans the suite across cores (see addopts)
-  "ruff==0.16.7",  # lints for dead code, modernizations, and N999 (no hyphenated package dirs)
+  "ruff==0.17.1",  # lints for dead code, modernizations, and N999 (no hyphenated package dirs)
 ]
 
 [tool.setuptools]
