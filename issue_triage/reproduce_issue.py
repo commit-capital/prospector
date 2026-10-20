@@ -86,7 +86,7 @@ def report_block(title: str, body: str) -> str:
                        "body": intake_audit.visible(body)[:REPORT_MAX]})
 
 
-def _test_paths() -> str:
+def test_paths_note() -> str:
     """The active profile's test-path conventions, named for the agent."""
     tp = profile.active().test_paths
     return (f"a directory on the path matching /{tp.dir_pattern}/ or a filename "
@@ -133,7 +133,7 @@ def author(worktree: str, *, issue: int, title: str, body: str,
         "__WORKTREE__": worktree,
         "__REPORT__": report_block(title, body),
         "__CHECK__": lane_check.TOOL,
-        "__TEST_PATHS__": _test_paths(),
+        "__TEST_PATHS__": test_paths_note(),
         "__RETRY__": _retry_block(retry_note),
         "__LINT__": authoring.lint_note(lane_check.TOOL),
         "__CONTRIBUTOR_DOCS__": authoring.docs_block(contributor_docs),

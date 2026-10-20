@@ -231,7 +231,7 @@ def test_gh_graphql_retries_secondary_rate_limit_after_each_wait(monkeypatch):
         (1, '{"message": "secondary"}', _SECONDARY),
         (0, '{"data": {"x": 1}}', ""),
     ]))
-    assert gh.gh_graphql("query {}", rate_limit_waits=(5, 10, 20)) == {"data": {"x": 1}}
+    assert gh.gh_graphql("query {}", retry_waits=(5, 10, 20)) == {"data": {"x": 1}}
     assert slept == [5, 10]
 
 
@@ -240,8 +240,27 @@ def test_gh_graphql_gives_up_when_waits_run_out(monkeypatch):
     monkeypatch.setattr(gh.time, "sleep", slept.append)
     monkeypatch.setattr(gh.subprocess, "run", _scripted_run(
         [(1, '{"message": "secondary"}', _SECONDARY)] * 3))
-    assert gh.gh_graphql("query {}", rate_limit_waits=(5, 10)) is None
+    assert gh.gh_graphql("query {}", retry_waits=(5, 10)) is None
     assert slept == [5, 10]
+
+
+def test_gh_graphql_retries_gateway_error(monkeypatch):
+    slept = []
+    monkeypatch.setattr(gh.time, "sleep", slept.append)
+    monkeypatch.setattr(gh.subprocess, "run", _scripted_run([
+        (1, "", "gh: HTTP 502"),
+        (0, '{"data": {"x": 1}}', ""),
+    ]))
+    assert gh.gh_graphql_data("query {}", retry_waits=(60, 120)) == {"x": 1}
+    assert slept == [5]
+
+
+def test_gh_graphql_gives_up_on_a_lasting_gateway_error(monkeypatch):
+    slept = []
+    monkeypatch.setattr(gh.time, "sleep", slept.append)
+    monkeypatch.setattr(gh.subprocess, "run", _scripted_run([(1, "", "gh: HTTP 504")] * 4))
+    assert gh.gh_graphql("query {}", retry_waits=(60, 120, 240)) is None
+    assert slept == [5, 15, 45]
 
 
 def test_gh_graphql_fails_fast_on_secondary_rate_limit_without_waits(monkeypatch):
@@ -255,7 +274,7 @@ def test_gh_graphql_does_not_retry_other_failures(monkeypatch):
     monkeypatch.setattr(gh.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError))
     monkeypatch.setattr(gh.subprocess, "run", _scripted_run(
         [(1, '{"message": "Bad credentials"}', "gh: Bad credentials (HTTP 401)")]))
-    assert gh.gh_graphql("query {}", rate_limit_waits=(5,)) is None
+    assert gh.gh_graphql("query {}", retry_waits=(5,)) is None
 
 
 def test_gh_graphql_sends_variables_as_string_fields(monkeypatch):
@@ -300,7 +319,7 @@ def test_gh_graphql_data_retries_secondary_rate_limit(monkeypatch):
         (1, '{"message": "secondary"}', _SECONDARY),
         (0, '{"data": {"x": 1}}', ""),
     ]))
-    assert gh.gh_graphql_data("query {}", rate_limit_waits=(5,)) == {"x": 1}
+    assert gh.gh_graphql_data("query {}", retry_waits=(5,)) == {"x": 1}
     assert slept == [5]
 
 

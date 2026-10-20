@@ -26,6 +26,7 @@ from pathlib import Path
 
 from pipeline import agent_wave
 from pipeline import analyze_driver
+from pipeline import display_pass
 from pipeline import headless_agent
 from pipeline import progress
 from pipeline import redundancy
@@ -107,6 +108,7 @@ def run(store: Store, *, limit: int, concurrency: int,
     building.finish()
 
     committed = 0
+    analyzed: list[int] = []
     failed = 0
     errored = 0
     done = 0
@@ -141,10 +143,14 @@ def run(store: Store, *, limit: int, concurrency: int,
                     _say(f"        {e}")
             else:
                 committed += 1
+                analyzed += [int(r["pr"]) for r in payload.get("prs", [])]
                 _say(f"    ✓ cluster {cid} committed  ({done}/{len(todo)})")
 
     _say("④ Wrapping up — each step reads every PR from the store:")
     orphans, salvage = _post_steps(store)
+    _say(f"  writing the summary cards of the {len(analyzed)} analyzed PR(s)…")
+    cards = display_pass.refresh(store, analyzed, trigger="analyze", concurrency=conc)
+    _say(f"  wrote {cards} summary card(s)")
     _say("  counting the clusters still pending (reads the clusters too)…")
     remaining = len(analyze_driver.pending(store))
     _say(f"✓ committed {committed}/{len(todo)} clusters ({failed} failed); "

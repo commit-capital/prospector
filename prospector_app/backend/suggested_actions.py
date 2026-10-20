@@ -84,37 +84,49 @@ def pr_suggestions(status: dict, now_ts: float) -> list[Suggestion]:
     if uncovered > 0:
         out.append({
             "kind": "threat-scan", "title": "Run threat scan",
-            "reason": f"{uncovered} PR{'s' if uncovered != 1 else ''} lack a scan "
-                      "of their latest push",
+            "reason": f"{_prs(uncovered)} lack a scan of their latest push",
             "last_run": last_runs.get("threat-scan"), "count": None,
             "estimate_seconds": est.get("threat_scan_seconds"),
         })
 
-    unclustered = cov.get("unclustered_work", 0)
+    cluster = cov.get("cluster") or {}
+    unclustered = cluster.get("never", 0)
+    cluster_ready = unclustered - cluster.get("blocked", 0)
     cluster_last = last_runs.get("cluster")
-    if unclustered > 0 and _stale(cluster_last, now_ts):
+    if cluster_ready > 0 and _stale(cluster_last, now_ts):
         ago = _ago(cluster_last, now_ts)
         when = "never clustered" if ago == "never run" else ago.replace("last run", "last clustering")
         out.append({
-            "kind": "cluster-new", "title": "Cluster new PRs",
-            "reason": f"{unclustered} PR{'s are' if unclustered != 1 else ' is'} "
-                      f"not in a cluster ({when})",
-            "last_run": cluster_last, "count": min(CLUSTER_NEW_BATCH, unclustered),
+            "kind": "cluster-new", "title": "Run clustering",
+            "reason": f"{_prs(unclustered)} not in a cluster ({when})"
+                      + _blocked_note(cluster.get("blocked", 0), "Threat scan"),
+            "last_run": cluster_last, "count": min(CLUSTER_NEW_BATCH, cluster_ready),
             "estimate_seconds": None,
         })
 
-    never_analyzed = (cov.get("analysis") or {}).get("never", 0)
-    if never_analyzed > 0:
-        count = min(CLUSTER_BATCH, never_analyzed)
+    analysis = cov.get("analysis") or {}
+    unanalyzed = analysis.get("stale", 0) + analysis.get("never", 0)
+    analysis_ready = unanalyzed - analysis.get("blocked", 0)
+    if analysis_ready > 0:
+        count = min(CLUSTER_BATCH, analysis_ready)
         per_cluster = est.get("analyze_clusters_seconds_per_cluster")
         out.append({
-            "kind": "analyze-clusters", "title": "Analyze clusters",
-            "reason": f"{never_analyzed} PR{'s' if never_analyzed != 1 else ''} "
-                      "have never been analyzed",
+            "kind": "analyze-clusters", "title": "Run analysis",
+            "reason": f"{_prs(unanalyzed)} lack a current analysis"
+                      + _blocked_note(analysis.get("blocked", 0), "Clustering"),
             "last_run": last_runs.get("analyze:commit"), "count": count,
             "estimate_seconds": per_cluster * count if per_cluster is not None else None,
         })
     return out
+
+
+def _prs(n: int) -> str:
+    return f"{n:,} PR{'s' if n != 1 else ''}"
+
+
+def _blocked_note(blocked: int, earlier: str) -> str:
+    """The reason's tail for a backlog part of which waits on an earlier phase."""
+    return f" · run {earlier} first to reach {blocked:,} of them" if blocked else ""
 
 
 def issue_suggestions(status: dict, pending_fix_scan: int,
@@ -140,7 +152,7 @@ def issue_suggestions(status: dict, pending_fix_scan: int,
         count = min(ISSUE_BATCH, pending)
         per_issue = est.get("issue_analyze_seconds_per_issue")
         out.append({
-            "kind": "issue-analyze", "title": "Analyze issues",
+            "kind": "issue-analyze", "title": "Run issue analysis",
             "reason": f"{pending} open issue{'s' if pending != 1 else ''} "
                       "have no disposition yet",
             "last_run": last_runs.get("issue-analyze"), "count": count,
@@ -160,7 +172,7 @@ def issue_suggestions(status: dict, pending_fix_scan: int,
 
 def alert_suggestions(last_ingest: str | None, unscanned_alerts: int,
                       unscanned_advisories: int, now_ts: float) -> list[Suggestion]:
-    """The Alerts view's one suggestion: the security sweep, which ingests and
+    """The Alerts view's one suggestion: the alert & advisory sweep, which ingests and
     fix-scans both alerts and advisories in one run."""
     parts: list[str] = []
     if _stale(last_ingest, now_ts):
@@ -175,7 +187,7 @@ def alert_suggestions(last_ingest: str | None, unscanned_alerts: int,
     if not parts:
         return []
     return [{
-        "kind": "security-sweep", "title": "Run security sweep",
+        "kind": "security-sweep", "title": "Run alert & advisory sweep",
         "reason": " · ".join(parts),
         "last_run": last_ingest, "count": SWEEP_LIMIT, "estimate_seconds": None,
     }]

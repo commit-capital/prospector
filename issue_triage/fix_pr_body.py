@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
-from issue_triage import issue_gates, link_prs, second_opinion
+from issue_triage import claim_test, issue_gates, link_prs, second_opinion
 from issue_triage.related_prs import RelatedPr
 from pipeline import describe_pr, settings
 
@@ -63,9 +63,10 @@ def commit_message(issue: int, summary: str, co_authors: Sequence[str] = (), *,
             + (f"{trailers}\n" if trailers else ""))
 
 
-def _coverage(issue: int, coverage: issue_gates.Coverage) -> list[str]:
-    """What the fix leaves of the report, and what it argues the base already
-    handles, each with the reviewer's evidence."""
+def _coverage(issue: int, coverage: issue_gates.Coverage, claims: list[dict]) -> list[str]:
+    """What the fix leaves of the report, with the tests that show it, and
+    what it argues the base already handles, each with the reviewer's
+    evidence. A shown claim the fix passes is no longer what remains."""
     def entries(status: issue_gates.CoverageStatus) -> list[str]:
         return [f"- {inert(d['defect'], 200)}"
                 + (f" ({inert(d['evidence'], 300)})" if d["evidence"] else "")
@@ -78,6 +79,12 @@ def _coverage(issue: int, coverage: issue_gates.Coverage) -> list[str]:
     left = entries("not-addressed")
     if left:
         out += ["", f"This pull request does not address, and #{issue} stays open for:", *left]
+    shown = [c for c in claims if c.get("status") == "shown"]
+    if left and shown:
+        out += ["", "Tests the pipeline wrote fail with this change applied, showing what "
+                    "remains (not part of this pull request):",
+                *[f"- {inert(c['defect'], 200)}: " + ", ".join(
+                    f"`{inert(p, 200)}`" for p in c.get("paths") or []) for c in shown]]
     already = entries("already-fixed")
     if already:
         out += ["", "The reviewer found the base already handles:", *already]
@@ -184,6 +191,24 @@ def _checklist(template: str | None, *, searched: bool, tests: list[str],
     return out
 
 
+def _red_claims(result: dict) -> list[dict]:
+    """The shown claims the host ran against the fix that ships: those it
+    still fails."""
+    shipped = claim_test.fix_digest(str(result.get("patch") or ""))
+    return [c for c in result.get("claims") or []
+            if c.get("status") == "shown" and c.get("fix") == shipped]
+
+
+def _rounds(result: dict) -> list[str]:
+    rounds = result.get("revisions") or []
+    if not rounds:
+        return []
+    shown = sum(1 for c in result.get("claims") or [] if c.get("status") == "shown")
+    return [f"- Revised in {len(rounds)} round(s) of automated code review"
+            + (f"; {shown} reviewer claim(s) were first shown by a failing test" if shown
+               else "") + "."]
+
+
 def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_sha: str,
            models: list[str], test_cmd: str | None,
            related: list[RelatedPr] | None = None, template: str | None = None) -> str:
@@ -211,10 +236,11 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
             f"- Root cause, as the fixing agent read it: {inert(result.get('root_cause', ''))}",
             f"- This pull request: {inert(result.get('summary', ''))}",
         ],
-        "issue": [reference(issue, coverage.closes), *_coverage(issue, coverage),
+        "issue": [reference(issue, coverage.closes),
+                  *_coverage(issue, coverage, _red_claims(result)),
                   *_related(issue, related), *_credited(result)],
         "changes": changes or ["- (no change recorded)"],
-        "verification": _verification(result, tests, test_cmd),
+        "verification": [*_verification(result, tests, test_cmd), *_rounds(result)],
         "risks": [
             "- Written by an automated pipeline, not a person: review it as you would an "
             "outside contribution.",

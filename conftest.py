@@ -129,6 +129,20 @@ def _no_intake_reviewer(monkeypatch):
         "verdict": "clear", "findings": [], "reason": "no reviewer in tests"})
 
 
+def _no_card_agent(prompt: str) -> object:
+    from pipeline import headless_agent
+    raise headless_agent.AgentUnavailable("no card writer in tests")
+
+
+@pytest.fixture(autouse=True)
+def _no_summary_card_writer(monkeypatch):
+    """`display_pass.ask` runs an agent for the PR and issue pages' summary
+    cards; no test reaches it, so a card pass finds the agent unavailable. A
+    test that needs a card sets the reply."""
+    from pipeline import display_pass
+    monkeypatch.setattr(display_pass, "ask", _no_card_agent)
+
+
 class _OfflineGitHub:
     """threat_evidence.GitHubReads that answers nothing."""
 

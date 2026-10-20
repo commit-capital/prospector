@@ -92,7 +92,7 @@ def feed_from_node(n: int, node: dict) -> PrFeed:
 
 
 def fetch_feeds(numbers: list[int], *,
-                rate_limit_waits: Sequence[float] = ()) -> dict[int, PrFeed]:
+                retry_waits: Sequence[float] = ()) -> dict[int, PrFeed]:
     """Feeds for `numbers`, keyed by PR. A PR missing from the result failed to
     fetch (transient) and keeps its stored entry."""
     out: dict[int, PrFeed] = {}
@@ -104,7 +104,7 @@ def fetch_feeds(numbers: list[int], *,
     for i in range(0, len(numbers), CHUNK_SIZE):
         chunk = [int(n) for n in numbers[i:i + CHUNK_SIZE]]
         payload = gh_graphql(feed_query(chunk), timeout=120,
-                             rate_limit_waits=rate_limit_waits)
+                             retry_waits=retry_waits)
         if report is not None:
             report.advance(len(chunk))
         if payload is None:
@@ -114,10 +114,10 @@ def fetch_feeds(numbers: list[int], *,
         for j, n in enumerate(chunk):
             node = repo.get(f"p{j}")
             if isinstance(node, dict):
-                complete = complete_pr_checks(node, rate_limit_waits=rate_limit_waits)
+                complete = complete_pr_checks(node, retry_waits=retry_waits)
                 out[n] = feed_from_node(n, node)
                 out[n].required = (required_checks(node.get("baseRefName"), required_by_base,
-                                                  rate_limit_waits=rate_limit_waits) if complete else None)
+                                                  retry_waits=retry_waits) if complete else None)
     if report is not None:
         missing = len(numbers) - len(out)
         report.finish(f"{len(out):,} read" + (f", {missing:,} missing" if missing else ""))

@@ -1528,6 +1528,26 @@ export interface IssueFixProof {
   suite?: { skipped?: string; confirmed?: boolean; flake?: boolean; excluded?: number;
             new_failures?: string[]; rebaselined?: string[] };
 }
+/** What the host's test of a reviewer's claim showed (issue_triage/claim_test.py). */
+export interface IssueFixClaim {
+  defect: string;
+  /** The fix the test ran against (claim_test.fix_digest). */
+  fix?: string;
+  status: "shown" | "unshown";
+  why: string;
+  paths: string[];
+  round?: number;
+}
+/** One round of code review the fix was revised in (cross_lane._revise). */
+export interface IssueFixRound {
+  round: number;
+  answering: string[];
+  claims: IssueFixClaim[];
+  responses: { comment: string; answer: "changed" | "disputed"; why: string }[];
+  ending: string;
+  detail: string;
+  required_pass?: boolean | null;
+}
 /** The latest fix attempt, distilled for display (fix_review.distill). */
 export interface IssueFixRun {
   lane: string | null;
@@ -1555,6 +1575,8 @@ export interface IssueFixRun {
   boundary?: IssueFixBoundary | null;
   intake?: IssueFixIntake | null;
   second_opinion?: IssueFixRivalEntry[] | null;
+  revisions?: IssueFixRound[];
+  claims?: IssueFixClaim[];
   candidates: IssueFixCandidate[];
   question: IssueFixQuestion | null;
   proposal: { pr: number | string | null; url: string | null } | null;
@@ -1600,8 +1622,11 @@ interface IssueAnalysis {
   fixed_by?: number | null;
 }
 /** Full issue detail for the flyout: the table row plus body + analysis. */
+/** The issue page's plain-language card (issue_triage/issue_display.py). */
+export interface IssueDisplay { bug: string; fix: string }
 export interface IssueDetail extends IssueRow {
   body: string | null;
+  display: IssueDisplay | null;
   analysis: IssueAnalysis | null;
   fixed_comment: string | null;
   dup_comment: string | null;
@@ -2080,6 +2105,7 @@ export const api = {
   issuesAlreadyFixed: () =>
     get<{ fixed: IssueFixedItem[]; likely_fixed: IssueLikelyFixedItem[] }>("/api/issues/already-fixed"),
   getIssue: (n: number) => get<IssueDetail>(`/api/issues/${n}`),
+  writeIssueDisplay: (n: number) => postJson<IssueDisplay>(`/api/issues/${n}/display`, {}),
   /** Queue an action on the issue's fix attempt; rejects with the server's
    *  reason when it does not fit (409). */
   issueFix: (n: number, body: IssueFixBody) => postJson(`/api/issues/${n}/fix`, body),
@@ -2562,6 +2588,12 @@ interface SectionCoverage {
   never: number;
 }
 
+/** A phase whose job reaches some pending PRs only after an earlier phase
+ * runs; `blocked` counts those. */
+interface GatedCoverage extends SectionCoverage {
+  blocked: number;
+}
+
 /** Threat-scan coverage: the freshness split plus how many open PRs, scanned
  * or not, have no current-head diff in this machine's cache — the diffs a scan
  * run here fetches first. A fetch-workload hint, not a coverage boundary. */
@@ -2571,13 +2603,14 @@ interface ThreatCoverage extends SectionCoverage {
 
 /** Phase coverage over the open PRs — the population every phase acts on.
  * `total` is that open count; `tracked` is the whole store, closed and merged
- * included. */
+ * included. Clustering, analysis and security review leave out the `exempt`
+ * dependency bumps. */
 interface PipelineCoverage {
   tracked: number;
   total: number;
-  clustered: number;
-  not_clustered: number;
-  analysis: SectionCoverage;
+  exempt: number;
+  cluster: GatedCoverage;
+  analysis: GatedCoverage;
   security: SectionCoverage;
   threat: ThreatCoverage;
 }

@@ -106,6 +106,18 @@ def test_main_batches_and_reports(tmp_path, monkeypatch, capsys):
     assert len(issue_analyze_driver.pending(st)) == 3  # batch-1 pair + #5
 
 
+def test_main_writes_the_analyzed_issues_summary_cards(tmp_path, monkeypatch):
+    _seed(tmp_path, 3)
+    monkeypatch.setattr(analyze_issues.headless_agent, "run_agent", lambda prompt, **kw: _fenced([
+        {"issue": n, "disposition": "needs-human", "rationale": "r"} for n in (1, 2)]))
+    monkeypatch.setattr(analyze_issues.issue_display.display_pass, "ask",
+                        lambda prompt: {"bug": "It breaks.", "fix": "Mend it."})
+    analyze_issues.main(["--batch", "3", "--retries", "0", "--store", str(tmp_path)])
+    st = issue_store.IssueStore(tmp_path)
+    assert [bool(analyze_issues.issue_display.current(st.load_issue(n))) for n in (1, 2, 3)] \
+        == [True, True, False]
+
+
 def test_main_retries_a_failed_batch(tmp_path, monkeypatch, capsys):
     """A batch that fails once is retried, so a transient agent failure doesn't
     silently leave its issues on stale analysis."""
