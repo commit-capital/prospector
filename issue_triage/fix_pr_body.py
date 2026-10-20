@@ -265,7 +265,9 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
               if tier == 0 else []),
             *[f"- The scope reviewer found it also changes, beyond the report: "
               f"{inert(item, 200)}"
-              for r in (result.get("reviews") or []) for item in (r.get("unasked") or [])[:5]],
+              for item in dict.fromkeys(
+                  i for r in issue_gates.latest_reviews(result.get("reviews"))
+                  for i in (r.get("unasked") or [])[:5])],
             *(["- It crosses a trust boundary. Check each crossing against what the issue "
                "asked for, and against who asked:"] if crossings else []),
             *[f"  - {inert(c.get('kind', ''), 40)} ({inert(c.get('where', ''), 160)}"
@@ -276,8 +278,7 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
         ],
         "model": [f"- {model_list} ({_family(models)}), writing and checking the change "
                   "in an isolated sandbox.",
-                  *([f"- {', '.join(reviewers)} ({_family(reviewers)}), reviewing it."]
-                    if reviewers else [])],
+                  *[f"- {m} ({_family([m])}), reviewing it independently." for m in reviewers]],
     }
     sections: list[tuple[str, list[str]]] = []
     carried: set[str] = set()

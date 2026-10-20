@@ -1864,7 +1864,7 @@ export interface SettingRow {
   name: string;
   label: string;
   group: string;
-  kind: "bool" | "int" | "choice" | "list" | "model" | "text" | "path" | "secret";
+  kind: "bool" | "int" | "choice" | "list" | "text" | "path" | "secret";
   value: string;
   default: string;
   help: string;

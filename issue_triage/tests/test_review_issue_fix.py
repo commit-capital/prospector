@@ -335,7 +335,7 @@ def _seen_model(monkeypatch) -> dict:
 
 
 def test_the_reviewer_runs_on_the_review_model_and_names_it(monkeypatch):
-    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODEL", "codex:gpt-x")
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODELS", "codex:gpt-x")
     seen = _seen_model(monkeypatch)
     out = review_issue_fix.review("/wt", PATCH, lens="root-cause", title="t", body="b",
                                   root_cause="rc", test_paths=[], evidence="")
@@ -343,7 +343,7 @@ def test_the_reviewer_runs_on_the_review_model_and_names_it(monkeypatch):
 
 
 def test_an_unset_review_model_keeps_the_agent_model(monkeypatch):
-    monkeypatch.delenv("TRIAGE_ISSUE_FIX_REVIEW_MODEL", raising=False)
+    monkeypatch.delenv("TRIAGE_ISSUE_FIX_REVIEW_MODELS", raising=False)
     monkeypatch.setenv("TRIAGE_AGENT_MODEL", "sonnet")
     seen = _seen_model(monkeypatch)
     reviews = review_issue_fix.full_review("/wt", PATCH, title="t", body="b", root_cause="rc",
@@ -353,6 +353,24 @@ def test_an_unset_review_model_keeps_the_agent_model(monkeypatch):
 
 
 def test_a_failed_review_still_names_its_model(monkeypatch):
-    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODEL", "opus")
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODELS", "opus")
     out = _run(monkeypatch, RuntimeError("timed out"))["out"]
     assert out["failed"] is True and out["model"] == "opus"
+
+
+def test_every_lens_runs_on_every_review_model(monkeypatch):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODELS", "opus,codex:gpt-x")
+    seen: list = []
+
+    def fake(prompt, **kw):
+        seen.append(kw.get("model"))
+        return json.dumps({"verdict": "safe", "reason": "r"})
+
+    monkeypatch.setattr(headless_agent, "run_agent", fake)
+    steps: list[str] = []
+    reviews = review_issue_fix.full_review("/wt", PATCH, title="t", body="b", root_cause="rc",
+                                           test_paths=[], evidence="", on_step=steps.append)
+    assert [(r["lens"], r["model"]) for r in reviews] == [
+        (lens, model) for lens in issue_gates.REVIEW_LENSES for model in ("opus", "codex:gpt-x")]
+    assert seen == ["opus", "codex:gpt-x"] * len(issue_gates.REVIEW_LENSES)
+    assert steps[1] == "reviewing: root-cause on codex:gpt-x"

@@ -215,7 +215,7 @@ def _codex_reviewer(home, tmp_path, monkeypatch) -> dict:
     monkeypatch.setattr(headless_codex, "CODEX_BIN", str(tmp_path / "codex"))
     monkeypatch.setattr(headless_agent, "_store",
                         lambda: type("S", (), {"append_agent_run": lambda self, r: None})())
-    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODEL", "codex:gpt-x")
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODELS", "codex:gpt-x")
     monkeypatch.setenv("TRIAGE_STORE_URL", "postgresql://secret")
     return {"record": record, "clone": os.path.realpath(home["clone"])}
 

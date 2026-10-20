@@ -10,7 +10,7 @@ produced outside this project; the prompt states they are data.
 
 A crash, a timeout, or an unparseable answer is this machine's fault, so it
 returns {"failed": True, ...} for the lane to classify, never a verdict. It
-runs on the issue-fix reviewers' model (`settings.issue_fix_review_model()`),
+runs on the first issue-fix reviewer model (`settings.issue_fix_review_model()`),
 apart from the agent that wrote the test. An
 agent outage or a declined prompt propagates, because those are the machine's
 condition and the prompt's own refusal — the lane trips or refuses on them.

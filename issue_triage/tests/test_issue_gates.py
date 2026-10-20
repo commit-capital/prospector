@@ -412,3 +412,87 @@ def test_each_lens_s_latest_review_counts_and_a_stalled_one_asks_nothing():
     assert issue_gates.review_comments([old, new]) == (False, [])
     stalled = {"lens": "root-cause", "verdict": "unsafe", "failed": True, "reason": "timeout"}
     assert issue_gates.review_comments([stalled, new]) == (False, [])
+
+
+# --- reviewers on several models ---------------------------------------------------
+
+def _two_models(**over):
+    """Every lens answered `safe` by opus and codex:gpt-x, with `over` keyed
+    "<lens>@<model>" replacing an answer's fields."""
+    out = []
+    for lens in issue_gates.REVIEW_LENSES:
+        for model in ("opus", "codex:gpt-x"):
+            out.append({"lens": lens, "model": model, "verdict": "safe", "reason": "",
+                        "concerns": [], **over.get(f"{lens}@{model}", {})})
+    return out
+
+
+def test_every_model_safe_passes_the_bar():
+    assert issue_gates.fix_proof_bar(_result(reviews=_two_models()))[0] is None
+
+
+@pytest.mark.parametrize("answer", [
+    {"verdict": "unsafe", "reason": "relaxes the check"},
+    {"verdict": "unsafe", "failed": True, "reason": "timed out"},
+    {"verdict": "safe", "failed": True},
+])
+def test_one_model_s_rejection_or_failure_blocks_the_bar(answer):
+    reviews = _two_models(**{"scope-safety@codex:gpt-x": answer})
+    ending, why = issue_gates.fix_proof_bar(_result(reviews=reviews))
+    assert ending == "fix-rejected" and why.startswith("scope-safety (codex:gpt-x): ")
+
+
+def test_a_revision_answers_each_model_s_review_apart():
+    first = _two_models(**{"root-cause@opus": {"verdict": "unsafe", "reason": "masks"}})
+    assert issue_gates.fix_proof_bar(_result(reviews=first))[0] == "fix-rejected"
+    revised = first + _two_models()
+    assert len(issue_gates.latest_reviews(revised)) == 4
+    assert issue_gates.fix_proof_bar(_result(reviews=revised))[0] is None
+
+
+def test_any_model_s_rejection_rejects_and_every_model_s_concerns_are_combined():
+    reviews = _two_models(**{
+        "root-cause@opus": {"verdict": "unsafe", "reason": "masks", "concerns": ["a"]},
+        "root-cause@codex:gpt-x": {"verdict": "unsafe", "reason": "masks", "concerns": ["b"]},
+        "scope-safety@opus": {"verdict": "unsafe", "failed": True, "reason": "timed out"}})
+    assert issue_gates.review_comments(reviews) == (True, [
+        "root-cause (opus): masks", "root-cause (opus): a",
+        "root-cause (codex:gpt-x): masks", "root-cause (codex:gpt-x): b"])
+
+
+def test_a_model_that_did_not_finish_beside_a_safe_one_neither_rejects_nor_passes():
+    reviews = _two_models(**{"root-cause@codex:gpt-x": {"verdict": "unsafe", "failed": True}})
+    assert issue_gates.review_comments(reviews) == (False, [])
+    assert issue_gates.fix_proof_bar(_result(reviews=reviews))[0] == "fix-rejected"
+
+
+def _account(model, *entries):
+    return {"lens": "scope-safety", "model": model, "verdict": "safe",
+            "coverage": [{"defect": d, "status": st, "evidence": f"{model}:{d}"}
+                         for d, st in entries]}
+
+
+def test_a_defect_is_covered_only_when_no_model_says_it_is_left():
+    reviews = [_account("opus", ("Cancel hangs", "addressed"), ("logs leak", "addressed")),
+               _account("codex:gpt-x", ("cancel  HANGS", "not-addressed"),
+                        ("logs leak", "already-fixed"))]
+    cov = issue_gates.fix_coverage(reviews)
+    assert cov.state == "partial"
+    assert [(d["defect"], d["status"]) for d in cov.defects] == [
+        ("cancel  HANGS", "not-addressed"), ("logs leak", "addressed")]
+
+
+def test_coverage_unions_the_defects_each_model_names():
+    reviews = [_account("opus", ("a", "addressed")),
+               _account("codex:gpt-x", ("a", "addressed"), ("b", "already-fixed"))]
+    cov = issue_gates.fix_coverage(reviews)
+    assert cov.state == "complete" and [d["defect"] for d in cov.defects] == ["a", "b"]
+
+
+def test_each_model_s_latest_account_counts_and_a_defect_both_leave_is_one_claim():
+    reviews = [_account("opus", ("a", "not-addressed"), ("b", "not-addressed")),
+               _account("codex:gpt-x", ("A", "not-addressed")),
+               _account("opus", ("a", "not-addressed"), ("b", "addressed"))]
+    assert issue_gates.fix_coverage(reviews).having("not-addressed") == [
+        {"defect": "a", "status": "not-addressed", "evidence": "opus:a"}]
+    assert issue_gates.review_comments(reviews) == (False, ["not addressed: a (opus:a)"])

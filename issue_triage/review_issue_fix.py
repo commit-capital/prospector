@@ -23,15 +23,15 @@ names as addressed by the change, not addressed, or already handled on the
 base, with its evidence (`coverage`); `issue_gates.fix_coverage` reads it, and a
 `safe` without a usable account is a reviewer failure too.
 
-`full_review` reads a change under every lens, the way one code review reads
-it whole. A revised change is reviewed afresh with the earlier rounds in view:
+`full_review` reads a change under every lens on every model in
+`settings.issue_fix_review_models()`, the way one code review reads it whole,
+and `issue_gates` merges their answers. A revised change is reviewed afresh with the earlier rounds in view:
 what the reviewers asked, the tests that showed a claim, and the fixer's answer
 to each comment, so a fixer can dispute a comment and a reviewer can hold or
 drop it on the code.
 
-The reviewers run on `settings.issue_fix_review_model()`, apart from the
-fixers' models, and each answer names the model that gave it (`model`), so the
-app and the pull request can say which family reviewed.
+Each answer names the model that gave it (`model`), so the host can merge
+answers per reviewer and the app and the pull request can say who reviewed.
 """
 from __future__ import annotations
 
@@ -150,12 +150,6 @@ def _unsafe(lens: str, reason: str, failed: bool = False) -> dict:
     return out
 
 
-def reviewer_model() -> str:
-    """The model a review runs on, as recorded on its answer: the configured
-    reviewer model, else the agent model, else the CLI's default."""
-    return settings.issue_fix_review_model() or settings.agent_model() or "default"
-
-
 def _broken(changes: object) -> list[str] | None:
     """The inputs that worked before whose change the report did not ask for,
     or None when the inventory is missing, empty, or malformed — a change alters
@@ -175,8 +169,10 @@ def _broken(changes: object) -> list[str] | None:
 def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
            root_cause: str, test_paths: list[str], evidence: str,
            inventory_veto: bool = True, history: str | None = None,
+           model: str | None = None,
            on_event: Callable[[tuple], None] | None = None) -> dict:
-    """Judge `patch` under one `lens`, returning {"lens", "model",
+    """Judge `patch` under one `lens` on `model` (else the first review model),
+    returning {"lens", "model",
     "verdict": "safe"|"unsafe", "reason": str, "concerns": list[str]},
     plus the scope-safety lens's `behavior_changes` and `coverage`. `evidence`
     is the host's account of the proof runs over the change, and `history` the
@@ -207,18 +203,20 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
         "__PATCH__": clip(patch),
         "__OUTPUT__": _OUTPUT[lens],
     })
+    model = model or settings.issue_fix_review_model()
     return {**_judge(prompt, worktree, lens=lens, inventory_veto=inventory_veto,
-                     on_event=on_event), "model": reviewer_model()}
+                     model=model, on_event=on_event),
+            "model": model or settings.agent_model() or "default"}
 
 
 def _judge(prompt: str, worktree: str, *, lens: str, inventory_veto: bool,
-           on_event: Callable[[tuple], None] | None) -> dict:
+           model: str | None, on_event: Callable[[tuple], None] | None) -> dict:
     """Run the reviewer on `prompt` and read its answer, as `review` says."""
     try:
         verdict, _ = headless_agent.json_reply(lambda: headless_agent.run_agent(
             prompt, allow_gh=False, cwd=worktree, edit_root=None,
             read_root=worktree, env_allow=(), timeout=AGENT_TIMEOUT_SECONDS,
-            model=settings.issue_fix_review_model(), on_event=on_event))
+            model=model, on_event=on_event))
     except (headless_agent.AgentUnavailable, headless_agent.AgentDeclined):
         raise
     except ValueError as e:
@@ -267,12 +265,16 @@ def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause:
                 test_paths: list[str], evidence: str, inventory_veto: bool = True,
                 history: str | None = None,
                 on_step: Callable[[str], None] = lambda step: None) -> list[dict]:
-    """`review` under every lens in issue_gates.REVIEW_LENSES, each reading the
-    whole change; `issue_gates.review_comments` reads the answers."""
+    """`review` under every lens in issue_gates.REVIEW_LENSES on every review
+    model, each reading the whole change; `issue_gates.review_comments` reads
+    the answers."""
+    models = settings.issue_fix_review_models()
     reviews = []
     for lens in issue_gates.REVIEW_LENSES:
-        on_step(f"reviewing: {lens}")
-        reviews.append(review(worktree, patch, lens=lens, title=title, body=body,
-                              root_cause=root_cause, test_paths=test_paths, evidence=evidence,
-                              inventory_veto=inventory_veto, history=history))
+        for model in models:
+            on_step(f"reviewing: {lens}" + (f" on {model}" if len(models) > 1 else ""))
+            reviews.append(review(worktree, patch, lens=lens, title=title, body=body,
+                                  root_cause=root_cause, test_paths=test_paths,
+                                  evidence=evidence, inventory_veto=inventory_veto,
+                                  history=history, model=model))
     return reviews
