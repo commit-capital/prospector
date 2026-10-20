@@ -132,8 +132,8 @@ One phase per invocation, against a base image built from `Dockerfile.base`:
       --base-sha <base-sha> --head-sha <pr-sha>
 
 The exit code is the result; the container's stdout/stderr streams to the
-launcher's. A phase that runs tests (`red`, `green`, `repro`, `coverage`, and a
-`compile` phase whose command is a test run) gets the profile's
+launcher's. A phase that runs tests (`red`, `green`, `repro`, `coverage`, `baseline`,
+`regress`, and a `compile` phase whose command is a test run) gets the profile's
 `verify.test_setup` as `--test-setup`, and `run-phase.sh` runs it ahead of the
 test command, exiting 60 when it fails. Sentinels are declared in `pipeline/gates.py` and mirrored in
 `run-phase.sh`:

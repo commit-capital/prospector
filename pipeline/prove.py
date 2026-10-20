@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
 
-from pipeline import diffpaths, gates, verify_driver
+from pipeline import diffpaths, gates, profile, verify_driver
 
 if TYPE_CHECKING:
     from pipeline.store import Store
@@ -312,8 +312,12 @@ class SuiteUnplannable(SuiteFault):
 
 
 def _tree_key(base: PinnedBase, pre_patch: str | None) -> str:
-    """The suite tree's identity: the base, and the pre-patch carried over it."""
+    """The suite tree's identity: the base, the pre-patch carried over it, and
+    the profile's test setup that prepares it."""
+    setup = profile.active().verify.test_setup
     pre = hashlib.sha256((pre_patch or "").encode()).hexdigest()[:16]
+    if setup:
+        pre += "-" + hashlib.sha256(setup.encode()).hexdigest()[:8]
     return f"{base.sha[:12]}-{pre}"
 
 
