@@ -390,8 +390,9 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
     request, leaves the pull request, the run it shows, and the result on disk
     as they were. An operator's send-back (`trigger` "send-back") that ends
     without a fix, or pushes one that still leaves part of the report
-    (`fix_review.partial_note`), hands the pull request back to them. Everything
-    but the writes when not `live`."""
+    (`fix_review.partial_note`), hands the pull request back to them; that hand-back
+    is recorded in the store in a dry run too, like the follow-up's own. Everything
+    but the upstream writes when not `live`."""
     from prospector_app.backend import executor
 
     issue = store.load_issue(n)
@@ -448,6 +449,7 @@ def _hand_back(store: IssueStore, n: int, pr: int, reason: str, *,
     edit = store.edit_issue(n)
     fu = {"pr": pr, **fix_review.followup_for(edit.fix_followup, pr)}
     head = head_sha or fu.get("head_sha")
+    fu.pop("approved", None)
     edit.record_fix_followup({**fu, "state": "handed-back", "reason": reason[:400],
                               **({"head_sha": head} if head else {}),
                               "judged": {"head_sha": head, "reason": reason[:400],
@@ -511,9 +513,10 @@ def _late_rivals(store: IssueStore, n: int, prs: list[int], *, live: bool,
     pr = fix_review.open_pr(edit)
     fu = fix_review.followup_for(edit.fix_followup, pr)
     if held and fu:
-        edit.record_fix_followup({**fu, "state": "handed-back", "reason": held[:400],
+        kept = {k: v for k, v in fu.items() if k != "approved"}
+        edit.record_fix_followup({**kept, "state": "handed-back", "reason": held[:400],
                                   "judged": {"head_sha": fu.get("head_sha"),
-                                             "reason": held[:400]}})
+                                             "reason": held[:400], "outside": False}})
     return f"Second opinion: {outcome}"
 
 

@@ -684,3 +684,48 @@ def test_an_operator_s_send_back_that_still_leaves_part_comes_back_to_them(store
     assert fu["state"] == "handed-back"
     assert "cancel after a restart is a no-op" in fu["judged"]["reason"]
     assert fix_review.fix_status(store.load_issue(7))[0] == "review"
+
+
+def test_a_hand_back_for_something_new_ends_the_approval_for_good(store, monkeypatch):
+    monkeypatch.setattr(followup, "read", lambda pr: _pr(views=[_greptile(reviewers.FAIL)]))
+    store.edit_issue(7).record_fix_followup({
+        "pr": 9, "state": "watching", "described_head": HEAD, "revisions": 2,
+        "approved": {"by": "op", "judged": {"reason": "old"}, "partial": True}})
+    followup.poll(store, mode="live")
+    fu = store.load_issue(7).fix_followup
+    assert fu["state"] == "handed-back" and "approved" not in fu
+    store.edit_issue(7).record_fix_followup({**fu, "state": "watching"})
+    assert fix_review.fix_status(store.load_issue(7))[0] == "pr-open"
+    assert fix_review.approval(store.load_issue(7)) is None
+
+
+def test_an_approval_made_while_a_sweep_runs_survives_its_write(store, monkeypatch):
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "head_sha": HEAD,
+                                             "described_head": HEAD,
+                                             "judged": {"head_sha": HEAD, "reason": "r"}})
+
+    def read(pr):
+        fix_review.approve(store, 7, by="op", partial=True)
+        return _pr(views=[_greptile(reviewers.FAIL)])
+
+    monkeypatch.setattr(followup, "read", read)
+    followup.poll(store, mode="live")
+    fu = store.load_issue(7).fix_followup
+    assert fu["approved"]["by"] == "op" and fu["described_head"] == ""
+
+
+def test_an_approval_withdrawn_while_a_sweep_runs_stays_withdrawn(store, monkeypatch):
+    judged = {"head_sha": HEAD, "reason": "r"}
+    store.edit_issue(7).record_fix_followup({
+        "pr": 9, "state": "handed-back", "head_sha": HEAD, "described_head": HEAD,
+        "judged": judged, "approved": {"by": "op", "judged": judged, "partial": False}})
+
+    def read(pr):
+        fix_review.queue(store, 7, "send-back", by="op", guidance="fix the rest")
+        store.edit_issue(7).record_fix_request({"action": "send-back", "status": "done",
+                                                "source": "operator"})
+        return _pr(views=[_greptile(reviewers.FAIL)])
+
+    monkeypatch.setattr(followup, "read", read)
+    followup.poll(store, mode="live")
+    assert "approved" not in store.load_issue(7).fix_followup

@@ -111,7 +111,11 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 36 — open PRs and issues carry `author_return` (the closes their author came
 #      back to, recorded by the responses sweep); an older app computes them
 #      itself and never reads the section.
-STORE_SCHEMA_VERSION = 36
+# 37 — an issue's `fix_followup` carries `approved` (an operator approved the
+#      pull request as it stands, perhaps as a partial fix) and hand-backs mark
+#      `judged.outside`; an older worker reads past both, keeps re-handing the
+#      pull request back, and re-renders a partial approval as "Fixes #N".
+STORE_SCHEMA_VERSION = 37
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
