@@ -1348,6 +1348,16 @@ export interface IssuePR {
   // The vocabulary issue_triage/issue_links.py ranks — strongest evidence first.
   how?: "explicit" | "github" | "fix-found" | "issue-ref" | "body-ref" | "subsystem" | null;
   in_store?: boolean; state?: "open" | "merged" | "closed" | null; draft?: boolean;
+  /** The issue page's row facts (service.linked_pr_facts); null when the PR store lacks the PR. */
+  facts?: LinkedPRFacts | null;
+}
+export interface LinkedPRFacts {
+  author: string | null;
+  author_kind: "prospector" | "maintainer" | "community";
+  checks: { passed: number; total: number; failed: boolean };
+  risk_tier: number | null;
+  disposition: Disposition | null;
+  safety: Safety;
 }
 /** How an author came back after we closed their PR or issue
  *  (prospector_app/backend/author_returns.py): they reopened it, or opened a
@@ -1614,6 +1624,8 @@ export interface IssueFixFollowup {
   closed_as?: "merged" | "closed" | null;
   step?: string | null;
   reason?: string | null;
+  /** Why the follow-up last decided as it did, at the head it judged. */
+  judged?: { reason?: string | null; head_sha?: string | null } | null;
   head_sha?: string | null;
   checked_at?: string | null;
   revisions?: number | null;

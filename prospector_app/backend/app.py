@@ -1300,9 +1300,13 @@ def issues_already_fixed():
 def issue_detail(n: int):
     """One issue's detail row — meta, analysis (disposition/rationale/asks),
     repro, cluster context, and linked PRs — for the issue flyout."""
+    from issue_triage import issue_links
     d = issues_mod.get_issue(n)
     if d is None:
         raise HTTPException(404, f"issue {n} not in store")
+    for link in d["linked_prs"]:
+        if link.get("how") in issue_links.REFERENCED:
+            link["facts"] = service.linked_pr_facts(link["pr"])
     return d
 
 
