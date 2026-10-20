@@ -877,20 +877,20 @@ class Collection(Generic[T]):
         return self._read(lambda conn: int(conn.execute(stmt).scalar_one()))
 
     def rows(self, columns: list[ColumnElement],
-             where: ColumnElement[bool] | None = None) -> list[Row[Any]]:
+             where: ColumnElement[bool] | None = None) -> list[Row[*tuple[Any, ...]]]:
         """(pk, *columns) of every row `where` matches, in pk order, read in pages."""
         return self._paged(columns, where)
 
     def _paged(self, columns: list[ColumnElement],
-               where: ColumnElement[bool] | None = None) -> list[Row[Any]]:
+               where: ColumnElement[bool] | None = None) -> list[Row[*tuple[Any, ...]]]:
         """Every row's (pk, *columns), in pk order, read as a series of
         BULK_PAGE_ROWS-row statements keyed past the last pk seen. Reported page
         by page where `progress` reports store reads."""
         report = progress.store_read(self.table.name, lambda: self.count(where))
-        rows: list[Row[Any]] = []
+        rows: list[Row[*tuple[Any, ...]]] = []
         last: int | None = None
         while True:
-            def q(conn: Connection, after: int | None = last) -> list[Row[Any]]:
+            def q(conn: Connection, after: int | None = last) -> list[Row[*tuple[Any, ...]]]:
                 stmt = select(self.pk, *columns).order_by(self.pk).limit(BULK_PAGE_ROWS)
                 if where is not None:
                     stmt = stmt.where(where)
@@ -907,7 +907,7 @@ class Collection(Generic[T]):
                 return rows
             last = page[-1][0]
 
-    def stamped_rows(self, columns: list[ColumnElement]) -> tuple[list[Row[Any]], str | None]:
+    def stamped_rows(self, columns: list[ColumnElement]) -> tuple[list[Row[*tuple[Any, ...]]], str | None]:
         """Every row's (pk, saved_at, *columns) in pk order, read in pages, plus the
         table's max saved_at taken before the first page — the watermark an
         incremental `since` continues from, as for a full `since` load."""
