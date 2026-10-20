@@ -2550,6 +2550,12 @@ interface SectionCoverage {
   never: number;
 }
 
+/** A phase whose job reaches some pending PRs only after an earlier phase
+ * runs; `blocked` counts those. */
+interface GatedCoverage extends SectionCoverage {
+  blocked: number;
+}
+
 /** Threat-scan coverage: the freshness split plus how many open PRs, scanned
  * or not, have no current-head diff in this machine's cache — the diffs a scan
  * run here fetches first. A fetch-workload hint, not a coverage boundary. */
@@ -2559,13 +2565,14 @@ interface ThreatCoverage extends SectionCoverage {
 
 /** Phase coverage over the open PRs — the population every phase acts on.
  * `total` is that open count; `tracked` is the whole store, closed and merged
- * included. */
+ * included. Clustering, analysis and security review leave out the `exempt`
+ * dependency bumps. */
 interface PipelineCoverage {
   tracked: number;
   total: number;
-  clustered: number;
-  not_clustered: number;
-  analysis: SectionCoverage;
+  exempt: number;
+  cluster: GatedCoverage;
+  analysis: GatedCoverage;
   security: SectionCoverage;
   threat: ThreatCoverage;
 }

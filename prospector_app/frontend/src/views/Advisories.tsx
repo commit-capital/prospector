@@ -307,7 +307,7 @@ export default function Advisories() {
                   ];
                 })}
                 {!loading && rows.length === 0 && (
-                  <tr><td colSpan={8} className="muted">No matching advisories. Run the security sweep from the Control tab to fetch them.</td></tr>
+                  <tr><td colSpan={8} className="muted">No matching advisories. Run the alert & advisory sweep from the Control tab to fetch them.</td></tr>
                 )}
               </tbody>
             </table>

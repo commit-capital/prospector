@@ -17,9 +17,10 @@ def stamp(hours_ago: float) -> str:
 
 
 def make_status(*, ingest_ago_h: float | None = 1.0, threat_uncovered: int = 0,
-                analysis_never: int = 0, issue_ingest_ago_h: float | None = 1.0,
+                analysis_never: int = 0, analysis_stale: int = 0, analysis_blocked: int = 0,
+                issue_ingest_ago_h: float | None = 1.0,
                 pending_analysis: int = 0, not_clustered: int = 0,
-                unclustered_work: int | None = None, cluster_ago_h: float | None = None,
+                cluster_blocked: int = 0, cluster_ago_h: float | None = None,
                 estimates: dict | None = None) -> dict:
     phases = [
         {"phase": "ingest",
@@ -37,9 +38,9 @@ def make_status(*, ingest_ago_h: float | None = 1.0, threat_uncovered: int = 0,
         "coverage": {
             "total": 100,
             "threat": {"stale": threat_uncovered, "never": 0},
-            "analysis": {"never": analysis_never},
-            "not_clustered": not_clustered,
-            "unclustered_work": not_clustered if unclustered_work is None else unclustered_work,
+            "analysis": {"stale": analysis_stale, "never": analysis_never,
+                         "blocked": analysis_blocked},
+            "cluster": {"never": not_clustered, "blocked": cluster_blocked},
         },
         "issue_coverage": {"pending_analysis": pending_analysis},
         "estimates": estimates or {},
@@ -134,13 +135,13 @@ def test_unparseable_stamp_reads_as_never():
 def test_unclustered_prs_suggest_clustering_when_it_has_not_run_today():
     out = sa.pr_suggestions(make_status(not_clustered=826, cluster_ago_h=29 * 24 + 1), NOW)
     assert [s["kind"] for s in out] == ["cluster-new"]
-    assert out[0]["reason"] == "826 PRs are not in a cluster (last clustering 29d ago)"
+    assert out[0]["reason"] == "826 PRs not in a cluster (last clustering 29d ago)"
     assert out[0]["count"] == sa.CLUSTER_NEW_BATCH
 
 
 def test_one_unclustered_pr_never_clustered():
     out = sa.pr_suggestions(make_status(not_clustered=1), NOW)
-    assert out[0]["reason"] == "1 PR is not in a cluster (never clustered)"
+    assert out[0]["reason"] == "1 PR not in a cluster (never clustered)"
     assert out[0]["count"] == 1
 
 
@@ -155,8 +156,20 @@ def test_merged_views_drop_a_repeated_kind():
     assert sa.merged([[a], [{**a, "title": "dup"}, b]]) == [a, b]
 
 
-def test_unclustered_prs_the_lane_skips_suggest_nothing():
-    assert sa.pr_suggestions(make_status(not_clustered=3, unclustered_work=0), NOW) == []
+def test_unclustered_prs_all_waiting_on_the_threat_scan_suggest_nothing():
+    assert sa.pr_suggestions(make_status(not_clustered=3, cluster_blocked=3), NOW) == []
+
+
+def test_a_backlog_partly_waiting_on_an_earlier_phase_says_which_to_run_first():
+    out = sa.pr_suggestions(make_status(not_clustered=424, cluster_blocked=30,
+                                        analysis_stale=125, analysis_never=692,
+                                        analysis_blocked=424), NOW)
+    kinds = {s["kind"]: s for s in out}
+    assert kinds["cluster-new"]["reason"] == (
+        "424 PRs not in a cluster (never clustered) · run Threat scan first to reach 30 of them")
+    assert kinds["cluster-new"]["count"] == sa.CLUSTER_NEW_BATCH
+    assert kinds["analyze-clusters"]["reason"] == (
+        "817 PRs lack a current analysis · run Clustering first to reach 424 of them")
 
 
 def test_a_job_run_within_the_cooldown_is_not_suggested_again():

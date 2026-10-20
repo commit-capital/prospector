@@ -80,7 +80,7 @@ export function IssueDetailContent({ issue }: { issue: number }) {
           )}
         </div>
       ) : (
-        <div className="muted small">Not yet analyzed — run Issue analyze from the Control tab.</div>
+        <div className="muted small">Not yet analyzed — run Issue analysis from the Control tab.</div>
       )}
 
       {(d.cluster != null || d.duplicates.length > 0) && (

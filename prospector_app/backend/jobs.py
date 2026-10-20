@@ -157,7 +157,7 @@ JOB_SPECS: dict[str, JobSpec] = {
         "argv": [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "threat_scan.py")],
     },
     "analyze-clusters": {
-        "label": "Analyze clusters",
+        "label": "Analysis",
         "detail": "dispositions for the lowest-id pending clusters, in parallel. gh reads and store writes only, nothing upstream.",
         "agentic": True,
         "ledger": ("pr", ("analyze:commit",)),
@@ -169,7 +169,7 @@ JOB_SPECS: dict[str, JobSpec] = {
                               "--limit", str(n)],
     },
     "cluster-new": {
-        "label": "Cluster new PRs",
+        "label": "Clustering",
         "detail": "summarize PRs lacking a current summary, place new PRs into the existing clusters (or new ones) without re-partitioning them, then analyze the pending clusters. Store writes only, nothing upstream.",
         "agentic": True,
         "ledger": ("pr", ("cluster:summaries", "cluster:assign")),
@@ -188,7 +188,7 @@ JOB_SPECS: dict[str, JobSpec] = {
         "argv": [*PIPELINE_PY, "-u", str(REPO_ROOT / "issue_triage" / "issue_ingest.py")],
     },
     "issue-analyze": {
-        "label": "Issue analyze",
+        "label": "Issue analysis",
         "detail": "dispositions for the lowest-id pending issues, in parallel batches. Store writes only, no fix scan.",
         "agentic": True,
         "ledger": ("issue", ("analyze",)),
@@ -212,7 +212,7 @@ JOB_SPECS: dict[str, JobSpec] = {
                               "--limit", str(n)],
     },
     "security-sweep": {
-        "label": "Security sweep",
+        "label": "Alert & advisory sweep",
         "detail": "alerts + advisories: ingest as the bot, then find-fixed. gh-heavy.",
         "agentic": True,
         "ledger": ("alert", ("alert-ingest", "alert-find-fixed",
