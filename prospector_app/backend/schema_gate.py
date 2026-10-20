@@ -58,15 +58,17 @@ def paused(lane: str) -> bool:
 
 def outdated_hosts(regs: WorkerRegistries, store_v: int, me: str) -> dict[str, int]:
     """Each machine whose code is behind `store_v`, by the schema version its
-    last heartbeat recorded, and this machine by its own code."""
-    out: dict[str, int] = {}
+    newest heartbeat across lanes recorded, and this machine by its own code.
+    A lane that stopped beating keeps the version it last ran."""
+    newest: dict[str, tuple[str, int]] = {}
     beats = [*verify_queue.worker_records(regs["verify_worker"]),
              *fix_queue.worker_records(regs["fix_worker"]),
              *(regs["issue_fix_worker"].get("hosts") or {}).values()]
     for rec in beats:
-        v, host = rec.get("schema"), rec.get("host")
-        if isinstance(v, int) and host and v < store_v:
-            out[str(host)] = min(v, out.get(str(host), v))
+        v, host, at = rec.get("schema"), rec.get("host"), str(rec.get("last_beat") or "")
+        if isinstance(v, int) and host and (str(host) not in newest or at > newest[str(host)][0]):
+            newest[str(host)] = (at, v)
+    out = {host: v for host, (_, v) in newest.items() if v < store_v}
     if schema.STORE_SCHEMA_VERSION < store_v:
         out[me] = schema.STORE_SCHEMA_VERSION
     else:
