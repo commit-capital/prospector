@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from issue_triage import fixability, public_comments, public_loop
+from issue_triage import public_comments, public_loop
 from issue_triage.issue_store import IssueStore
 from issue_triage.public_loop import (
     IN_PROGRESS,
@@ -302,11 +302,9 @@ def rivals(monkeypatch):
     return found
 
 
-def _rival(number: int, *, state: str = "open", closes: bool = True,
-           quiet_days: float = 1) -> dict:
-    moved = datetime.now(timezone.utc) - timedelta(days=quiet_days)
-    return {"number": number, "title": "t", "state": state, "author": "someone",
-            "closes": closes, "updated_at": moved.isoformat()}
+def _rival(number: int) -> dict:
+    return {"number": number, "title": "t", "state": "open", "author": "someone",
+            "closes": True, "updated_at": NOW.isoformat()}
 
 
 def test_a_clean_community_fix_is_proposed_under_the_default_scope(store, writes, rivals):
@@ -339,46 +337,24 @@ def test_a_community_issue_gets_only_its_pull_request_not_labels_or_comments(sto
     assert writes == [] and store.load_issue(2).fix_request is None
 
 
-def test_a_community_fix_another_open_pull_request_claims_is_left_for_an_operator(
-        store, writes, rivals):
+def test_another_author_s_pull_request_does_not_hold_our_proposal(store, writes, rivals):
     _save(store, 2, association="NONE")
     store.edit_issue(2).record_fix_run(_run(ending="fixed", patch="p",
                                             boundary={"crossings": []}))
-    rivals["prs"] = [_rival(40, state="closed"), _rival(41, closes=False), _rival(42)]
-    public_loop.sync(store, mode="live", now=NOW)
-    issue = store.load_issue(2)
-    assert issue.fix_request is None
-    assert "#42" in issue.fix_thread[-1]["text"]
-    public_loop.sync(store, mode="live", now=NOW)
-    assert rivals["searched"] == [2]
-
-
-def test_a_community_fix_waits_while_the_search_for_rivals_cannot_run(store, writes, rivals):
-    _save(store, 2, association="NONE")
-    store.edit_issue(2).record_fix_run(_run(ending="fixed", patch="p",
-                                            boundary={"crossings": []}))
-    rivals["prs"] = None
-    public_loop.sync(store, mode="live", now=NOW)
-    assert store.load_issue(2).fix_request is None
-    rivals["prs"] = []
-    public_loop.sync(store, mode="live", now=NOW)
-    assert store.load_issue(2).fix_request["action"] == "propose"
-
-
-def test_a_maintainer_s_fix_another_author_s_active_pull_request_claims_waits_too(
-        store, writes, rivals):
     store.edit_issue(1).record_fix_run(_run(ending="fixed", patch="p"))
     rivals["prs"] = [_rival(42)]
     public_loop.sync(store, mode="live", now=NOW)
-    assert store.load_issue(1).fix_request is None
-    assert "#42" in store.load_issue(1).fix_thread[-1]["text"]
+    assert store.load_issue(2).fix_request["action"] == "propose"
+    assert store.load_issue(1).fix_request["action"] == "propose"
+    assert rivals["searched"] == []
 
 
-def test_a_rival_that_went_quiet_no_longer_holds_the_fix(store, writes, rivals):
+def test_a_proposal_left_for_an_operator_over_a_rival_is_queued_again(store, writes):
     _save(store, 2, association="NONE")
     store.edit_issue(2).record_fix_run(_run(ending="fixed", patch="p",
                                             boundary={"crossings": []}))
-    rivals["prs"] = [_rival(42, quiet_days=fixability.RIVAL_ACTIVE_DAYS + 1)]
+    store.edit_issue(2).record_fix_public({"queued": {f"{FINISHED}:propose": {
+        "at": FINISHED, "left": "an open pull request already claims to fix it: #42"}}})
     public_loop.sync(store, mode="live", now=NOW)
     assert store.load_issue(2).fix_request["action"] == "propose"
 

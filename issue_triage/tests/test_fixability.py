@@ -1,10 +1,10 @@
-"""Whether an issue is worth a fix attempt: the rival rule, the agent's verdict
-held to what the clone shows, freshness against the issue's content, and the
-hunter's order. The agent and GitHub's search are mocked."""
+"""Whether an issue is worth a fix attempt: the agent's verdict held to what the
+clone shows, freshness against the issue's content, and the hunter's order. The
+agent and GitHub's search are mocked."""
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -16,38 +16,12 @@ from pipeline import headless_agent
 NOW = datetime(2026, 10, 16, tzinfo=timezone.utc)
 
 
-def _iso(days_ago: float) -> str:
-    return (NOW - timedelta(days=days_ago)).isoformat()
-
-
-def _pr(number: int, *, author: str = "rando", state: str = "open", closes: bool = True,
-        moved: float = 1) -> dict:
-    return {"number": number, "title": "t", "state": state, "author": author, "closes": closes,
-            "updated_at": _iso(moved)}
-
-
 @pytest.fixture
 def search(monkeypatch):
-    found: list = []
+    found: list = [{"number": 9, "title": "t", "state": "open", "author": "rando",
+                    "closes": True, "updated_at": NOW.isoformat()}]
     monkeypatch.setattr(related_prs, "search", lambda issue, exclude=None: found)
-    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "fixbot")
-    monkeypatch.setenv("TRIAGE_PUSH_LOGIN", "pushbot")
     return found
-
-
-def test_an_active_rival_claim_holds_the_issue(search):
-    search.append(_pr(9, moved=3))
-    assert fixability.rival(7, now=NOW) == {"pr": 9, "author": "rando",
-                                            "updated_at": _iso(3)}
-
-
-@pytest.mark.parametrize("pr", [
-    _pr(9, moved=fixability.RIVAL_ACTIVE_DAYS + 1),  # gone quiet
-    _pr(9, author="fixbot[bot]"), _pr(9, author="pushbot"),  # our own proposal
-    _pr(9, state="closed"), _pr(9, closes=False)])
-def test_a_quiet_closed_unclaiming_or_own_pull_request_holds_nothing(search, pr):
-    search.append(pr)
-    assert fixability.rival(7, now=NOW) is None
 
 
 @pytest.fixture
@@ -108,11 +82,21 @@ def _issue(store: IssueStore, n: int = 7, *, content: str = "2026-10-10T00:00:00
     return store.load_issue(n)
 
 
-def test_an_active_rival_skips_the_issue_without_an_agent(tmp_path, clone, search, monkeypatch):
-    search.append(_pr(9, moved=0))
-    monkeypatch.setattr(headless_agent, "run_agent", lambda *a, **k: pytest.fail("agent ran"))
+def test_another_author_s_pull_request_does_not_skip_the_issue(tmp_path, clone, search,
+                                                               monkeypatch):
+    _agent(monkeypatch, GO)
     out = fixability.judge(_issue(IssueStore(tmp_path)), clone, base_sha="b" * 40)
-    assert out["verdict"] == "skip" and out["rival"]["pr"] == 9
+    assert out["verdict"] == "go" and "rival" not in out
+
+
+def test_a_skip_recorded_for_another_author_s_pull_request_reads_as_stale(tmp_path):
+    store = IssueStore(tmp_path)
+    _issue(store)
+    store.edit_issue(7).record_fix_triage({
+        "verdict": "skip", "kind": "unclear", "reason": "#9 by rando already claims to fix it",
+        "rival": {"pr": 9, "author": "rando", "updated_at": NOW.isoformat()},
+        "base_sha": "b" * 40, "replies": 0})
+    assert fixability.current(store.load_issue(7)) is None
 
 
 def test_a_reply_after_the_triage_makes_it_stale(tmp_path, clone, search, monkeypatch):
