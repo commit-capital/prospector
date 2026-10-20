@@ -229,6 +229,11 @@ class Issue:
         """Whether the issue is worth a fix attempt (`issue_triage.fixability`)."""
         return self._fix_section("fix_triage")
 
+    def set_display(self, payload: dict) -> None:
+        """Stamp the page's plain-language card (issue_triage/issue_display.py)."""
+        _stamp(self.rec, "display", payload, None)
+        self._persist()
+
     def record_fix_triage(self, section: dict) -> None:
         _stamp(self.rec, "fix_triage", section, None)
         self._persist()

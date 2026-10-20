@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from issue_triage import issue_analyze_driver
+from issue_triage import issue_display
 from issue_triage import pr_index
 from issue_triage.issue_store import IssueStore
 from pipeline import agent_wave
@@ -126,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     pending_batches = [entries[i:i + args.batch] for i in range(0, len(entries), args.batch)]
     total = len(pending_batches)
     applied = 0
+    analyzed: list[int] = []
     stop: agent_wave.Stop | None = None
     for attempt in range(max(0, args.retries) + 1):
         if not pending_batches:
@@ -157,11 +159,16 @@ def main(argv: list[str] | None = None) -> int:
                 # Serial on the main thread — the store is never touched concurrently.
                 n = issue_analyze_driver.apply_verdicts(store, good)
                 applied += n
+                analyzed += [int(v["issue"]) for v in good]
                 _say(f"    ✓ {label}: {n} verdicts applied  "
                      f"({done}/{len(pending_batches)} · {took})")
         pending_batches = failed
         if stop:
             break
+    if applied:
+        _say("④ writing the issue page's summary cards for the analyzed issues…")
+        cards = issue_display.refresh(store, analyzed, trigger="analyze", concurrency=conc)
+        _say(f"  wrote {cards} summary card(s)")
     # Named from the store, so it covers every way an issue can be left behind:
     # an unrecovered batch, and a verdict the agent or the driver dropped.
     _say("re-reading issues to count what is still pending analysis…")

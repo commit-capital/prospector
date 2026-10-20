@@ -8,6 +8,9 @@ rejects a reply that cites a PR or issue number the inputs never name, or that
 recommends a verdict other than the PR's own, and says why; a rejected reply is
 never stored.
 
+ANALYZE writes the card for the PRs it analyzes (`refresh`); a new push or
+verdict stales the analysis and its re-analysis writes a new card.
+
 The `display` section is stamped with the head it describes and a hash of the
 verdict, rationale, asks and summary it was written from (`source_hash`); `current`
 reads it only while both still match, and the page falls back to the summary's
@@ -21,6 +24,7 @@ import argparse
 import hashlib
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
 from pipeline import capacity, headless_agent, storekit
@@ -195,7 +199,7 @@ def check(reply: object, src: dict[str, str], disposition: str | None) -> dict |
     return {"problem": problem.strip(), "fix": fix.strip(), "how": [x.strip() for x in how]}
 
 
-def _ask(prompt: str) -> object:
+def ask(prompt: str) -> object:
     try:
         with headless_agent.workdir("display-pass-") as tmp:
             text = headless_agent.run_agent(prompt, allow_gh=False, cwd=tmp, read_root=tmp,
@@ -207,16 +211,27 @@ def _ask(prompt: str) -> object:
         return None
 
 
-def compose(pr: Pr) -> dict | str:
-    """A checked display payload for `pr`, or why the last attempt was rejected."""
-    src = inputs(pr)
+def compose(src: dict[str, str], disposition: str | None) -> dict | str:
+    """A checked display payload from a PR's `inputs`, or why the last attempt
+    was rejected. Runs the agent only; touches no store."""
     prompt = _PROMPT.format(**src)
     got: dict | str = "no attempt ran"
     for _ in range(ATTEMPTS):
-        got = check(_ask(prompt), src, pr.disposition)
+        got = check(ask(prompt), src, disposition)
         if isinstance(got, dict):
             return got
     return got
+
+
+def _record(store: Store, pr: Pr, payload: dict | str, *, started: str, trigger: str) -> None:
+    head = pr.effective_head_sha
+    if isinstance(payload, dict):
+        store.edit_pr(pr.number).set_display({**payload, "model": MODEL, "source_hash": source_hash(pr)},
+                                             head_sha=head)
+    store.append_run({"phase": PHASE, "pr": pr.number, "started": started, "finished": storekit.now(),
+                      "trigger": trigger,
+                      "stats": {"head_sha": head, "written": isinstance(payload, dict),
+                                **({} if isinstance(payload, dict) else {"reason": payload})}})
 
 
 def write(store: Store, n: int, *, trigger: str) -> dict | str:
@@ -225,22 +240,38 @@ def write(store: Store, n: int, *, trigger: str) -> dict | str:
     pr = store.load_pr(n)
     if pr is None:
         raise KeyError(n)
-    head, digest = pr.effective_head_sha, source_hash(pr)
     started = storekit.now()
-    payload = compose(pr)
-    written = isinstance(payload, dict)
-    if isinstance(payload, dict):
-        store.edit_pr(n).set_display({**payload, "model": MODEL, "source_hash": digest},
-                                     head_sha=head)
-    store.append_run({"phase": PHASE, "pr": n, "started": started, "finished": storekit.now(),
-                      "trigger": trigger,
-                      "stats": {"head_sha": head, "written": written,
-                                **({} if written else {"reason": payload})}})
+    payload = compose(inputs(pr), pr.disposition)
+    _record(store, pr, payload, started=started, trigger=trigger)
     if isinstance(payload, str):
         return payload
     fresh = store.load_pr(n)
     sec = fresh.section("display") if fresh else None
     return sec if sec is not None else "the card was not stored"
+
+
+def refresh(store: Store, ns: list[int], *, trigger: str, concurrency: int = 4) -> int:
+    """Write the card of each open, analyzed PR in `ns` whose card is missing
+    or stale, the agents in parallel and the store on this thread. A paused or
+    unavailable agent ends the pass quietly: the card is presentation. Returns
+    the count written."""
+    prs = [pr for n in dict.fromkeys(ns) if (pr := store.load_pr(n)) is not None
+           and pr.state == "open" and pr.disposition and current(pr) is None]
+    written = 0
+    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+        futures = {pool.submit(compose, inputs(pr), pr.disposition): (pr, storekit.now())
+                   for pr in prs}
+        for fut in as_completed(futures):
+            pr, started = futures[fut]
+            try:
+                payload = fut.result()
+            except (capacity.CapacityPaused, headless_agent.AgentUnavailable):
+                for f in futures:
+                    f.cancel()
+                break
+            _record(store, pr, payload, started=started, trigger=trigger)
+            written += isinstance(payload, dict)
+    return written
 
 
 def wanted(prs: dict[int, Pr]) -> list[int]:

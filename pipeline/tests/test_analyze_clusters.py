@@ -116,6 +116,19 @@ def test_main_records_run_with_attempted_count(tmp_path, monkeypatch):
     assert runs[0].raw["stats"]["attempted"] == 2
 
 
+def test_main_writes_the_analyzed_prs_summary_cards(tmp_path, monkeypatch):
+    _seed(tmp_path, 3)
+    monkeypatch.setattr(analyze_clusters.headless_agent, "run_agent",
+                        lambda prompt, **kw: _fenced(_bundle_cluster_id(prompt)))
+    card = {"problem": "It broke.", "fix": "It mends it.", "how": ["It mends it."]}
+    monkeypatch.setattr(analyze_clusters.display_pass, "ask", lambda prompt: card)
+    monkeypatch.setattr(analyze_clusters.display_pass, "_issue_lines", lambda pr: "(none)")
+    assert analyze_clusters.main(["--limit", "2", "--store", str(tmp_path)]) == 0
+    st = Store(tmp_path)
+    assert [bool(analyze_clusters.display_pass.current(st.load_pr(n))) for n in (1, 2, 3)] \
+        == [True, True, False]
+
+
 def test_main_runs_clusters_concurrently(tmp_path, monkeypatch):
     """With --concurrency > 1 the clusters' agents overlap in time rather than
     running strictly one after another."""

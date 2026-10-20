@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from issue_triage import fix_review
+from issue_triage import issue_display
 from issue_triage import issue_links
 from issue_triage import pr_index
 from issue_triage import trust_boundary
@@ -317,6 +318,7 @@ def get_issue(n: int) -> dict | None:
     store_states, pr_states_loading = _store_pr_states()
     row = _row(i, clusters, store_states, snapshot_loading=pr_states_loading)
     row["body"] = i.body
+    row["display"] = issue_display.current(i)
     # The effective verdict, matching row["disposition"]: while the fix scan cites
     # a merged fixer it supplies the route, the rationale, and the gist.
     row["analysis"] = None if i.disposition is None else {
