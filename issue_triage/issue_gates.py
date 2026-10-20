@@ -10,7 +10,8 @@ reproduction_outcome names a reproduction attempt's result from the host's red
 exits and the judge's ratings; fix_patch_regate and fix_proof_bar hold an
 agent-authored fix to what it may touch and to host-observed proof plus two
 refuting reviews; fix_coverage reads the scope reviewer's account of each defect
-a report names into whether a proven fix covers the whole report.
+a report names into whether a proven fix covers the whole report, and
+review_comments reads every review into what the fixer must answer.
 """
 from __future__ import annotations
 
@@ -344,6 +345,29 @@ def fix_coverage(reviews: list[dict] | None) -> Coverage:
             partial = any(d["status"] == "not-addressed" for d in defects)
             return Coverage("partial" if partial else "complete", defects)
     return Coverage("unchecked", [])
+
+
+def review_comments(reviews: list[dict] | None) -> tuple[bool, list[str]]:
+    """What the reviews ask the fixer to change, as one code review's comments,
+    and whether any of them rejects the fix: (rejected, comments). Each lens's
+    latest review counts. A judged rejection comments its reason and concerns
+    and rejects; a reported defect the coverage account leaves unaddressed is a
+    comment that does not reject, since a proven fix for part of a report
+    stands as a partial fix. A reviewer that reached no verdict comments
+    nothing."""
+    latest = {r.get("lens"): r for r in reviews or []}
+    rejected = False
+    comments: list[str] = []
+    for lens, review in latest.items():
+        if review.get("failed") or review.get("verdict") == "safe":
+            continue
+        rejected = True
+        comments += [f"{lens}: {c}" for c in [review.get("reason") or "not safe",
+                                               *(review.get("concerns") or [])]]
+    comments += [f"not addressed: {d['defect']}" + (f" ({d['evidence']})" if d["evidence"]
+                                                    else "")
+                 for d in fix_coverage(reviews).having("not-addressed")]
+    return rejected, comments
 
 
 def propose_gate(record: dict, live: dict | None, *,

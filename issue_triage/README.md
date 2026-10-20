@@ -92,6 +92,13 @@ green with it applied. The scope-safety reviewer lists every behavior the fix
 alters and marks each as asked for by the report or not; the host reads any
 unasked change as unsafe.
 
+The cross lane (`cross_lane.py`), which the worker runs, reviews its pick as a
+code review: every lens reads the change, and what they ask goes back to the
+pick's model, which revises or disputes each comment before a fresh review
+reads the exchange. A reported defect the reviewers say the fix leaves is first
+put to a failing test (`claim_test.py`). A test that fails with the fix applied
+becomes one the revision must pass.
+
 ```bash
 uv run python -m issue_triage.fix_lane --issue N                          # reproduce + fix on the verify pin
 uv run python -m issue_triage.fix_lane --issue N --reproduce-only         # stop once the reproduction proves red

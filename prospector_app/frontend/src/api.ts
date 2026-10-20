@@ -1528,6 +1528,26 @@ export interface IssueFixProof {
   suite?: { skipped?: string; confirmed?: boolean; flake?: boolean; excluded?: number;
             new_failures?: string[]; rebaselined?: string[] };
 }
+/** What the host's test of a reviewer's claim showed (issue_triage/claim_test.py). */
+export interface IssueFixClaim {
+  defect: string;
+  /** The fix the test ran against (claim_test.fix_digest). */
+  fix?: string;
+  status: "shown" | "unshown";
+  why: string;
+  paths: string[];
+  round?: number;
+}
+/** One round of code review the fix was revised in (cross_lane._revise). */
+export interface IssueFixRound {
+  round: number;
+  answering: string[];
+  claims: IssueFixClaim[];
+  responses: { comment: string; answer: "changed" | "disputed"; why: string }[];
+  ending: string;
+  detail: string;
+  required_pass?: boolean | null;
+}
 /** The latest fix attempt, distilled for display (fix_review.distill). */
 export interface IssueFixRun {
   lane: string | null;
@@ -1555,6 +1575,8 @@ export interface IssueFixRun {
   boundary?: IssueFixBoundary | null;
   intake?: IssueFixIntake | null;
   second_opinion?: IssueFixRivalEntry[] | null;
+  revisions?: IssueFixRound[];
+  claims?: IssueFixClaim[];
   candidates: IssueFixCandidate[];
   question: IssueFixQuestion | null;
   proposal: { pr: number | string | null; url: string | null } | null;

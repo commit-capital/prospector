@@ -262,6 +262,24 @@ def test_the_distilled_run_keeps_the_reviewer_s_coverage():
     assert run["reviews"][0]["coverage"] == COVERAGE_14777
 
 
+def test_the_distilled_run_keeps_the_review_rounds_and_reads_an_older_round():
+    claim = {"defect": "cancel", "fix": "f" * 16, "status": "shown", "why": "w",
+             "paths": ["c.test.ts"],
+             "round": 1, "patch": "diff ...", "red_tail": "t"}
+    rounds = [{"round": 1, "answering": ["not addressed: cancel"], "claims": [claim],
+               "responses": [{"comment": "c", "answer": "changed", "why": "w"}],
+               "ending": "fixed", "detail": "d", "required_pass": True},
+              {"round": 2, "answering": "x leaks", "ending": "fix-rejected", "detail": "d",
+               "reproductions_pass": False}]
+    run = fix_review.distill({"ending": "fixed", "result": {"revisions": rounds,
+                                                            "claims": [claim]}})
+    assert run["claims"] == [{k: claim[k] for k in ("defect", "fix", "status", "why", "paths",
+                                                    "round")}]
+    assert run["revisions"][1] == {"round": 2, "ending": "fix-rejected", "detail": "d",
+                                   "answering": ["x leaks"], "claims": [], "responses": [],
+                                   "required_pass": False}
+
+
 # --- the runner --------------------------------------------------------------------
 
 def test_a_solve_that_fixes_part_of_the_report_says_partial_in_the_thread(store, monkeypatch):
