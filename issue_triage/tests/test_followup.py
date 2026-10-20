@@ -87,8 +87,9 @@ def _traced(**files: str) -> dict:
 
 
 def test_the_failing_test_files_are_read_off_the_runner_s_lines():
-    assert followup.failing_tests({"job 40": LOG_16929, "job 41": "FAIL ui/src/a.test.tsx"}) \
-        == [ROUTE_TEST, "ui/src/a.test.tsx"]
+    assert followup.failing_tests({"job 40": LOG_16929, "job 41": "FAIL ui/src/a.test.tsx",
+                                   "job 42": " FAIL  |cli| src/b.spec.ts > x"}) \
+        == [ROUTE_TEST, "src/b.spec.ts", "ui/src/a.test.tsx"]
 
 
 def test_ci_still_failing_runs_the_failing_tests_in_the_sandbox():

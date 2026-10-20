@@ -80,9 +80,9 @@ _MARKUP_RE = re.compile(r"<!--.*?-->|</?(?:a|img|details|summary|br|p|sub|sup|di
                         re.DOTALL | re.IGNORECASE)
 _FAIL_LINE_RE = re.compile(r"(FAIL|✗|×|Error|error:|AssertionError|expected|##\[error\])")
 # A runner's line for a failing test file: vitest's `FAIL  <project>  <file> > …`
-# and jest's `FAIL <file>`.
-_FAIL_TEST_RE = re.compile(
-    r"\bFAIL\s+(?:@[\w./-]+\s+)?([\w./@-]+\.(?:test|spec)\.[cm]?[jt]sx?)\b")
+# (the project bare or as `|project|`) and jest's `FAIL <file>`.
+_FAIL_TEST_RE = re.compile(r"\bFAIL\s+(?:@[\w./-]+\s+|\|[^|\s]+\|\s+)?"
+                           r"([\w./@-]+\.(?:test|spec)\.[cm]?[jt]sx?)\b")
 MAX_ATTRIBUTED = 3
 # What the sandbox says of one failing test file (`attribute`).
 CAUSED, BASE_FAILS, PASSES, UNKNOWN = "caused", "base-fails", "passes", "unknown"
@@ -400,7 +400,7 @@ def decide(pr: PrState, fu: dict | None, *, logs: dict[str, str] | None = None,
         traced = fu.get("ci_attribution") or {}
         if tests and traced.get("head_sha") != head:
             return Step("wait", "running the failing tests in the sandbox", tests=tests)
-        files: dict[str, str] = traced.get("files") or {} if tests else {}
+        files: dict[str, str] = (traced.get("files") or {}) if tests else {}
         caused = [n for n, v in files.items() if v == CAUSED]
         jobs = ", ".join(c.name for c in failing[:5])
         if files and all(v in (BASE_FAILS, PASSES) for v in files.values()):
