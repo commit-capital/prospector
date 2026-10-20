@@ -11,7 +11,8 @@ when a maintainer filed the issue (`gates.priority_author`) and its report asks
 for it; a fix with any other crossing, a fix whose reviewer gave no usable
 answer, and a fix with no record on an issue someone else filed wait for an
 operator's Propose. A held fix still ends `fixed`; `held` says why an issue's
-attempt waits.
+attempt waits. A crossing the report did not ask for goes back to the fixer as
+a review comment (`comments`), so a revision can drop it.
 """
 from __future__ import annotations
 
@@ -154,6 +155,13 @@ def judge(worktree: str, base_dir: Path, fix_patch: str, *, title: str, body: st
                for path, host in new_hosts(base_dir, fix_patch)]
     reviewed = review(worktree, fix_patch, title=title, body=body, on_event=on_event)
     return {**reviewed, "crossings": [*reviewed["crossings"], *scanned]}
+
+
+def comments(boundary: dict | None) -> list[str]:
+    """The crossings on `boundary` the report did not ask for, as review comments."""
+    return [f"trust boundary: {c.get('kind')} at {c.get('where')}: {c.get('what')}. The "
+            "report does not ask for this; remove it unless the fix cannot work without it"
+            for c in (boundary or {}).get("crossings") or [] if not c.get("requested")]
 
 
 def hold(boundary: dict | None, *, maintainer_filed: bool) -> str | None:

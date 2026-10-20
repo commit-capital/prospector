@@ -6,8 +6,10 @@ The candidates (`settings.issue_fix_models()`, one agent per model, run at once)
 work in their own clones with the one-agent lane's prompt
 (`solo_lane.author`). Each finished patch is re-gated
 (`issue_gates.fix_patch_regate`, no rewrite of an existing test). A candidate's
-tests are a reproduction only when they fail twice on the unfixed tree. Then
-every candidate's fix runs against every reproduction — its own and the
+tests are a reproduction only when they fail twice on the unfixed tree. A
+candidate the re-gate refuses never has its fix picked, but its new tests and
+additive test edits still count as a reproduction. Then every trusted
+candidate's fix runs against every reproduction — its own and the
 others' — and a fix is agreed when it passes each of them and at least
 AGREEMENT of them. A reading of the report is a group of candidates whose fixes
 pass every reproduction in the group, their own included (`readings`). Two
@@ -26,16 +28,18 @@ the tests of every reproduction it passed (`shipped_reproductions`). Agreement
 proves the fix does what its tests ask, never that it does nothing more or
 everything the report asks, so a fix that clears the checks then faces a full
 code review (`review_issue_fix.full_review`). What the reviewers ask
-(`issue_gates.review_comments`) goes back to the pick's own model the way a
-code review goes back to its author (`_revise`, at most REVISIONS rounds): a
-defect the reviewers say the fix leaves is first put to a test
+(`issue_gates.review_comments`), with each trust-boundary crossing the report
+did not ask for (`trust_boundary.comments`), goes back to the pick's own model
+the way a code review goes back to its author (`_revise`, at most REVISIONS
+rounds): a defect the reviewers say the fix leaves is first put to a test
 (`claim_test.prove_claim`), and a test that fails with the fix applied joins
 the tests the revision must pass. Each round is the one-agent lane over the
 current change, where the author changes the code or disputes a comment, with
-every check and a fresh review that reads the earlier rounds; it counts only
-while the revision passes the shipped reproductions and every shown claim. A
-pick whose reviews reject it and that no round clears ends `fix-rejected`; one
-that only leaves part of the report ships as a partial fix. The reviewer's
+every check, a fresh review that reads the earlier rounds, and a fresh
+trust-boundary judgment; it counts only while the revision passes the shipped
+reproductions and every shown claim. A pick whose reviews reject it and that
+no round clears ends `fix-rejected`; one that only leaves part of the report
+ships as a partial fix. The reviewer's
 inventory of unasked changes to inputs that worked vetoes a `safe` only on
 tier-0 paths; elsewhere it is recorded beside the verdict for the maintainer
 who reviews the proposal.
@@ -148,6 +152,9 @@ def _author(spec: fix_lane.LaneSpec, workdir: Path, cand: Candidate,
         if rewritten:
             cand.ending = "fix-untrusted"
             cand.detail = "the change rewrites existing tests: " + ", ".join(rewritten)
+            cand.test_patch = diffpaths.filter_diff(cand.test_patch,
+                                                    lambda p: p not in rewritten)
+            cand.test_paths = diffpaths.changed_paths(cand.test_patch)
             return cand
         ok, why = issue_gates.fix_patch_regate(cand.fix_patch, changes=verdict["changes"],
                                                max_lines=settings.issue_fix_max_lines())
@@ -203,11 +210,12 @@ def agreed_candidates(live: list[Candidate], *,
 def lone_reproduction(cands: list[Candidate],
                       repros: list[Candidate]) -> Candidate | None:
     """The one reproduction of a run, when its own fix passes it and no
-    candidate judged the report no defect; None otherwise."""
+    candidate judged the report no defect; None otherwise, and when its own
+    fix is untrusted."""
     if len(repros) != 1 or any(c.ending == "not-a-defect" for c in cands):
         return None
     lone = repros[0]
-    return lone if lone.passes.get(lone.index) else None
+    return lone if lone.ending is None and lone.passes.get(lone.index) else None
 
 
 def readings(live: list[Candidate]) -> list[list[Candidate]]:
@@ -332,6 +340,13 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         shutil.rmtree(workdir / "pick", ignore_errors=True)
 
 
+def _comments(reviews: list[dict] | None, boundary: dict | None) -> tuple[bool, list[str]]:
+    """The reviews' comments (`issue_gates.review_comments`) and the
+    crossings the report did not ask for (`trust_boundary.comments`)."""
+    rejected, comments = issue_gates.review_comments(reviews)
+    return rejected, comments + trust_boundary.comments(boundary)
+
+
 def _fix_part(patch: str) -> str:
     return diffpaths.filter_diff(patch, lambda p: not diffpaths.is_test_path(p))
 
@@ -370,11 +385,13 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
             repros: list[Candidate], result: dict, *,
             proof_patch: Callable[..., Path], label: str,
             on_step: Callable[[str], None]) -> tuple[str | None, str, dict | None, int]:
-    """Answer the reviews of the change on `result` the way an author answers a
-    code review, in up to REVISIONS rounds: each defect the reviews say it
+    """Answer the reviews of the change on `result`, and the crossings its
+    boundary record says the report did not ask for, the way an author answers
+    a code review, in up to REVISIONS rounds: each defect the reviews say it
     leaves is first put to a test (at most claim_test.MAX_CLAIMS a round), then
     the pick's own model revises the change or disputes the comments, and a
-    fresh review reads the earlier rounds. A revision counts only while it
+    fresh review reads the earlier rounds and re-judges the boundary. A
+    revision counts only while it
     passes the shipped reproductions and every shown claim, which then ship
     with it. Records each round on `result["revisions"]`, each claim on
     `result["claims"]`, and a counted revision's patch, proof, reviews and
@@ -384,8 +401,8 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
     required = "".join(r.test_patch for r in shipped_reproductions(pick, repros))
     rounds: list[dict] = result.setdefault("revisions", [])
     claims: list[dict] = result.setdefault("claims", [])
-    reviews = result["reviews"]
-    rejected, comments = issue_gates.review_comments(reviews)
+    reviews, boundary = result["reviews"], result.get("boundary")
+    rejected, comments = _comments(reviews, boundary)
     standing = not rejected
     patch, summary, root_cause = result["patch"], result["summary"], result["root_cause"]
     reproduction: dict | None = None
@@ -447,10 +464,11 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
                 return res.ending, res.detail, None, spent
             break
         reviews = revised.get("reviews") or reviews
+        boundary = revised.get("boundary", boundary)
         patch = result["patch"] if res.ending == "fixed" else revised.get("patch") or patch
         summary = revised.get("summary") or summary
         root_cause = revised.get("root_cause") or root_cause
-        rejected, comments = issue_gates.review_comments(reviews)
+        rejected, comments = _comments(reviews, boundary)
         detail = "; ".join(comments)
     if standing:
         return None, "", reproduction, spent
@@ -461,11 +479,11 @@ def _answer_review(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
                    repros: list[Candidate], result: dict, ending: str | None, detail: str,
                    reproduction: dict, *, proof_patch: Callable[..., Path], label: str,
                    on_step: Callable[[str], None]) -> tuple[str | None, str, dict, int]:
-    """`_judge_pick`'s ending, revised (`_revise`) when its reviews left any
-    comment; the reproduction record of the change that stands, and the agent
-    runs the revision spent."""
-    if ending not in (None, "fix-rejected") or not issue_gates.review_comments(
-            result.get("reviews"))[1]:
+    """`_judge_pick`'s ending, revised (`_revise`) when its reviews or its
+    unrequested trust-boundary crossings left any comment; the reproduction
+    record of the change that stands, and the agent runs the revision spent."""
+    if ending not in (None, "fix-rejected") or not _comments(
+            result.get("reviews"), result.get("boundary"))[1]:
         return ending, detail, reproduction, 0
     ending, detail, revised, spent = _revise(spec, workdir, pick, repros, result,
                                              proof_patch=proof_patch, label=label,
@@ -583,14 +601,16 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
             return finish("no-fix", "; ".join(f"{c.model}: {c.ending}" for c in cands)[:400])
 
         on_step("proving each reproduction on the unfixed tree")
-        for c in live:
+        testers = [c for c in cands if c.ending is None
+                   or (c.ending == "fix-untrusted" and c.test_paths)]
+        for c in testers:
             cmd = verify_driver.derive_test_command(c.test_paths)
             if cmd:
                 red = prove.red_legs(spec.base, patch=proof_patch(c.test_patch),
                                      test_cmd=cmd, label=label)
                 c.red = red
                 c.reproduces = _twice(red, gates.SENTINEL_TEST_FAIL)
-        repros = [c for c in live if c.reproduces]
+        repros = [c for c in testers if c.reproduces]
 
         on_step("cross-testing every fix against every reproduction")
         for c in live:
