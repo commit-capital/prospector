@@ -61,3 +61,23 @@ def test_a_queued_request_is_cancelled(client):
     assert c.post("/api/issues/7/fix/cancel").status_code == 200
     assert store.load_issue(7).fix_request["status"] == "cancelled"
     assert c.post("/api/issues/7/fix/cancel").status_code == 409
+
+
+def test_approving_an_open_fix_leaves_it_to_the_maintainers(client):
+    c, store = client
+    store.edit_issue(7).record_fix_run({"ending": "fixed", "host": "s", "patch": "p",
+                                        "proposal": {"pr": 9, "url": "u"}})
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back",
+                                             "judged": {"reason": "CI fails"}})
+    assert c.get("/api/issues/7").json()["fix_status"] == "review"
+    r = c.post("/api/issues/7/fix/approve", json={"partial": True})
+    assert r.status_code == 200 and r.json()["detail"] == "#9 approved"
+    d = c.get("/api/issues/7").json()
+    assert d["fix_status"] == "pr-open"
+    assert d["fix_approved"]["by"] == "Op" and d["fix_approved"]["partial"] is True
+
+
+def test_approving_without_an_open_pull_request_is_a_409(client):
+    c, _ = client
+    r = c.post("/api/issues/7/fix/approve", json={"partial": False})
+    assert r.status_code == 409 and "no open pull request" in r.json()["detail"]

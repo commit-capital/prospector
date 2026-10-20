@@ -1288,18 +1288,21 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
     way the title and body are re-rendered from the run and posted as the bot
     when they differ. The run must pass `issue_gates.propose_gate` and the pull
     request must be open from one of the report's lane branches on the push
-    user's fork. A dry-run does everything up to the writes; with no token
+    user's fork. An operator's partial approval (`fix_review.approval`) keeps the
+    title, body and commit from closing the issue. A dry-run does everything up to the writes; with no token
     every run is one. Every outcome is logged to Activity."""
     from issue_triage import (
         fetch_issues,
         fix_lane,
         fix_pr_body,
+        fix_review,
         issue_gates,
         propose,
         related_prs,
         second_opinion,
     )
     from pipeline import describe_pr, diffpaths
+    from prospector_app.backend import issue_data
     from pipeline.gh import gh_json
 
     base_res = {"issue": int(issue), "pr": int(pr), "action": "UPDATE"}
@@ -1333,7 +1336,10 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
     patch = str(result["patch"])
     summary = str(result.get("summary") or "")
     title_text = fix_pr_body.title(issue, summary)
-    closes = issue_gates.fix_coverage(result.get("reviews")).closes
+    stored = issue_data.store().load_issue(issue)
+    approved = (fix_review.approval(stored) if stored else None) or {}
+    partial = bool(approved.get("partial"))
+    closes = issue_gates.fix_coverage(result.get("reviews")).closes and not partial
     message = fix_pr_body.commit_message(
         issue, summary, second_opinion.co_authors(result.get("second_opinion")), closes=closes)
     tests = [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)]
@@ -1341,7 +1347,7 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
         issue=issue, result=result, tests=tests, base_sha=record["base_sha"],
         report_sha=record["report_sha"], models=list(record.get("models") or []),
         test_cmd=None, related=related_prs.search(issue, exclude={int(pr)}),
-        template=describe_pr.fetch_template())
+        template=describe_pr.fetch_template(), partial=partial)
     problems = fix_pr_body.problems(title_text, body, message, issue=issue, closes=closes)
     if problems:
         return done("blocked", "rendering: " + "; ".join(problems), dry=dry_run)

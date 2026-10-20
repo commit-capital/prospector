@@ -7,8 +7,8 @@ fixes, the tests that reproduce it and the runs that proved the fix, the models
 that wrote it. The agents contribute only three short fields — the summary, the
 root cause, and each changed file's rationale — and those are text an outsider's
 report shaped, so `inert` holds them to one line of plain text before they
-land. Only a fix that covers its whole report (`issue_gates.fix_coverage`)
-closes the issue; any other names it without a closing keyword and lists what
+land. Only a fix that covers its whole report (`issue_gates.fix_coverage`) and
+that an operator did not approve as partial closes the issue; any other names it without a closing keyword and lists what
 the fix leaves. `problems` is the gate every rendering passes before it is
 proposed.
 """
@@ -221,13 +221,17 @@ def _rounds(result: dict) -> list[str]:
 
 def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_sha: str,
            models: list[str], test_cmd: str | None,
-           related: list[RelatedPr] | None = None, template: str | None = None) -> str:
+           related: list[RelatedPr] | None = None, template: str | None = None,
+           partial: bool = False) -> str:
     """The pull request body: a disclosure, the repository's required sections
     (`describe_pr.required_sections`) each filled from `result` by its heading,
     any content block no required section carries under its own heading, the
     template's checklist, and the marker that names what it came from.
-    `related` is the related-PR search's answer, None when it did not run."""
+    `related` is the related-PR search's answer, None when it did not run.
+    `partial` is an operator's word that the fix covers only part of its
+    report, whatever the reviews account."""
     coverage = issue_gates.fix_coverage(result.get("reviews"))
+    closes = coverage.closes and not partial
     changes = [f"- `{inert(c.get('path', ''), 200)}`: {inert(c.get('rationale', ''))}"
                for c in (result.get("changes") or [])]
     model_list = ", ".join(sorted(set(models))) or "unrecorded"
@@ -236,7 +240,7 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
     boundary = result.get("boundary") or {}
     crossings = boundary.get("crossings") or []
     warnings = [*([f"This change addresses only part of #{issue}."]
-                  if coverage.state == "partial" else []),
+                  if coverage.state == "partial" or partial else []),
                 *(["This change touches highest-risk code (tier 0)."] if tier == 0 else []),
                 *(["This change crosses a trust boundary."] if crossings else []),
                 *(["Its trust-boundary review did not finish."] if boundary.get("failed")
@@ -247,7 +251,7 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
             f"- Root cause, as the fixing agent read it: {inert(result.get('root_cause', ''))}",
             f"- This pull request: {inert(result.get('summary', ''))}",
         ],
-        "issue": [reference(issue, coverage.closes),
+        "issue": [reference(issue, closes),
                   *_coverage(issue, coverage, _red_claims(result)),
                   *_related(issue, related), *_credited(result)],
         "changes": changes or ["- (no change recorded)"],

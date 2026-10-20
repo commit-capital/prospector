@@ -464,6 +464,15 @@ a:hover { text-decoration: underline; }
 .sug-headline { font-size: 15.5px; font-weight: 600; line-height: 1.4; }
 .sug-headline b { font-weight: 800; }
 .sug-stale { font-size: 11.5px; color: var(--yellow); }
+/* The two answers to a fix PR waiting on the operator, side by side. */
+.fix-decision { display: flex; gap: 12px; align-items: stretch; flex-wrap: wrap; }
+.fix-decision-card { flex: 1 1 280px; display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.fix-decision-card h4 { margin: 0; }
+.fix-decision-card .row-actions { margin-top: auto; }
+.fix-decision-or { align-self: center; font-weight: 700; color: var(--muted); }
+.fix-decision-check { display: block; line-height: 1.6; }
+.fix-decision-check input { margin: 0 6px 0 0; vertical-align: -1px; }
 /* The issue Summary's PRs that may fix it: one indented row each, its facts beneath. */
 .fix-prs { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 0 14px; }
 .fix-pr-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 13.5px; }

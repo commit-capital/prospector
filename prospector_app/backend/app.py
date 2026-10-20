@@ -1311,6 +1311,20 @@ def issue_fix_request(n: int, payload: models.IssueFixBody):
     return {"ok": True, "detail": why}
 
 
+@app.post("/api/issues/{n}/fix/approve")
+def issue_fix_approve(n: int, payload: models.IssueFixApproveBody):
+    """Approve issue #n's open fix pull request as it stands and leave it to the
+    maintainers (`fix_review.approve`); nothing is posted upstream. 409 when
+    there is no open pull request or a request is in flight."""
+    from issue_triage import fix_review
+    ok, why = fix_review.approve(issue_data.store(), n, by=activity.operator()["name"],
+                                 partial=payload.partial)
+    if not ok:
+        raise HTTPException(409, why)
+    issue_data.refresh()
+    return {"ok": True, "detail": why}
+
+
 @app.post("/api/issues/{n}/fix/cancel")
 def issue_fix_cancel(n: int):
     """Cancel issue #n's queued fix request; a running one finishes."""

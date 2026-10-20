@@ -120,6 +120,11 @@ class IssueFixBody(BaseModel):
     dry_run: bool = False
 
 
+class IssueFixApproveBody(BaseModel):
+    # A partial approval keeps the pull request from closing the issue.
+    partial: bool = False
+
+
 class AlertDismissBody(BaseModel):
     # The per-source reason vocabulary lives in alert_triage.alert_gates
     # (DISMISS_REASONS); the gate validates it, so this stays a plain string.

@@ -780,3 +780,91 @@ def test_a_prioritized_issue_goes_first_and_only_while_queued(store):
     assert fix_review.queued_issues(issues) == [8, 7]
     store.claim_fix_request(7, host="studio")
     assert store.prioritize_fix_request(7, 2.0) is False
+
+
+# --- approving a fix and leaving it for the maintainers ------------------------------
+
+HELD = {"head_sha": "h" * 40, "reason": "CI still fails after a re-run"}
+
+
+def _handed_back(store: IssueStore, **over) -> None:
+    _run(store, proposal={"pr": 9, "url": "u"})
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back",
+                                             "head_sha": "h" * 40, "described_head": "h" * 40,
+                                             "judged": HELD, **over})
+
+
+def test_an_approved_fix_leaves_the_review_queue_for_the_maintainers(store):
+    _handed_back(store)
+    assert fix_review.fix_status(store.load_issue(7))[0] == "review"
+    assert fix_review.approve(store, 7, by="op", partial=False) == (True, "#9 approved")
+    issue = store.load_issue(7)
+    status, reason = fix_review.fix_status(issue)
+    assert status == "pr-open" and "approved by op" in reason
+    assert issue.fix_followup["approved"]["judged"] == HELD
+    assert issue.fix_followup["described_head"] == "h" * 40
+    assert "Approved #9" in issue.fix_thread[-1]["text"]
+
+
+def test_approving_a_partial_fix_asks_for_its_description_again(store):
+    _handed_back(store)
+    fix_review.approve(store, 7, by="op", partial=True)
+    fu = store.load_issue(7).fix_followup
+    assert fu["approved"]["partial"] is True and fu["described_head"] == ""
+    assert "partial" in store.load_issue(7).fix_thread[-1]["text"]
+
+
+@pytest.mark.parametrize("prep,why", [
+    (lambda s: _run(s), "no open pull request"),
+    (lambda s: (_handed_back(s), s.edit_issue(7).record_fix_request(
+        {"action": "send-back", "status": "queued", "source": "operator"})), "already queued"),
+])
+def test_an_approval_needs_an_open_pull_request_and_no_request_in_flight(store, prep, why):
+    prep(store)
+    ok, reason = fix_review.approve(store, 7, by="op", partial=False)
+    assert not ok and why in reason
+
+
+@pytest.mark.parametrize("judged,want", [
+    (HELD, "pr-open"),
+    ({"head_sha": "g" * 40, "reason": "CI fails on the base too", "outside": True}, "pr-open"),
+    ({"head_sha": "g" * 40, "reason": "2 revisions spent; CI still fails"}, "review"),
+    ({"head_sha": "h" * 40, "reason": "the change a maintainer asked for did not land"},
+     "review"),
+])
+def test_an_approval_holds_until_the_fixer_fails_at_something_new(store, judged, want):
+    _handed_back(store)
+    fix_review.approve(store, 7, by="op", partial=False)
+    fu = store.load_issue(7).fix_followup
+    store.edit_issue(7).record_fix_followup({**fu, "judged": judged})
+    assert fix_review.fix_status(store.load_issue(7))[0] == want
+
+
+def test_an_approval_holds_while_the_follow_up_watches_or_finds_it_green(store):
+    _handed_back(store)
+    fix_review.approve(store, 7, by="op", partial=False)
+    fu = store.load_issue(7).fix_followup
+    for state in ("watching", "ready"):
+        store.edit_issue(7).record_fix_followup({**fu, "state": state})
+        assert fix_review.fix_status(store.load_issue(7))[0] == "pr-open"
+
+
+def test_an_operator_s_send_back_withdraws_the_approval(store):
+    _handed_back(store)
+    fix_review.approve(store, 7, by="op", partial=True)
+    assert fix_review.queue(store, 7, "send-back", by="op", guidance="fix the rest")[0]
+    assert "approved" not in store.load_issue(7).fix_followup
+
+
+def test_a_follow_up_revision_keeps_the_approval(store):
+    _handed_back(store)
+    fix_review.approve(store, 7, by="op", partial=False)
+    assert fix_review.queue(store, 7, "send-back", by="followup", source="followup",
+                            notes="CI fails in ui")[0]
+    assert store.load_issue(7).fix_followup["approved"]["by"] == "op"
+
+
+def test_a_hand_back_s_status_gives_the_reason_it_was_judged_for(store):
+    _handed_back(store, reason="handed-back at this head")
+    assert fix_review.fix_status(store.load_issue(7)) == (
+        "review", "#9 handed back: CI still fails after a re-run")
