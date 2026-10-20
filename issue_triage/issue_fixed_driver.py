@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from issue_triage import issue_links
 from issue_triage import pr_index
+from issue_triage import reproduce_issue
 from issue_triage.issue_freshness import is_current
 from issue_triage.issue_store import IssueStore
 from pipeline import storekit
@@ -27,7 +28,6 @@ if TYPE_CHECKING:
     from issue_triage.issue_model import Issue, IssueCluster
 
 VALID = {"fixed", "likely-fixed", "not-fixed"}
-_BODY_CLIP = 1500
 _CAUSAL_EVIDENCE_FIELDS = (
     "reported_origin", "fix_hunk", "relationship", "before", "after", "current_path_check")
 
@@ -81,7 +81,7 @@ def _issue_bundle(iss: Issue, cluster: IssueCluster | None,
     return {
         "number": iss.number,
         "title": iss.title,
-        "body": (iss.body or "")[:_BODY_CLIP],
+        "body": (iss.body or "")[:reproduce_issue.REPORT_MAX],
         "author": iss.author,
         "comments": iss.comments,
         "subsystem": iss.subsystem,
