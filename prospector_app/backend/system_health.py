@@ -1,7 +1,8 @@
 """One systemwide health verdict, for the strip every page shows.
 
 Composes what the shared store already knows — every worker's tripped lanes,
-every worker's heartbeat (and the schema version its code writes) and Docker
+every worker's heartbeat (with the schema version its code writes and its
+profile's stamp) and Docker
 disk reading, and each ingest's last run — into a short list of
 problem items with one overall severity, so an outage on any machine reaches
 the operator on whatever page they have open. `summarize` is pure over plain
@@ -14,8 +15,8 @@ from datetime import datetime, timezone
 from typing import NotRequired, TypedDict
 
 from pipeline import settings, storekit, verify_driver, worker_health
-from prospector_app.backend import (data, escalation, fix_queue, schema_gate, threat_view,
-                                    verify_queue)
+from prospector_app.backend import (data, escalation, fix_queue, profile_gate, schema_gate,
+                                    threat_view, verify_queue)
 
 
 class HealthItem(TypedDict):
@@ -114,13 +115,21 @@ def _disk_item(host: str, disk: dict | None, now_ts: float) -> HealthItem | None
                       f"every sandbox run.\n{remedy}"}
 
 
+def _profile_line(host: str, st: dict) -> str:
+    tiers = st.get("tier_globs") or []
+    globs = " · ".join(f"tier{t} {n}" for t, n in zip((0, 1, 3), tiers))
+    gates = ", ".join(st.get("fixable_gates") or []) or "none"
+    return f"{host}: {st.get('fingerprint')} · fixable gates {gates} · {globs} globs"
+
+
 def summarize(health_hosts: list[dict], offline: list[dict],
               worker_lanes: list[tuple[str, str]],
               ingest_last: dict[str, str | None],
               now_ts: float | None = None,
               stood_down: frozenset[str] = frozenset(),
               outdated: dict[str, int] | None = None, store_schema: int = 0,
-              me: str | None = None) -> SystemHealth:
+              me: str | None = None,
+              profile_drift: dict[str, dict] | None = None) -> SystemHealth:
     """The strip's answer, from plain data: `health_hosts` is
     `escalation.health_status()["hosts"]`, `offline` is
     `escalation.offline_workers()`, `worker_lanes` every `(lane, host)` the
@@ -129,7 +138,9 @@ def summarize(health_hosts: list[dict], offline: list[dict],
     stood down; they contribute nothing. `outdated` maps each machine whose
     code is behind the store's `store_schema` to its code's version; its lanes
     are down and it reads as needing an update, `me` (this machine) in the
-    operator's own words."""
+    operator's own words. `profile_drift` maps each live machine to its
+    profile stamp when their profiles differ; every machine's lanes are then
+    down."""
     now_ts = now_ts if now_ts is not None else time.time()
     health_hosts = [h for h in health_hosts if str(h["host"]) not in stood_down]
     offline = [o for o in offline if str(o["host"]) not in stood_down]
@@ -147,11 +158,18 @@ def summarize(health_hosts: list[dict], offline: list[dict],
     for host, names in tripped_by_host.items():
         lanes.update((name, host) for name in names)
     outdated = {h: v for h, v in (outdated or {}).items() if h not in stood_down}
+    drift = {h: st for h, st in (profile_drift or {}).items() if h not in stood_down}
     down = {(lane, host) for lane, host in lanes
-            if host in offline_by_host or host in outdated
+            if host in offline_by_host or host in outdated or host in drift
             or lane in tripped_by_host.get(host, [])}
 
     items: list[HealthItem] = []
+    if drift:
+        items.append({
+            "kind": "profile-drift", "severity": "red", "host": None,
+            "label": f"Profiles differ across {len(drift)} machines — workers paused",
+            "detail": "\n".join(_profile_line(h, st) for h, st in sorted(drift.items()))
+                      + "\nMake each machine's TRIAGE_PROFILE file match and restart its workers."})
     for host, code_v in sorted(outdated.items(), key=lambda kv: kv[0] != me):
         items.append({
             "kind": "outdated", "severity": "red", "host": host,
@@ -247,7 +265,8 @@ def status() -> SystemHealth:
     me = settings.worker_id()
     summary = summarize(health["hosts"], escalation.offline_workers(registries=regs),
                         worker_lanes, ingest_last, stood_down=stood,
-                        outdated=schema_gate.outdated_hosts(regs, store_v, me), store_schema=store_v, me=me)
+                        outdated=schema_gate.outdated_hosts(regs, store_v, me), store_schema=store_v, me=me,
+                        profile_drift=profile_gate.drift(regs, me))
     from prospector_app.backend import capacity_view
     try:
         paused = capacity_view.health_items()

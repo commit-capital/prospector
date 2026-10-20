@@ -51,7 +51,7 @@ from pipeline import wire
 from pipeline import worker_health
 from pipeline.freshness import is_current
 from pipeline.storekit import now as _now
-from prospector_app.backend import data, schema_gate
+from prospector_app.backend import data, profile_gate, schema_gate
 from prospector_app.backend import service
 from prospector_app.backend import verify_queue
 from prospector_app.backend import lane_health
@@ -926,7 +926,7 @@ def _drain_loop() -> None:
         traceback.print_exc()
     last_reclaim = time.monotonic()
     while not stop.is_set():
-        if schema_gate.paused("verify-worker"):
+        if schema_gate.paused("verify-worker") or profile_gate.paused("verify-worker"):
             stop.wait(POLL_SECONDS)
             continue
         try:

@@ -2673,9 +2673,11 @@ class TestFixEligibility:
 
     def test_fix_needs_profile_optin(self, monkeypatch):
         self._profile(monkeypatch)
+        monkeypatch.setattr(settings, "worker_id", lambda: "studio")
         ok, why = gates.fix_eligibility(_pr(), "fix")
         assert ok is False
         assert "fixable_gates" in why
+        assert "the profile active on studio" in why
 
     def test_guided_fix_needs_no_profile_optin(self, monkeypatch):
         # Operator guidance is its own mandate: the instruction IS the opt-in,

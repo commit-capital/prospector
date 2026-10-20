@@ -15,7 +15,11 @@ manifests, test/artifact path conventions, review-harness PR-template policy,
 and VERIFY full-suite adapter — lives in a JSON **repository profile** selected
 by `TRIAGE_PROFILE` (see `profile.example.json` for the shape;
 `pipeline/profile.py` validates it strictly and fails loudly on any malformed
-or unknown field). Match terms are regular expressions searched against the
+or unknown field). Every worker machine against one store must use the same
+profile: each heartbeat records a fingerprint of its machine's profile, and
+while two live workers' fingerprints differ every machine's work loops pause and
+the health strip lists how they differ (`prospector_app/backend/profile_gate.py`).
+Match terms are regular expressions searched against the
 lowercased title/body — write them in lowercase. The `test_paths` patterns are
 also compiled by the app frontend as JavaScript RegExp — keep them in the
 shared regex subset (no `(?P<…>)` named groups, inline flags, or possessive

@@ -811,12 +811,13 @@ def fix_eligibility(pr: Pr, action: str,
         if denied:
             return False, ("touches a path the profile withholds from autofix: "
                            f"{', '.join(denied[:5])}")
+    # Each machine reads its own profile file, so these refusals name the machine.
     if action == "fix" and objection and "objection" not in profile.active().autofix.fixable_gates:
-        return False, ("the active profile does not name objection in autofix.fixable_gates, "
-                       "so agent continuations are not enabled for this repository")
+        return False, (f"the profile active on {settings.worker_id()} does not name objection "
+                       "in autofix.fixable_gates, so agent continuations are not enabled there")
     if action == "fix" and not guided and not objection and not profile.active().autofix.fixable_gates:
-        return False, ("the active profile names no autofix.fixable_gates, so "
-                       "agent-authored fixes are not enabled for this repository")
+        return False, (f"the profile active on {settings.worker_id()} names no "
+                       "autofix.fixable_gates, so agent-authored fixes are not enabled there")
     return True, f"eligible for {action}"
 
 

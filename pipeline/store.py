@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from pipeline import gates
+from pipeline import profile
 from pipeline import progress
 from pipeline import reviewers
 from pipeline import schema
@@ -1241,7 +1242,8 @@ class Store:
         _WORKER_PRUNE_SECONDS. host and last_beat are required: a beat that
         names no machine or no time tells an app nothing about whether a runner
         is online. Each beat records the schema version its code writes, so
-        another machine can tell a worker left behind by a schema bump. Two
+        another machine can tell a worker left behind by a schema bump, and its
+        repository profile's stamp, so machines can tell their profiles differ. Two
         hosts' merges may race on the shared row; a lost beat is rewritten by
         the loser's next tick."""
         if not record.get("host"):
@@ -1250,7 +1252,8 @@ class Store:
             raise ValidationError(f"{name}.last_beat: required")
         from datetime import datetime, timedelta, timezone
         host = str(record["host"])
-        hosts = {**hosts, host: {**record, "schema": schema.STORE_SCHEMA_VERSION}}
+        hosts = {**hosts, host: {**record, "schema": schema.STORE_SCHEMA_VERSION,
+                                 "profile": profile.stamp(profile.active())}}
         cutoff = (datetime.now(timezone.utc)
                   - timedelta(seconds=self._WORKER_PRUNE_SECONDS)
                   ).isoformat(timespec="microseconds")

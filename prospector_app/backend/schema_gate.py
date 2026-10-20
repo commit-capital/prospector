@@ -56,10 +56,9 @@ def paused(lane: str) -> bool:
     return True
 
 
-def outdated_hosts(regs: WorkerRegistries, store_v: int, me: str) -> dict[str, int]:
-    """Each machine whose code is behind `store_v`, by the schema version its
-    newest heartbeat across lanes recorded, and this machine by its own code.
-    A lane that stopped beating keeps the version it last ran."""
+def newest_beats(regs: WorkerRegistries) -> dict[str, dict]:
+    """Each machine's newest heartbeat across lanes. A lane that stopped
+    beating keeps the record it last wrote."""
     newest: dict[str, dict] = {}
     beats = [*verify_queue.worker_records(regs["verify_worker"]),
              *fix_queue.worker_records(regs["fix_worker"]),
@@ -68,7 +67,13 @@ def outdated_hosts(regs: WorkerRegistries, store_v: int, me: str) -> dict[str, i
         host = str(rec.get("host") or "")
         if host and str(rec.get("last_beat") or "") > str(newest.get(host, {}).get("last_beat") or ""):
             newest[host] = rec
-    out = {host: v for host, rec in newest.items()
+    return newest
+
+
+def outdated_hosts(regs: WorkerRegistries, store_v: int, me: str) -> dict[str, int]:
+    """Each machine whose code is behind `store_v`, by the schema version its
+    newest heartbeat recorded, and this machine by its own code."""
+    out = {host: v for host, rec in newest_beats(regs).items()
            if isinstance(v := rec.get("schema"), int) and v < store_v}
     if schema.STORE_SCHEMA_VERSION < store_v:
         out[me] = schema.STORE_SCHEMA_VERSION

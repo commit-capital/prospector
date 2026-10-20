@@ -12,6 +12,8 @@ type, or invalid pattern is a hard error, never a silent default.
 """
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -519,3 +521,14 @@ def active() -> RepoProfile:
     if not settings.profile_path():
         return GENERIC
     return _load(settings.profile_path())
+
+
+def stamp(p: RepoProfile) -> dict[str, object]:
+    """What a worker heartbeat records of `p`: a fingerprint of the whole
+    profile, plus the fields that most often change a safety verdict, for the
+    health strip to show when machines disagree."""
+    blob = json.dumps(dataclasses.asdict(p), sort_keys=True)
+    t = p.risk_tiers
+    return {"fingerprint": hashlib.sha256(blob.encode()).hexdigest()[:12],
+            "fixable_gates": list(p.autofix.fixable_gates),
+            "tier_globs": [len(t.tier0_globs), len(t.tier1_globs), len(t.tier3_globs)]}
