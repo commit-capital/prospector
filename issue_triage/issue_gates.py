@@ -9,12 +9,14 @@ issue_cluster_state is the derived board chip, computed on read, never stored.
 reproduction_outcome names a reproduction attempt's result from the host's red
 exits and the judge's ratings; fix_patch_regate and fix_proof_bar hold an
 agent-authored fix to what it may touch and to host-observed proof plus two
-refuting reviews.
+refuting reviews; fix_coverage reads the scope reviewer's account of each defect
+a report names into whether a proven fix covers the whole report.
 """
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from issue_triage.issue_freshness import is_current
 from pipeline import author_fix, diffpaths, gates, risktier, threats
@@ -288,6 +290,60 @@ def fix_proof_bar(result: dict) -> tuple[str | None, str]:
         if review.get("verdict") != "safe" or review.get("failed"):
             return "fix-rejected", f"{lens}: {review.get('reason') or 'not safe'}"
     return None, "proven on the base and safe under both lenses"
+
+
+CoverageStatus = Literal["addressed", "not-addressed", "already-fixed"]
+COVERAGE_STATUSES: tuple[CoverageStatus, ...] = ("addressed", "not-addressed", "already-fixed")
+
+
+class CoverageEntry(TypedDict):
+    defect: str
+    status: CoverageStatus
+    evidence: str
+
+
+@dataclass(frozen=True)
+class Coverage:
+    """How much of its report a fix covers. `state` is "complete" when every
+    defect the reviewer found in the report is addressed by the change or
+    already handled on the base, "partial" when one is neither, and "unchecked"
+    when no review carries a usable account; only "complete" closes the issue."""
+    state: Literal["complete", "partial", "unchecked"]
+    defects: list[CoverageEntry]
+
+    @property
+    def closes(self) -> bool:
+        return self.state == "complete"
+
+    def having(self, status: CoverageStatus) -> list[CoverageEntry]:
+        return [d for d in self.defects if d["status"] == status]
+
+
+def coverage_entries(raw: object) -> list[CoverageEntry] | None:
+    """A reviewer's `reported_defects` as {"defect", "status", "evidence"}
+    entries, or None when missing, empty or malformed — a report names at least
+    the defect it was filed for."""
+    if not isinstance(raw, list) or not raw:
+        return None
+    out: list[CoverageEntry] = []
+    for d in raw:
+        if (not isinstance(d, dict) or d.get("status") not in COVERAGE_STATUSES
+                or not str(d.get("defect") or "").strip()):
+            return None
+        out.append({"defect": str(d["defect"]).strip(), "status": d["status"],
+                    "evidence": str(d.get("evidence") or "").strip()})
+    return out
+
+
+def fix_coverage(reviews: list[dict] | None) -> Coverage:
+    """The coverage the latest review that recorded one gives the fix; a
+    revision's review comes after the one it answered."""
+    for review in reversed(reviews or []):
+        defects = coverage_entries(review.get("coverage"))
+        if defects is not None:
+            partial = any(d["status"] == "not-addressed" for d in defects)
+            return Coverage("partial" if partial else "complete", defects)
+    return Coverage("unchecked", [])
 
 
 def propose_gate(record: dict, live: dict | None, *,

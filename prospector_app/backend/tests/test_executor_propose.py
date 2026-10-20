@@ -83,7 +83,10 @@ def lane(monkeypatch):
                    "base_sha": "a" * 40, "models": ["opus"],
                    "result": {"patch": PATCH, "summary": "Set x to two", "root_cause": "r",
                               "changes": [{"path": "src/x.ts", "rationale": "set x"}],
-                              "proof": {}, "tier": {"tier": 2}}},
+                              "proof": {}, "tier": {"tier": 2}, "reviews": [
+                                  {"lens": "scope-safety", "verdict": "safe", "coverage": [
+                                      {"defect": "x is one", "status": "addressed",
+                                       "evidence": "src/x.ts:1"}]}]}},
         "live": {"state": "open", "title": "t", "body": "b"},
         "existing": {}, "pushes": [], "posts": [], "events": [], "related": [],
         "pr": {"state": "open", "title": "fix: Set x to two", "body": "old body",
@@ -151,6 +154,18 @@ def test_a_live_proposal_pushes_opens_and_logs(lane):
     [(kind, event)] = lane["events"]
     assert kind == "issue-propose" and event["identity"] == "bot[bot]"
     assert event["dry_run"] is False and event["pr"] == 42
+
+
+def test_a_partial_fix_is_proposed_without_closing_the_issue(lane):
+    lane["record"]["result"]["reviews"][0]["coverage"].append(
+        {"defect": "cancel after a restart returns 200", "status": "not-addressed",
+         "evidence": "the cancellable states exclude submitting"})
+    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    assert res["status"] == "executed"
+    body = lane["posts"][0]["body"]
+    assert "Fixes #7" not in body and "Addresses part of #7" in body
+    assert "cancel after a restart returns 200" in body
+    assert "Fixes" not in lane["pushes"][0]["message"]
 
 
 def test_without_a_token_a_live_request_is_a_dry_run(lane):

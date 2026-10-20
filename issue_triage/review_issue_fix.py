@@ -18,7 +18,10 @@ the change or not. The reviewer rates; the host decides: a `safe` whose
 inventory holds an unasked change to an input that worked is unsafe, and one
 that carries no usable inventory is a reviewer failure. An unasked change to an
 input that already failed — the reported defect met on a sibling path — is
-recorded and does not block.
+recorded and does not block. The same lens accounts for each defect the report
+names as addressed by the change, not addressed, or already handled on the
+base, with its evidence (`coverage`); `issue_gates.fix_coverage` reads it, and a
+`safe` without a usable account is a reviewer failure too.
 """
 from __future__ import annotations
 
@@ -48,7 +51,10 @@ _QUESTIONS = {
                      "caller whose observable behavior the change alters, including "
                      "inputs that used to be accepted and are now rejected, and empty, "
                      "missing, or malformed values; search the worktree for the callers "
-                     "of every function, route, and parameter it touches."),
+                     "of every function, route, and parameter it touches. Then list every distinct "
+                     "defect or symptom the report names — a report may name several — and "
+                     "say whether this change addresses it; one argued already handled on "
+                     "the base counts only when you found the code that handles it."),
 }
 
 # What each lens returns beyond the verdict, keyed by issue_gates.REVIEW_LENSES.
@@ -61,8 +67,11 @@ _OUTPUT = {
    "concerns": ["<each specific problem, if any>"],
    "behavior_changes": [{"input": "<the input or caller>", "before": "<what it does now>",
                          "after": "<what it does with the change>",
-                         "requested": true | false, "worked_before": true | false}]}
-"behavior_changes" lists every alteration you found, the requested one included; "requested" is true only when the report asks for that change; "worked_before" is true when the input got a correct, non-error answer before the change, and false when it already failed (a crash, a 500, a wrong result).""",
+                         "requested": true | false, "worked_before": true | false}],
+   "reported_defects": [{"defect": "<one defect or symptom the report names>",
+                         "status": "addressed" | "not-addressed" | "already-fixed",
+                         "evidence": "<the file:line and code that shows it>"}]}
+"reported_defects" lists every defect the report names, not only the one the tests reproduce; "already-fixed" means the code before this change already handles it. "behavior_changes" lists every alteration you found, the requested one included; "requested" is true only when the report asks for that change; "worked_before" is true when the input got a correct, non-error answer before the change, and false when it already failed (a crash, a 500, a wrong result).""",
 }
 
 PROMPT = """\
@@ -143,7 +152,7 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
            on_event: Callable[[tuple], None] | None = None) -> dict:
     """Judge `patch` under one `lens`, returning
     {"lens", "verdict": "safe"|"unsafe", "reason": str, "concerns": list[str]},
-    plus the scope-safety lens's `behavior_changes`. `evidence` is the host's
+    plus the scope-safety lens's `behavior_changes` and `coverage`. `evidence` is the host's
     account of the proof runs over the change.
 
     Only a well-formed, explicit `safe` returns safe; every other outcome,
@@ -189,6 +198,9 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
                      "concerns": concerns}
         if isinstance(verdict.get("behavior_changes"), list):
             out["behavior_changes"] = verdict["behavior_changes"]
+        coverage = issue_gates.coverage_entries(verdict.get("reported_defects"))
+        if coverage is not None:
+            out["coverage"] = coverage
         return out
     if lens != "scope-safety":
         return {"lens": lens, "verdict": "safe", "reason": str(verdict.get("reason") or ""),
@@ -198,12 +210,18 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
     if broken is None:
         return _unsafe(lens, "the reviewing agent returned no usable behavior-change "
                              "inventory", failed=True)
+    coverage = issue_gates.coverage_entries(verdict.get("reported_defects"))
     out = {"lens": lens, "verdict": "safe", "reason": str(verdict.get("reason") or ""),
            "concerns": concerns, "behavior_changes": inventory}
-    if broken and not inventory_veto:
-        out["unasked"] = broken
-    elif broken:
+    if coverage is not None:
+        out["coverage"] = coverage
+    if broken and inventory_veto:
         out.update(verdict="unsafe",
                    reason=f"changes inputs that worked, which the report did not ask "
                           f"to change: {'; '.join(broken)}")
+    elif coverage is None:
+        return _unsafe(lens, "the reviewing agent returned no usable account of the "
+                             "report's defects", failed=True)
+    elif broken:
+        out["unasked"] = broken
     return out

@@ -182,12 +182,14 @@ _UNASKED = {"input": "?id= (empty)", "before": "200, filter ignored", "after": "
             "requested": False, "worked_before": True}
 _SIBLING = {"input": "/count?id=bad", "before": "500", "after": "400", "requested": False,
             "worked_before": False}
+_COVERED = [{"defect": "?id=bad returns 500", "status": "addressed", "evidence": "src/q.ts:4"}]
 
 
 def test_a_scope_safe_verdict_whose_inventory_holds_only_the_asked_change_passes(
         monkeypatch):
     out = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r",
-                                        "behavior_changes": [_ASKED]}),
+                                        "behavior_changes": [_ASKED],
+                                        "reported_defects": _COVERED}),
                lens="scope-safety")["out"]
     assert out["verdict"] == "safe"
     assert out["behavior_changes"] == [_ASKED]
@@ -205,7 +207,8 @@ def test_a_scope_safe_verdict_listing_an_unasked_change_reads_as_unsafe(monkeypa
 def test_without_the_inventory_veto_a_safe_verdict_stands_and_records_the_unasked(
         monkeypatch):
     out = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r",
-                                        "behavior_changes": [_ASKED, _UNASKED]}),
+                                        "behavior_changes": [_ASKED, _UNASKED],
+                                        "reported_defects": _COVERED}),
                lens="scope-safety", inventory_veto=False)["out"]
     assert out["verdict"] == "safe"
     assert out["unasked"] == ["?id= (empty)"]
@@ -220,7 +223,8 @@ def test_without_the_inventory_veto_the_reviewer_s_own_unsafe_still_rejects(monk
 
 def test_an_unasked_change_to_an_input_that_already_failed_does_not_block(monkeypatch):
     out = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r",
-                                        "behavior_changes": [_ASKED, _SIBLING]}),
+                                        "behavior_changes": [_ASKED, _SIBLING],
+                                        "reported_defects": _COVERED}),
                lens="scope-safety")["out"]
     assert out["verdict"] == "safe"
     assert out["behavior_changes"] == [_ASKED, _SIBLING]
@@ -230,12 +234,51 @@ def test_an_unasked_change_to_an_input_that_already_failed_does_not_block(monkey
     None, [], [{"input": "x"}], "none", [{"input": "x", "requested": False}]])
 def test_a_scope_safe_verdict_without_a_usable_inventory_reads_as_failed(
         monkeypatch, inventory):
-    reply = {"verdict": "safe", "reason": "r"}
+    reply = {"verdict": "safe", "reason": "r", "reported_defects": _COVERED}
     if inventory is not None:
         reply["behavior_changes"] = inventory
     out = _run(monkeypatch, json.dumps(reply), lens="scope-safety")["out"]
     assert out["verdict"] == "unsafe"
     assert out["failed"] is True
+
+
+# Issue #14777's shape: a report naming three defects, a fix that addresses one.
+_14777 = [
+    {"defect": "the reaper swallows the lease-release error", "status": "addressed",
+     "evidence": "reaper.ts:88 now logs the error"},
+    {"defect": "cancel after a restart is a no-op that returns 200",
+     "status": "not-addressed",
+     "evidence": "SETUP_TOKEN_CANCELLABLE_STATES excludes submitting"},
+    {"defect": "a session stuck in submitting is never reconciled at startup",
+     "status": "not-addressed", "evidence": "startup reconciles only pending sessions"},
+]
+
+
+def test_the_scope_lens_records_each_reported_defect_s_coverage(monkeypatch):
+    out = _run(monkeypatch, json.dumps({"verdict": "safe", "reason": "r",
+                                        "behavior_changes": [_ASKED],
+                                        "reported_defects": _14777}),
+               lens="scope-safety")["out"]
+    assert out["verdict"] == "safe" and out["coverage"] == _14777
+    assert issue_gates.fix_coverage([out]).state == "partial"
+
+
+@pytest.mark.parametrize("defects", [
+    None, [], "all", [{"defect": "x"}], [{"defect": "", "status": "addressed"}],
+    [{"defect": "x", "status": "mostly"}]])
+def test_a_scope_safe_verdict_without_a_usable_coverage_reads_as_failed(monkeypatch, defects):
+    reply = {"verdict": "safe", "reason": "r", "behavior_changes": [_ASKED]}
+    if defects is not None:
+        reply["reported_defects"] = defects
+    out = _run(monkeypatch, json.dumps(reply), lens="scope-safety")["out"]
+    assert out["verdict"] == "unsafe" and out["failed"] is True
+
+
+def test_an_unsafe_scope_verdict_keeps_its_coverage(monkeypatch):
+    out = _run(monkeypatch, json.dumps({"verdict": "unsafe", "reason": "r",
+                                        "reported_defects": _14777}),
+               lens="scope-safety")["out"]
+    assert out["coverage"] == _14777
 
 
 def test_the_root_cause_lens_needs_no_inventory(monkeypatch):
@@ -250,8 +293,8 @@ def test_the_host_evidence_and_each_lens_s_output_reach_the_prompt(monkeypatch):
     root = _run(monkeypatch, json.dumps({"verdict": "unsafe", "reason": "r"}),
                 lens="root-cause")["calls"]["prompt"]
     assert "Preservation tests (src/keep.test.ts): passed twice." in scope
-    assert '"behavior_changes"' in scope
-    assert '"behavior_changes"' not in root
+    assert '"behavior_changes"' in scope and '"reported_defects"' in scope
+    assert '"behavior_changes"' not in root and '"reported_defects"' not in root
 
 
 def test_every_review_lens_has_an_output_shape():

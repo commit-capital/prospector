@@ -7,14 +7,17 @@ fixes, the tests that reproduce it and the runs that proved the fix, the models
 that wrote it. The agents contribute only three short fields — the summary, the
 root cause, and each changed file's rationale — and those are text an outsider's
 report shaped, so `inert` holds them to one line of plain text before they
-land. `problems` is the gate every rendering passes before it is proposed.
+land. Only a fix that covers its whole report (`issue_gates.fix_coverage`)
+closes the issue; any other names it without a closing keyword and lists what
+the fix leaves. `problems` is the gate every rendering passes before it is
+proposed.
 """
 from __future__ import annotations
 
 import re
 from collections.abc import Sequence
 
-from issue_triage import link_prs, second_opinion
+from issue_triage import issue_gates, link_prs, second_opinion
 from issue_triage.related_prs import RelatedPr
 from pipeline import describe_pr, settings
 
@@ -49,9 +52,36 @@ def title(issue: int, summary: str) -> str:
     return inert(f"fix: {summary}", TITLE_MAX) or f"fix: issue #{issue}"
 
 
-def commit_message(issue: int, summary: str, co_authors: Sequence[str] = ()) -> str:
+def reference(issue: int, closes: bool) -> str:
+    return f"Fixes #{issue}" if closes else f"Addresses part of #{issue}"
+
+
+def commit_message(issue: int, summary: str, co_authors: Sequence[str] = (), *,
+                   closes: bool) -> str:
     trailers = "".join(f"\nCo-authored-by: {c}" for c in co_authors)
-    return f"{title(issue, summary)}\n\nFixes #{issue}\n" + (f"{trailers}\n" if trailers else "")
+    return (f"{title(issue, summary)}\n\n{reference(issue, closes)}\n"
+            + (f"{trailers}\n" if trailers else ""))
+
+
+def _coverage(issue: int, coverage: issue_gates.Coverage) -> list[str]:
+    """What the fix leaves of the report, and what it argues the base already
+    handles, each with the reviewer's evidence."""
+    def entries(status: issue_gates.CoverageStatus) -> list[str]:
+        return [f"- {inert(d['defect'], 200)}"
+                + (f" ({inert(d['evidence'], 300)})" if d["evidence"] else "")
+                for d in coverage.having(status)]
+
+    out: list[str] = []
+    if coverage.state == "unchecked":
+        out += ["", f"No reviewer checked this change against each defect #{issue} names, "
+                    "so it does not close the issue."]
+    left = entries("not-addressed")
+    if left:
+        out += ["", f"This pull request does not address, and #{issue} stays open for:", *left]
+    already = entries("already-fixed")
+    if already:
+        out += ["", "The reviewer found the base already handles:", *already]
+    return out
 
 
 def _verification(result: dict, tests: list[str], test_cmd: str | None) -> list[str]:
@@ -162,13 +192,16 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
     any content block no required section carries under its own heading, the
     template's checklist, and the marker that names what it came from.
     `related` is the related-PR search's answer, None when it did not run."""
+    coverage = issue_gates.fix_coverage(result.get("reviews"))
     changes = [f"- `{inert(c.get('path', ''), 200)}`: {inert(c.get('rationale', ''))}"
                for c in (result.get("changes") or [])]
     model_list = ", ".join(sorted(set(models))) or "unrecorded"
     tier = (result.get("tier") or {}).get("tier")
     boundary = result.get("boundary") or {}
     crossings = boundary.get("crossings") or []
-    warnings = [*(["This change touches highest-risk code (tier 0)."] if tier == 0 else []),
+    warnings = [*([f"This change addresses only part of #{issue}."]
+                  if coverage.state == "partial" else []),
+                *(["This change touches highest-risk code (tier 0)."] if tier == 0 else []),
                 *(["This change crosses a trust boundary."] if crossings else []),
                 *(["Its trust-boundary review did not finish."] if boundary.get("failed")
                   else [])]
@@ -178,7 +211,8 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
             f"- Root cause, as the fixing agent read it: {inert(result.get('root_cause', ''))}",
             f"- This pull request: {inert(result.get('summary', ''))}",
         ],
-        "issue": [f"Fixes #{issue}", *_related(issue, related), *_credited(result)],
+        "issue": [reference(issue, coverage.closes), *_coverage(issue, coverage),
+                  *_related(issue, related), *_credited(result)],
         "changes": changes or ["- (no change recorded)"],
         "verification": _verification(result, tests, test_cmd),
         "risks": [
@@ -233,8 +267,10 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
     return "\n".join(parts) + "\n"
 
 
-def problems(title_text: str, body: str, message: str, *, issue: int) -> list[str]:
-    """Why a rendering may not be proposed; empty when it may."""
+def problems(title_text: str, body: str, message: str, *, issue: int,
+             closes: bool) -> list[str]:
+    """Why a rendering may not be proposed; empty when it may. It closes
+    exactly `issue` when `closes`, and nothing otherwise."""
     out: list[str] = []
     if not title_text or "\n" in title_text or len(title_text) > TITLE_MAX:
         out.append("the title is empty, multi-line, or too long")
@@ -245,8 +281,9 @@ def problems(title_text: str, body: str, message: str, *, issue: int) -> list[st
         out.append(f"the body lacks required sections: {', '.join(missing)}")
     for name, text in (("body", body), ("commit message", message)):
         refs = link_prs.parse_issue_refs(text)
-        if refs != {issue}:
-            out.append(f"the {name} closes {sorted(refs)} rather than exactly #{issue}")
+        if refs != ({issue} if closes else set()):
+            out.append(f"the {name} closes {sorted(refs)} rather than "
+                       + (f"exactly #{issue}" if closes else "nothing"))
     if _BIDI_RE.search(body):
         out.append("the body carries bidi control characters")
     if _HTML_RE.search(body) or _IMAGE_RE.search(body):

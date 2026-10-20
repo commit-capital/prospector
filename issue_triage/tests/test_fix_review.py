@@ -223,7 +223,58 @@ def test_the_distilled_run_carries_each_candidate_s_own_account(monkeypatch):
     assert run["question"]["labels"] == ["A", "B"]
 
 
+# Issue #14777's shape: three reported defects, a proven fix for the first alone.
+COVERAGE_14777 = [
+    {"defect": "the reaper swallows the lease-release error", "status": "addressed",
+     "evidence": "reaper.ts:88 now logs it"},
+    {"defect": "cancel after a restart is a no-op that returns 200",
+     "status": "not-addressed", "evidence": "the cancellable states exclude submitting"},
+    {"defect": "a session stuck in submitting is never reconciled at startup",
+     "status": "not-addressed", "evidence": "startup reconciles pending sessions only"},
+]
+PARTIAL = [{"lens": "scope-safety", "verdict": "safe", "coverage": COVERAGE_14777}]
+
+
+def test_a_partial_fix_s_status_and_open_pull_request_say_partial(store):
+    _run(store, reviews=PARTIAL)
+    status, reason = fix_review.fix_status(store.load_issue(7))
+    assert status == "review"
+    assert reason.startswith("partial fix: 1 of 3 reported defects addressed; not addressed: "
+                             "cancel after a restart")
+    _run(store, reviews=PARTIAL, proposal={"pr": 15363})
+    status, reason = fix_review.fix_status(store.load_issue(7))
+    assert status == "pr-open" and reason.startswith("partial fix: 1 of 3") and "#15363" in reason
+    _run(store, reviews=[{**PARTIAL[0], "coverage": COVERAGE_14777[:1]}])
+    assert fix_review.fix_status(store.load_issue(7)) == ("review", "ok")
+    _run(store, reviews=PARTIAL, ending="fix-rejected")
+    assert fix_review.partial(store.load_issue(7)) is None
+
+
+def test_a_defect_argued_already_handled_is_not_counted_as_addressed(store):
+    already = {"defect": "cancel removes the row", "status": "already-fixed", "evidence": "e"}
+    _run(store, reviews=[{**PARTIAL[0], "coverage": [*COVERAGE_14777, already]}])
+    assert fix_review.fix_status(store.load_issue(7))[1].startswith(
+        "partial fix: 1 of 4 reported defects addressed, 1 already handled on the base;")
+
+
+def test_the_distilled_run_keeps_the_reviewer_s_coverage():
+    run = fix_review.distill({"ending": "fixed", "result": {"reviews": PARTIAL}})
+    assert run["reviews"][0]["coverage"] == COVERAGE_14777
+
+
 # --- the runner --------------------------------------------------------------------
+
+def test_a_solve_that_fixes_part_of_the_report_says_partial_in_the_thread(store, monkeypatch):
+    record = {"ending": "fixed", "detail": "proven",
+              "result": {"patch": "diff --git a/x b/x\n", "reviews": PARTIAL}}
+    monkeypatch.setattr(fix_review_runner, "solve", lambda s, n, **kw: (record, None))
+    fix_review.queue(store, 7, "solve", by="op")
+    status, outcome = fix_review_runner.run_request(
+        store, 7, store.claim_fix_request(7, host="studio"))
+    assert outcome.startswith("Solved: partial fix: 1 of 3 reported defects addressed")
+    assert "Solved: fixed" not in outcome
+    assert store.load_issue(7).fix_thread[-1]["text"] == outcome
+
 
 def test_a_solve_records_the_distilled_run_and_ends_the_request(store, monkeypatch):
     monkeypatch.setattr(settings, "worker_id", lambda: "studio")

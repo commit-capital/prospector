@@ -1416,6 +1416,8 @@ export interface IssueRow {
   /** Whose move the issue's fix attempt waits on (issue_triage/fix_review.py). */
   fix_status?: IssueFixStatus | null;
   fix_reason?: string | null;
+  /** The attempt is a proven fix for only part of its report (fix_review.partial). */
+  fix_partial?: boolean;
   /** Dup-group members folded under this row when the query collapsed dups. */
   dup_rows?: IssueRow[];
 }
@@ -1460,6 +1462,13 @@ export interface IssueFixReview {
   reason: string | null;
   concerns: string[];
   unasked: string[];
+  /** Each defect the report names, as the scope reviewer found the change covers it. */
+  coverage?: IssueFixCoverage[];
+}
+export interface IssueFixCoverage {
+  defect: string;
+  status: "addressed" | "not-addressed" | "already-fixed";
+  evidence: string;
 }
 /** One trust boundary a fix crosses (issue_triage/trust_boundary.py). */
 export interface IssueFixCrossing {

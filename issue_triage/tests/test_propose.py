@@ -27,11 +27,15 @@ new file mode 100644
 """
 
 
+COVERED = [{"lens": "scope-safety", "verdict": "safe", "coverage": [
+    {"defect": "x is one", "status": "addressed", "evidence": "src/x.ts:1"}]}]
+
+
 def _result(**over) -> dict:
     return {"patch": PATCH, "summary": "Set x to two", "root_cause": "x was one",
             "changes": [{"path": "src/x.ts", "rationale": "set x"}],
             "proof": {"compile": {"exit": 0}, "suite": {"excluded": 2}},
-            "tier": {"tier": 2}, **over}
+            "tier": {"tier": 2}, "reviews": COVERED, **over}
 
 
 def _record(**over) -> dict:
@@ -46,13 +50,13 @@ def _rendered(result: dict | None = None) -> tuple[str, str, str]:
     body = fix_pr_body.render(issue=7, result=res, tests=["src/x.test.ts"], base_sha="a" * 40,
                               report_sha=REPORT, models=["opus", "sonnet"], test_cmd=None)
     return (fix_pr_body.title(7, res["summary"]), body,
-            fix_pr_body.commit_message(7, res["summary"]))
+            fix_pr_body.commit_message(7, res["summary"], closes=True))
 
 
 def test_a_rendered_proposal_has_no_problems():
     title, body, message = _rendered()
     assert title == "fix: Set x to two"
-    assert fix_pr_body.problems(title, body, message, issue=7) == []
+    assert fix_pr_body.problems(title, body, message, issue=7, closes=True) == []
     assert body.count("Fixes #7") == 1 and "Fixes #7" in message
 
 
@@ -60,7 +64,7 @@ def test_each_required_section_carries_the_block_its_heading_names(monkeypatch):
     monkeypatch.setattr(fix_pr_body.describe_pr, "required_sections", lambda: (
         "Thinking Path", "What Changed", "Verification", "Risks", "Model Used", "Screenshots"))
     title, body, message = _rendered()
-    assert fix_pr_body.problems(title, body, message, issue=7) == []
+    assert fix_pr_body.problems(title, body, message, issue=7, closes=True) == []
     sections = body.split("\n## ")
     heads = [part.split("\n", 1)[0] for part in sections[1:]]
     assert heads == ["Thinking Path", "What Changed", "Verification", "Risks", "Model Used",
@@ -86,16 +90,55 @@ def test_each_trust_boundary_the_change_crosses_is_a_warning_and_a_risk():
     assert "[!WARNING]" in body and "crosses a trust boundary" in body
     risks = next(part for part in body.split("\n## ") if part.startswith("Risk"))
     assert "network (src/x.ts:2, not asked for by the report): posts the config to" in risks
-    assert fix_pr_body.problems(title, body, message, issue=7) == []
+    assert fix_pr_body.problems(title, body, message, issue=7, closes=True) == []
     _, body, _ = _rendered(_result(boundary={"crossings": [], "failed": True}))
     assert "trust-boundary review did not finish" in body
 
 
 def test_changes_the_scope_reviewer_found_beyond_the_report_are_listed_under_risks():
-    _, body, _ = _rendered(_result(reviews=[{"lens": "scope-safety", "verdict": "safe",
+    _, body, _ = _rendered(_result(reviews=[{**COVERED[0],
                                              "unasked": ["whitespace-only titles"]}]))
     risks = next(part for part in body.split("\n## ") if part.startswith("Risk"))
     assert "beyond the report: whitespace-only titles" in risks
+
+
+# Issue #14777's shape: three reported defects, a proven fix for the first alone.
+PARTIAL = [{"lens": "scope-safety", "verdict": "safe", "coverage": [
+    {"defect": "the reaper swallows the lease-release error", "status": "addressed",
+     "evidence": "reaper.ts:88 now logs it"},
+    {"defect": "cancel after a restart is a no-op that returns 200",
+     "status": "not-addressed", "evidence": "the cancellable states exclude submitting"},
+    {"defect": "a session stuck in submitting is never reconciled at startup",
+     "status": "not-addressed", "evidence": ""},
+    {"defect": "cancel removes the durable row", "status": "already-fixed",
+     "evidence": "cancelDurable deletes it"}]}]
+
+
+def test_a_partial_fix_addresses_part_of_the_issue_and_lists_what_remains():
+    res = _result(reviews=PARTIAL)
+    body = fix_pr_body.render(issue=7, result=res, tests=[], base_sha="a" * 40,
+                              report_sha=REPORT, models=["opus"], test_cmd=None)
+    message = fix_pr_body.commit_message(7, res["summary"], closes=False)
+    assert "Fixes" not in body and "Fixes" not in message
+    assert "Addresses part of #7" in body and "Addresses part of #7" in message
+    linked = next(part for part in body.split("\n## ") if part.startswith("Linked"))
+    assert ("- cancel after a restart is a no-op that returns 200 (the cancellable states "
+            "exclude submitting)") in linked
+    assert "- a session stuck in submitting is never reconciled at startup\n" in linked
+    assert "already handles:\n- cancel removes the durable row (cancelDurable" in linked
+    assert "lease-release" not in linked
+    assert "addresses only part of #7" in body.split("## ", 1)[0]
+    assert fix_pr_body.problems(fix_pr_body.title(7, res["summary"]), body, message,
+                                issue=7, closes=False) == []
+    assert fix_pr_body.problems(fix_pr_body.title(7, res["summary"]), body, message,
+                                issue=7, closes=True)
+
+
+def test_a_fix_no_reviewer_checked_against_the_report_does_not_close_it():
+    body = fix_pr_body.render(issue=7, result=_result(reviews=[]), tests=[], base_sha="a" * 40,
+                              report_sha=REPORT, models=["opus"], test_cmd=None)
+    assert "Fixes #7" not in body and "does not close the issue" in body
+    assert issue_gates.fix_coverage([]).state == "unchecked"
 
 
 def test_agent_text_is_held_to_inert_plain_text():
@@ -108,22 +151,22 @@ def test_agent_text_cannot_close_another_issue():
     title, body, message = _rendered(_result(summary="fix things, closes #99"))
     assert "#99" in body
     assert any("rather than exactly #7" in p
-               for p in fix_pr_body.problems(title, body, message, issue=7))
+               for p in fix_pr_body.problems(title, body, message, issue=7, closes=True))
 
 
 def test_a_foreign_link_or_live_mention_in_the_body_is_a_problem():
     title, body, message = _rendered()
-    assert fix_pr_body.problems(title, body + "\nhttps://evil.example/x\n", message, issue=7)
-    assert fix_pr_body.problems(title, body + "\ncc @someone\n", message, issue=7)
+    assert fix_pr_body.problems(title, body + "\nhttps://evil.example/x\n", message, issue=7, closes=True)
+    assert fix_pr_body.problems(title, body + "\ncc @someone\n", message, issue=7, closes=True)
     repo_link = f"\nhttps://github.com/{settings.repo()}/issues/7\n"
-    assert fix_pr_body.problems(title, body + repo_link, message, issue=7) == []
+    assert fix_pr_body.problems(title, body + repo_link, message, issue=7, closes=True) == []
 
 
 def test_a_body_missing_a_required_section_is_a_problem(monkeypatch):
     title, body, message = _rendered()
     monkeypatch.setattr(fix_pr_body.describe_pr, "required_sections",
                         lambda: ("What Changed", "Screenshots"))
-    assert fix_pr_body.problems(title, body, message, issue=7) == [
+    assert fix_pr_body.problems(title, body, message, issue=7, closes=True) == [
         "the body lacks required sections: Screenshots"]
 
 
@@ -254,7 +297,7 @@ def repos(tmp_path, monkeypatch, push_user):
 
 def _push(repos: dict, **over) -> propose.Pushed:
     kw = {"issue": 7, "report_sha": REPORT, "base_sha": repos["base"], "patch": PATCH,
-          "message": fix_pr_body.commit_message(7, "Set x to two"),
+          "message": fix_pr_body.commit_message(7, "Set x to two", closes=True),
           "workdir": repos["workdir"], "dry_run": False, **over}
     return propose.push_fix(**kw)
 
@@ -340,7 +383,7 @@ def _head(repos: dict) -> str:
 
 def _revise(repos: dict, **over) -> propose.Pushed:
     kw = {"issue": 7, "report_sha": REPORT, "base_sha": repos["base"], "patch": REVISED,
-          "message": fix_pr_body.commit_message(7, "Set x to three"),
+          "message": fix_pr_body.commit_message(7, "Set x to three", closes=True),
           "expected_head": _head(repos), "workdir": repos["workdir"], "dry_run": False, **over}
     return propose.push_revision(**kw)
 
@@ -449,7 +492,7 @@ def test_the_search_s_findings_are_listed_under_the_linked_issue():
     assert "- #5 (open): fix x" in body
     assert "found no other pull request" in _body(related=[], template=TEMPLATE)
     title = fix_pr_body.title(7, "Set x to two")
-    assert fix_pr_body.problems(title, body, fix_pr_body.commit_message(7, "x"), issue=7) == []
+    assert fix_pr_body.problems(title, body, fix_pr_body.commit_message(7, "x", closes=True), issue=7, closes=True) == []
 
 
 CREDITED = [{"pr": 12, "author": "contrib", "verdict": "gap-closed", "why": "w"},
@@ -458,12 +501,12 @@ CREDITED = [{"pr": 12, "author": "contrib", "verdict": "gap-closed", "why": "w"}
 
 def test_a_rival_whose_test_changed_the_fix_is_credited():
     trailer = "contrib <123+contrib@users.noreply.github.com>"
-    assert fix_pr_body.commit_message(7, "Set x to two", co_authors=[trailer]) == (
+    assert fix_pr_body.commit_message(7, "Set x to two", co_authors=[trailer], closes=True) == (
         f"fix: Set x to two\n\nFixes #7\n\nCo-authored-by: {trailer}\n")
     title, body, message = _rendered(_result(second_opinion=CREDITED))
     linked = next(part for part in body.split("\n## ") if part.startswith("Linked"))
     assert "#12 by contrib" in linked and "#13" not in linked
-    assert fix_pr_body.problems(title, body, message, issue=7) == []
+    assert fix_pr_body.problems(title, body, message, issue=7, closes=True) == []
 
 
 def test_a_fix_one_reproduction_backs_says_so_under_risks():

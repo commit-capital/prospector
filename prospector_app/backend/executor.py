@@ -1242,14 +1242,15 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
 
     summary = str(result.get("summary") or "")
     title_text = fix_pr_body.title(issue, summary)
+    closes = issue_gates.fix_coverage(result.get("reviews")).closes
     message = fix_pr_body.commit_message(
-        issue, summary, second_opinion.co_authors(result.get("second_opinion")))
+        issue, summary, second_opinion.co_authors(result.get("second_opinion")), closes=closes)
     tests = [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)]
     body = fix_pr_body.render(
         issue=issue, result=result, tests=tests, base_sha=record["base_sha"],
         report_sha=record["report_sha"], models=list(record.get("models") or []),
         test_cmd=None, related=related, template=describe_pr.fetch_template())
-    problems = fix_pr_body.problems(title_text, body, message, issue=issue)
+    problems = fix_pr_body.problems(title_text, body, message, issue=issue, closes=closes)
     if problems:
         return done("blocked", "rendering: " + "; ".join(problems), dry=dry_run)
 
@@ -1332,15 +1333,16 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
     patch = str(result["patch"])
     summary = str(result.get("summary") or "")
     title_text = fix_pr_body.title(issue, summary)
+    closes = issue_gates.fix_coverage(result.get("reviews")).closes
     message = fix_pr_body.commit_message(
-        issue, summary, second_opinion.co_authors(result.get("second_opinion")))
+        issue, summary, second_opinion.co_authors(result.get("second_opinion")), closes=closes)
     tests = [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)]
     body = fix_pr_body.render(
         issue=issue, result=result, tests=tests, base_sha=record["base_sha"],
         report_sha=record["report_sha"], models=list(record.get("models") or []),
         test_cmd=None, related=related_prs.search(issue, exclude={int(pr)}),
         template=describe_pr.fetch_template())
-    problems = fix_pr_body.problems(title_text, body, message, issue=issue)
+    problems = fix_pr_body.problems(title_text, body, message, issue=issue, closes=closes)
     if problems:
         return done("blocked", "rendering: " + "; ".join(problems), dry=dry_run)
 

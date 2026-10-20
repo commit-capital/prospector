@@ -337,7 +337,7 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
         record, question = solve(store, n, guidance=guidance, notes=notes, trigger=trigger,
                                  on_step=on_step, unattended=unattended)
         _write_run(store, n, record, question)
-        return f"Solved: {record['ending']} — {record['detail']}"
+        return f"Solved: {fix_review.outcome(record)}"
     if action == "send-back" and req.get("rivals"):
         return _late_rivals(store, n, [int(p) for p in req["rivals"]],
                             live=settings.issue_fix_followup() == "live", on_step=on_step)
@@ -360,15 +360,15 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
             record, question = solve(store, n, guidance=guidance, notes=notes,
                                      trigger="send-back", on_step=on_step)
             _write_run(store, n, record, question)
-            return f"Started over: {record['ending']} — {record['detail']}"
+            return f"Started over: {fix_review.outcome(record)}"
         record = revise(store, n, comments=guidance or "", notes=notes, on_step=on_step)
         _write_run(store, n, record, None)
-        return f"Revised: {record['ending']} — {record['detail']}"
+        return f"Revised: {fix_review.outcome(record)}"
     if action == "answer":
         record, question = answer(store, n, req.get("answer") or {}, notes=notes,
                                   on_step=on_step, unattended=unattended)
         _write_run(store, n, record, question)
-        return f"Resumed on the answer: {record['ending']} — {record['detail']}"
+        return f"Resumed on the answer: {fix_review.outcome(record)}"
     if action in ("ask-reporter", "propose"):
         return _bot_action(store, n, action, dry_run=bool(req.get("dry_run")))
     raise RequestFailed(f"unknown action {action!r}")
