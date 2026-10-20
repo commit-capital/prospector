@@ -72,7 +72,7 @@ def test_a_test_that_fails_twice_with_the_fix_and_shows_the_defect_proves_the_cl
     assert "+export const x = 2;" in lane["red_patch"]  # run with the fix applied
     assert lane["seen"]["x"] == "export const x = 2;\n"  # the agent's clone holds the fix
     assert lane["seen"]["defect"] == DEFECT["defect"]
-    assert claim["agent_runs"] == 2
+    assert claim["agent_runs"] == 2 and claim["fix"] == claim_test.fix_digest(FIX)
     assert not (lane["work"] / "claim").exists()
 
 
@@ -99,3 +99,20 @@ def test_a_claim_test_that_edits_existing_code_is_refused(lane):
     lane["author"] = edits
     claim = lane["run"]()
     assert claim["status"] == "unshown" and "edited existing files" in claim["why"]
+
+
+def test_the_claim_reaches_the_agent_as_bounded_data_on_a_locked_down_run(monkeypatch):
+    seen: dict = {}
+
+    def run_agent(prompt, **kw):
+        seen.update(prompt=prompt, **kw)
+        return '```json\n{"give_up": "handled at cancel.ts:12"}\n```'
+
+    monkeypatch.setattr(claim_test.headless_agent, "run_agent", run_agent)
+    out = claim_test.author("/wt", title="t", body="b", defect="cancel " + "x" * 5000,
+                            evidence="see `cancel.ts`", env={}, contributor_docs=[])
+    assert out == {"give_up": "handled at cancel.ts:12"}
+    assert '{"still_present": "cancel xxx' in seen["prompt"]
+    assert "x" * (claim_test.CLAIM_MAX + 10) not in seen["prompt"]
+    assert seen["allow_gh"] is False and seen["edit_root"] == seen["cwd"]
+    assert seen["read_root"] == [seen["cwd"]]

@@ -343,7 +343,8 @@ def _brief(comments: list[str], claims: list[claim_test.Claim]) -> str:
     for c in claims:
         if c["status"] == "shown":
             lines.append(f'- The host tested "{c["defect"]}": {", ".join(c["paths"])} fails '
-                         f"twice with this attempt applied:\n```\n{c['red_tail'][-1200:]}\n```")
+                         f"twice with this attempt applied:\n```\n"
+                         + c["red_tail"][-1200:].replace("```", "'''") + "\n```")
         else:
             lines.append(f'- The host tested "{c["defect"]}" and no failing test was shown '
                          f"({c['why']}); weigh that comment on the code.")
@@ -397,7 +398,8 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         left = issue_gates.fix_coverage(reviews).having("not-addressed")
         for i, defect in enumerate(left[:claim_test.MAX_CLAIMS]):
             claim = claim_test.prove_claim(spec, defect=defect, tests=required,
-                                           fix=_fix_part(patch), workdir=workdir / f"claim-{n}-{i}",
+                                           fix=_fix_part(patch),
+                                           workdir=workdir / f"claim-{n}-{i}",
                                            proof_patch=proof_patch, label=label, on_step=on_step)
             spent += claim["agent_runs"]
             shown_now.append(claim)

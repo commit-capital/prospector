@@ -288,8 +288,8 @@ def _proof(proof: dict) -> dict:
 
 
 def _round(r: dict) -> dict:
-    """A round of code review as the app shows it; a round recorded before the
-    reviews answered as comments carries one reason."""
+    """A round of code review as the app shows it; `answering` may be one
+    reason rather than a list of comments."""
     answering = r.get("answering")
     return {"round": r.get("round"), "ending": r.get("ending"), "detail": r.get("detail"),
             "answering": answering if isinstance(answering, list) else
@@ -332,7 +332,7 @@ def distill(record: dict, question: dict | None = None) -> dict:
         "reviews": reviews, "boundary": res.get("boundary"), "intake": res.get("intake"),
         "second_opinion": res.get("second_opinion"),
         "revisions": [_round(r) for r in res.get("revisions") or []],
-        "claims": [{k: c.get(k) for k in ("defect", "status", "why", "paths", "round")}
+        "claims": [{k: c.get(k) for k in ("defect", "fix", "status", "why", "paths", "round")}
                    for c in res.get("claims") or []],
         "candidates": candidates,
         "question": None, "proposal": None,

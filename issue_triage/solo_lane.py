@@ -130,7 +130,7 @@ Its reading of the root cause: __ROOT_CAUSE__
 What the reviewers asked to change:
 __REVIEW__
 
-Answer every comment as an author answers a code review: change the code so the comment no longer holds, or, where you are sure a comment is wrong, leave the code as it is and say why, naming the code that shows it. A test file named in a comment was written and run by the host: it fails with the earlier attempt applied, and your change must make it pass unless you show it asserts behavior the code deliberately has. Never edit or delete those test files. A fresh reviewer reads your answers beside the comments.
+Answer every comment as an author answers a code review: change the code so the comment no longer holds, or, where you are sure a comment is wrong, leave the code as it is and say why, naming the code that shows it. A test file named in a comment was written and run by the host: it fails with the earlier attempt applied, and a revision counts only once it passes. You may still dispute that comment in your answer, but the host keeps the test. Never edit or delete those test files. A fresh reviewer reads your answers beside the comments.
 """
 
 
@@ -293,8 +293,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
     about it by `attempt` ({summary, root_cause, review}); the whole change from
     the base is judged. `review` puts a fix that clears the host's checks
     through every reviewer too (`review_issue_fix.full_review`), which reads
-    the review the revision answers (`_review_history`); a review that rejects it ends
-    `fix-rejected` with the reviewers' comments. `model` pins the agent's model. The
+    the review the revision answers (`_review_history`); a review that rejects
+    it ends `fix-rejected` with the reviewers' comments. `model` pins the agent's model. The
     clone is removed on the way out."""
     label = f"solo-{spec.issue}"
     clone_dir = workdir / "solo"

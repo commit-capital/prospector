@@ -14,13 +14,22 @@ with the reason, and an unshown claim never blocks a fix on its own.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
-from issue_triage import issue_gates, judge_repro, lane_check, lane_tree, reproduce_issue
+from issue_triage import (
+    intake_audit,
+    issue_gates,
+    judge_repro,
+    lane_check,
+    lane_tree,
+    reproduce_issue,
+)
 from pipeline import authoring, diffpaths, gates, headless_agent, prove, threats, verify_driver
 
 if TYPE_CHECKING:
@@ -29,6 +38,9 @@ if TYPE_CHECKING:
 # Claims proven in one review round; the rest of a round's claims go to the
 # fixer as the reviewer wrote them.
 MAX_CLAIMS = 3
+
+# The reviewer's defect and evidence are each cut to this in the prompt.
+CLAIM_MAX = 1000
 
 # Writing a focused failing test over a fixed tree.
 AGENT_TIMEOUT_SECONDS = 1200
@@ -44,8 +56,7 @@ __REPORT__
 
 ## The reviewer's claim
 
-- Still present: __DEFECT__
-- The reviewer's evidence: __EVIDENCE__
+__CLAIM__
 
 ## Trust
 
@@ -69,8 +80,16 @@ or {"give_up": "<why, naming the code that handles it or shows it is deliberate>
 """
 
 
+def fix_digest(patch: str) -> str:
+    """A stable name for the non-test part of `patch`, so a claim names the fix
+    it ran against."""
+    fix = diffpaths.filter_diff(patch, lambda p: not diffpaths.is_test_path(p))
+    return hashlib.sha256(fix.encode()).hexdigest()[:16]
+
+
 class Claim(TypedDict):
     defect: str
+    fix: str
     status: Literal["shown", "unshown"]
     why: str
     patch: str
@@ -89,8 +108,8 @@ def author(worktree: str, *, title: str, body: str, defect: str, evidence: str,
     prompt = headless_agent.fill(PROMPT, {
         "__WORKTREE__": worktree,
         "__REPORT__": reproduce_issue.report_block(title, body),
-        "__DEFECT__": defect,
-        "__EVIDENCE__": evidence or "(none given)",
+        "__CLAIM__": json.dumps({"still_present": intake_audit.visible(defect)[:CLAIM_MAX],
+                                 "evidence": intake_audit.visible(evidence)[:CLAIM_MAX]}),
         "__CHECK__": lane_check.TOOL,
         "__TEST_PATHS__": reproduce_issue.test_paths_note(),
         "__LINT__": authoring.lint_note(lane_check.TOOL),
@@ -122,7 +141,8 @@ def prove_claim(spec: LaneSpec, *, defect: issue_gates.CoverageEntry, tests: str
 
     def claim(status: Literal["shown", "unshown"], why: str, patch: str = "",
               paths: list[str] | None = None, tail: str = "") -> Claim:
-        return Claim(defect=defect["defect"], status=status, why=why, patch=patch,
+        return Claim(defect=defect["defect"], fix=fix_digest(fix), status=status, why=why,
+                     patch=patch,
                      paths=paths or [], red_tail=tail[-2000:], agent_runs=runs)
 
     fixed = proof_patch(tests, fix)

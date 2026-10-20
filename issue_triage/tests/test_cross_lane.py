@@ -669,7 +669,8 @@ CLAIM_PATCH = ("diff --git a/src/claim.test.ts b/src/claim.test.ts\nnew file mod
 
 def _claim(status: str) -> claim_test.Claim:
     shown = status == "shown"
-    return claim_test.Claim(defect=GAP["defect"], status="shown" if shown else "unshown",
+    return claim_test.Claim(defect=GAP["defect"], fix="f" * 16,
+                            status="shown" if shown else "unshown",
                             why="fails twice" if shown else "no failing test could be written",
                             patch=CLAIM_PATCH if shown else "",
                             paths=["src/claim.test.ts"] if shown else [],

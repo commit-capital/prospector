@@ -17,9 +17,9 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
-from issue_triage import issue_gates, link_prs, second_opinion
+from issue_triage import claim_test, issue_gates, link_prs, second_opinion
 from issue_triage.related_prs import RelatedPr
-from pipeline import describe_pr, diffpaths, settings
+from pipeline import describe_pr, settings
 
 TITLE_MAX = 120
 FIELD_MAX = 400
@@ -192,11 +192,11 @@ def _checklist(template: str | None, *, searched: bool, tests: list[str],
 
 
 def _red_claims(result: dict) -> list[dict]:
-    """The shown claims whose tests the shipped patch does not carry: those the
-    fix still fails."""
-    shipped = set(diffpaths.changed_paths(str(result.get("patch") or "")))
+    """The shown claims the host ran against the fix that ships: those it
+    still fails."""
+    shipped = claim_test.fix_digest(str(result.get("patch") or ""))
     return [c for c in result.get("claims") or []
-            if c.get("status") == "shown" and not set(c.get("paths") or []) <= shipped]
+            if c.get("status") == "shown" and c.get("fix") == shipped]
 
 
 def _rounds(result: dict) -> list[str]:

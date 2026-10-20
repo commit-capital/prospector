@@ -1521,6 +1521,8 @@ export interface IssueFixProof {
 /** What the host's test of a reviewer's claim showed (issue_triage/claim_test.py). */
 export interface IssueFixClaim {
   defect: string;
+  /** The fix the test ran against (claim_test.fix_digest). */
+  fix?: string;
   status: "shown" | "unshown";
   why: string;
   paths: string[];
@@ -1534,7 +1536,7 @@ export interface IssueFixRound {
   responses: { comment: string; answer: "changed" | "disputed"; why: string }[];
   ending: string;
   detail: string;
-  required_pass?: boolean;
+  required_pass?: boolean | null;
 }
 /** The latest fix attempt, distilled for display (fix_review.distill). */
 export interface IssueFixRun {
