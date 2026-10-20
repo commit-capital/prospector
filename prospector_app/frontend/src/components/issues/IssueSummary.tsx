@@ -216,7 +216,7 @@ function suggestedAction(d: IssueDetail): string {
  *  that may fix it, our analysis, and the one action surface. */
 export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) {
   return (
-    <section className="suggestion summary-panel tone-muted">
+    <section className="suggestion summary-panel issue-summary tone-yellow">
       <h3 className="summary-title">Summary</h3>
       <IssueStory d={d} onWritten={onChanged} />
       {d.body && (
