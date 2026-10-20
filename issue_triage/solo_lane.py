@@ -2,9 +2,9 @@
 checks a reported defect on its own, and the host's test runs alone decide
 whether the result is proposed.
 
-It is the baseline the staged lane (`fix_lane`) is measured against. There is
-no judge and no reviewer: the agent writes a failing test and the fix in one
-clone, with the issue-fix sandbox check as its loop, and the host then re-gates
+It is the baseline the staged lane (`fix_lane`) is measured against, and, with
+`review`, the revision round of a code review (`cross_lane`, a send-back). There
+is no judge: the agent writes a failing test and the fix in one clone, with the issue-fix sandbox check as its loop, and the host then re-gates
 the fix (`issue_gates.fix_patch_regate`), proves the agent's tests green twice
 with the fix applied, and runs the compile preflight and the related tests. A
 fix that clears all of them ends `fixed`. The agent's tests are also run red on
@@ -90,15 +90,9 @@ Give up when the report does not describe a defect in this code, when you cannot
 # Output
 
 Return ONLY a JSON object, as a ```json fenced block: either
-{"summary": "<one line, imperative, usable as a commit message>", "root_cause": "<one or two sentences>", "tests": ["<each test file you added or extended>"], "changes": [{"path": "<repo-relative>", "rationale": "<one or two sentences>"}]}
+{"summary": "<one line, imperative, usable as a commit message>", "root_cause": "<one or two sentences>", "tests": ["<each test file you added or extended>"], "changes": [{"path": "<repo-relative>", "rationale": "<one or two sentences>"}], "responses": [{"comment": "<a reviewer comment, when revising>", "answer": "changed|disputed", "why": "<what you changed, or the code that shows the comment is wrong>"}]}
 or {"give_up": "<why>", "kind": "not-a-defect|cannot-reproduce|unclear|other"}.
 """
-
-
-def _test_paths() -> str:
-    tp = profile.active().test_paths
-    return (f"a directory on the path matching /{tp.dir_pattern}/ or a filename "
-            f"matching /{tp.file_pattern}/")
 
 
 GUIDANCE = """
@@ -132,8 +126,24 @@ The clone already holds an earlier attempt at this fix: its tests and its change
 
 What the earlier attempt said it did: __SUMMARY__
 Its reading of the root cause: __ROOT_CAUSE__
-What the scope reviewer said about it: __REVIEW__
+
+What the reviewers asked to change:
+__REVIEW__
+
+Answer every comment as an author answers a code review: change the code so the comment no longer holds, or, where you are sure a comment is wrong, leave the code as it is and say why, naming the code that shows it. A test file named in a comment was written and run by the host: it fails with the earlier attempt applied, and your change must make it pass unless you show it asserts behavior the code deliberately has. Never edit or delete those test files. A fresh reviewer reads your answers beside the comments.
 """
+
+
+def _review_history(attempt: dict | None, responses: list[dict]) -> str | None:
+    """What a revision's reviewer reads of the review it answers: the earlier
+    rounds (`attempt["history"]`), this round's comments, and the bot's answer
+    to each."""
+    if not attempt:
+        return None
+    return "\n".join([
+        *([attempt["history"]] if attempt.get("history") else []),
+        "This revision answers:", attempt.get("review") or "(no review)",
+        *[f'- The bot {r["answer"]} "{r["comment"]}": {r["why"]}' for r in responses]])
 
 
 def author(worktree: str, *, title: str, body: str, env: dict[str, str],
@@ -149,7 +159,8 @@ def author(worktree: str, *, title: str, body: str, env: dict[str, str],
     anyone else's (the issue's author, the code reviewers, CI), which it frames
     as data like the report; `attempt`
     ({summary, root_cause, review}) describes an earlier attempt the clone
-    already holds, for the agent to revise. `contributor_docs` are the
+    already holds, for the agent to revise, and the answer's `responses` are
+    its answer to each review comment. `contributor_docs` are the
     repository's own, read from the lane's base."""
     worktree = os.path.realpath(worktree)
     prompt = headless_agent.fill(PROMPT, {
@@ -164,7 +175,7 @@ def author(worktree: str, *, title: str, body: str, env: dict[str, str],
             "__REVIEW__": attempt.get("review") or "(no review)"}) if attempt else "",
         "__WORKTREE__": worktree,
         "__REPORT__": reproduce_issue.report_block(title, body),
-        "__TEST_PATHS__": _test_paths(),
+        "__TEST_PATHS__": reproduce_issue.test_paths_note(),
         "__WITHHELD__": "\n".join(gates.fix_withheld_globs()),
         "__CHECK__": lane_check.TOOL,
         "__RUNS__": MAX_RUNS,
@@ -186,7 +197,11 @@ def author(worktree: str, *, title: str, body: str, env: dict[str, str],
             "root_cause": str(verdict.get("root_cause") or "").strip(),
             "tests": [str(t) for t in verdict.get("tests") or [] if t],
             "changes": [{"path": str(c.get("path")), "rationale": str(c.get("rationale") or "")}
-                        for c in changes if isinstance(c, dict) and c.get("path")]}
+                        for c in changes if isinstance(c, dict) and c.get("path")],
+            "responses": [{"comment": str(r.get("comment") or ""),
+                           "answer": "disputed" if r.get("answer") == "disputed" else "changed",
+                           "why": str(r.get("why") or "")}
+                          for r in verdict.get("responses") or [] if isinstance(r, dict)]}
 
 
 def host_checks(spec: fix_lane.LaneSpec, *, test_patch: str, fix_patch: str,
@@ -277,7 +292,9 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
     earlier attempt (tests and change, uncommitted) that the agent revises, told
     about it by `attempt` ({summary, root_cause, review}); the whole change from
     the base is judged. `review` puts a fix that clears the host's checks
-    through the scope-safety reviewer too. `model` pins the agent's model. The
+    through every reviewer too (`review_issue_fix.full_review`), which reads
+    the review the revision answers (`_review_history`); a review that rejects it ends
+    `fix-rejected` with the reviewers' comments. `model` pins the agent's model. The
     clone is removed on the way out."""
     label = f"solo-{spec.issue}"
     clone_dir = workdir / "solo"
@@ -336,7 +353,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         reproduction = {"outcome": None, "files": [{"path": p} for p in test_paths],
                         "base_sha": spec.base.sha}
         result = {"patch": patch, "changes": verdict["changes"], "summary": verdict["summary"],
-                  "root_cause": verdict["root_cause"], "proof": {}, "reviews": [],
+                  "root_cause": verdict["root_cause"], "responses": verdict.get("responses") or [],
+                  "proof": {}, "reviews": [],
                   "threat": threats.scan_diff(fix_patch), "tier": risktier.tier_facet(paths),
                   "checks": checks}
         if rewritten:
@@ -365,22 +383,24 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         detail = ("proven green with its own tests" if test_cmd
                   else "no test of its own; compile and related tests pass")
         if review:
-            on_step("reviewing: scope-safety")
-            agent_runs += 1
-            verdict_review = review_issue_fix.review(
-                str(clone), fix_patch, lens="scope-safety", title=spec.title, body=spec.body,
+            reviews = review_issue_fix.full_review(
+                str(clone), fix_patch, title=spec.title, body=spec.body,
                 root_cause=str(verdict["root_cause"]), test_paths=test_paths,
                 evidence=f"- The change's tests fail on the base and pass with it; the "
                          f"compile, related tests and full suite pass.\n- {detail}.",
-                inventory_veto=result["tier"].get("tier") == 0)
-            result["reviews"] = [verdict_review]
-            if verdict_review.get("failed"):
-                return finish("run-failed", str(verdict_review.get("reason")
+                inventory_veto=result["tier"].get("tier") == 0,
+                history=_review_history(attempt, verdict.get("responses") or []),
+                on_step=on_step)
+            agent_runs += len(reviews)
+            result["reviews"] = reviews
+            rejected, comments = issue_gates.review_comments(reviews)
+            stalled = [r for r in reviews if r.get("failed")]
+            if stalled and not rejected:
+                return finish("run-failed", str(stalled[0].get("reason")
                                                 or "the reviewing agent did not finish"))
-            if verdict_review.get("verdict") != "safe":
-                return finish("fix-rejected",
-                              f"scope-safety: {verdict_review.get('reason') or 'not safe'}")
-            detail += "; the scope-safety review passes"
+            if rejected:
+                return finish("fix-rejected", "; ".join(comments))
+            detail += "; the reviews pass"
             on_step("reviewing: trust boundaries")
             agent_runs += 1
             result["boundary"] = trust_boundary.judge(str(clone), spec.base.clone, fix_patch,

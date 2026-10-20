@@ -516,3 +516,21 @@ def test_a_fix_one_reproduction_backs_says_so_under_risks():
     assert "only this fix's own tests reproduce the defect" in body
     assert "no second reading of the report corroborates" in body
     assert "no second reading" not in _body()
+
+
+def test_a_partial_fix_cites_the_failing_test_that_shows_what_remains():
+    claims = [{"defect": "cancel after a restart is a no-op", "status": "shown",
+               "paths": ["src/cancel.test.ts"], "round": 1},
+              {"defect": "x is one", "status": "shown", "paths": ["src/x.test.ts"], "round": 1}]
+    res = _result(reviews=PARTIAL, claims=claims,
+                  revisions=[{"round": 1, "ending": "fix-unproven"}])
+    body = fix_pr_body.render(issue=7, result=res, tests=[], base_sha="a" * 40,
+                              report_sha=REPORT, models=["opus"], test_cmd=None)
+    linked = next(part for part in body.split("\n## ") if part.startswith("Linked"))
+    assert "- cancel after a restart is a no-op: `src/cancel.test.ts`" in linked
+    assert "`src/x.test.ts`" not in linked  # the shipped patch carries and passes it
+    assert ("Revised in 1 round(s) of automated code review; 2 reviewer claim(s) were first "
+            "shown by a failing test.") in body
+    message = fix_pr_body.commit_message(7, res["summary"], closes=False)
+    assert fix_pr_body.problems(fix_pr_body.title(7, res["summary"]), body, message,
+                                issue=7, closes=False) == []

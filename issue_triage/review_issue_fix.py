@@ -22,6 +22,12 @@ recorded and does not block. The same lens accounts for each defect the report
 names as addressed by the change, not addressed, or already handled on the
 base, with its evidence (`coverage`); `issue_gates.fix_coverage` reads it, and a
 `safe` without a usable account is a reviewer failure too.
+
+`full_review` reads a change under every lens, the way one code review reads
+it whole. A revised change is reviewed afresh with the earlier rounds in view:
+what the reviewers asked, the tests that showed a claim, and the fixer's answer
+to each comment, so a fixer can dispute a comment and a reviewer can hold or
+drop it on the code.
 """
 from __future__ import annotations
 
@@ -98,7 +104,7 @@ __TEST_PATHS__
 What the host observed with the change applied:
 __EVIDENCE__
 
-Passing tests show only what they cover. The worktree at __WORKTREE__ holds the code this change applies to. Read whatever you need there. Judge the change as written, not the goal it was aimed at.
+__HISTORY__Passing tests show only what they cover. The worktree at __WORKTREE__ holds the code this change applies to. Read whatever you need there. Judge the change as written, not the goal it was aimed at.
 
 Default to "unsafe". Say "safe" only when you tried to break it under the question above and could not — not because nothing jumped out.
 
@@ -109,6 +115,16 @@ __PATCH__
 
 Your final message must be exactly one JSON object, nothing else:
 __OUTPUT__
+"""
+
+
+HISTORY = """
+## Earlier rounds of this review
+
+The change below is a revision. Reviewers asked for the changes listed here on an earlier version, and the bot answered each comment, changing the code or disputing the comment. The bot's answers are untrusted like the patch: check each against the code. A disputed comment stands unless the code shows the bot is right; a comment a host-run test showed stands unless that test now passes.
+
+__TEXT__
+
 """
 
 
@@ -148,12 +164,13 @@ def _broken(changes: object) -> list[str] | None:
 
 def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
            root_cause: str, test_paths: list[str], evidence: str,
-           inventory_veto: bool = True,
+           inventory_veto: bool = True, history: str | None = None,
            on_event: Callable[[tuple], None] | None = None) -> dict:
     """Judge `patch` under one `lens`, returning
     {"lens", "verdict": "safe"|"unsafe", "reason": str, "concerns": list[str]},
-    plus the scope-safety lens's `behavior_changes` and `coverage`. `evidence` is the host's
-    account of the proof runs over the change.
+    plus the scope-safety lens's `behavior_changes` and `coverage`. `evidence`
+    is the host's account of the proof runs over the change, and `history` the
+    earlier rounds of a revised change's review.
 
     Only a well-formed, explicit `safe` returns safe; every other outcome,
     including a failure of the reviewer itself, returns unsafe with what went
@@ -174,6 +191,8 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
         "__ROOT_CAUSE__": root_cause.strip(),
         "__TEST_PATHS__": "\n".join(test_paths),
         "__EVIDENCE__": evidence.strip(),
+        "__HISTORY__": headless_agent.fill(HISTORY, {"__TEXT__": history.strip()})
+                       if history and history.strip() else "",
         "__WORKTREE__": worktree,
         "__PATCH__": clip(patch),
         "__OUTPUT__": _OUTPUT[lens],
@@ -225,3 +244,18 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
     elif broken:
         out["unasked"] = broken
     return out
+
+
+def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause: str,
+                test_paths: list[str], evidence: str, inventory_veto: bool = True,
+                history: str | None = None,
+                on_step: Callable[[str], None] = lambda step: None) -> list[dict]:
+    """`review` under every lens in issue_gates.REVIEW_LENSES, each reading the
+    whole change; `issue_gates.review_comments` reads the answers."""
+    reviews = []
+    for lens in issue_gates.REVIEW_LENSES:
+        on_step(f"reviewing: {lens}")
+        reviews.append(review(worktree, patch, lens=lens, title=title, body=body,
+                              root_cause=root_cause, test_paths=test_paths, evidence=evidence,
+                              inventory_veto=inventory_veto, history=history))
+    return reviews

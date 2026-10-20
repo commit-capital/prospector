@@ -299,3 +299,25 @@ def test_the_host_evidence_and_each_lens_s_output_reach_the_prompt(monkeypatch):
 
 def test_every_review_lens_has_an_output_shape():
     assert set(review_issue_fix._OUTPUT) == set(issue_gates.REVIEW_LENSES)
+
+
+def test_a_revision_s_review_reads_the_earlier_rounds(monkeypatch):
+    prompt = _run(monkeypatch, json.dumps({"verdict": "unsafe", "reason": "r"}),
+                  history="This revision answers:\n- not addressed: cancel")["calls"]["prompt"]
+    assert "## Earlier rounds of this review" in prompt and "- not addressed: cancel" in prompt
+    first = _run(monkeypatch, json.dumps({"verdict": "unsafe", "reason": "r"}))["calls"]
+    assert "Earlier rounds" not in first["prompt"]
+
+
+def test_a_full_review_reads_the_change_under_every_lens(monkeypatch):
+    seen = []
+
+    def fake(prompt, **kw):
+        seen.append(prompt)
+        return json.dumps({"verdict": "unsafe", "reason": "r"})
+
+    monkeypatch.setattr(headless_agent, "run_agent", fake)
+    reviews = review_issue_fix.full_review("/wt", PATCH, title="t", body="b", root_cause="rc",
+                                           test_paths=[], evidence="", history="h")
+    assert [r["lens"] for r in reviews] == list(issue_gates.REVIEW_LENSES)
+    assert all("Earlier rounds" in p for p in seen)

@@ -390,3 +390,25 @@ def test_a_revision_s_coverage_supersedes_the_review_it_answered():
                {"coverage": _cov("addressed", "addressed")}]
     assert issue_gates.fix_coverage(reviews).state == "complete"
     assert issue_gates.fix_coverage(reviews[::-1]).state == "partial"
+
+
+# --- review comments ---------------------------------------------------------------
+
+def test_a_rejection_and_a_left_defect_are_both_comments_only_the_rejection_rejects():
+    root = {"lens": "root-cause", "verdict": "unsafe", "reason": "masks the symptom",
+            "concerns": ["special-cases the test input"]}
+    scope = {"lens": "scope-safety", "verdict": "safe",
+             "coverage": _cov("addressed", "not-addressed")}
+    assert issue_gates.review_comments([scope]) == (
+        False, ["not addressed: defect 1 (e)"])
+    assert issue_gates.review_comments([root, scope]) == (True, [
+        "root-cause: masks the symptom", "root-cause: special-cases the test input",
+        "not addressed: defect 1 (e)"])
+
+
+def test_each_lens_s_latest_review_counts_and_a_stalled_one_asks_nothing():
+    old = {"lens": "scope-safety", "verdict": "unsafe", "reason": "leaks"}
+    new = {"lens": "scope-safety", "verdict": "safe", "coverage": _cov("addressed")}
+    assert issue_gates.review_comments([old, new]) == (False, [])
+    stalled = {"lens": "root-cause", "verdict": "unsafe", "failed": True, "reason": "timeout"}
+    assert issue_gates.review_comments([stalled, new]) == (False, [])

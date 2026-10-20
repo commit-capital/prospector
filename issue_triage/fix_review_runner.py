@@ -37,6 +37,7 @@ from issue_triage import (
     fix_lane,
     fix_review,
     intake_audit,
+    issue_gates,
     propose,
     related_prs,
     second_opinion,
@@ -235,9 +236,8 @@ def revise(store: IssueStore, n: int, *, comments: str,
         raise RequestFailed("the last attempt holds no change to revise")
     base = _revision_base(previous)
     spec, report = _spec(store, n, base, comments or None, notes)
-    reviews = res_prev.get("reviews") or []
-    review = "; ".join(filter(None, [str(r.get("reason") or "") for r in reviews]
-                              + [str(c) for r in reviews for c in r.get("concerns") or []]))
+    review = "\n".join(f"- {c}" for c in
+                       issue_gates.review_comments(res_prev.get("reviews"))[1])
     workdir = propose.result_dir(n)
     started = storekit.now()
     res = solo_lane.run(spec, workdir=workdir, on_step=on_step, start_patch=res_prev["patch"],

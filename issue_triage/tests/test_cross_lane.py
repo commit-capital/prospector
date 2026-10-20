@@ -11,8 +11,18 @@ from pathlib import Path
 
 import pytest
 
-from issue_triage import cross_lane, fix_lane, fix_review, review_issue_fix, solo_lane
+from issue_triage import (
+    claim_test,
+    cross_lane,
+    fix_lane,
+    fix_review,
+    issue_gates,
+    review_issue_fix,
+    solo_lane,
+)
 from pipeline import authoring, gates, headless_agent, prove, resolve_evidence, verify_driver
+
+ROOT_SAFE = {"lens": "root-cause", "verdict": "safe", "reason": "cures it", "concerns": []}
 
 
 def _legs(exit_: int, confirm: int | None) -> dict:
@@ -169,7 +179,7 @@ def cross(tmp_path, monkeypatch):
     def fake_review(worktree, patch, **kw):
         state["reviewed"].append({"worktree": worktree, "patch": patch, **kw})
         assert (Path(worktree) / "src" / "x.ts").read_text() != "export const x = 1;\n"
-        return state["review"]
+        return state["review"] if kw["lens"] == "scope-safety" else ROOT_SAFE
 
     monkeypatch.setattr(review_issue_fix, "review", fake_review)
 
@@ -186,7 +196,7 @@ def cross(tmp_path, monkeypatch):
 def test_candidates_that_agree_end_fixed_with_the_smallest_fix(cross):
     res = cross["run"]()
     assert res.ending == "fixed" and res.fault is False
-    assert res.agent_runs == 5
+    assert res.agent_runs == 6
     assert res.result["boundary"]["crossings"] == []
     assert res.result["pick"] in (0, 1)  # candidate 2's fix is the largest
     pick = res.result["pick"]
@@ -390,12 +400,12 @@ def test_every_clone_is_removed_afterward(cross):
                    for p in cross["workdir"].iterdir() if p.is_dir())
 
 
-def test_the_picked_fix_faces_the_scope_safety_reviewer_with_it_applied(cross):
+def test_the_picked_fix_faces_a_full_code_review_with_it_applied(cross):
     res = cross["run"]()
-    [review] = cross["reviewed"]
-    assert review["lens"] == "scope-safety" and "src/x.ts" in review["patch"]
-    assert "reproduction" in review["evidence"]
-    assert res.result["reviews"] == [cross["review"]]
+    assert [r["lens"] for r in cross["reviewed"]] == list(issue_gates.REVIEW_LENSES)
+    for review in cross["reviewed"]:
+        assert "src/x.ts" in review["patch"] and "reproduction" in review["evidence"]
+    assert res.result["reviews"] == [ROOT_SAFE, cross["review"]]
 
 
 def test_the_inventory_vetoes_only_on_tier_0_paths(cross, monkeypatch):
@@ -454,7 +464,7 @@ def test_an_answer_resumes_a_dispute_on_the_reading_it_chose(cross, reading, shi
     assert res.ending == "fixed", res.detail
     assert res.result["pick"] == reading[0] and res.result["reading"] == reading
     assert res.result["agreement"]["shipped"] == shipped
-    assert res.agent_runs == 2 and res.result["boundary"]["crossings"] == []
+    assert res.agent_runs == 3 and res.result["boundary"]["crossings"] == []
     assert cross["green_runs"] == before  # the cross-test results are read, not re-run
 
 
@@ -583,6 +593,7 @@ def test_a_run_whose_report_does_not_parse_names_nothing_pinned():
 
 
 UNSAFE = {"lens": "scope-safety", "verdict": "unsafe", "reason": "x leaks", "concerns": []}
+SAFE = {**UNSAFE, "verdict": "safe", "reason": "only x"}
 
 
 @pytest.fixture
@@ -599,7 +610,9 @@ def reviser(cross, monkeypatch):
         return cross["reviser"](worktree)
 
     def review(worktree, patch, **kw):
-        cross["reviewed"].append(patch)
+        if kw["lens"] != "scope-safety":
+            return ROOT_SAFE
+        cross["reviewed"].append({"patch": patch, **kw})
         return cross["verdicts"].pop(0)
 
     monkeypatch.setattr(solo_lane, "author", author)
@@ -609,14 +622,15 @@ def reviser(cross, monkeypatch):
 
 
 def test_a_rejected_pick_is_revised_by_its_own_model_and_ships_when_cleared(reviser):
-    reviser["verdicts"] = [UNSAFE, {**UNSAFE, "verdict": "safe"}]
+    reviser["verdicts"] = [UNSAFE, SAFE]
     res = reviser["run"]()
-    assert res.ending == "fixed" and "revised in 1 round" in res.detail
+    assert res.ending == "fixed" and "after 1 round(s) of revision" in res.detail
     pick_model = ("opus", "sonnet", "opus")[res.result["pick"]]
-    assert reviser["revised_with"] == [(pick_model, "x leaks")]
+    assert reviser["revised_with"] == [(pick_model, "- scope-safety: x leaks")]
     assert [r["ending"] for r in res.result["revisions"]] == ["fixed"]
-    assert res.result["revisions"][0]["reproductions_pass"] is True
-    assert [r["verdict"] for r in res.result["reviews"]] == ["unsafe", "safe"]
+    assert res.result["revisions"][0]["required_pass"] is True
+    assert [r["verdict"] for r in res.result["reviews"]
+            if r["lens"] == "scope-safety"] == ["unsafe", "safe"]
 
 
 def test_revision_stops_after_its_rounds_answering_each_rejection(reviser):
@@ -624,14 +638,122 @@ def test_revision_stops_after_its_rounds_answering_each_rejection(reviser):
                            {**UNSAFE, "reason": "leaks again"}]
     res = reviser["run"]()
     assert res.ending == "fix-rejected" and "leaks again" in res.detail
-    assert [why for _, why in reviser["revised_with"]] == ["x leaks", "still leaks"]
+    assert [why for _, why in reviser["revised_with"]] == ["- scope-safety: x leaks",
+                                                          "- scope-safety: still leaks"]
     assert len(res.result["revisions"]) == cross_lane.REVISIONS
+    assert "Round 1, the reviewers asked:\n- scope-safety: x leaks" in (
+        reviser["reviewed"][-1]["history"])
 
 
 def test_a_revision_that_escapes_the_reproductions_is_not_shipped(reviser):
-    reviser["verdicts"] = [UNSAFE, {**UNSAFE, "verdict": "safe"}]
+    reviser["verdicts"] = [UNSAFE, SAFE]
     reviser["reviser"] = _writes("a.test.ts", 3)
     res = reviser["run"]()
-    assert res.ending == "fix-rejected" and "no longer passes the reproductions" in res.detail
-    assert res.result["revisions"][0]["reproductions_pass"] is False
+    assert res.ending == "fix-rejected" and "does not pass the reproductions" in res.detail
+    assert res.result["revisions"][0]["required_pass"] is False
     assert "export const x = 3" not in res.result["patch"]
+
+
+# --- a code review the author answers (issue #14777's shape) -------------------------
+
+GAP = {"defect": "cancel after a restart is a no-op", "status": "not-addressed",
+       "evidence": "the cancellable states exclude submitting"}
+PARTIAL = {**SAFE, "coverage": [
+    {"defect": "the reaper swallows the release error", "status": "addressed", "evidence": "e"},
+    GAP]}
+COMPLETE = {**SAFE, "coverage": [{**c, "status": "addressed"} for c in PARTIAL["coverage"]]}
+CLAIM_PATCH = ("diff --git a/src/claim.test.ts b/src/claim.test.ts\nnew file mode 100644\n"
+               "--- /dev/null\n+++ b/src/claim.test.ts\n@@ -0,0 +1 @@\n"
+               "+test('cancel', () => expect(y).toBe(2));\n")
+
+
+def _claim(status: str) -> claim_test.Claim:
+    shown = status == "shown"
+    return claim_test.Claim(defect=GAP["defect"], status="shown" if shown else "unshown",
+                            why="fails twice" if shown else "no failing test could be written",
+                            patch=CLAIM_PATCH if shown else "",
+                            paths=["src/claim.test.ts"] if shown else [],
+                            red_tail="expected 2, got undefined", agent_runs=2)
+
+
+def _sets_y(answer: str):
+    """A reviser that keeps x at 2 and, unless it disputes, also sets y."""
+    def author(wt: str) -> dict:
+        out = _writes("a.test.ts", 2)(wt)
+        if answer == "changed":
+            (Path(wt) / "src" / "y.ts").write_text("export const y = 2;\n")
+            out["changes"].append({"path": "src/y.ts", "rationale": "set y"})
+        out["responses"] = [{"comment": f"not addressed: {GAP['defect']}", "answer": answer,
+                             "why": "y is set" if answer == "changed" else "cancel handles it"}]
+        return out
+    return author
+
+
+@pytest.fixture
+def answered(reviser, monkeypatch):
+    """The reviser lane whose claim tests answer from `answered["claim"]`, over a
+    sandbox where the claim test passes only once y is set."""
+    reviser["claims"] = []
+
+    def prove_claim(spec, *, defect, tests, fix, workdir, proof_patch, label, on_step=None):
+        reviser["claims"].append({"defect": defect, "fix": fix})
+        return _claim(reviser["claim"])
+
+    monkeypatch.setattr(claim_test, "prove_claim", prove_claim)
+    green = prove.green_legs
+
+    def claim_green(base_, *, patch, test_cmd, label, tail_bytes=0):
+        text = patch.read_text()
+        if "src/claim.test.ts" in text and "+export const y = 2" not in text:
+            return FAILS
+        return green(base_, patch=patch, test_cmd=test_cmd, label=label)
+
+    monkeypatch.setattr(prove, "green_legs", claim_green)
+    return reviser
+
+
+def test_a_defect_a_test_shows_the_fix_leaves_is_revised_until_covered(answered):
+    answered.update(claim="shown", verdicts=[PARTIAL, COMPLETE], reviser=_sets_y("changed"))
+    res = answered["run"]()
+    assert res.ending == "fixed" and "after 1 round(s) of revision" in res.detail
+    assert issue_gates.fix_coverage(res.result["reviews"]).state == "complete"
+    assert [c["defect"] for c in answered["claims"]] == [GAP]
+    assert "+export const y" not in answered["claims"][0]["fix"]  # tested against the pick
+    # The shown claim ships with the revision that passes it.
+    assert "src/claim.test.ts" in res.result["patch"] and "export const y = 2" in res.result["patch"]
+    [(_, brief)] = answered["revised_with"]
+    assert f"not addressed: {GAP['defect']}" in brief
+    assert "src/claim.test.ts fails twice" in brief and "expected 2, got undefined" in brief
+    history = answered["reviewed"][-1]["history"]
+    assert "This revision answers:" in history and "src/claim.test.ts fails twice" in history
+    assert 'The bot changed "not addressed' in history
+    [round_] = res.result["revisions"]
+    assert round_["required_pass"] is True and round_["claims"][0]["status"] == "shown"
+    assert res.result["claims"][0]["round"] == 1
+
+
+def test_a_revision_that_cannot_pass_a_shown_claim_leaves_the_pick_as_a_partial_fix(answered):
+    answered.update(claim="shown", verdicts=[PARTIAL], reviser=_writes("a.test.ts", 2))
+    res = answered["run"]()
+    assert res.ending == "fixed"
+    assert issue_gates.fix_coverage(res.result["reviews"]).state == "partial"
+    assert res.result["revisions"][0]["ending"] == "fix-unproven"
+    assert "src/claim.test.ts" not in res.result["patch"]  # a red test never ships
+
+
+def test_a_dispute_of_a_claim_no_test_shows_is_judged_by_a_fresh_review(answered):
+    answered.update(claim="unshown", verdicts=[PARTIAL, COMPLETE], reviser=_sets_y("disputed"))
+    res = answered["run"]()
+    assert res.ending == "fixed"
+    assert issue_gates.fix_coverage(res.result["reviews"]).state == "complete"
+    [(_, brief)] = answered["revised_with"]
+    assert "no failing test was shown" in brief
+    assert 'The bot disputed "not addressed' in answered["reviewed"][-1]["history"]
+    assert "src/claim.test.ts" not in res.result["patch"]
+
+
+def test_a_complete_safe_review_asks_for_no_revision(answered):
+    answered.update(claim="shown", verdicts=[COMPLETE])
+    res = answered["run"]()
+    assert res.ending == "fixed" and answered["claims"] == []
+    assert res.result.get("revisions") is None

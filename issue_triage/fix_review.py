@@ -10,7 +10,8 @@ on read, whose move the attempt waits on; a proposal's follow-up record
 (`fix_followup`) counts only while it follows the run's own pull request.
 `distill` turns a finished run's `result.json` record into the `fix_run` the app
 renders: each candidate's own account, the agreement, the picked change, the
-checks, the reviewers, and the question — never an agent's transcript. A fixed
+checks, the reviewers, the rounds of code review it was revised in and the
+tests that put their claims, and the question — never an agent's transcript. A fixed
 run that covers only part of its report (`issue_gates.fix_coverage`) reads as
 a partial fix wherever the attempt is named (`outcome`, `fix_status`).
 """
@@ -286,6 +287,17 @@ def _proof(proof: dict) -> dict:
     return out
 
 
+def _round(r: dict) -> dict:
+    """A round of code review as the app shows it; a round recorded before the
+    reviews answered as comments carries one reason."""
+    answering = r.get("answering")
+    return {"round": r.get("round"), "ending": r.get("ending"), "detail": r.get("detail"),
+            "answering": answering if isinstance(answering, list) else
+            [str(answering)] if answering else [],
+            "claims": r.get("claims") or [], "responses": r.get("responses") or [],
+            "required_pass": r.get("required_pass", r.get("reproductions_pass"))}
+
+
 def distill(record: dict, question: dict | None = None) -> dict:
     """The `fix_run` section for a finished run's `result.json` record."""
     res = record.get("result") or {}
@@ -319,6 +331,9 @@ def distill(record: dict, question: dict | None = None) -> dict:
         "tier": res.get("tier"), "proof": _proof(res.get("proof") or {}),
         "reviews": reviews, "boundary": res.get("boundary"), "intake": res.get("intake"),
         "second_opinion": res.get("second_opinion"),
+        "revisions": [_round(r) for r in res.get("revisions") or []],
+        "claims": [{k: c.get(k) for k in ("defect", "status", "why", "paths", "round")}
+                   for c in res.get("claims") or []],
         "candidates": candidates,
         "question": None, "proposal": None,
     }

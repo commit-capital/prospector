@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   api, type IssueDetail, type IssueFixBody, type IssueFixBoundary, type IssueFixCandidate, type IssueFixCoverage,
-  type IssueFixFollowup, type IssueFixIntake, type IssueFixRivalEntry,
+  type IssueFixFollowup, type IssueFixIntake, type IssueFixRivalEntry, type IssueFixRound,
   type IssueFixQuestion,
   type IssueFixRun, type IssueFixStatus, type IssueFixThreadEntry,
 } from "../api";
@@ -378,10 +378,38 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
           )}
         </>
       )}
+      {(run.revisions?.length ?? 0) > 0 && <ReviewRounds rounds={run.revisions ?? []} />}
       {run.intake && <Intake intake={run.intake} />}
       {run.boundary && <Boundary boundary={run.boundary} />}
       {(run.second_opinion?.length ?? 0) > 0 && <SecondOpinion entries={run.second_opinion ?? []} />}
       {run.candidates.length > 0 && <Candidates run={run} />}
+    </>
+  );
+}
+
+function ReviewRounds({ rounds }: { rounds: IssueFixRound[] }) {
+  return (
+    <>
+      <h4>Code review</h4>
+      {rounds.map((r) => (
+        <div key={r.round} style={{ marginBottom: 8 }}>
+          <div className="small"><b>Round {r.round}</b> · {r.ending}
+            {r.required_pass === false && " · fails the tests it answers"}</div>
+          <ul style={{ margin: "2px 0 0 18px" }}>
+            {r.answering.map((c, i) => <li key={`c${i}`}>{c}</li>)}
+            {r.claims.map((c, i) => (
+              <li key={`t${i}`} className="muted">
+                Tested “{c.defect}”: {c.status === "shown"
+                  ? <>a test fails with the fix applied ({c.paths.join(", ")})</> : <>not shown — {c.why}</>}
+              </li>
+            ))}
+            {r.responses.map((x, i) => (
+              <li key={`a${i}`}><span className={`chip sm chip-${x.answer === "changed" ? "green" : "yellow"}`}>
+                {x.answer}</span> {x.comment}{x.why && <span className="muted"> — {x.why}</span>}</li>
+            ))}
+          </ul>
+        </div>
+      ))}
     </>
   );
 }
