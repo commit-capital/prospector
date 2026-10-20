@@ -3,10 +3,11 @@ data they feed.
 
 Each suggestion names a Control-tab job (`jobs.JOB_SPECS` kind) that is worth
 running now — an ingest gone stale, a backlog a phase has never covered — with
-a one-line reason, and a default batch size for jobs that take a count. The
-builders are pure over plain data; `suggestions` gathers each view's inputs
-from the app's cached snapshots. An empty list means nothing needs running
-from that view.
+a one-line reason, and a default batch size for jobs that take a count. A job
+that ran within RECOMMEND_AFTER_HOURS is not suggested again, since batch jobs
+take on only part of a backlog per run. The builders are pure over plain data;
+`suggestions` gathers each view's inputs from the app's cached snapshots. An
+empty list means nothing needs running from that view.
 """
 from __future__ import annotations
 
@@ -26,8 +27,9 @@ class Suggestion(TypedDict):
     estimate_seconds: float | None
 
 
-# An ingest older than this reads as stale and earns a refresh suggestion.
-STALE_AFTER_HOURS = 24.0
+# An ingest older than this reads as stale and earns a refresh suggestion, and
+# a job that ran more recently than this is not suggested.
+RECOMMEND_AFTER_HOURS = 96.0
 
 # Default batch sizes, matching the Control tab's inputs and the CLIs' defaults.
 CLUSTER_BATCH = 20
@@ -57,7 +59,7 @@ def _ago(iso: str | None, now_ts: float) -> str:
 
 def _stale(iso: str | None, now_ts: float) -> bool:
     hours = _hours_since(iso, now_ts)
-    return hours is None or hours >= STALE_AFTER_HOURS
+    return hours is None or hours >= RECOMMEND_AFTER_HOURS
 
 
 def pr_suggestions(status: dict, now_ts: float) -> list[Suggestion]:
@@ -202,12 +204,29 @@ def merged(groups: list[list[Suggestion]]) -> list[Suggestion]:
     return out
 
 
+def rested(items: list[Suggestion], last_runs: dict[str, str | None],
+           now_ts: float) -> list[Suggestion]:
+    """`items` without the jobs whose last run (by job kind) is recent."""
+    return [s for s in items if _stale(last_runs.get(s["kind"]), now_ts)]
+
+
 def suggestions(view: str) -> list[Suggestion]:
     """The named view's suggestions, gathered from live snapshots; `ALL`
     names every view's."""
-    if view == ALL:
-        return merged([suggestions(v) for v in VIEWS])
+    from prospector_app.backend import pipeline_status
     now_ts = time.time()
+    if view == ALL:
+        items = merged([_view_suggestions(v, now_ts) for v in VIEWS])
+    else:
+        items = _view_suggestions(view, now_ts)
+    last_runs: dict[str, str | None] = {}
+    for kind, runtime in pipeline_status.job_runtimes().items():
+        last = runtime.get("last_run")
+        last_runs[kind] = last if isinstance(last, str) else None
+    return rested(items, last_runs, now_ts)
+
+
+def _view_suggestions(view: str, now_ts: float) -> list[Suggestion]:
     if view == "prs":
         from prospector_app.backend import pipeline_status
         return pr_suggestions(pipeline_status.status(), now_ts)
