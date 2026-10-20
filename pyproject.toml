@@ -16,7 +16,7 @@ dependencies = [
   "psycopg[binary]==3.3.6",
   "pydantic==2.14.1",
   "python-dotenv==1.2.4",
-  "sqlalchemy==2.0.53",
+  "sqlalchemy==2.1.5",
   "sse-starlette==3.5.0",
   "uvicorn[standard]==0.54.0",
 ]

@@ -412,14 +412,14 @@ class WorkerRegistries(TypedDict):
 _EVIDENCE_META = ("id", "pr", "head_sha", "author", "captured_at", "complete", "data")
 
 
-def _evidence_select() -> Select[Any]:
+def _evidence_select() -> Select[*tuple[Any, ...]]:
     """A threat_evidence read of every column but the diff blobs."""
     from sqlalchemy import select
     t = schema.threat_evidence
     return select(*(t.c[name] for name in _EVIDENCE_META))
 
 
-def _evidence_record(row: Row[Any]) -> storekit.EvidenceRecord:
+def _evidence_record(row: Row[*tuple[Any, ...]]) -> storekit.EvidenceRecord:
     return storekit.EvidenceRecord(id=int(row[0]), pr=int(row[1]), head_sha=row[2],
                                    author=row[3], captured_at=row[4],
                                    complete=bool(row[5]), data=row[6])
