@@ -38,6 +38,6 @@
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.70.0",
     "vibium": "26.8.21",
-    "vite": "^8.3.0"
+    "vite": "^8.3.3"
   }
 }
