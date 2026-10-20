@@ -10,6 +10,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -294,8 +295,9 @@ def _answers(path: str) -> bool:
 def test_the_real_sandbox_holds_the_profile_s_walls(tmp_path):
     real_home = Path(os.path.expanduser("~")).resolve()
     scratch = Path(os.path.realpath(tmp_path))
-    clone = real_home / ".prospector-codex-wall-test" / scratch.name / "clone"
-    clone.mkdir(parents=True)
+    root = Path(tempfile.mkdtemp(prefix=".prospector-codex-wall-test-", dir=real_home))
+    clone = root / "clone"
+    clone.mkdir()
     (clone.parent / "codex-home").mkdir()
     (clone / "a.txt").write_text("ok")
     (clone / ".env").write_text("SECRET")
@@ -328,4 +330,4 @@ def test_the_real_sandbox_holds_the_profile_s_walls(tmp_path):
                      f"s.connect({os.path.realpath(sock)!r})")
             assert not ok("/usr/bin/python3", "-c", probe)
     finally:
-        shutil.rmtree(clone.parent.parent, ignore_errors=True)
+        shutil.rmtree(root, ignore_errors=True)
