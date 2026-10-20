@@ -234,7 +234,8 @@ def suggestions(view: str) -> list[Suggestion]:
     last_runs: dict[str, str | None] = {}
     for kind, runtime in pipeline_status.job_runtimes().items():
         last = runtime.get("last_run")
-        last_runs[kind] = last if isinstance(last, str) else None
+        # A run that failed since leaves the job worth suggesting again.
+        last_runs[kind] = last if isinstance(last, str) and "failed_job" not in runtime else None
     return rested(items, last_runs, now_ts)
 
 

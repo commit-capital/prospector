@@ -1,6 +1,6 @@
-import type { PipelineStatus } from "../../api";
+import type { JobRuntime, PipelineStatus } from "../../api";
+import { LastRun } from "./LastRun";
 import { Panel } from "./Panel";
-import { ago, agoColor, fmt } from "./format";
 import { PIPELINE_STEPS, pipelineStep } from "./jobLayout";
 
 /** One phase's status at a glance: freshness chip up top, done/total progress
@@ -8,11 +8,13 @@ import { PIPELINE_STEPS, pipelineStep } from "./jobLayout";
  * Passing `stale` splits the pending count into stale (a later push outdated
  * the fact) vs never covered, and reads `done` as facts current at each PR's
  * present head. */
-function PhaseCard({ icon, label, step, lastRun, done, total, totalLabel, stale }: {
+function PhaseCard({ icon, label, step, lastRun, failed, onOpenJob, done, total, totalLabel, stale }: {
   icon: string;
   label: string;
   step?: number | null;
   lastRun: string | null | undefined;
+  failed?: JobRuntime;
+  onOpenJob: (id: number) => void;
   done?: number;
   total?: number;
   totalLabel?: string;
@@ -29,7 +31,7 @@ function PhaseCard({ icon, label, step, lastRun, done, total, totalLabel, stale 
           {step != null && <span className="phase-step" title={`Step ${step} of the PR pipeline`}>{step}</span>}
           <span className="phase-card-icon">{icon}</span>{label}
         </span>
-        <span className={agoColor(lastRun)} title={fmt(lastRun)}>{ago(lastRun)}</span>
+        <LastRun lastRun={lastRun} failed={failed} onOpenJob={onOpenJob} />
       </div>
       {hasCoverage && (
         <>
@@ -54,8 +56,19 @@ function PhaseCard({ icon, label, step, lastRun, done, total, totalLabel, stale 
 }
 
 /** How far each pipeline phase has covered the open PRs and issues. */
-export function Coverage({ pipeline }: { pipeline: PipelineStatus | null }) {
+export function Coverage({ pipeline, runtimes, onOpenJob }: {
+  pipeline: PipelineStatus | null;
+  runtimes: Record<string, JobRuntime> | null;
+  onOpenJob: (id: number) => void;
+}) {
   const last = (phase: string) => pipeline?.phases.find((p) => p.phase === phase)?.last_run;
+  const failed = (kind: string) => runtimes?.[kind]?.failed_job != null ? runtimes[kind] : undefined;
+  // The ingest job chains the issue ingest, so its failure leaves issues stale
+  // until an issue ingest finishes after it.
+  const ingestFailed = failed("ingest");
+  const issuesLast = last("issue-ingest");
+  const issuesFailed = failed("issue-ingest") ?? (ingestFailed?.failed_at != null && (issuesLast == null
+    || Date.parse(ingestFailed.failed_at) > Date.parse(issuesLast)) ? ingestFailed : undefined);
   const cov = pipeline?.coverage;
   const icov = pipeline?.issue_coverage;
   const scoped = cov && cov.total - cov.exempt;
@@ -79,20 +92,25 @@ export function Coverage({ pipeline }: { pipeline: PipelineStatus | null }) {
               </span>
             </div>
             <div className="phase-card-stats" style={{ justifyContent: "flex-start", gap: 14 }}>
-              <span>PRs <span className={agoColor(last("ingest"))} title={fmt(last("ingest"))}>{ago(last("ingest"))}</span></span>
-              <span>Issues <span className={agoColor(last("issue-ingest"))} title={fmt(last("issue-ingest"))}>{ago(last("issue-ingest"))}</span></span>
+              <span>PRs <LastRun lastRun={last("ingest")} failed={failed("ingest")} onOpenJob={onOpenJob} /></span>
+              <span>Issues <LastRun lastRun={last("issue-ingest")} failed={issuesFailed} onOpenJob={onOpenJob} /></span>
             </div>
           </div>
           <PhaseCard icon="🛡️" label="Threat scan" step={pipelineStep("threat-scan")} lastRun={last("threat-scan")}
+            failed={failed("threat-scan")} onOpenJob={onOpenJob}
             done={cov?.threat.current} total={cov?.total} stale={cov?.threat.stale} />
           <PhaseCard icon="🧩" label="Clustering" step={pipelineStep("cluster-new")} lastRun={last("cluster")}
+            failed={failed("cluster-new")} onOpenJob={onOpenJob}
             done={cov?.cluster.current} total={scoped} />
           <PhaseCard icon="🔍" label="Analysis" step={pipelineStep("analyze-clusters")} lastRun={last("analyze:commit")}
+            failed={failed("analyze-clusters")} onOpenJob={onOpenJob}
             done={cov?.analysis.current} total={scoped} stale={cov?.analysis.stale} />
           <PhaseCard icon="🔒" label="Security review" step={pipelineStep("security-review")} lastRun={last("security:commit")}
+            onOpenJob={onOpenJob}
             done={cov?.security.current} total={scoped} stale={cov?.security.stale} />
           {icov && (
             <PhaseCard icon="🐞" label="Issue analysis" lastRun={last("issue-analyze")}
+              failed={failed("issue-analyze")} onOpenJob={onOpenJob}
               done={icov.analyzed} total={icov.open} totalLabel="open issues" />
           )}
         </div>

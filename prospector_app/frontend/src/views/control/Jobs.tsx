@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { api, type JobRuntime, type JobSpec, type PipelineStatus, type SuggestedAction } from "../../api";
 import { Panel } from "./Panel";
+import { LastRun } from "./LastRun";
 import { ago, fmtDuration } from "./format";
 import { layoutJobs, pipelineStep } from "./jobLayout";
 
@@ -76,13 +77,14 @@ function backlogNote(spec: JobSpec, pipeline: PipelineStatus | null): ReactNode 
 
 /** Every Control-tab job. The jobs worth running now come first, full width
  *  with why; the rest are tiles that open one at a time. */
-export function Jobs({ specs, runtimes, suggestions, pipeline, running, onStart }: {
+export function Jobs({ specs, runtimes, suggestions, pipeline, running, onStart, onOpenJob }: {
   specs: JobSpec[];
   runtimes: Record<string, JobRuntime> | null;
   suggestions: SuggestedAction[];
   pipeline: PipelineStatus | null;
   running: string | null;
   onStart: (url: string, spec: JobSpec) => void;
+  onOpenJob: (id: number) => void;
 }) {
   const [cluster, setCluster] = useState("");
   const [prNum, setPrNum] = useState("");
@@ -136,7 +138,7 @@ export function Jobs({ specs, runtimes, suggestions, pipeline, running, onStart 
             {spec.agentic
               ? <span title="runs AI agents — costs tokens">🤖 agentic</span>
               : <span title="no agents — costs nothing but time">⚙️ deterministic</span>}
-            {runtimes && <> · last run {ago(runtime?.last_run)}</>}
+            {runtimes && <> · last run <LastRun lastRun={runtime?.last_run} failed={runtime} onOpenJob={onOpenJob} /></>}
             {takes && <> · takes {takes}</>}
           </span>
           <span style={{ flex: 1 }} />
@@ -214,7 +216,9 @@ export function Jobs({ specs, runtimes, suggestions, pipeline, running, onStart 
             <span className="job-tile-name">{t.label}</span>
             {running === t.kind
               ? <span className="job-tile-running">running…</span>
-              : runtimes?.[t.kind]?.last_run && <span className="muted small">{ago(runtimes[t.kind].last_run)}</span>}
+              : runtimes?.[t.kind]?.failed_job != null
+                ? <span className="small job-tile-failed">failed</span>
+                : runtimes?.[t.kind]?.last_run && <span className="muted small">{ago(runtimes[t.kind].last_run)}</span>}
           </button>
         ))}
       </div>

@@ -21,6 +21,7 @@ from prospector_app.backend import data
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
+    from prospector_app.backend import jobs
 
 # Canonical phase names → human label
 PHASE_LABELS: dict[str, str] = {
@@ -212,8 +213,9 @@ def job_runtimes() -> dict[str, dict[str, str | float | None]]:
     given; without any, a job with a ledger mapping reads it from the ledger —
     each phase's mean over its recent timed records, summed over the job's
     phases — and it is None while any phase has no timed record. A phase in
-    _SWEEP_STAT reads only its sweeps, for both the stamp and the duration. A
-    job with neither is left out."""
+    _SWEEP_STAT reads only its sweeps, for both the stamp and the duration.
+    `failed_job` and `failed_at` name this machine's newest run of the job
+    when it failed since `last_run`. A job with none of these is left out."""
     from prospector_app.backend import jobs
     ledgers: dict[str, list[storekit.RunRecord]] = {}
     out: dict[str, dict[str, str | float | None]] = {}
@@ -250,6 +252,29 @@ def job_runtimes() -> dict[str, dict[str, str | float | None]]:
                        if all(durations.values()) else None)
             count = None
         out[kind] = {"last_run": last, "typical_seconds": typical, "typical_count": count}
+    for kind, job in _failed_jobs(out).items():
+        out.setdefault(kind, {"last_run": None, "typical_seconds": None,
+                              "typical_count": None}).update(
+            failed_job=job["id"], failed_at=job["finished"])
+    return out
+
+
+def _failed_jobs(runtimes: dict[str, dict[str, str | float | None]]) -> dict[str, jobs.Job]:
+    """Per job kind, this machine's newest finished run when it failed after
+    the kind's last recorded run."""
+    from prospector_app.backend import jobs
+    newest: dict[str, jobs.Job] = {}
+    for job in jobs.JOBS.values():
+        prior = newest.get(job["kind"])
+        if job["status"] in ("done", "failed") and (prior is None or job["id"] > prior["id"]):
+            newest[job["kind"]] = job
+    out: dict[str, jobs.Job] = {}
+    for kind, job in newest.items():
+        last = runtimes.get(kind, {}).get("last_run")
+        since = storekit.parse_ts(last) if isinstance(last, str) else None
+        failed = storekit.parse_ts(job["finished"])
+        if job["status"] == "failed" and (since is None or (failed is not None and failed > since)):
+            out[kind] = job
     return out
 
 

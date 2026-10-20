@@ -393,6 +393,31 @@ def test_a_job_without_a_ledger_reads_its_own_runs(monkeypatch, tmp_path):
         "typical_count": None}
 
 
+def test_a_job_that_failed_since_its_last_run_is_named(monkeypatch, tmp_path):
+    from prospector_app.backend import jobs
+    _sweep_ledger(monkeypatch, tmp_path)
+    failed = jobs.start_job("security-sweep", count=12)
+    failed.update(status="failed", started="2026-07-05T10:00:00+00:00",
+                  finished="2026-07-05T11:00:00+00:00")
+    assert pipeline_status.job_runtimes()["security-sweep"]["failed_job"] == failed["id"]
+
+    done = jobs.start_job("security-sweep", count=12)
+    done.update(status="done", started="2026-07-05T12:00:00+00:00",
+                finished="2026-07-05T12:05:00+00:00")
+    assert "failed_job" not in pipeline_status.job_runtimes()["security-sweep"]
+
+
+def test_a_failed_job_without_history_is_reported(monkeypatch, tmp_path):
+    from prospector_app.backend import jobs
+    _sweep_ledger(monkeypatch, tmp_path)
+    job = jobs.start_job("triage-cluster", cluster=7)
+    job.update(status="failed", started="2026-07-05T10:00:00+00:00",
+               finished="2026-07-05T10:03:00+00:00")
+    assert pipeline_status.job_runtimes()["triage-cluster"] == {
+        "last_run": None, "typical_seconds": None, "typical_count": None,
+        "failed_job": job["id"], "failed_at": "2026-07-05T10:03:00+00:00"}
+
+
 def test_elapsed_reads_a_stamp_without_an_offset_as_utc():
     assert pipeline_status._elapsed_seconds("2026-07-05T10:00:00",
                                             "2026-07-05T10:01:00+00:00") == 60.0
