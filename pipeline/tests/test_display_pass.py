@@ -85,7 +85,7 @@ def test_problem_section_prefers_the_problem_heading():
 
 def test_write_stores_a_current_section(tmp_path, monkeypatch):
     st = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(dp, "_ask", lambda prompt: GOOD)
+    monkeypatch.setattr(dp, "ask", lambda prompt: GOOD)
     sec = dp.write(st, 1, trigger="operator")
     assert isinstance(sec, dict) and sec["problem"] == GOOD["problem"]
     pr = st.load_pr(1)
@@ -96,7 +96,7 @@ def test_write_stores_a_current_section(tmp_path, monkeypatch):
 
 def test_write_stores_nothing_when_every_reply_is_rejected(tmp_path, monkeypatch):
     st = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(dp, "_ask", lambda prompt: {**GOOD, "fix": "Fixes #999."})
+    monkeypatch.setattr(dp, "ask", lambda prompt: {**GOOD, "fix": "Fixes #999."})
     why = dp.write(st, 1, trigger="operator")
     assert why == "it cited #999, which nothing it was given names"
     assert st.load_pr(1).section("display") is None
@@ -106,7 +106,7 @@ def test_write_stores_nothing_when_every_reply_is_rejected(tmp_path, monkeypatch
 
 def test_a_new_verdict_or_head_retires_the_card(tmp_path, monkeypatch):
     st = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(dp, "_ask", lambda prompt: GOOD)
+    monkeypatch.setattr(dp, "ask", lambda prompt: GOOD)
     dp.write(st, 1, trigger="operator")
     st.edit_pr(1).route_to("close-stale", "Abandoned.")
     assert dp.current(st.load_pr(1)) is None
@@ -122,3 +122,12 @@ def test_missing_section_reads_as_none(tmp_path, monkeypatch):
     st = _seed(tmp_path, monkeypatch)
     assert dp.current(st.load_pr(1)) is None
     assert dp.wanted(st.all_prs()) == [1]
+
+
+def test_refresh_writes_only_missing_cards_and_stops_quietly(tmp_path, monkeypatch):
+    st = _seed(tmp_path, monkeypatch)
+    assert dp.refresh(st, [1], trigger="analyze") == 0
+    assert st.load_pr(1).section("display") is None
+    monkeypatch.setattr(dp, "ask", lambda prompt: GOOD)
+    assert dp.refresh(st, [1, 1, 99], trigger="analyze") == 1
+    assert dp.refresh(st, [1], trigger="analyze") == 0

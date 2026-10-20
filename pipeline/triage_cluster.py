@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from pipeline import analyze_driver
 from pipeline import cluster_driver
 from pipeline import diff_cache
+from pipeline import display_pass
 from pipeline import headless_agent
 from pipeline import ingest
 from pipeline import redundancy
@@ -165,6 +166,10 @@ def _run(store: Store, cid: int, cluster: Cluster) -> int:
                 _say(f"    ✓ formatted with {formatted['tier']}; TL;DR written")
     except Exception as exc:
         _say(f"    ! rationale formatting unavailable; keeping raw display: {exc}")
+    _say("    writing each PR page's summary card…")
+    cards = display_pass.refresh(store, [int(r["pr"]) for r in payload.get("prs", [])],
+                                 trigger="analyze")
+    _say(f"    ✓ {cards} summary card(s) written")
 
     # 7. Report.
     c = store.load_cluster(cid)

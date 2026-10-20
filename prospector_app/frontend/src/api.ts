@@ -1600,8 +1600,11 @@ interface IssueAnalysis {
   fixed_by?: number | null;
 }
 /** Full issue detail for the flyout: the table row plus body + analysis. */
+/** The issue page's plain-language card (issue_triage/issue_display.py). */
+export interface IssueDisplay { bug: string; fix: string }
 export interface IssueDetail extends IssueRow {
   body: string | null;
+  display: IssueDisplay | null;
   analysis: IssueAnalysis | null;
   fixed_comment: string | null;
   dup_comment: string | null;
@@ -2080,6 +2083,7 @@ export const api = {
   issuesAlreadyFixed: () =>
     get<{ fixed: IssueFixedItem[]; likely_fixed: IssueLikelyFixedItem[] }>("/api/issues/already-fixed"),
   getIssue: (n: number) => get<IssueDetail>(`/api/issues/${n}`),
+  writeIssueDisplay: (n: number) => postJson<IssueDisplay>(`/api/issues/${n}/display`, {}),
   /** Queue an action on the issue's fix attempt; rejects with the server's
    *  reason when it does not fit (409). */
   issueFix: (n: number, body: IssueFixBody) => postJson(`/api/issues/${n}/fix`, body),

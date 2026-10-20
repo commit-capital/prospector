@@ -1310,6 +1310,22 @@ def issue_detail(n: int):
     return d
 
 
+@app.post("/api/issues/{n}/display")
+def issue_display_write(n: int):
+    """Write issue #n's plain-language card now (issue_triage/issue_display.py),
+    as the operator. 422, naming the failed check, when no reply passed."""
+    from issue_triage import issue_display
+    try:
+        sec = issue_display.write(issue_data.store(), n, trigger="operator")
+    except KeyError:
+        raise HTTPException(404, f"issue {n} not in store")
+    except headless_agent.AgentUnavailable as e:
+        raise HTTPException(503, str(e))
+    if isinstance(sec, str):
+        raise HTTPException(422, f"The summary was not written: {sec}.")
+    return sec
+
+
 @app.post("/api/issues/{n}/fix")
 def issue_fix_request(n: int, payload: models.IssueFixBody):
     """Queue an action on issue #n's fix attempt for the issue-fix worker:
