@@ -1,11 +1,11 @@
 """The ONE policy for whether an issue is worth a fix attempt, judged before
 any fixing agent runs.
 
-`judge` returns an issue's `fix_triage`. Another author's open pull request that
-claims to fix the issue and moved within RIVAL_ACTIVE_DAYS (`rival`) makes it a
-`skip` with no agent run. Otherwise one locked-down agent with read-only tools
-over the base clone reads the report, the replies its author and the
-maintainers posted, and the code, and answers `go`, `ask` (a defect whose
+`judge` returns an issue's `fix_triage`. Another author's pull request on the
+issue never stands in the way: the factory fixes it anyway, and
+`second_opinion` reads that pull request's tests as evidence. One locked-down
+agent with read-only tools over the base clone reads the report, the replies
+its author and the maintainers posted, and the code, and answers `go`, `ask` (a defect whose
 correct behavior or missing detail only its author can settle, with one
 question to ask) or `skip` (not a defect, code not in this tree, already
 fixed, or not testable without an outside service), with a `fixability`
@@ -19,12 +19,11 @@ hunter may take.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from issue_triage import issue_freshness, related_prs, reply_router, reproduce_issue
-from pipeline import headless_agent, settings, storekit
+from issue_triage import issue_freshness, reply_router, reproduce_issue
+from pipeline import headless_agent
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue
@@ -32,9 +31,6 @@ if TYPE_CHECKING:
 
 MODEL = "sonnet"
 AGENT_TIMEOUT_SECONDS = 900
-
-# How recently another author's pull request must have moved to hold the issue.
-RIVAL_ACTIVE_DAYS = 14
 
 KINDS = ("defect", "feature", "intended", "not-in-repo", "already-fixed", "external",
          "unclear")
@@ -77,28 +73,6 @@ The issue's author and the repository's maintainers wrote these after the report
 __TEXT__
 </replies>
 """
-
-
-def rival(issue: int, *, now: datetime | None = None) -> dict | None:
-    """Another author's open pull request that claims to fix `issue` and moved
-    within RIVAL_ACTIVE_DAYS (`active_claim`), or None, including when the
-    search did not answer."""
-    return active_claim(related_prs.search(issue) or [], now=now)
-
-
-def active_claim(found: Sequence[related_prs.RelatedPr], *,
-                 now: datetime | None = None) -> dict | None:
-    """The first of `found` that holds its issue: open, claiming to fix it, by
-    an author other than this deployment's bot or push user, and moved within
-    RIVAL_ACTIVE_DAYS, as {pr, author, updated_at}; None when none does."""
-    ours = {settings.bot_login(), settings.push_login(), f"{settings.bot_login()}[bot]"}
-    since = (now or datetime.now(timezone.utc)) - timedelta(days=RIVAL_ACTIVE_DAYS)
-    for p in found:
-        moved = storekit.parse_ts(p.get("updated_at"))
-        if (p["state"] == "open" and p["closes"] and p["author"] not in ours
-                and moved is not None and moved >= since):
-            return {"pr": p["number"], "author": p["author"], "updated_at": p.get("updated_at")}
-    return None
 
 
 def _replies_block(replies: Sequence[Reply]) -> str:
@@ -146,12 +120,6 @@ def judge(issue: Issue, clone: Path, *, base_sha: str,
           replies: Sequence[Reply] = ()) -> dict:
     """The issue's `fix_triage` over the base `clone` at `base_sha`. An agent
     outage or a declined prompt propagates."""
-    claim = rival(issue.number)
-    if claim is not None:
-        return {"verdict": "skip", "kind": "unclear", "rival": claim,
-                "reason": f"#{claim['pr']} by {claim['author']} already claims to fix it "
-                          f"and moved within {RIVAL_ACTIVE_DAYS} days.",
-                "base_sha": base_sha, "replies": len(replies)}
     meta = issue.raw.get("meta") or {}
     words = {k: reply_router.quoted([r for r in replies if r.maintainer is m])
              for k, m in (("guidance", True), ("notes", False))}
@@ -162,8 +130,10 @@ def judge(issue: Issue, clone: Path, *, base_sha: str,
 
 
 def current(issue: Issue) -> dict | None:
-    """The issue's triage while it is current, else None."""
-    if issue.fix_triage is None or not issue_freshness.is_current(issue, "fix_triage"):
+    """The issue's triage while it is current, else None. A skip for another
+    author's pull request reads as stale, so the issue is judged on its own."""
+    if (issue.fix_triage is None or issue.fix_triage.get("rival")
+            or not issue_freshness.is_current(issue, "fix_triage")):
         return None
     return issue.fix_triage
 

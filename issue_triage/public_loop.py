@@ -15,9 +15,9 @@ GitHub. In scope (`in_scope`) are the issues a maintainer filed
 with no pull request queues `propose`, and a drafted question queues
 `ask-reporter`, once per attempt, with source `public`. A fixed attempt on an
 issue out of scope still opens its pull request when nothing holds it
-(`trust_boundary.held`), and gets no label or comment; on any issue a
-maintainer did not file, the proposal is left to an operator while another
-open pull request claims to fix the issue. `refresh` ingests the
+(`trust_boundary.held`), and gets no label or comment. Another author's pull
+request on the issue never holds the proposal; `second_opinion` has already
+measured the fix against its tests. `refresh` ingests the
 in-scope issues GitHub reports as updated since its last pass, so a new one
 reaches the store, and the hunter, without a full ingest; it reads them through
 the full ingest's GraphQL selection, so the bot's own labels and comments leave
@@ -67,10 +67,8 @@ from typing import TYPE_CHECKING
 from issue_triage import (
     fetch_issues,
     fix_review,
-    fixability,
     issue_ingest,
     public_comments,
-    related_prs,
     reply_router,
     trust_boundary,
 )
@@ -337,14 +335,21 @@ def work_for(issue: Issue, mode: str, now: datetime) -> _Work:
     if not scoped:
         # Out of scope, a clean fix still opens its pull request; nothing else.
         queue = queue if queue and queue.action == "propose" else None
-        if queue and queue.key in (view.get("queued") or {}):
+        if queue and _queued(view, queue.key):
             queue = None
         return _Work(labels=labels, comments=[], queue=queue)
     posted = view.get("posted") or {}
     comments = [d for d in comments_due(issue, now, view) if d.key not in posted]
-    if queue and queue.key in (view.get("queued") or {}):
+    if queue and _queued(view, queue.key):
         queue = None
     return _Work(labels=labels, comments=comments, queue=queue)
+
+
+def _queued(view: dict, key: str) -> bool:
+    """Whether `view` records the request `key` as queued. A proposal recorded
+    as left for an operator over another author's pull request is not."""
+    got = (view.get("queued") or {}).get(key)
+    return got is not None and not (isinstance(got, dict) and got.get("left"))
 
 
 def _iso(when: datetime) -> str:
@@ -440,20 +445,6 @@ def ask_triage(issue: Issue, record: dict) -> str:
             else "dry-run" if status == "dry-run" else "error")
 
 
-def _rival_claim(issue: Issue) -> str | None:
-    """Why a fix should not open its own pull request on its own: another
-    author's pull request holds the issue (`fixability.active_claim`). "" when
-    the search could not run, so the proposal waits for the next pass; None when
-    nothing stands in the way."""
-    found = related_prs.search(issue.number)
-    if found is None:
-        return ""
-    claim = fixability.active_claim(found)
-    if claim is None:
-        return None
-    return f"an open pull request already claims to fix it: #{claim['pr']}"
-
-
 def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
                host: str, now: datetime) -> bool:
     """Bring GitHub in line with issue `issue`'s attempt. Whether it wrote, or
@@ -500,14 +491,7 @@ def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
                   + _first_line(due.body))
         if work.queue and not failed:
             q = work.queue
-            rival = _rival_claim(leased) if q.action == "propose" else None
-            if rival is not None:
-                # The search did not answer (try again next pass), or another
-                # pull request already claims the issue (an operator decides).
-                if rival:
-                    _record(store, n, mode, "queued", q.key, {"at": _iso(now), "left": rival})
-                    _note(store, n, f"Left the proposal for an operator: {rival}.")
-            elif dry:
+            if dry:
                 _note(store, n, f"Dry run: would queue {q.action}.")
                 _record(store, n, mode, "queued", q.key, _iso(now))
             else:
