@@ -2818,6 +2818,9 @@ export interface JobRuntime {
   typical_seconds: number | null;
   /** For a count job timed from its own runs: the mean count they were given. */
   typical_count: number | null;
+  /** This machine's newest run of the job and when it ended, when it failed since `last_run`. */
+  failed_job?: number;
+  failed_at?: string;
 }
 export type JobStatus = "queued" | "running" | "done" | "failed";
 export interface JobRec { id: number; kind: string; cluster: number | null; pr?: number | null; count?: number | null; status: JobStatus; label: string; started: string; finished: string | null; returncode: number | null }

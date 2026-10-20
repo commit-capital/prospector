@@ -72,6 +72,11 @@ export default function ControlPanel() {
   usePoll(tab === "history" ? loadHunt : noop, 30_000);
   usePoll(tab === "capacity" ? loadCapacity : noop, 30_000);
 
+  const openJob = (id: number) => {
+    runner.attach(`/api/jobs/${id}/stream`, "", `↻ job #${id}'s output…`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   const pickTab = (t: Tab) => {
     setTab(t);
     try { localStorage.setItem(TAB_KEY, t); } catch { /* the tab resets next visit */ }
@@ -100,9 +105,9 @@ export default function ControlPanel() {
       </div>
       {tab === "jobs" && (
         <>
-          <Coverage pipeline={pipeline} />
+          <Coverage pipeline={pipeline} runtimes={runtimes} onOpenJob={openJob} />
           <Jobs specs={specs} runtimes={runtimes} suggestions={suggestions} pipeline={pipeline}
-            running={runner.running}
+            running={runner.running} onOpenJob={openJob}
             onStart={(url, spec) => {
               runner.attach(url, spec.kind, `▶ starting ${spec.label}…`);
               window.scrollTo({ top: 0, behavior: "smooth" });

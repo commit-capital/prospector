@@ -352,6 +352,7 @@ a:hover { text-decoration: underline; }
    same system's older spellings and share every rule. */
 .chip, .badge { display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: var(--fs-sm);
   border: 1px solid var(--border); white-space: nowrap; margin-right: var(--sp-1); }
+.chip-button { background: none; font-family: inherit; line-height: inherit; cursor: pointer; }
 .chip.sm, .badge.sm { font-size: var(--fs-xs); padding: 0 6px; }
 .chip[title], .badge[title], a[title], .checks-chip { cursor: help; }
 .grid tbody tr.rowlink a[title] { cursor: pointer; }
@@ -897,6 +898,7 @@ button.queue-card:hover { border-color: var(--accent); }
 .job-tile:hover { border-color: var(--accent); }
 .job-tile.open { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .job-tile-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-tile-failed { color: var(--red); }
 .job-tile-running { color: var(--accent); font-size: 11px; }
 .cpanel .phase-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; }
 @media (max-width: 760px) { .cpanel .phase-grid { grid-template-columns: minmax(0, 1fr); } }

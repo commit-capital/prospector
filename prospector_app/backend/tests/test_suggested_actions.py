@@ -173,6 +173,15 @@ def test_a_job_unrun_or_past_the_cooldown_stays_suggested():
     assert sa.rested(out, {"issue-find-fixed": stamp(sa.RECOMMEND_AFTER_HOURS + 1)}, NOW) == out
 
 
+def test_suggestions_keep_a_job_whose_last_run_failed(monkeypatch):
+    from prospector_app.backend import pipeline_status
+    monkeypatch.setattr(pipeline_status, "status", lambda: make_status(threat_uncovered=3))
+    monkeypatch.setattr(pipeline_status, "job_runtimes", lambda: {
+        "threat-scan": {"last_run": stamp(0.1), "typical_seconds": None,
+                        "typical_count": None, "failed_job": 4}})
+    assert [s["kind"] for s in sa.suggestions("prs")] == ["threat-scan"]
+
+
 def test_suggestions_drop_jobs_the_control_tab_shows_as_just_run(monkeypatch):
     from prospector_app.backend import pipeline_status
     monkeypatch.setattr(pipeline_status, "status", lambda: make_status(threat_uncovered=3))
