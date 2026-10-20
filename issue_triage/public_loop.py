@@ -16,8 +16,8 @@ with no pull request queues `propose`, and a drafted question queues
 `ask-reporter`, once per attempt, with source `public`. A fixed attempt on an
 issue out of scope still opens its pull request when nothing holds it
 (`trust_boundary.held`), and gets no label or comment. Another author's pull
-request on the issue never holds the proposal; `second_opinion` has already
-measured the fix against its tests. `refresh` ingests the
+request on the issue never holds the proposal; `second_opinion` measures the
+fix against its tests. `refresh` ingests the
 in-scope issues GitHub reports as updated since its last pass, so a new one
 reaches the store, and the hunter, without a full ingest; it reads them through
 the full ingest's GraphQL selection, so the bot's own labels and comments leave

@@ -1,11 +1,10 @@
 """The ONE policy for whether an issue is worth a fix attempt, judged before
 any fixing agent runs.
 
-`judge` returns an issue's `fix_triage`. Another author's pull request on the
-issue never stands in the way: the factory fixes it anyway, and
-`second_opinion` reads that pull request's tests as evidence. One locked-down
-agent with read-only tools over the base clone reads the report, the replies
-its author and the maintainers posted, and the code, and answers `go`, `ask` (a defect whose
+`judge` returns an issue's `fix_triage`, whatever pull requests claim the
+issue; `second_opinion` reads their tests. One locked-down agent with read-only
+tools over the base clone reads the report, the replies its author and the
+maintainers posted, and the code, and answers `go`, `ask` (a defect whose
 correct behavior or missing detail only its author can settle, with one
 question to ask) or `skip` (not a defect, code not in this tree, already
 fixed, or not testable without an outside service), with a `fixability`
