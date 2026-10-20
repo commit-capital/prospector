@@ -26,8 +26,8 @@ from collections.abc import Callable, Sequence
 from issue_triage import intake_audit, lane_check
 from pipeline import authoring, headless_agent, profile, verify_driver
 
-# The reported defect is embedded JSON-encoded, its body cut to this so a long
-# report cannot crowd the rest of the prompt out of the model's attention.
+# Every agent that reads a report gets its body cut to this, so a long report
+# cannot crowd the rest of the prompt out of the model's attention.
 REPORT_MAX = 8000
 
 # Writing and checking reproduction test files is a full agent job.
