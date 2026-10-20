@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { api, type PRDetail } from "../api";
+import { type PRDetail } from "../api";
+import { AnalyzeJobLink } from "./AnalyzeJobLink";
 import { LinkedIssues } from "./LinkedIssues";
 import { closedNote, shownIssues } from "./linkedIssuesShown";
 import { useRepoMeta } from "../RepoMetaContext";
@@ -7,20 +7,10 @@ import { useRepoMeta } from "../RepoMetaContext";
 /** The Summary panel's opening lines: what was wrong, what the PR changes (and
  *  the issues it fixes), and how it works. ANALYZE writes the card; until it
  *  does, the diff summary's one-liner stands in as the fix. */
-export function PRStory({ pr, onWritten }: { pr: PRDetail; onWritten: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string>();
+export function PRStory({ pr }: { pr: PRDetail }) {
   const d = pr.display;
   const fix = d?.fix ?? pr.summary?.one_liner;
   const fixes = shownIssues(pr.issues).shown;
-
-  const write = () => {
-    setBusy(true); setErr(undefined);
-    api.writeDisplay(pr.number)
-      .then(onWritten)
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
-      .finally(() => setBusy(false));
-  };
 
   return (
     <>
@@ -42,16 +32,7 @@ export function PRStory({ pr, onWritten }: { pr: PRDetail; onWritten: () => void
           )}
         </dl>
       )}
-      {!d && busy && <div className="muted small"><span className="spinner" /> Writing a plain-language summary…</div>}
-      {!d && !busy && (
-        <div>
-          <button className="btn-secondary sm" onClick={write}
-            title="Have an agent write a plain-language problem, fix and how-it-works for this PR.">
-            {err ? "Try again" : "Write summary"}
-          </button>
-        </div>
-      )}
-      {err && <div className="sug-verify" role="alert">⛔ {err}</div>}
+      {!d && <div><AnalyzeJobLink kind="analyze-clusters" label="Analysis" /></div>}
     </>
   );
 }

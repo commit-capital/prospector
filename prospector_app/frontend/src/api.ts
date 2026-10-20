@@ -2105,7 +2105,6 @@ export const api = {
   issuesAlreadyFixed: () =>
     get<{ fixed: IssueFixedItem[]; likely_fixed: IssueLikelyFixedItem[] }>("/api/issues/already-fixed"),
   getIssue: (n: number) => get<IssueDetail>(`/api/issues/${n}`),
-  writeIssueDisplay: (n: number) => postJson<IssueDisplay>(`/api/issues/${n}/display`, {}),
   /** Queue an action on the issue's fix attempt; rejects with the server's
    *  reason when it does not fit (409). */
   issueFix: (n: number, body: IssueFixBody) => postJson(`/api/issues/${n}/fix`, body),
@@ -2471,7 +2470,6 @@ export const api = {
     });
     return r.json() as Promise<ExecResult>;
   },
-  writeDisplay: (n: number) => postJson<PRDisplay>(`/api/prs/${n}/display`, {}),
   clearSecretLeak: (n: number, headSha: string) =>
     postJson<{ ok: boolean }>(`/api/prs/${n}/threat/clear-secret`, { head_sha: headSha }),
   retriggerReview: async (n: number, reviewer: string, dryRun: boolean) => {

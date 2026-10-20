@@ -57,3 +57,25 @@ def test_refresh_ends_quietly_when_the_agent_is_unavailable(tmp_path):
     st = _seed(tmp_path)
     assert idp.refresh(st, [5], trigger="issue-fix") == 0
     assert st.load_issue(5).section("display") is None
+
+
+def test_wanted_lists_open_analyzed_issues_without_a_current_card(tmp_path, monkeypatch):
+    st = _seed(tmp_path)
+    st.create_issue(6, META)
+    st.create_issue(7, {**META, "state": "closed"})
+    st.edit_issue(7).route_to("needs-human", "Closed upstream.", gist="Closed.")
+    st.create_issue(8, META)
+    st.edit_issue(8).route_to("needs-human", "Also stuck.", gist="Stuck too.")
+    assert idp.wanted(st.all_issues()) == [8, 5]
+    monkeypatch.setattr(idp.display_pass, "ask", lambda prompt: GOOD)
+    idp.write(st, 8, trigger="operator")
+    assert idp.wanted(st.all_issues()) == [5]
+
+
+def test_refresh_with_force_rewrites_a_current_card(tmp_path, monkeypatch):
+    st = _seed(tmp_path)
+    asked: list[str] = []
+    monkeypatch.setattr(idp.display_pass, "ask", lambda prompt: asked.append(prompt) or GOOD)
+    idp.write(st, 5, trigger="operator")
+    assert idp.refresh(st, [5], trigger="operator", force=True) == 1
+    assert len(asked) == 2

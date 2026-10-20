@@ -1,7 +1,7 @@
-import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, type IssueDetail, type IssueFixFollowup, type IssueFixRun, type IssuePR } from "../../api";
+import { type IssueDetail, type IssueFixFollowup, type IssueFixRun, type IssuePR } from "../../api";
+import { AnalyzeJobLink } from "../AnalyzeJobLink";
 import { Collapsible } from "../Collapsible";
 import { PRLink } from "../PRLink";
 import { GitHubPRLink } from "../GitHubPRLink";
@@ -143,36 +143,15 @@ function FixPRs({ d }: { d: IssueDetail }) {
 
 /** The bug and the fix it needs, in a sentence each. ANALYZE writes the card;
  *  until it does, the analysis gist stands in for the bug. */
-function IssueStory({ d, onWritten }: { d: IssueDetail; onWritten: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string>();
+function IssueStory({ d }: { d: IssueDetail }) {
   const card = d.display;
-
-  const write = () => {
-    setBusy(true); setErr(undefined);
-    api.writeIssueDisplay(d.number)
-      .then(onWritten)
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
-      .finally(() => setBusy(false));
-  };
-
   const bug = card?.bug ?? d.analysis?.gist;
   return (
-    <>
-      <dl className="pr-story">
-        {bug && <><dt>The bug</dt><dd>{bug}</dd></>}
-        <dt>Suggested fix</dt>
-        <dd>
-          {card?.fix ?? (busy
-            ? <span className="muted small"><span className="spinner" /> Writing a plain-language summary…</span>
-            : <button className="btn-secondary sm" onClick={write}
-                title="Have an agent write the bug and the fix it needs in a sentence each.">
-                {err ? "Try again" : "Write summary"}
-              </button>)}
-        </dd>
-      </dl>
-      {err && <div className="sug-verify" role="alert">⛔ {err}</div>}
-    </>
+    <dl className="pr-story">
+      {bug && <><dt>The bug</dt><dd>{bug}</dd></>}
+      <dt>Suggested fix</dt>
+      <dd>{card?.fix ?? <AnalyzeJobLink kind="issue-analyze" label="Issue analysis" />}</dd>
+    </dl>
   );
 }
 
@@ -218,7 +197,7 @@ export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () =
   return (
     <section className="suggestion summary-panel tone-muted">
       <h3 className="summary-title">Summary</h3>
-      <IssueStory d={d} onWritten={onChanged} />
+      <IssueStory d={d} />
       {d.body && (
         <Collapsible className="summary-description" summary={<>Full issue report</>}>
           <div className="markdown prbody-md" style={{ maxHeight: "none" }}>

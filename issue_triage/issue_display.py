@@ -10,11 +10,15 @@ issue number the inputs never name; a rejected reply is never stored.
 The `display` section carries a hash of what it was written from
 (`source_hash`); `current` reads it only while that still matches, so an edited
 report or a new analysis retires it.
+
+  uv run python -m issue_triage.issue_display [--issue N ...] [--limit N] [--all]
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
@@ -120,13 +124,14 @@ def write(store: IssueStore, n: int, *, trigger: str) -> dict | str:
     return (fresh.section("display") if fresh else None) or "the card was not stored"
 
 
-def refresh(store: IssueStore, ns: list[int], *, trigger: str, concurrency: int = 4) -> int:
-    """Write the card of each issue in `ns` whose card is missing or stale, the
-    agents in parallel and the store on this thread. A paused or unavailable
-    agent ends the pass quietly: the card is presentation. Returns the count
-    written."""
+def refresh(store: IssueStore, ns: list[int], *, trigger: str, concurrency: int = 4,
+            force: bool = False) -> int:
+    """Write the card of each issue in `ns` whose card is missing or stale (or
+    every one, with `force`), the agents in parallel and the store on this
+    thread. A paused or unavailable agent ends the pass quietly: the card is
+    presentation. Returns the count written."""
     issues = store.load_issues(ns)
-    todo = [i for i in issues.values() if current(i) is None]
+    todo = [i for i in issues.values() if force or current(i) is None]
     written = 0
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
         futures = {pool.submit(compose, inputs(i)): (i, storekit.now()) for i in todo}
@@ -141,3 +146,38 @@ def refresh(store: IssueStore, ns: list[int], *, trigger: str, concurrency: int 
             _record(store, issue.number, got, source_hash(issue), started=started, trigger=trigger)
             written += isinstance(got, dict)
     return written
+
+
+def _analyzed(issue: Issue) -> bool:
+    return issue.state == "open" and bool(issue.gist or issue.rationale)
+
+
+def wanted(issues: dict[int, Issue]) -> list[int]:
+    """Open, analyzed issues with no current card, newest first."""
+    return sorted((n for n, i in issues.items() if _analyzed(i) and current(i) is None), reverse=True)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Write the issue page's plain-language card.")
+    ap.add_argument("--issue", type=int, action="append", help="this issue (repeatable); forces a rewrite")
+    ap.add_argument("--all", action="store_true", help="rewrite issues whose card is current too")
+    ap.add_argument("--limit", type=int, help="cap how many issues to process")
+    args = ap.parse_args()
+
+    from issue_triage.issue_store import IssueStore
+    store = IssueStore()
+    if args.issue:
+        ns = args.issue
+    else:
+        issues = store.all_issues(omit_candidates=True)
+        ns = (sorted((n for n, i in issues.items() if _analyzed(i)), reverse=True) if args.all
+              else wanted(issues))
+    ns = ns[: args.limit] if args.limit else ns
+    print(f"writing {len(ns)} issue card(s)…", flush=True)
+    written = refresh(store, ns, trigger="operator", force=bool(args.issue or args.all))
+    print(f"wrote {written} of {len(ns)}; see the {PHASE} runs for each rejection", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
