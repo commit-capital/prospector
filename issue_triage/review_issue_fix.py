@@ -24,9 +24,8 @@ base, with its evidence (`coverage`); `issue_gates.fix_coverage` reads it, and a
 `safe` without a usable account is a reviewer failure too.
 
 `full_review` reads a change under every lens on every model in
-`settings.issue_fix_review_models()`, the way one code review reads it whole;
-models from different families catch different faults, and `issue_gates`
-merges their answers. A revised change is reviewed afresh with the earlier rounds in view:
+`settings.issue_fix_review_models()`, the way one code review reads it whole,
+and `issue_gates` merges their answers. A revised change is reviewed afresh with the earlier rounds in view:
 what the reviewers asked, the tests that showed a claim, and the fixer's answer
 to each comment, so a fixer can dispute a comment and a reviewer can hold or
 drop it on the code.

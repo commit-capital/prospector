@@ -514,10 +514,9 @@ def issue_fix_models() -> tuple[str, ...]:
 
 
 def issue_fix_review_models() -> tuple[str | None, ...]:
-    """The models every issue-fix review lens runs on, each apart from the
-    fixers and from one another: TRIAGE_ISSUE_FIX_REVIEW_MODELS, comma-separated
-    and deduplicated, or `(None,)` to take `agent_model()`. A `codex:<model>`
-    runs on Codex."""
+    """The models every issue-fix review lens runs on, each in its own run:
+    TRIAGE_ISSUE_FIX_REVIEW_MODELS, comma-separated and deduplicated, or
+    `(None,)` to take `agent_model()`. A `codex:<model>` runs on Codex."""
     raw = os.environ.get("TRIAGE_ISSUE_FIX_REVIEW_MODELS", "")
     return tuple(dict.fromkeys(m.strip() for m in raw.split(",") if m.strip())) or (None,)
 
