@@ -956,8 +956,9 @@ export interface FixQueueEntry {
   conflict_paths: string[];
   resolvable: boolean;
   /** The stamped auto-review outcome on a parked `resolve`, or null when no
-   *  auto-review has judged it. */
-  auto_review?: { ok: boolean; reason: string } | null;
+   *  auto-review has judged it. `reviewed` counts the agent reviews recorded;
+   *  `objected` says whether one judged the change unsafe. */
+  auto_review?: { ok: boolean; reason: string; reviewed: number; objected: boolean } | null;
   /** The sandbox runs the authoring agent made, empty for every other action. */
   checks: SandboxCheck[];
 }

@@ -4,7 +4,7 @@ import { api, type FixQueue } from "../../api";
 import { useExec } from "../../ExecContext";
 import { PRLink } from "../../components/PRLink";
 import { SandboxChecks } from "../../components/SandboxChecks";
-import { ago, elapsed, fixStatusChip, fmt } from "./format";
+import { ago, autoReviewChip, elapsed, fixStatusChip, fmt } from "./format";
 
 /** The parked-and-ready chip, worded by what the action actually produced. */
 const PARKED_READY: Record<string, string> = {
@@ -106,9 +106,10 @@ export function FixTable({ queue, onChanged }: { queue: FixQueue; onChanged: () 
                           {e.resolvable ? PARKED_READY[e.action] ?? "✅ Ready" : "⚠ Needs a look"}
                         </span>
                         {e.auto_review && (
-                          <span className={e.auto_review.ok ? "chip chip-green sm" : "chip chip-amber sm"}
+                          <span className={e.auto_review.ok ? "chip chip-green sm"
+                            : e.auto_review.reviewed ? "chip chip-amber sm" : "chip chip-muted sm"}
                             title={e.auto_review.reason}>
-                            🤖 {e.auto_review.ok ? "agents cleared" : "agents left it for you"}
+                            🤖 {autoReviewChip(e.auto_review)}
                           </span>
                         )}
                         {e.rounds > 0 && (

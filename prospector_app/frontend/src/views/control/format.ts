@@ -70,6 +70,15 @@ export function fixStatusChip(status: string): string {
   return queueStatusChip(status);
 }
 
+/** The queue chip's words for a parked resolve's auto-review, telling a row
+ *  no agent reviewed apart from one an agent objected to. */
+export function autoReviewChip(r: { ok: boolean; reviewed: number; objected: boolean }): string {
+  if (r.ok) return "agents cleared";
+  if (r.objected) return "agents objected";
+  if (!r.reviewed) return "no agent review";
+  return "agents left it for you";
+}
+
 /** Chip tone for a run's result: security verdicts map straight to their
  *  color; a fix run's result is its terminal status, so it takes the same tone
  *  the queue row does; verify outcomes are green when the fix is confirmed, red
