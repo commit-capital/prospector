@@ -319,12 +319,19 @@ def _entry(n: int, title: str | None, req: dict) -> FixQueueEntry:
 
 
 def _auto_review_bar(result: dict) -> dict | None:
-    """The stamped auto-review outcome, {"ok", "reason"}, or None when no
-    auto-review has judged this request."""
-    bar = (result.get("auto_review") or {}).get("bar")
+    """The stamped auto-review outcome, {"ok", "reason", "reviewed",
+    "objected"}, or None when no auto-review has judged this request.
+    `reviewed` counts the agent reviews recorded and `objected` says whether
+    one judged the change unsafe, so a row no agent looked at reads apart from
+    one an agent rejected."""
+    auto = result.get("auto_review") or {}
+    bar = auto.get("bar")
     if not isinstance(bar, dict):
         return None
-    return {"ok": bool(bar.get("ok")), "reason": str(bar.get("reason") or "")}
+    reviews = [r for r in auto.get("reviews") or [] if isinstance(r, dict)]
+    return {"ok": bool(bar.get("ok")), "reason": str(bar.get("reason") or ""),
+            "reviewed": len(reviews),
+            "objected": any(r.get("verdict") != "safe" and not r.get("failed") for r in reviews)}
 
 
 def queue_entries() -> list[FixQueueEntry]:

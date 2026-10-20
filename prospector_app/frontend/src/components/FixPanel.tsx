@@ -144,7 +144,11 @@ function RequestStrip({ req, runner }: { req: FixRequest; runner: FixRunner | nu
                   + (req.result.auto_review.tests
                     ? " and the related tests passed."
                     : "; no related tests were found to run.")
-                : `🤖 Auto-review left it for you: ${req.result.auto_review.bar.reason}`}
+                : `🤖 Auto-review left it for you: ${req.result.auto_review.bar.reason}. `
+                  + (req.result.auto_review.reviews.length
+                    ? `Agent reviews: ${req.result.auto_review.reviews
+                      .map((r) => `${r.lens} ${r.failed ? "failed to run" : r.verdict}`).join(", ")}.`
+                    : "No agent reviewed it.")}
             </div>
           )}
           {checks}

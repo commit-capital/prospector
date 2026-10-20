@@ -401,7 +401,8 @@ def next_reviewable() -> int | None:
     being judged (a record naming no host keeps its worktree on an unknown
     machine, and judging it here could only cancel work another can still
     push); only ones no auto-review has stamped — a stamped verdict stands
-    until the resolve is re-authored; and none resting in _review_backoff."""
+    until the resolve is re-authored (`_review_stands`); and none resting in
+    _review_backoff."""
     if "resolve" not in settings.fix_autopush():
         return None
     me = settings.worker_id()
@@ -413,7 +414,7 @@ def next_reviewable() -> int | None:
             continue
         if req.get("host") != me:
             continue
-        if (req.get("result") or {}).get("auto_review") is not None:
+        if _review_stands((req.get("result") or {}).get("auto_review")):
             continue
         rested_at = _review_backoff.get(n)
         if rested_at is not None and (time.monotonic() - rested_at
@@ -423,6 +424,14 @@ def next_reviewable() -> int | None:
         if best_key is None or key < best_key:
             best_n, best_key = n, key
     return best_n
+
+
+def _review_stands(auto: dict | None) -> bool:
+    """Whether a stamped auto-review stands. A tier-0 stamp with no reviews
+    holds no evidence for the operator, so it is judged again."""
+    if auto is None:
+        return False
+    return bool(auto.get("reviews")) or (auto.get("tier") or {}).get("tier") != 0
 
 
 def _oldest(status: str, mine_only: tuple[str, ...] = (),
@@ -1693,8 +1702,10 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
                    "host": settings.worker_id(), "at": _now(),
                    "tier": risktier.tier_facet(paths),
                    "reviews": [], "tests": None}
+    # Tier 0 is reviewed and tested as evidence for the operator, though the
+    # bar never lets it push unattended and no continuation reworks it.
     tier = stamp["tier"]["tier"]
-    if tier is not None and tier != 0:
+    if tier is not None:
         history = resolve_evidence.history(worktree, paths)
         context = resolve_evidence.store_context(rec)
         related = resolve_evidence.related_tests(worktree, paths)
@@ -1723,7 +1734,7 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
                 + "\n".join(str(c) for c in judged_rejection.get("concerns") or []),
                 origin={"lens": judged_rejection.get("lens"),
                         "concerns": list(judged_rejection.get("concerns") or [])})
-            if _may_continue(rec, objection):
+            if tier != 0 and _may_continue(rec, objection):
                 _continue_resolve(n, rec, claimed, head, worktree, result, stamp, objection)
                 return
         if all(r.get("verdict") == "safe" for r in reviews) and len(reviews) == 2:

@@ -1891,18 +1891,44 @@ def test_machine_failures_leave_no_stamp_so_a_recovered_host_retries(review_lane
     assert "auto_review" not in (req.get("result") or {})
 
 
-def test_a_tier0_conflict_parks_without_spending_agents(review_lane, store, monkeypatch):
-    called = []
-    monkeypatch.setattr(fix_worker.review_resolve, "review",
-                        lambda wt, **kw: called.append(1))
+def test_a_tier0_conflict_is_reviewed_and_tested_but_parks(review_lane, store):
     _parked_resolve(store, result={**RESOLVE_RESULT,
                                    "conflict_paths": ["package.json"]})
     fix_worker.review_parked_resolve(1)
     req = store.load_pr(1).fix_request
+    auto = req["result"]["auto_review"]
     assert req["status"] == "awaiting-review"
-    assert req["result"]["auto_review"]["bar"]["ok"] is False
-    assert "tier" in req["result"]["auto_review"]["bar"]["reason"]
-    assert called == []
+    assert [r["lens"] for r in auto["reviews"]] == ["behavior", "history"]
+    assert auto["tests"]["run"]["exit"] == 0
+    assert auto["bar"]["ok"] is False
+    assert "tier 0" in auto["bar"]["reason"]
+
+
+def test_a_tier0_objection_parks_without_a_continuation(review_lane, store, monkeypatch):
+    monkeypatch.setattr(fix_worker, "_may_continue", lambda rec, objection: True)
+    monkeypatch.setattr(fix_worker, "_continue_resolve",
+                        lambda *a, **kw: pytest.fail("a tier-0 resolve was continued"))
+    review_lane["reviews"].append(
+        {"verdict": "unsafe", "reason": "drops a warn event", "concerns": []})
+    _parked_resolve(store, result={**RESOLVE_RESULT,
+                                   "conflict_paths": ["package.json"]})
+    fix_worker.review_parked_resolve(1)
+    auto = store.load_pr(1).fix_request["result"]["auto_review"]
+    assert auto["reviews"][0]["verdict"] == "unsafe"
+    assert auto["tests"] is None
+    assert auto["bar"]["ok"] is False
+
+
+def test_a_tier0_stamp_without_reviews_is_judged_again(review_lane, store):
+    _parked_resolve(store, result={
+        **RESOLVE_RESULT, "conflict_paths": ["package.json"],
+        "auto_review": {"tier": {"tier": 0, "pinned_by": ["package.json"]},
+                        "reviews": [], "tests": None,
+                        "bar": {"ok": False, "reason": "tier 0"}}})
+    assert fix_worker.next_reviewable() == 1
+    fix_worker.review_parked_resolve(1)
+    assert len(store.load_pr(1).fix_request["result"]["auto_review"]["reviews"]) == 2
+    assert fix_worker.next_reviewable() is None
 
 
 def test_failing_related_tests_stay_parked(review_lane, store, monkeypatch):
@@ -2102,7 +2128,18 @@ def test_queue_entries_carry_the_auto_review_bar(store):
         "auto_review": {"reviews": [], "bar": {"ok": False,
                                                "reason": "tier 0"}}})
     entry = next(e for e in fix_queue.queue_entries() if e["pr"] == 1)
-    assert entry["auto_review"] == {"ok": False, "reason": "tier 0"}
+    assert entry["auto_review"] == {"ok": False, "reason": "tier 0",
+                                    "reviewed": 0, "objected": False}
+
+
+def test_queue_entries_tell_an_objection_from_no_review(store):
+    _parked_resolve(store, result={
+        **RESOLVE_RESULT,
+        "auto_review": {"reviews": [{"lens": "behavior", "verdict": "unsafe", "reason": "r"}],
+                        "bar": {"ok": False, "reason": "tier 0"}}})
+    entry = next(e for e in fix_queue.queue_entries() if e["pr"] == 1)
+    assert entry["auto_review"] == {"ok": False, "reason": "tier 0",
+                                    "reviewed": 1, "objected": True}
 
 
 def test_queue_entries_without_a_stamp_have_no_auto_review(store):
