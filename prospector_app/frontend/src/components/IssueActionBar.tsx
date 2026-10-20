@@ -37,7 +37,7 @@ function defaultComment(a: IAct, d: IssueDetail, canonical: string, fixer: strin
   return "";
 }
 
-/** One action surface for the issue detail flyout: close (already-fixed / dup /
+/** The action row under the issue Summary's suggested action: close (already-fixed / dup /
  *  not-planned / completed) / comment, plus reopen. The stored triage verdict
  *  (d.disposition) picks the pre-selected action; the fixed/dup default comments
  *  come from the backend so the same wording the executor posts is previewed. */
@@ -105,42 +105,40 @@ export function IssueActionBar({ d, onActed }: { d: IssueDetail; onActed?: () =>
     : (dryRun ? "Close (dry)" : "● Close");
 
   return (
-    <div className="suggestion tone-muted">
-      <div className="pr-actions-wrap stacked">
-        <div className="pr-actions">
-          <Select value={action} onChange={(next) => setAction(next as IAct)} disabled={busy}>
-            {OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
-          </Select>
-          {action === "dup" && (
-            <input className="canon" placeholder="#" value={canonical}
-              onChange={(e) => setCanonical(e.target.value.replace(/\D/g, ""))} disabled={busy} />
-          )}
-          {action === "already-fixed" && (
-            <>
-              <span className="muted small">by</span>
-              <input className="canon" placeholder="#" value={fixerInput}
-                onChange={(e) => setFixerInput(e.target.value.replace(/\D/g, ""))} disabled={busy}
-                title="the merged PR that fixed this issue" />
-            </>
-          )}
-          <button className={`btn-primary sm btn-stable ${busy ? "is-busy" : ""} ${!dryRun ? "btn-live" : ""}`}
-            onClick={fire} disabled={busy || blocked}
-            title={needsCanon ? "enter the canonical issue #" : needsFixer ? "enter the fixer PR #" : needsComment ? "a comment is required" : ""}>
-            <span className="btn-stable-label">{fireLabel}</span>
-            {busy && <span className="spinner btn-stable-spinner" aria-hidden="true" />}
-          </button>
-          {d.state === "closed" && (
-            <button className="btn-secondary sm" onClick={reopen} disabled={busy}
-              title="Undo: reopen + remove the bot's closing comment(s)">↩ Reopen</button>
-          )}
-          {result && <ExecResultChip result={result} />}
-        </div>
-        <CommentEditor botLogin={botLogin} value={commentText} isEdited={isEdited}
-          open={openComment} onToggle={() => setOpenComment((o) => !o)}
-          onChange={setEdited} onReset={() => setEdited(null)}
-          placeholder={action === "comment" || action === "not-planned" || action === "completed"
-            ? "comment posted to the issue (required)" : "comment posted to the issue (optional)"} />
+    <div className="pr-actions-wrap stacked">
+      <div className="pr-actions">
+        <Select value={action} onChange={(next) => setAction(next as IAct)} disabled={busy}>
+          {OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+        </Select>
+        {action === "dup" && (
+          <input className="canon" placeholder="#" value={canonical}
+            onChange={(e) => setCanonical(e.target.value.replace(/\D/g, ""))} disabled={busy} />
+        )}
+        {action === "already-fixed" && (
+          <>
+            <span className="muted small">by</span>
+            <input className="canon" placeholder="#" value={fixerInput}
+              onChange={(e) => setFixerInput(e.target.value.replace(/\D/g, ""))} disabled={busy}
+              title="the merged PR that fixed this issue" />
+          </>
+        )}
+        <button className={`btn-primary sm btn-stable ${busy ? "is-busy" : ""} ${!dryRun ? "btn-live" : ""}`}
+          onClick={fire} disabled={busy || blocked}
+          title={needsCanon ? "enter the canonical issue #" : needsFixer ? "enter the fixer PR #" : needsComment ? "a comment is required" : ""}>
+          <span className="btn-stable-label">{fireLabel}</span>
+          {busy && <span className="spinner btn-stable-spinner" aria-hidden="true" />}
+        </button>
+        {d.state === "closed" && (
+          <button className="btn-secondary sm" onClick={reopen} disabled={busy}
+            title="Undo: reopen + remove the bot's closing comment(s)">↩ Reopen</button>
+        )}
+        {result && <ExecResultChip result={result} />}
       </div>
+      <CommentEditor botLogin={botLogin} value={commentText} isEdited={isEdited}
+        open={openComment} onToggle={() => setOpenComment((o) => !o)}
+        onChange={setEdited} onReset={() => setEdited(null)}
+        placeholder={action === "comment" || action === "not-planned" || action === "completed"
+          ? "comment posted to the issue (required)" : "comment posted to the issue (optional)"} />
     </div>
   );
 }

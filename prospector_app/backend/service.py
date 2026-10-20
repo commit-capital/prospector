@@ -603,6 +603,32 @@ def _is_bot_author(login: str | None) -> bool:
     return not login or login in _BOT_LOGINS or login.endswith("[bot]")
 
 
+def author_kind(rec: Pr) -> str:
+    """prospector (this deployment's App), maintainer, or community."""
+    login = rec.author or ""
+    if login.removeprefix("app/").removesuffix("[bot]") == settings.bot_login():
+        return "prospector"
+    if (gates.priority_author(login, rec.author_association)
+            or login in profile.active().trusted_authors):
+        return "maintainer"
+    return "community"
+
+
+def linked_pr_facts(n: int) -> dict | None:
+    """What an issue page shows on the row of a PR that may fix it; None for a
+    PR the store does not carry."""
+    rec = data.prs().get(int(n))
+    if rec is None:
+        return None
+    checks = pr_checks.checks_for_record(rec)
+    return {"author": rec.author, "author_kind": author_kind(rec),
+            "checks": {"passed": checks["passed"], "total": checks["total"],
+                       "failed": any(c["status"] == "fail" and not c["advisory"]
+                                     for c in checks["checks"])},
+            "risk_tier": (_facets(rec).get("risk") or {}).get("tier"),
+            "disposition": rec.disposition, "safety": rec.security_verdict}
+
+
 def pr_pain(pr: Pr) -> dict:
     """Community Pain Score for a single PR.
 

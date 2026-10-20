@@ -463,6 +463,14 @@ a:hover { text-decoration: underline; }
 .sug-headline { font-size: 15.5px; font-weight: 600; line-height: 1.4; }
 .sug-headline b { font-weight: 800; }
 .sug-stale { font-size: 11.5px; color: var(--yellow); }
+/* The issue Summary's PRs that may fix it: one indented row each, its facts beneath. */
+.fix-prs { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 0 14px; }
+.fix-pr-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 13.5px; }
+.fix-pr-title { color: var(--text); }
+.fix-pr-facts { display: flex; gap: 4px; flex-wrap: wrap; margin: 3px 0 0 2px; }
+.fix-pr-facts .chip, .fix-pr-head .chip { cursor: help; }
+.issue-analysis { display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; line-height: 1.5; }
+.issue-asks { margin: 0 0 0 18px; }
 
 /* buttons */
 /* Every button uses the app's typeface. Unclassed buttons get the panel look

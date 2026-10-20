@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from issue_triage import issue_links
 from issue_triage import pr_index
+from issue_triage import reproduce_issue
 from issue_triage.issue_freshness import is_current
 from issue_triage.issue_store import IssueStore
 from pipeline import profile
@@ -27,7 +28,6 @@ if TYPE_CHECKING:
     from issue_triage.issue_model import Issue, IssueCluster
 
 VALID = {"close-dup", "request-repro", "link-pr", "needs-human"}
-_BODY_CLIP = 1500
 
 # The canonical decision criteria, one bullet per disposition — embedded in
 # ANALYZE_PROMPT (the headless batch prompt) and surfaced in the `bundle` CLI
@@ -76,7 +76,7 @@ def _issue_bundle(iss: Issue, cluster: IssueCluster | None,
     return {
         "number": iss.number,
         "title": iss.title,
-        "body": (iss.body or "")[:_BODY_CLIP],
+        "body": (iss.body or "")[:reproduce_issue.REPORT_MAX],
         "author": iss.author,
         "trusted_author": iss.author in profile.active().trusted_authors,
         "subsystem": iss.subsystem,
