@@ -212,7 +212,7 @@ def fetch_all(max_pages: int = 60, max_issues: int | None = None) -> list[dict]:
         if cursor:
             variables["cursor"] = cursor
         conn = gh.gh_graphql_data(_ISSUES_QUERY, variables=variables,
-                                  rate_limit_waits=gh.RATE_LIMIT_BACKOFF)["repository"]["issues"]
+                                  retry_waits=gh.RATE_LIMIT_BACKOFF)["repository"]["issues"]
         rows += [normalize_gql(n) for n in conn["nodes"]]
         if report:
             progress.say(f"  page {page_no}: {len(rows):,} open issues so far · "

@@ -20,6 +20,10 @@ SECONDARY_RATE_LIMIT = "secondary rate limit"
 # GitHub's guidance when a secondary limit names no retry-after: wait at least
 # a minute, longer on each repeat.
 RATE_LIMIT_BACKOFF: tuple[float, ...] = (60, 120, 240)
+# gh's error text for a gateway failure GitHub usually clears within seconds,
+# and the first of the waits (tripling each time) a retry of one takes.
+GATEWAY_ERRORS = ("HTTP 502", "HTTP 503", "HTTP 504")
+GATEWAY_FIRST_WAIT = 5.0
 
 
 class RateLimited(RuntimeError):
@@ -101,21 +105,26 @@ def _graphql_once(query: str, variables: Mapping[str, str],
 
 
 def _graphql(query: str, variables: Mapping[str, str] | None, timeout: int,
-             rate_limit_waits: Sequence[float]) -> tuple[dict | None, str]:
-    """`_graphql_once`, retrying a GitHub secondary rate limit after each wait in
-    ``rate_limit_waits`` (seconds) in turn."""
+             retry_waits: Sequence[float]) -> tuple[dict | None, str]:
+    """`_graphql_once`, retried once per wait in ``retry_waits`` (seconds) on a
+    GitHub secondary rate limit, which sleeps that wait, or a gateway error,
+    which sleeps the shorter gateway backoff."""
     parsed, reason = _graphql_once(query, variables or {}, timeout)
-    for wait in rate_limit_waits:
-        if parsed is not None or SECONDARY_RATE_LIMIT not in reason.lower():
+    for attempt, wait in enumerate(retry_waits):
+        if parsed is not None:
             break
-        _log.warning("GitHub secondary rate limit; retrying in %ds", wait)
+        if SECONDARY_RATE_LIMIT not in reason.lower():
+            if not any(e in reason for e in GATEWAY_ERRORS):
+                break
+            wait = min(wait, GATEWAY_FIRST_WAIT * 3 ** attempt)
+        _log.warning("gh api graphql failed (%s); retrying in %ds", reason, wait)
         time.sleep(wait)
         parsed, reason = _graphql_once(query, variables or {}, timeout)
     return parsed, reason
 
 
 def gh_graphql(query: str, *, variables: Mapping[str, str] | None = None,
-               timeout: int = 60, rate_limit_waits: Sequence[float] = (),
+               timeout: int = 60, retry_waits: Sequence[float] = (),
                raise_on_rate_limit: bool = False) -> dict | None:
     """`gh api graphql` for `query`, parsed as a JSON object, or None when no
     usable response came back (timeout, unparseable/non-object body, or an
@@ -125,10 +134,10 @@ def gh_graphql(query: str, *, variables: Mapping[str, str] | None = None,
     envelope, and errors coexist with partial data — so a body carrying a
     `data` object is returned regardless of exit code.
 
-    A caller answering an HTTP request passes no ``rate_limit_waits`` and fails
-    fast. With ``raise_on_rate_limit`` a rate-limit refusal raises `RateLimited`
+    ``retry_waits`` are as in `_graphql`; a caller answering an HTTP request
+    passes none and fails fast. With ``raise_on_rate_limit`` a rate-limit refusal raises `RateLimited`
     instead of returning None."""
-    parsed, reason = _graphql(query, variables, timeout, rate_limit_waits)
+    parsed, reason = _graphql(query, variables, timeout, retry_waits)
     if parsed is None:
         if raise_on_rate_limit and "rate limit" in reason.lower():
             raise RateLimited(reason)
@@ -137,11 +146,11 @@ def gh_graphql(query: str, *, variables: Mapping[str, str] | None = None,
 
 
 def gh_graphql_data(query: str, *, variables: Mapping[str, str] | None = None,
-                    timeout: int = 60, rate_limit_waits: Sequence[float] = ()) -> dict:
+                    timeout: int = 60, retry_waits: Sequence[float] = ()) -> dict:
     """The `data` object of a `gh api graphql` call that returned no GraphQL
     errors. Anything less raises RuntimeError naming gh's error text or the
     GraphQL errors, for a caller that must not proceed on partial data."""
-    parsed, reason = _graphql(query, variables, timeout, rate_limit_waits)
+    parsed, reason = _graphql(query, variables, timeout, retry_waits)
     if parsed is None:
         raise RuntimeError(f"GraphQL query failed: {reason}")
     if parsed.get("errors") or not isinstance(parsed.get("data"), dict):
@@ -239,7 +248,7 @@ def noreply_email(user_id: int, login: str) -> str:
     return f"{user_id}+{login}@users.noreply.github.com"
 
 
-def complete_pr_checks(node: dict, *, rate_limit_waits: Sequence[float] = ()) -> bool:
+def complete_pr_checks(node: dict, *, retry_waits: Sequence[float] = ()) -> bool:
     """Fill the PR node's check contexts from every page at its pinned head."""
     from pipeline import ci_signal
     contexts = ci_signal.check_contexts(node)
@@ -260,7 +269,7 @@ def complete_pr_checks(node: dict, *, rate_limit_waits: Sequence[float] = ()) ->
                 f'name: "{settings.repo_name()}") {{ object(expression: $head) {{ ... on Commit {{ '
                 f'statusCheckRollup {{ contexts(first: 100, after: $cursor) {{ {ci_signal.CONTEXT_FIELDS} }} }} '
                 f'}} }} }} }}',
-                variables={"head": head, "cursor": cursor}, rate_limit_waits=rate_limit_waits)
+                variables={"head": head, "cursor": cursor}, retry_waits=retry_waits)
         except RuntimeError:
             return False
         commit = ((data.get("repository") or {}).get("object") or {})
@@ -275,7 +284,7 @@ def complete_pr_checks(node: dict, *, rate_limit_waits: Sequence[float] = ()) ->
 
 
 def required_checks(branch: str | None, known: dict[str, list[str] | None], *,
-                    rate_limit_waits: Sequence[float] = ()) -> list[str] | None:
+                    retry_waits: Sequence[float] = ()) -> list[str] | None:
     """Required contexts, cached per branch. None when the read is incomplete."""
     from pipeline import ci_signal
     if not branch:
@@ -287,7 +296,7 @@ def required_checks(branch: str | None, known: dict[str, list[str] | None], *,
                 f'query($ref: String!) {{ repository(owner: "{settings.repo_owner()}", '
                 f'name: "{settings.repo_name()}") {{ ref(qualifiedName: $ref) '
                 f'{{ {ci_signal.REF_FIELDS} }} }} }}',
-                variables={"ref": f"refs/heads/{branch}"}, rate_limit_waits=rate_limit_waits)
+                variables={"ref": f"refs/heads/{branch}"}, retry_waits=retry_waits)
         except RuntimeError:
             return None
         ref = (data.get("repository") or {}).get("ref") or {}

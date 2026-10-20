@@ -401,7 +401,7 @@ def upsert_listed(store: Store, gh_prs: list[dict]) -> _UpsertStats:
     and reviewer facts — what `--new` does for its new arrivals."""
     issue_links = load_issue_links(prs=gh_prs)
     live, _ = live_prs.fetch([int(pr["number"]) for pr in gh_prs],
-                             rate_limit_waits=RATE_LIMIT_BACKOFF)
+                             retry_waits=RATE_LIMIT_BACKOFF)
     existing = {int(pr["number"]): rec for pr in gh_prs
                 if (rec := store.load_pr(int(pr["number"]))) is not None}
     with store.batch():
@@ -453,7 +453,7 @@ def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]
     if prs:
         progress.say(f"{len(conv_numbers):,} of {len(prs):,} PRs are new or updated since "
                      "their reviews and comments were last read")
-    feeds = (review_fetch.fetch_feeds(conv_numbers, rate_limit_waits=RATE_LIMIT_BACKOFF)
+    feeds = (review_fetch.fetch_feeds(conv_numbers, retry_waits=RATE_LIMIT_BACKOFF)
              if conv_numbers else {})
     staging = progress.Progress("staging", len(prs), "PRs", one="PR")
     for gh_pr in prs:
@@ -523,7 +523,7 @@ def _targeted_ingest(store: Store, args: argparse.Namespace, started: str) -> in
     issue_links = load_issue_links(prs=targets)
     print(f"open PRs: {len(gh_prs)} | targeting: {len(targets)}")
     live, _ = live_prs.fetch([int(pr["number"]) for pr in targets],
-                              rate_limit_waits=RATE_LIMIT_BACKOFF)
+                              retry_waits=RATE_LIMIT_BACKOFF)
     with store.batch():
         counts = _upsert_all(store, targets, issue_links, existing_prs, live_facts=live)
     upserted, drafts = counts["upserted"], counts["drafts"]
@@ -565,7 +565,7 @@ def main(argv: list[str] | None = None) -> int:
     print("fetching open PRs…", flush=True)
     gh_prs = fetch_open_prs(args.max)
     live, _ = live_prs.fetch([int(pr["number"]) for pr in gh_prs],
-                              rate_limit_waits=RATE_LIMIT_BACKOFF)
+                              retry_waits=RATE_LIMIT_BACKOFF)
     print("loading issue links from the issue store…", flush=True)
     issue_links = load_issue_links(prs=gh_prs)
     print(f"open PRs: {len(gh_prs)} | PRs with issue links: {len(issue_links)}")
