@@ -62,7 +62,7 @@ def _not_found_numbers(errors: list, chunk: list[int]) -> set[int]:
 
 
 def fetch(prs: list[int], *,
-          rate_limit_waits: Sequence[float] = ()) -> tuple[dict[int, dict], set[int]]:
+          retry_waits: Sequence[float] = ()) -> tuple[dict[int, dict], set[int]]:
     """Fetch live head-bound facts for ``prs``.
 
     Returns ``(facts, not_found)``: facts keyed by PR number, plus the requested
@@ -86,7 +86,7 @@ def fetch(prs: list[int], *,
     try:
         for i in range(0, len(prs), CHUNK_SIZE):
             chunk = prs[i:i + CHUNK_SIZE]
-            if not _read(chunk, out, not_found, required_by_base, rate_limit_waits):
+            if not _read(chunk, out, not_found, required_by_base, retry_waits):
                 failed += chunk
             if report is not None:
                 report.advance(len(chunk))
@@ -99,7 +99,7 @@ def fetch(prs: list[int], *,
                      if report is not None else None)
             for i in range(0, len(failed), RETRY_CHUNK_SIZE):
                 chunk = failed[i:i + RETRY_CHUNK_SIZE]
-                _read(chunk, out, not_found, required_by_base, rate_limit_waits)
+                _read(chunk, out, not_found, required_by_base, retry_waits)
                 if retry is not None:
                     retry.advance(len(chunk))
     except RateLimited as exc:
@@ -113,10 +113,10 @@ def fetch(prs: list[int], *,
 
 def _read(chunk: list[int], out: dict[int, dict], not_found: set[int],
           required_by_base: dict[str, list[str] | None],
-          rate_limit_waits: Sequence[float]) -> bool:
+          retry_waits: Sequence[float]) -> bool:
     """Read one batch into ``out`` and ``not_found``. False when the request
     returned nothing usable."""
-    payload = gh_graphql(_query(chunk), rate_limit_waits=rate_limit_waits,
+    payload = gh_graphql(_query(chunk), retry_waits=retry_waits,
                          raise_on_rate_limit=True)
     if payload is None:
         _log.warning("live PR fetch failed for %d PRs (%d-%d)",
@@ -140,10 +140,10 @@ def _read(chunk: list[int], out: dict[int, dict], not_found: set[int],
         if diffstat is None:
             _log.warning("live PR fetch returned incomplete diffstat for PR #%d", n)
             continue
-        complete = complete_pr_checks(node, rate_limit_waits=rate_limit_waits)
+        complete = complete_pr_checks(node, retry_waits=retry_waits)
         runs, statuses = ci_signal.from_graphql_pr(node)
         required = (required_checks(node.get("baseRefName"), required_by_base,
-                                    rate_limit_waits=rate_limit_waits) if complete else None)
+                                    retry_waits=retry_waits) if complete else None)
         file_nodes = ((node.get("files") or {}).get("nodes")) or []
         paths = [f.get("path") for f in file_nodes if f.get("path")]
         out[int(n)] = {
