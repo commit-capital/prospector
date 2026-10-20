@@ -644,13 +644,19 @@ def test_a_hand_back_records_whether_ci_outside_the_change_caused_it(store, monk
     assert fu["state"] == "handed-back" and fu["judged"]["outside"] is False
 
 
+@pytest.fixture
+def revise_route(monkeypatch):
+    monkeypatch.setattr(fix_review_runner, "route", lambda comments: "revise")
+
+
 def _send_back(store: IssueStore, guidance: str = "fix the rest") -> str:
     fix_review.queue(store, 7, "send-back", by="op", guidance=guidance)
     _, outcome = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
     return outcome
 
 
-def test_an_operator_s_send_back_that_fixes_nothing_comes_back_to_them(store, monkeypatch):
+def test_an_operator_s_send_back_that_fixes_nothing_comes_back_to_them(store, monkeypatch,
+                                                                       revise_route):
     monkeypatch.setattr(fix_review_runner, "revise", lambda *a, **k: {
         "ending": "no-fix", "detail": "nothing to change"})
     store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "head_sha": HEAD,
@@ -668,7 +674,8 @@ PARTIAL_REVIEW = [{"lens": "scope-safety", "verdict": "safe", "coverage": [
      "evidence": ""}]}]
 
 
-def test_an_operator_s_send_back_that_still_leaves_part_comes_back_to_them(store, monkeypatch):
+def test_an_operator_s_send_back_that_still_leaves_part_comes_back_to_them(store, monkeypatch,
+                                                                           revise_route):
     from prospector_app.backend import executor
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_FOLLOWUP", "live")
     monkeypatch.setattr(fix_review_runner, "revise", lambda *a, **k: {
