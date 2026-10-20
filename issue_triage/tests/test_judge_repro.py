@@ -150,10 +150,10 @@ def test_a_token_in_the_report_is_not_re_substituted_into_the_judge_prompt(monke
 
 
 def test_judge_runs_on_the_review_model(monkeypatch):
-    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODEL", "codex:gpt-x")
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODELS", "codex:gpt-x")
     assert _judge(monkeypatch, lambda p, **k: _fenced(SURE))["calls"]["model"] == "codex:gpt-x"
 
 
 def test_an_unset_review_model_leaves_the_judge_on_the_agent_model(monkeypatch):
-    monkeypatch.delenv("TRIAGE_ISSUE_FIX_REVIEW_MODEL", raising=False)
+    monkeypatch.delenv("TRIAGE_ISSUE_FIX_REVIEW_MODELS", raising=False)
     assert _judge(monkeypatch, lambda p, **k: _fenced(SURE))["calls"]["model"] is None

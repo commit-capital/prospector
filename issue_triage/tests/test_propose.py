@@ -55,15 +55,17 @@ def _rendered(result: dict | None = None) -> tuple[str, str, str]:
 
 def test_the_body_names_who_wrote_the_change_and_who_reviewed_it():
     reviews = [{**COVERED[0], "model": "codex:gpt-x"},
-               {"lens": "root-cause", "verdict": "safe", "model": "codex:gpt-x"}]
+               {"lens": "root-cause", "verdict": "safe", "model": "codex:gpt-x"},
+               {"lens": "root-cause", "verdict": "safe", "model": "opus"}]
     _, body, _ = _rendered(_result(reviews=reviews))
     assert "- opus, sonnet (Anthropic Claude, via Claude Code), writing" in body
-    assert "- codex:gpt-x (OpenAI, via the Codex CLI), reviewing it." in body
+    assert "- codex:gpt-x (OpenAI, via the Codex CLI), reviewing it independently." in body
+    assert "- opus (Anthropic Claude, via Claude Code), reviewing it independently." in body
 
 
 def test_a_review_with_no_recorded_model_names_no_reviewer():
     _, body, _ = _rendered()
-    assert "reviewing it." not in body
+    assert "reviewing it" not in body
 
 
 def test_a_rendered_proposal_has_no_problems():

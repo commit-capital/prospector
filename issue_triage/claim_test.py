@@ -11,7 +11,7 @@ runs them twice with the fix applied, and has `judge_repro` rate the failure;
 when that reads `reproduced`: its test is then evidence the fixer must answer,
 and a revision has to pass it. Any other answer leaves the claim `unshown`
 with the reason, and an unshown claim never blocks a fix on its own. The
-claim agent runs on the reviewers' model (`settings.issue_fix_review_model()`).
+claim agent runs on the first reviewer model (`settings.issue_fix_review_model()`).
 """
 from __future__ import annotations
 

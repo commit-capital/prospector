@@ -247,7 +247,8 @@ def fix_proof_bar(result: dict) -> tuple[str | None, str]:
     proof is the reproduction red on the base and green with the fix, the
     preservation tests green with the fix, the compile lane, the lint
     (gates.lint_block), and the related tests. Only an explicit `safe` from
-    every lens in REVIEW_LENSES passes."""
+    every reviewer's latest answer (latest_reviews), with every lens in
+    REVIEW_LENSES answered, passes."""
     proof = result.get("proof") or {}
     if not _twice(proof.get("red"), gates.SENTINEL_TEST_FAIL):
         return "fix-unproven", "the reproduction is not red twice on the base"
@@ -283,18 +284,39 @@ def fix_proof_bar(result: dict) -> tuple[str | None, str]:
         named = ", ".join((suite.get("new_failures") or [])[:5]) or "files the runner did not name"
         return "fix-unproven", ("the fix makes the full suite fail beyond the tree's own "
                                 f"failures: {named}")
-    reviews = {r.get("lens"): r for r in result.get("reviews") or []}
+    latest = latest_reviews(result.get("reviews"))
     for lens in REVIEW_LENSES:
-        review = reviews.get(lens)
-        if review is None:
+        answers = [r for r in latest if r.get("lens") == lens]
+        if not answers:
             return "fix-rejected", f"no {lens} review"
-        if review.get("verdict") != "safe" or review.get("failed"):
-            return "fix-rejected", f"{lens}: {review.get('reason') or 'not safe'}"
+        for review in answers:
+            if review.get("verdict") != "safe" or review.get("failed"):
+                return "fix-rejected", f"{reviewer(review)}: {review.get('reason') or 'not safe'}"
     return None, "proven on the base and safe under both lenses"
+
+
+def latest_reviews(reviews: list[dict] | None) -> list[dict]:
+    """Each reviewer's latest answer, one per lens and model, in the order the
+    reviewers first answered; a revision's reviews come after those of the
+    version they answered."""
+    latest: dict[tuple[object, object], dict] = {}
+    for review in reviews or []:
+        latest[review.get("lens"), review.get("model")] = review
+    return list(latest.values())
+
+
+def reviewer(review: dict) -> str:
+    """A review's lens, with the model that gave it when recorded."""
+    model = review.get("model")
+    return f"{review.get('lens')} ({model})" if model else str(review.get("lens"))
 
 
 CoverageStatus = Literal["addressed", "not-addressed", "already-fixed"]
 COVERAGE_STATUSES: tuple[CoverageStatus, ...] = ("addressed", "not-addressed", "already-fixed")
+# Which status a defect two models account for differently keeps: a defect
+# is covered only when no model says the change leaves it.
+_COVERAGE_RANK: dict[CoverageStatus, int] = {"not-addressed": 0, "addressed": 1,
+                                             "already-fixed": 2}
 
 
 class CoverageEntry(TypedDict):
@@ -337,37 +359,51 @@ def coverage_entries(raw: object) -> list[CoverageEntry] | None:
 
 
 def fix_coverage(reviews: list[dict] | None) -> Coverage:
-    """The coverage the latest review that recorded one gives the fix; a
-    revision's review comes after the one it answered."""
-    for review in reversed(reviews or []):
+    """The coverage the reviewers give the fix: each model's latest review that
+    recorded an account (a revision's review comes after the one it answered),
+    merged into one list of defects. Defects the models name in the same words
+    are one, with the status from _COVERAGE_RANK."""
+    accounts: dict[object, list[CoverageEntry]] = {}
+    for review in reviews or []:
         defects = coverage_entries(review.get("coverage"))
         if defects is not None:
-            partial = any(d["status"] == "not-addressed" for d in defects)
-            return Coverage("partial" if partial else "complete", defects)
-    return Coverage("unchecked", [])
+            accounts[review.get("model")] = defects
+    if not accounts:
+        return Coverage("unchecked", [])
+    merged: dict[str, CoverageEntry] = {}
+    for defects in accounts.values():
+        for d in defects:
+            key = " ".join(d["defect"].casefold().split())
+            held = merged.get(key)
+            if held is None or _COVERAGE_RANK[d["status"]] < _COVERAGE_RANK[held["status"]]:
+                merged[key] = d
+    out = list(merged.values())
+    partial = any(d["status"] == "not-addressed" for d in out)
+    return Coverage("partial" if partial else "complete", out)
 
 
 def review_comments(reviews: list[dict] | None) -> tuple[bool, list[str]]:
     """What the reviews ask the fixer to change, as one code review's comments,
-    and whether any of them rejects the fix: (rejected, comments). Each lens's
-    latest review counts. A judged rejection comments its reason and concerns
-    and rejects; a reported defect the coverage account leaves unaddressed is a
-    comment that does not reject, since a proven fix for part of a report
-    stands as a partial fix. A reviewer that reached no verdict comments
-    nothing."""
-    latest = {r.get("lens"): r for r in reviews or []}
+    and whether any of them rejects the fix: (rejected, comments). Each
+    reviewer's latest answer counts (latest_reviews), so any model's judged
+    rejection rejects, and every model's comments are combined. A judged
+    rejection comments its reason and concerns and rejects; a reported defect
+    the merged coverage account (fix_coverage) leaves unaddressed is a comment
+    that does not reject, since a proven fix for part of a report stands as a
+    partial fix. A reviewer that reached no verdict comments nothing: its
+    failure is the caller's to read, never a pass."""
     rejected = False
     comments: list[str] = []
-    for lens, review in latest.items():
+    for review in latest_reviews(reviews):
         if review.get("failed") or review.get("verdict") == "safe":
             continue
         rejected = True
-        comments += [f"{lens}: {c}" for c in [review.get("reason") or "not safe",
-                                               *(review.get("concerns") or [])]]
+        comments += [f"{reviewer(review)}: {c}"
+                     for c in [review.get("reason") or "not safe", *(review.get("concerns") or [])]]
     comments += [f"not addressed: {d['defect']}" + (f" ({d['evidence']})" if d["evidence"]
                                                     else "")
                  for d in fix_coverage(reviews).having("not-addressed")]
-    return rejected, comments
+    return rejected, list(dict.fromkeys(comments))
 
 
 def propose_gate(record: dict, live: dict | None, *,

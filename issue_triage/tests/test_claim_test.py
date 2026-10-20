@@ -120,7 +120,7 @@ def test_the_claim_reaches_the_agent_as_bounded_data_on_a_locked_down_run(monkey
 
 @pytest.mark.parametrize("setting,want", [("codex:gpt-x", "codex:gpt-x"), ("", None)])
 def test_the_claim_agent_runs_on_the_review_model(monkeypatch, setting, want):
-    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODEL", setting)
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODELS", setting)
     seen: dict = {}
 
     def run_agent(prompt, **kw):
