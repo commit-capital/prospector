@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 import { api, type Autohunt, type CapacityState, type ControlOverview, type FixQueue, type JobRuntime, type JobSpec, type PipelineStatus, type SuggestedAction } from "../api";
 import { usePoll } from "../poll";
 import { Attention } from "./control/Attention";
@@ -32,11 +33,13 @@ export default function ControlPanel() {
   const [overview, setOverview] = useState<ControlOverview | null>(null);
   const [overviewErr, setOverviewErr] = useState<string>();
   const [open, setOpen] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>(readTab);
+  // ?job=<kind> opens that job's row, as a page's link to it does.
+  const focusJob = useSearchParams()[0].get("job");
+  const [tab, setTab] = useState<Tab>(() => (focusJob ? "jobs" : readTab()));
   const [specs, setSpecs] = useState<JobSpec[]>([]);
   const [runtimes, setRuntimes] = useState<Record<string, JobRuntime> | null>(null);
   const [pipeline, setPipeline] = useState<PipelineStatus | null>(null);
-  const [suggestions, setSuggestions] = useState<SuggestedAction[]>([]);
+  const [suggestions, setSuggestions] = useState<SuggestedAction[] | null>(null);
   const [capacity, setCapacity] = useState<CapacityState | null>(null);
   const [hunt, setHunt] = useState<Autohunt | null>(null);
   const [fixQueue, setFixQueue] = useState<FixQueue | null>(null);
@@ -50,7 +53,7 @@ export default function ControlPanel() {
   const refreshOverview = useCallback(() => { void fetchOverview(true); }, [fetchOverview]);
   const loadPipeline = useCallback(() => {
     api.pipelineStatus().then(setPipeline).catch(() => {});
-    api.suggestedActions("all").then((d) => setSuggestions(d.items)).catch(() => {});
+    api.suggestedActions("all").then((d) => setSuggestions(d.items)).catch(() => setSuggestions([]));
     api.jobRuntimes().then((d) => setRuntimes(d.runtimes)).catch(() => {});
   }, []);
   const loadFixQueue = useCallback(
@@ -65,6 +68,15 @@ export default function ControlPanel() {
     api.jobSpecs().then((d) => setSpecs(d.specs)).catch(() => {});
     loadPipeline();
   }, [loadPipeline]);
+
+  // Scroll to the linked job once the panels above it have loaded.
+  const scrolled = useRef(false);
+  const loaded = overview != null && runtimes != null && suggestions != null && specs.length > 0;
+  useEffect(() => {
+    if (!focusJob || !loaded || scrolled.current) return;
+    scrolled.current = true;
+    document.getElementById(`job-${focusJob}`)?.scrollIntoView({ block: "center" });
+  }, [focusJob, loaded]);
 
   const busy = (overview?.lanes ?? []).some((l) => l.now.length > 0);
   usePoll(loadOverview, busy ? 10_000 : 30_000);
@@ -106,8 +118,8 @@ export default function ControlPanel() {
       {tab === "jobs" && (
         <>
           <Coverage pipeline={pipeline} runtimes={runtimes} onOpenJob={openJob} />
-          <Jobs specs={specs} runtimes={runtimes} suggestions={suggestions} pipeline={pipeline}
-            running={runner.running} onOpenJob={openJob}
+          <Jobs specs={specs} runtimes={runtimes} suggestions={suggestions ?? []} pipeline={pipeline}
+            focus={focusJob} running={runner.running} onOpenJob={openJob}
             onStart={(url, spec) => {
               runner.attach(url, spec.kind, `▶ starting ${spec.label}…`);
               window.scrollTo({ top: 0, behavior: "smooth" });

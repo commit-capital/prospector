@@ -81,8 +81,6 @@ from prospector_app.backend import verify_worker
 from prospector_app.backend import work_status
 
 from pipeline import actions as pipeline_actions
-from pipeline import display_pass
-from pipeline import headless_agent
 from pipeline import reviewers
 from pipeline import settings
 from pipeline import threat_evidence
@@ -845,22 +843,6 @@ def pr_history_endpoint(n: int):
     return {"items": pr_history.timeline(n)}
 
 
-@app.post("/api/prs/{n}/display")
-def pr_display_write(n: int):
-    """Write PR #n's plain-language card now (pipeline/display_pass.py), as
-    the operator. 422, naming the failed check, when no reply passed."""
-    try:
-        sec = display_pass.write(data.store(), n, trigger="operator")
-    except KeyError:
-        raise HTTPException(404, f"PR #{n} not found")
-    except headless_agent.AgentUnavailable as e:
-        raise HTTPException(503, str(e))
-    if isinstance(sec, str):
-        raise HTTPException(422, f"The summary was not written: {sec}.")
-    data.refresh()
-    return sec
-
-
 @app.get("/api/prs/{n}/diff")
 def pr_diff(n: int):
     return service.get_diff(n)
@@ -1308,22 +1290,6 @@ def issue_detail(n: int):
         if link.get("how") in issue_links.REFERENCED:
             link["facts"] = service.linked_pr_facts(link["pr"])
     return d
-
-
-@app.post("/api/issues/{n}/display")
-def issue_display_write(n: int):
-    """Write issue #n's plain-language card now (issue_triage/issue_display.py),
-    as the operator. 422, naming the failed check, when no reply passed."""
-    from issue_triage import issue_display
-    try:
-        sec = issue_display.write(issue_data.store(), n, trigger="operator")
-    except KeyError:
-        raise HTTPException(404, f"issue {n} not in store")
-    except headless_agent.AgentUnavailable as e:
-        raise HTTPException(503, str(e))
-    if isinstance(sec, str):
-        raise HTTPException(422, f"The summary was not written: {sec}.")
-    return sec
 
 
 @app.post("/api/issues/{n}/fix")

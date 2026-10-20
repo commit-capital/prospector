@@ -77,11 +77,12 @@ function backlogNote(spec: JobSpec, pipeline: PipelineStatus | null): ReactNode 
 
 /** Every Control-tab job. The jobs worth running now come first, full width
  *  with why; the rest are tiles that open one at a time. */
-export function Jobs({ specs, runtimes, suggestions, pipeline, running, onStart, onOpenJob }: {
+export function Jobs({ specs, runtimes, suggestions, pipeline, focus, running, onStart, onOpenJob }: {
   specs: JobSpec[];
   runtimes: Record<string, JobRuntime> | null;
   suggestions: SuggestedAction[];
   pipeline: PipelineStatus | null;
+  focus?: string | null;
   running: string | null;
   onStart: (url: string, spec: JobSpec) => void;
   onOpenJob: (id: number) => void;
@@ -89,7 +90,7 @@ export function Jobs({ specs, runtimes, suggestions, pipeline, running, onStart,
   const [cluster, setCluster] = useState("");
   const [prNum, setPrNum] = useState("");
   const [counts, setCounts] = useState<Record<string, string>>({});
-  const [openKind, setOpenKind] = useState<string | null>(null);
+  const [openKind, setOpenKind] = useState<string | null>(focus ?? null);
   const [inputError, setInputError] = useState<{ kind: string; msg: string } | null>(null);
   const [recon, setRecon] = useState<{ checked: number; changed: number; failed: number[]; complete: boolean } | null>(null);
   const [reconBusy, setReconBusy] = useState(false);
@@ -129,7 +130,7 @@ export function Jobs({ specs, runtimes, suggestions, pipeline, running, onStart,
     const note = suggestion ? null : backlogNote(spec, pipeline);
     const step = pipelineStep(spec.kind);
     return (
-      <div key={spec.kind} className={suggestion ? "job-recommended" : "job-open"}>
+      <div key={spec.kind} id={`job-${spec.kind}`} className={suggestion ? "job-recommended" : "job-open"}>
         <div className="job-row-head">
           {step != null && <span className="phase-step" title={`Step ${step} of the PR pipeline — run the lower steps first`}>{step}</span>}
           <b>{spec.label}</b>

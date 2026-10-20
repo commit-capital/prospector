@@ -564,7 +564,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         </div>
         <section className="suggestion summary-panel tone-muted">
           <h3 className="summary-title">Summary</h3>
-          <PRStory pr={pr} onWritten={reloadPr} />
+          <PRStory pr={pr} />
           {description}
         </section>
         {/* A malicious PR's evidence outlives the PR: closing it upstream is
@@ -661,7 +661,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       {/* The Summary: what the PR fixes and how, what we found, and the one
           action surface under the suggestion. */}
       <PRActionBar pr={pr} runState={rs} onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }}
-        summary={<><PRStory pr={pr} onWritten={reloadPr} />{description}{dupCoverage}<AnalysisLine pr={pr} onJump={jump} /></>} />
+        summary={<><PRStory pr={pr} />{description}{dupCoverage}<AnalysisLine pr={pr} onJump={jump} /></>} />
        </>
       )}
 
