@@ -1,22 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { api, type IssueDetail } from "../api";
-import { useRepoMeta } from "../RepoMetaContext";
 import { TrustedAuthorName } from "../components/TrustedAuthor";
-import { DispositionChip, LinkedPRs, ReproChip } from "./Issues";
-import { IssueActionBar } from "../components/IssueActionBar";
+import { IssueSummary } from "../components/issues/IssueSummary";
 import { FixStatusChip, IssueFixPanel } from "../components/IssueFixPanel";
 import { FlyoutIssueLink } from "../components/FlyoutIssueLink";
 
-/** One issue's full detail — meta, triage verdict (disposition + rationale +
- *  asks), dup-cluster context, linked PRs, the agent's plain-language summary
- *  (gist), and the report body. Rendered inside the issue flyout. */
+/** One issue's full detail: the Summary panel, the auto-fix lane, and the
+ *  dup-cluster context. Rendered inside the issue flyout. */
 export function IssueDetailContent({ issue }: { issue: number }) {
   const [d, setD] = useState<IssueDetail>();
   const [err, setErr] = useState<string>();
-  const { prUrl } = useRepoMeta();
 
   useEffect(() => {
     api.getIssue(issue).then(setD).catch((e) => setErr(String(e)));
@@ -26,7 +20,6 @@ export function IssueDetailContent({ issue }: { issue: number }) {
   if (err) return <div className="error">Failed to load issue #{issue}: {err}</div>;
   if (!d) return <div className="muted" style={{ padding: 16 }}>Loading issue #{issue}…</div>;
 
-  const a = d.analysis;
   return (
     <div className="prcontent">
       <div className="prc-head">
@@ -35,8 +28,6 @@ export function IssueDetailContent({ issue }: { issue: number }) {
           {d.author && <a href={`https://github.com/${d.author}`} target="_blank" rel="noreferrer"
                           title="The reporter's GitHub profile">@<TrustedAuthorName author={d.author} trusted={d.trusted_author} /></a>}
           <span className={`chip sm ${d.state === "open" ? "chip-green" : "chip-muted"}`}>{d.state}</span>
-          <DispositionChip d={d.disposition} />
-          <ReproChip grade={d.repro_grade} />
           <FixStatusChip status={d.fix_status} reason={d.fix_reason} />
           {d.pain != null && <span className="chip chip-purple sm" title="Cluster pain rank (higher = more impactful)">pain {d.pain.toFixed(2)}</span>}
           {d.subsystem && <span className="chip chip-muted sm">{d.subsystem}</span>}
@@ -53,35 +44,13 @@ export function IssueDetailContent({ issue }: { issue: number }) {
         </div>
       </div>
 
-      <IssueActionBar d={d} onActed={reload} />
+      <IssueSummary d={d} onChanged={reload} />
 
-      <h3>Auto-fix</h3>
-      <IssueFixPanel d={d} onChanged={reload} />
-
-      <h3>Triage</h3>
-      {a ? (
-        <div className="callout">
-          <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
-            <DispositionChip d={a.disposition} />
-            {a.canonical != null && <span className="muted small">duplicate of <FlyoutIssueLink n={a.canonical} /></span>}
-            {a.fixed_by != null && (
-              <span className="muted small">fixed by <a href={prUrl(a.fixed_by)} target="_blank" rel="noreferrer"
-                className="gh-pr-link" title="The merged PR the fix scan cites">#{a.fixed_by}</a></span>
-            )}
-          </div>
-          {a.rationale && <div style={{ whiteSpace: "pre-wrap" }}>{a.rationale}</div>}
-          {a.asks && a.asks.length > 0 && (
-            <>
-              <div className="muted small" style={{ marginTop: 8 }}>Asks for the reporter:</div>
-              <ul style={{ margin: "4px 0 0 18px" }}>
-                {a.asks.map((ask, i) => <li key={i}>{ask}</li>)}
-              </ul>
-            </>
-          )}
-        </div>
-      ) : (
-        <div className="muted small">Not yet analyzed — run Issue analyze from the Control tab.</div>
-      )}
+      <section className="panel">
+        <div className="panel-head"><h3>Other actions</h3></div>
+        <h4>Auto-fix</h4>
+        <IssueFixPanel d={d} onChanged={reload} />
+      </section>
 
       {(d.cluster != null || d.duplicates.length > 0) && (
         <>
@@ -97,28 +66,6 @@ export function IssueDetailContent({ issue }: { issue: number }) {
               {d.duplicates.length > 12 && ` +${d.duplicates.length - 12}`}
             </div>
           )}
-        </>
-      )}
-
-      <h3>PRs that may fix it</h3>
-      {d.linked_prs.length
-        ? <LinkedPRs prs={d.linked_prs} count={d.linked_pr_count} referencedCount={d.referenced_pr_count} />
-        : <span className="muted">—</span>}
-
-      {a?.gist && (
-        <>
-          <h3>Summary</h3>
-          <div className="callout" style={{ whiteSpace: "pre-wrap" }}>{a.gist}</div>
-        </>
-      )}
-
-      {d.body && (
-        <>
-          <h3>Report</h3>
-          <div className="markdown prbody-md">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{d.body.slice(0, 4000)}</ReactMarkdown>
-          </div>
-          {d.body.length > 4000 && <div className="muted small">… truncated — full text on GitHub ↗</div>}
         </>
       )}
     </div>
