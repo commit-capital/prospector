@@ -227,7 +227,7 @@ def _read_only(seen: dict, clone: str) -> None:
         os.path.realpath(seen["env"]["TMPDIR"])]
     assert "TRIAGE_STORE_URL" not in seen["env"]
     assert seen["argv"][seen["argv"].index("-m") + 1] == "gpt-x"
-    assert "writes nothing" in seen["prompt"] and "apply_patch" not in seen["prompt"]
+    assert "writes only a private temp" in seen["prompt"] and "apply_patch" not in seen["prompt"]
 
 
 @pytest.mark.parametrize("lens", ["root-cause", "scope-safety"])

@@ -63,7 +63,7 @@ READ_ONLY_CONTEXT = """
 
 ## Working in Codex
 
-Your shell runs in a sandbox: it reads the worktree and the system's tools, writes nothing, and has no network. Read and search files with ordinary commands (`rg`, `sed -n`, `cat`, `ls`). Do not edit any file, and do not run the project's code (node, pnpm, a test runner).
+Your shell runs in a sandbox: it reads the worktree and the system's tools, writes only a private temp directory, and has no network. Read and search files with ordinary commands (`rg`, `sed -n`, `cat`, `ls`). Do not edit any file, and do not run the project's code (node, pnpm, a test runner).
 """
 
 _OUTPUT_HEADING = "\n# Output\n"
