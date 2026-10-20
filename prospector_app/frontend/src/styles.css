@@ -1637,8 +1637,9 @@ tr.row-done:hover > td { opacity: 1; }
 .home-tile-stale { fill: var(--muted); opacity: .18; }
 .home-tile-sub { line-height: 1.3; }
 .home-progress-stale { flex-basis: 100%; margin-top: -4px; }
+/* 300px columns fit all four side by side on a laptop-width window. */
 .home-columns {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(430px, 100%), 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
   gap: 12px; align-items: start; margin-bottom: 10px;
 }
 .home-col { min-width: 0; display: flex; flex-direction: column; gap: 10px; }

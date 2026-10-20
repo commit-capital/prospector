@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import {
   api, type AdvisoryQueryResult, type AlertQueryResult, type AutonomousItem,
@@ -16,11 +16,11 @@ import { useSystemHealth } from "../useSystemHealth";
 import { SkeletonRows } from "../components/SkeletonRows";
 import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
-  HOME_ISSUE_CARDS, issuesHref, painLabel,
+  HOME_ISSUE_CARDS, HOME_SECTIONS, issuesHref, painLabel,
   SAMPLE_ISSUE_LIMIT, SAMPLE_LIMIT, SAMPLE_QUERY,
   SECURITY_ADVISORIES_HREF, SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY,
   SECURITY_ALERTS_HREF, SECURITY_CARD,
-  type HomeCard, type HomeIssueAction, type HomeIssueCard, type HomeRowAction,
+  type HomeCard, type HomeIssueAction, type HomeSection, type HomeIssueCard, type HomeRowAction,
 } from "./homeCards";
 
 // While the backend snapshot is cold-loading, counts come back null with
@@ -535,6 +535,36 @@ export default function Home() {
         onActionDone={() => setGeneration((g) => g + 1)} />
     );
   };
+  const sections: Record<HomeSection, ReactNode> = {
+    issues: (
+      <section key="issues" className="home-col">
+        <div className="home-col-head muted">Issues — triage picks to action</div>
+        {HOME_ISSUE_CARDS.map((c) => <HomeIssueCardRow key={c.key} card={c} />)}
+      </section>
+    ),
+    act: (
+      <section key="act" className="home-col">
+        <div className="home-col-head muted">Your move — one click each</div>
+        {HOME_CARDS.filter((c) => c.column === "act").map(renderCard)}
+        <HomeSecurityCard />
+      </section>
+    ),
+    auto: (
+      <section key="auto" className={"home-col" + (stalled ? " home-col-stalled" : "")}>
+        <div className="home-col-head muted">
+          {stalled ? "Stalled — the workers are down" : "In motion — the workers clear these"}
+        </div>
+        {HOME_CARDS.filter((c) => c.column === "auto").map(renderCard)}
+        <HomeAutoFeedCard />
+      </section>
+    ),
+    handed: (
+      <section key="handed" className="home-col">
+        <div className="home-col-head muted">Handed back — needs a person</div>
+        {HOME_CARDS.filter((c) => c.column === "handed").map(renderCard)}
+      </section>
+    ),
+  };
   return (
     <div className="home">
       <div className="home-head">
@@ -548,26 +578,7 @@ export default function Home() {
       {err && <div className="error">Failed to load PRs: {err}</div>}
       {loading && <SkeletonRows label="Loading PR data…" />}
       <div className="home-columns">
-        <section className="home-col">
-          <div className="home-col-head muted">Your move — one click each</div>
-          {HOME_CARDS.filter((c) => c.column === "act").map(renderCard)}
-          <HomeSecurityCard />
-        </section>
-        <section className={"home-col" + (stalled ? " home-col-stalled" : "")}>
-          <div className="home-col-head muted">
-            {stalled ? "Stalled — the workers are down" : "In motion — the workers clear these"}
-          </div>
-          {HOME_CARDS.filter((c) => c.column === "auto").map(renderCard)}
-          <HomeAutoFeedCard />
-        </section>
-        <section className="home-col">
-          <div className="home-col-head muted">Handed back — needs a person</div>
-          {HOME_CARDS.filter((c) => c.column === "handed").map(renderCard)}
-        </section>
-        <section className="home-col">
-          <div className="home-col-head muted">Issues — triage picks to action</div>
-          {HOME_ISSUE_CARDS.map((c) => <HomeIssueCardRow key={c.key} card={c} />)}
-        </section>
+        {HOME_SECTIONS.map((key) => sections[key])}
       </div>
     </div>
   );
