@@ -25,22 +25,24 @@ def test_check_rejects_a_number_the_inputs_never_name(tmp_path):
     assert idp.check({"bug": GOOD["bug"]}, src) == "the bug or fix was missing"
 
 
-def test_write_stores_a_card_a_new_analysis_retires(tmp_path, monkeypatch):
+def test_refresh_stores_a_card_a_new_analysis_retires(tmp_path, monkeypatch):
     st = _seed(tmp_path)
     monkeypatch.setattr(idp.display_pass, "ask", lambda prompt: GOOD)
-    sec = idp.write(st, 5, trigger="operator")
-    assert isinstance(sec, dict) and sec["fix"] == GOOD["fix"]
+    assert idp.refresh(st, [5], trigger="operator") == 1
+    assert st.load_issue(5).section("display")["fix"] == GOOD["fix"]
     assert idp.current(st.load_issue(5)) == st.load_issue(5).section("display")
     assert [r.raw["stats"]["written"] for r in st.runs() if r.raw["phase"] == idp.PHASE] == [True]
     st.edit_issue(5).route_to("needs-human", "Logging alone is not enough.", gist="Stuck logins.")
     assert idp.current(st.load_issue(5)) is None
 
 
-def test_write_stores_nothing_when_every_reply_is_rejected(tmp_path, monkeypatch):
+def test_refresh_stores_nothing_when_every_reply_is_rejected(tmp_path, monkeypatch):
     st = _seed(tmp_path)
     monkeypatch.setattr(idp.display_pass, "ask", lambda prompt: {**GOOD, "bug": "See #999."})
-    assert idp.write(st, 5, trigger="operator") == "it cited #999, which nothing it was given names"
+    assert idp.refresh(st, [5], trigger="operator") == 0
     assert st.load_issue(5).section("display") is None
+    assert [r.raw["stats"]["reason"] for r in st.runs() if r.raw["phase"] == idp.PHASE] == \
+        ["it cited #999, which nothing it was given names"]
 
 
 def test_refresh_writes_only_stale_cards(tmp_path, monkeypatch):
@@ -68,7 +70,7 @@ def test_wanted_lists_open_analyzed_issues_without_a_current_card(tmp_path, monk
     st.edit_issue(8).route_to("needs-human", "Also stuck.", gist="Stuck too.")
     assert idp.wanted(st.all_issues()) == [8, 5]
     monkeypatch.setattr(idp.display_pass, "ask", lambda prompt: GOOD)
-    idp.write(st, 8, trigger="operator")
+    idp.refresh(st, [8], trigger="operator")
     assert idp.wanted(st.all_issues()) == [5]
 
 
@@ -76,6 +78,6 @@ def test_refresh_with_force_rewrites_a_current_card(tmp_path, monkeypatch):
     st = _seed(tmp_path)
     asked: list[str] = []
     monkeypatch.setattr(idp.display_pass, "ask", lambda prompt: asked.append(prompt) or GOOD)
-    idp.write(st, 5, trigger="operator")
+    idp.refresh(st, [5], trigger="operator")
     assert idp.refresh(st, [5], trigger="operator", force=True) == 1
     assert len(asked) == 2

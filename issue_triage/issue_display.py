@@ -109,21 +109,6 @@ def _record(store: IssueStore, n: int, got: dict | str, digest: str, *,
                                 **({} if isinstance(got, dict) else {"reason": got})}})
 
 
-def write(store: IssueStore, n: int, *, trigger: str) -> dict | str:
-    """Compose and store issue `n`'s display section, booking the attempt on
-    the ledger. Returns the stored section, or why no reply passed the checks."""
-    issue = store.load_issue(n)
-    if issue is None:
-        raise KeyError(n)
-    started = storekit.now()
-    got = compose(inputs(issue))
-    _record(store, n, got, source_hash(issue), started=started, trigger=trigger)
-    if isinstance(got, str):
-        return got
-    fresh = store.load_issue(n)
-    return (fresh.section("display") if fresh else None) or "the card was not stored"
-
-
 def refresh(store: IssueStore, ns: list[int], *, trigger: str, concurrency: int = 4,
             force: bool = False) -> int:
     """Write the card of each issue in `ns` whose card is missing or stale (or
