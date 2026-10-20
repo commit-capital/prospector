@@ -595,3 +595,144 @@ def test_a_live_poll_queues_one_judgment_per_new_rival(store, late):
     followup.poll(store, mode="live")
     assert late[-1] == {9, 12, 13}
     assert store.load_issue(7).fix_request["status"] == "done"
+
+
+# --- an approved fix ----------------------------------------------------------------
+
+def test_a_hand_back_for_ci_outside_the_change_says_so():
+    based = _decide(_pr([_check("server", "failure", run_id=4)]),
+                    _traced(**{ROUTE_TEST: followup.BASE_FAILS}), logs={"job 40": LOG_16929})
+    assert based.kind == "hand-back" and based.outside
+    logs = {"job 40": "src/x.ts(3,1): error TS2304: Cannot find name 'y'."}
+    untraced = _decide(_pr([_check("typecheck", "failure", run_id=4)]),
+                       {**RERAN, "ci_untraced_revised": True}, logs=logs)
+    assert untraced.kind == "hand-back" and untraced.outside
+    spent = _decide(_pr(views=[_greptile(reviewers.FAIL)]), {**DESCRIBED, "revisions": 2})
+    assert spent.kind == "hand-back" and not spent.outside
+
+
+def test_a_hand_back_whose_description_was_asked_for_again_is_re_described():
+    held = {"state": "handed-back", "head_sha": HEAD, "described_head": ""}
+    assert _decide(_pr(views=[_greptile(reviewers.FAIL)]), held).kind == "describe"
+
+
+def test_re_describing_an_approved_hand_back_keeps_it_handed_back(store, monkeypatch):
+    from prospector_app.backend import executor
+    monkeypatch.setattr(followup, "read", lambda pr: _pr(views=[_greptile(reviewers.FAIL)]))
+    calls = []
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    monkeypatch.setattr(executor, "update_issue_fix_proposal",
+                        lambda n, pr, **kw: calls.append(kw) or {"status": "executed",
+                                                                 "detail": "rewrote"})
+    judged = {"head_sha": HEAD, "reason": "CI fails on the base too", "outside": True}
+    store.edit_issue(7).record_fix_followup({
+        "pr": 9, "state": "handed-back", "head_sha": HEAD, "described_head": "",
+        "judged": judged, "approved": {"by": "op", "judged": judged, "partial": True}})
+    followup.poll(store, mode="live")
+    fu = store.load_issue(7).fix_followup
+    assert calls and calls[0]["push"] is False
+    assert fu["state"] == "handed-back" and fu["described_head"] == HEAD
+    assert fix_review.fix_status(store.load_issue(7))[0] == "pr-open"
+
+
+def test_a_hand_back_records_whether_ci_outside_the_change_caused_it(store, monkeypatch):
+    monkeypatch.setattr(followup, "read", lambda pr: _pr(views=[_greptile(reviewers.FAIL)]))
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching",
+                                             "described_head": HEAD, "revisions": 2})
+    followup.poll(store, mode="live")
+    fu = store.load_issue(7).fix_followup
+    assert fu["state"] == "handed-back" and fu["judged"]["outside"] is False
+
+
+@pytest.fixture
+def revise_route(monkeypatch):
+    monkeypatch.setattr(fix_review_runner, "route", lambda comments: "revise")
+
+
+def _send_back(store: IssueStore, guidance: str = "fix the rest") -> str:
+    fix_review.queue(store, 7, "send-back", by="op", guidance=guidance)
+    _, outcome = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
+    return outcome
+
+
+def test_an_operator_s_send_back_that_fixes_nothing_comes_back_to_them(store, monkeypatch,
+                                                                       revise_route):
+    monkeypatch.setattr(fix_review_runner, "revise", lambda *a, **k: {
+        "ending": "no-fix", "detail": "nothing to change"})
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "head_sha": HEAD,
+                                             "described_head": HEAD,
+                                             "judged": {"head_sha": HEAD, "reason": "old"}})
+    assert "#9 is unchanged" in _send_back(store)
+    fu = store.load_issue(7).fix_followup
+    assert fu["state"] == "handed-back" and "no-fix" in fu["judged"]["reason"]
+    assert fix_review.fix_status(store.load_issue(7))[0] == "review"
+
+
+PARTIAL_REVIEW = [{"lens": "scope-safety", "verdict": "safe", "coverage": [
+    {"defect": "the reaper swallows the error", "status": "addressed", "evidence": "r.ts:8"},
+    {"defect": "cancel after a restart is a no-op", "status": "not-addressed",
+     "evidence": ""}]}]
+
+
+def test_an_operator_s_send_back_that_still_leaves_part_comes_back_to_them(store, monkeypatch,
+                                                                           revise_route):
+    from prospector_app.backend import executor
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_FOLLOWUP", "live")
+    monkeypatch.setattr(fix_review_runner, "revise", lambda *a, **k: {
+        "ending": "fixed", "detail": "ok",
+        "result": {"patch": PATCH, "reviews": PARTIAL_REVIEW}})
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    monkeypatch.setattr(executor, "update_issue_fix_proposal",
+                        lambda n, pr, **kw: {"status": "executed", "detail": "Pushed"})
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "head_sha": HEAD,
+                                             "described_head": HEAD})
+    assert _send_back(store).startswith("Revised #9")
+    fu = store.load_issue(7).fix_followup
+    assert fu["state"] == "handed-back"
+    assert "cancel after a restart is a no-op" in fu["judged"]["reason"]
+    assert fix_review.fix_status(store.load_issue(7))[0] == "review"
+
+
+def test_a_hand_back_for_something_new_ends_the_approval_for_good(store, monkeypatch):
+    monkeypatch.setattr(followup, "read", lambda pr: _pr(views=[_greptile(reviewers.FAIL)]))
+    store.edit_issue(7).record_fix_followup({
+        "pr": 9, "state": "watching", "described_head": HEAD, "revisions": 2,
+        "approved": {"by": "op", "judged": {"reason": "old"}, "partial": True}})
+    followup.poll(store, mode="live")
+    fu = store.load_issue(7).fix_followup
+    assert fu["state"] == "handed-back" and "approved" not in fu
+    store.edit_issue(7).record_fix_followup({**fu, "state": "watching"})
+    assert fix_review.fix_status(store.load_issue(7))[0] == "pr-open"
+    assert fix_review.approval(store.load_issue(7)) is None
+
+
+def test_an_approval_made_while_a_sweep_runs_survives_its_write(store, monkeypatch):
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "head_sha": HEAD,
+                                             "described_head": HEAD,
+                                             "judged": {"head_sha": HEAD, "reason": "r"}})
+
+    def read(pr):
+        fix_review.approve(store, 7, by="op", partial=True)
+        return _pr(views=[_greptile(reviewers.FAIL)])
+
+    monkeypatch.setattr(followup, "read", read)
+    followup.poll(store, mode="live")
+    fu = store.load_issue(7).fix_followup
+    assert fu["approved"]["by"] == "op" and fu["described_head"] == ""
+
+
+def test_an_approval_withdrawn_while_a_sweep_runs_stays_withdrawn(store, monkeypatch):
+    judged = {"head_sha": HEAD, "reason": "r"}
+    store.edit_issue(7).record_fix_followup({
+        "pr": 9, "state": "handed-back", "head_sha": HEAD, "described_head": HEAD,
+        "judged": judged, "approved": {"by": "op", "judged": judged, "partial": False}})
+
+    def read(pr):
+        fix_review.queue(store, 7, "send-back", by="op", guidance="fix the rest")
+        store.edit_issue(7).record_fix_request({"action": "send-back", "status": "done",
+                                                "source": "operator"})
+        return _pr(views=[_greptile(reviewers.FAIL)])
+
+    monkeypatch.setattr(followup, "read", read)
+    followup.poll(store, mode="live")
+    assert "approved" not in store.load_issue(7).fix_followup

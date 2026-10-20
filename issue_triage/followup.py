@@ -37,9 +37,12 @@ their reviews with words, their open inline comments, their comments).
 - `wait` — CI or a reviewer has not finished at this head.
 - `ready` — CI passes and every active reviewer's bar passes.
 
-A hand-back or ready holds until the head moves or a maintainer asks for a
-change, and is recorded with the head and reason it was judged at (`judged`);
-any other step at a new head leaves it `watching`. The record follows one pull
+A hand-back or ready holds until the head moves, a maintainer asks for a
+change, or its description is asked for again (an operator's partial approval
+clears `described_head`; the re-render keeps the hold). It is recorded with the
+head and reason it was judged at (`judged`), and whether the hand-back is for CI
+that fails outside the change (`outside`), which an approval holds over; any
+other step at a new head leaves it `watching`. The record follows one pull
 request: a proposal of another pull request starts a fresh one. `poll` carries
 the steps out for every issue whose proposal it has not seen end, and re-reads
 a `done` record that carries no `closed_as` to fill it in, as
@@ -130,6 +133,8 @@ class Step:
     rivals: list[int] = field(default_factory=list)
     tests: list[str] = field(default_factory=list)
     untraced: bool = False
+    # A hand-back for CI that fails outside the change: an approval holds over it.
+    outside: bool = False
 
 
 def read(pr: int) -> PrState | None:
@@ -368,7 +373,7 @@ def decide(pr: PrState, fu: dict | None, *, logs: dict[str, str] | None = None,
         return Step("done", f"#{pr.number} merged" if pr.state == "merged"
                     else f"#{pr.number} was closed without merging")
     if (fu.get("head_sha") == head and fu.get("state") in ("handed-back", "ready")
-            and not feedback and not rivals):
+            and fu.get("described_head") == head and not feedback and not rivals):
         return Step("wait", f"{fu['state']} at this head")
     if missed and not feedback:
         return Step("hand-back", f"the change a maintainer asked for did not land: {missed}",
@@ -406,10 +411,12 @@ def decide(pr: PrState, fu: dict | None, *, logs: dict[str, str] | None = None,
         if files and all(v in (BASE_FAILS, PASSES) for v in files.values()):
             said = {BASE_FAILS: "fails on the base too", PASSES: "passes with the change"}
             return Step("hand-back", f"CI still fails after a re-run ({jobs}), and in the "
-                        "sandbox " + "; ".join(f"{n} {said[v]}" for n, v in files.items()))
+                        "sandbox " + "; ".join(f"{n} {said[v]}" for n, v in files.items()),
+                        outside=True)
         if not caused and fu.get("ci_untraced_revised"):
             return Step("hand-back", f"CI still fails after a re-run and a revision ({jobs}), "
-                                     "and the sandbox traced no failure to the change")
+                                     "and the sandbox traced no failure to the change",
+                        outside=True)
         if int(fu.get("revisions") or 0) >= MAX_REVISIONS:
             return Step("hand-back", f"{MAX_REVISIONS} revisions spent; CI still fails")
         if caused:
@@ -504,6 +511,7 @@ def poll(store: IssueStore, *, mode: str | None = None,
     for n, issue in store.fix_issues().items():
         pr = ((issue.fix_run or {}).get("proposal") or {}).get("pr")
         fu = fix_review.followup_for(issue.fix_followup, pr)
+        held = fu.get("approved")
         if not pr or (fu.get("state") == "done" and fu.get("closed_as")):
             continue
         if (issue.fix_request or {}).get("status") in fix_review.IN_FLIGHT:
@@ -547,10 +555,11 @@ def poll(store: IssueStore, *, mode: str | None = None,
         if step.kind != "done" and finished:
             fu["state"] = "watching"
         fu.setdefault("state", "watching")
-        if step.kind not in ("done", "hand-back", "ready") and (moved or step.kind != "wait"):
+        if step.kind not in ("done", "hand-back", "ready") and (
+                moved or step.kind not in ("wait", "describe")):
             fu["state"] = "watching"
         if step.kind == "wait":
-            store.edit_issue(n).record_fix_followup(fu)
+            _save(store, n, fu, held)
             continue
         acted += 1
         live = mode == "live"
@@ -560,11 +569,15 @@ def poll(store: IssueStore, *, mode: str | None = None,
                 _note(store, n, f"{step.reason}; follow-up finished.")
         elif step.kind in ("hand-back", "ready"):
             fu["state"] = "handed-back" if step.kind == "hand-back" else "ready"
-            fu["judged"] = {"head_sha": state.head_sha, "reason": step.reason[:400]}
+            fu["judged"] = {"head_sha": state.head_sha, "reason": step.reason[:400],
+                            "outside": step.outside}
+            if step.kind == "hand-back" and not step.outside:
+                fu.pop("approved", None)
             _note(store, n, (f"Handed back to you: {step.reason}." if step.kind == "hand-back"
                              else f"#{pr} is green: {step.reason}. Ready for your review."))
         elif not live:
-            fu["state"] = "watching"
+            if moved or step.kind != "describe":
+                fu["state"] = "watching"
             _note(store, n, f"Dry run: would {step.kind} #{pr} — {step.reason}.")
             if step.kind == "describe":
                 fu["described_head"] = state.head_sha
@@ -610,5 +623,21 @@ def poll(store: IssueStore, *, mode: str | None = None,
                 _note(store, n, f"Revision {fu[budget]} of {cap} queued: {step.reason}.")
             else:
                 _note(store, n, f"Could not queue a revision: {why}.")
-        store.edit_issue(n).record_fix_followup(fu)
+        _save(store, n, fu, held)
     return acted
+
+
+def _save(store: IssueStore, n: int, fu: dict, held: dict | None) -> None:
+    """Write issue `n`'s follow-up record `fu`, keeping what an operator did to
+    its approval since the sweep read it (`held`): an approval given or withdrawn
+    meanwhile wins over the sweep's copy, a partial one with the description it
+    asked for again."""
+    edit = store.edit_issue(n)
+    now = edit.fix_followup or {}
+    if now.get("pr") == fu.get("pr") and now.get("approved") != held:
+        fu = {k: v for k, v in fu.items() if k != "approved"}
+        if now.get("approved"):
+            fu["approved"] = now["approved"]
+            if now["approved"].get("partial"):
+                fu["described_head"] = now.get("described_head")
+    edit.record_fix_followup(fu)

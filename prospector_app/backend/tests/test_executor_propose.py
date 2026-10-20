@@ -346,3 +346,21 @@ def test_a_revision_credits_the_rival_whose_test_it_answers(lane, monkeypatch):
     assert res["status"] == "executed"
     assert lane["revisions"][0]["message"].endswith(
         "Co-authored-by: contrib <123+contrib@users.noreply.github.com>\n")
+
+
+def test_a_fix_approved_as_partial_is_re_described_without_closing_the_issue(lane, tmp_path,
+                                                                             monkeypatch):
+    from issue_triage.issue_store import IssueStore
+    from prospector_app.backend import issue_data
+    store = IssueStore(tmp_path / "issues")
+    store.save_issue({"issue": 7, "meta": {"title": "x", "state": "open",
+                                           "updated_at": "2026-09-01T00:00:00Z"}})
+    store.edit_issue(7).record_fix_run({"ending": "fixed", "detail": "ok", "patch": PATCH,
+                                        "proposal": {"pr": 9, "url": "u"}})
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "approved": {
+        "by": "op", "judged": None, "partial": True}})
+    monkeypatch.setattr(issue_data, "store", lambda: store)
+    res = executor.update_issue_fix_proposal(7, 9, push=False, token="tok", dry_run=False)
+    assert res["status"] == "executed"
+    body = lane["bodies"][-1]
+    assert "Fixes #7" not in body and "Addresses part of #7" in body

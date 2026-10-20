@@ -8,6 +8,7 @@ import {
 import { useExec } from "../ExecContext";
 import { useRepoMeta } from "../RepoMetaContext";
 import { DiffView } from "./DiffView";
+import { fixDecision } from "./issues/fixDecision";
 
 // How often the panel re-reads the issue while its request is queued or running.
 const POLL_MS = 15_000;
@@ -152,6 +153,9 @@ function FixActions({ d, onChanged }: { d: IssueDetail; onChanged: () => void })
   }
   if (status === "pr-open" || status === "pr-merged") return null;
   const pr = d.fix_pr ?? null;
+  if (fixDecision(d)) {
+    return <div className="muted small">Approve #{pr} or send it back from the Summary's suggested action above.</div>;
+  }
   if (status === "review" || (status === "failed" && pr != null)) {
     return (
       <div className="fix-composer">

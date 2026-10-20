@@ -339,6 +339,7 @@ def get_issue(n: int) -> dict | None:
     row["fix_thread"] = i.fix_thread
     row["fix_followup"] = i.fix_followup
     row["fix_pr"] = fix_review.open_pr(i)
+    row["fix_approved"] = fix_review.approval(i)
     row["fix_held"] = trust_boundary.held(i)
     return row
 

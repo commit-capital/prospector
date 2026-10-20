@@ -552,3 +552,11 @@ def test_a_partial_fix_cites_the_failing_test_that_shows_what_remains():
     message = fix_pr_body.commit_message(7, res["summary"], closes=False)
     assert fix_pr_body.problems(fix_pr_body.title(7, res["summary"]), body, message,
                                 issue=7, closes=False) == []
+
+
+def test_a_fix_approved_as_partial_addresses_part_of_the_issue_whatever_its_reviews_say():
+    body = _body(partial=True)
+    assert "Fixes" not in body and "Addresses part of #7" in body
+    assert "addresses only part of #7" in body.split("## ", 1)[0]
+    assert fix_pr_body.problems("t", body, fix_pr_body.commit_message(7, "s", closes=False),
+                                issue=7, closes=False) == []

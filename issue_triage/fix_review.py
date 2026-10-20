@@ -8,6 +8,10 @@ latest attempt (`fix_run`) and no other request is in flight; the words an
 operator gives with it land in the thread (`fix_thread`). `fix_status` derives,
 on read, whose move the attempt waits on; a proposal's follow-up record
 (`fix_followup`) counts only while it follows the run's own pull request.
+An operator's approval (`approve`) leaves an open pull request to the
+maintainers: it rides on the follow-up record and holds (`approval`) through
+later heads and revisions, until the follow-up hands the pull request back for
+something new the fixer failed at — not for CI that fails outside the change.
 `distill` turns a finished run's `result.json` record into the `fix_run` the app
 renders: each candidate's own account, the agreement, the picked change, the
 checks, the reviewers, the rounds of code review it was revised in and the
@@ -111,10 +115,14 @@ def _fix_status(issue: Issue) -> tuple[str, str] | None:
         ended = _ended(proposal, fu)
         if ended:
             return ended
+        held = approval(issue)
+        if held:
+            return "pr-open", _approved_reason(proposal["pr"], held, fu)
         if fu.get("state") == "ready":
             return "review", f"#{proposal['pr']} is green — ready for your review"
         if fu.get("state") == "handed-back":
-            return "review", f"#{proposal['pr']} handed back: {fu.get('reason') or ''}"
+            why = (fu.get("judged") or {}).get("reason") or fu.get("reason") or ""
+            return "review", f"#{proposal['pr']} handed back: {why}"
         if fu.get("state") == "watching" and fu.get("reason"):
             return "pr-open", f"#{proposal['pr']}: {fu['reason']}"
         return "pr-open", f"#{proposal['pr']}"
@@ -131,6 +139,58 @@ def _fix_status(issue: Issue) -> tuple[str, str] | None:
     if ending in FAULT_ENDINGS or run.get("fault"):
         return "failed", f"{ending}: {detail}"
     return "declined", f"{ending}: {detail}"
+
+
+def approval(issue: Issue) -> dict | None:
+    """The operator's approval of the open pull request while it holds: through
+    watching, a green head, and a hand-back the operator approved over or one
+    for CI that fails outside the change (`judged.outside`). A hand-back for
+    anything else after the approval ends it."""
+    pr = open_pr(issue)
+    fu = followup_for(issue.fix_followup, pr)
+    held = fu.get("approved")
+    if not held:
+        return None
+    judged = fu.get("judged")
+    if (fu.get("state") == "handed-back" and judged != held.get("judged")
+            and not (judged or {}).get("outside")):
+        return None
+    return held
+
+
+def _approved_reason(pr: object, held: dict, fu: dict) -> str:
+    reason = f"#{pr} approved by {held.get('by')}" + (" as a partial fix" if held.get("partial")
+                                                       else "") + "; with the maintainers"
+    if fu.get("state") == "handed-back":
+        reason += f" — {(fu.get('judged') or {}).get('reason') or fu.get('reason') or ''}"
+    return reason
+
+
+def approve(store: IssueStore, n: int, *, by: str, partial: bool) -> tuple[bool, str]:
+    """Approve issue `n`'s open pull request as it stands and leave it to the
+    maintainers (`approval`). A `partial` approval asks the follow-up to
+    re-render the description, which then names the issue without a closing
+    keyword. (ok, reason)."""
+    issue = store.load_issue(n)
+    if issue is None:
+        return False, f"issue #{n} is not in the store"
+    req = issue.fix_request
+    if req and req.get("status") in IN_FLIGHT:
+        return False, f"a {req.get('action')} request is already {req.get('status')}"
+    pr = open_pr(issue)
+    if pr is None:
+        return False, "the attempt has no open pull request to approve"
+    fu = {"pr": pr, "state": "watching", **followup_for(issue.fix_followup, pr)}
+    fu["approved"] = {"by": by, "at": storekit.now(), "judged": fu.get("judged"),
+                      "partial": bool(partial)}
+    if partial:
+        fu["described_head"] = ""
+    issue.record_fix_followup(fu)
+    issue.append_fix_thread({"at": fu["approved"]["at"], "by": by, "kind": "comment",
+                             "action": "approve",
+                             "text": f"Approved #{pr}" + (" as a partial fix" if partial else "")
+                                     + "; left for the maintainers."})
+    return True, f"#{pr} approved"
 
 
 def open_pr(issue: Issue) -> int | None:
@@ -224,6 +284,9 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
     if rivals:
         section["rivals"] = list(rivals)
     issue.record_fix_request(section)
+    fu = issue.fix_followup
+    if action == "send-back" and source == "operator" and fu and "approved" in fu:
+        issue.record_fix_followup({k: v for k, v in fu.items() if k != "approved"})
     given = answer or {}
     words = "\n\n".join(w for w in ((guidance or "").strip(), str(given.get("text") or "").strip(),
                                     (notes or "").strip()) if w)

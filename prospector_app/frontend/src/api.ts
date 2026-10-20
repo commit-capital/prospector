@@ -1641,7 +1641,11 @@ export interface IssueDetail extends IssueRow {
   fix_pr?: number | null;
   /** Why the fixed attempt waits for an operator to open its PR (trust_boundary.held). */
   fix_held?: string | null;
+  /** The operator's approval of the open PR while it holds (fix_review.approval). */
+  fix_approved?: IssueFixApproval | null;
 }
+/** An open fix PR approved as it stands and left to the maintainers. */
+export interface IssueFixApproval { by: string; at: string; partial: boolean }
 /** Where the follow-up on an issue's proposed pull request stands
  *  (issue_triage/followup.py): the last step it took or waits on, and why. */
 export interface IssueFixFollowup {
@@ -2110,6 +2114,8 @@ export const api = {
   /** Queue an action on the issue's fix attempt; rejects with the server's
    *  reason when it does not fit (409). */
   issueFix: (n: number, body: IssueFixBody) => postJson(`/api/issues/${n}/fix`, body),
+  issueFixApprove: (n: number, partial: boolean) =>
+    postJson(`/api/issues/${n}/fix/approve`, { partial }),
   cancelIssueFix: (n: number) => postJson(`/api/issues/${n}/fix/cancel`, {}),
   listAlerts: () => get<{ items: AlertRow[]; pr_states_loading: boolean }>("/api/alerts"),
   queryAlerts: (opts: {

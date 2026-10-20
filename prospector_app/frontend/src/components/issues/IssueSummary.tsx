@@ -9,6 +9,8 @@ import { FlyoutIssueLink } from "../FlyoutIssueLink";
 import { IssueActionBar } from "../IssueActionBar";
 import { DispositionChip, ReproChip } from "../../views/Issues";
 import { EVIDENCE, REFERENCED, linkStateChip } from "./issueLinkChips";
+import { FixDecisionCards } from "./FixDecisionCards";
+import { fixDecision } from "./fixDecision";
 
 type Tone = "green" | "amber" | "red" | "blue" | "purple" | "gold" | "muted";
 type Fact = { tone: Tone; text: string; tip: string };
@@ -182,6 +184,8 @@ function IssueAnalysis({ d }: { d: IssueDetail }) {
 }
 
 function suggestedAction(d: IssueDetail): string {
+  if (fixDecision(d)) return "Needs your review: approve as-is or request a full fix";
+  if (d.fix_approved && d.fix_pr != null) return `Approved: #${d.fix_pr} is with the maintainers`;
   const a = d.analysis;
   switch (a?.disposition) {
     case "close-dup": return `Close as a duplicate of #${a.canonical}`;
@@ -196,6 +200,7 @@ function suggestedAction(d: IssueDetail): string {
 /** The issue page's Summary panel: the bug and its fix, the report, the PRs
  *  that may fix it, our analysis, and the one action surface. */
 export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) {
+  const decision = fixDecision(d);
   return (
     <section className="suggestion summary-panel issue-summary tone-yellow">
       <h3 className="summary-title">Summary</h3>
@@ -214,7 +219,15 @@ export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () =
       <IssueAnalysis d={d} />
       <div className="summary-action">
         <div className="sug-headline"><span className="analysis-label">Suggested action:</span> <b>{suggestedAction(d)}</b></div>
-        <IssueActionBar d={d} onActed={onChanged} />
+        {decision ? (
+          <>
+            <FixDecisionCards key={`${decision.pr}:${d.fix_reason ?? ""}`} d={d} decision={decision}
+                              onChanged={onChanged} />
+            <Collapsible summary={<>Comment on or close the issue instead</>}>
+              <IssueActionBar d={d} onActed={onChanged} />
+            </Collapsible>
+          </>
+        ) : <IssueActionBar d={d} onActed={onChanged} />}
       </div>
     </section>
   );
