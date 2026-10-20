@@ -246,6 +246,15 @@ def test_a_partial_fix_s_status_and_open_pull_request_say_partial(store):
     assert status == "pr-open" and reason.startswith("partial fix: 1 of 3") and "#15363" in reason
     _run(store, reviews=[{**PARTIAL[0], "coverage": COVERAGE_14777[:1]}])
     assert fix_review.fix_status(store.load_issue(7)) == ("review", "ok")
+    _run(store, reviews=PARTIAL, ending="fix-rejected")
+    assert fix_review.partial(store.load_issue(7)) is None
+
+
+def test_a_defect_argued_already_handled_is_not_counted_as_addressed(store):
+    already = {"defect": "cancel removes the row", "status": "already-fixed", "evidence": "e"}
+    _run(store, reviews=[{**PARTIAL[0], "coverage": [*COVERAGE_14777, already]}])
+    assert fix_review.fix_status(store.load_issue(7))[1].startswith(
+        "partial fix: 1 of 4 reported defects addressed, 1 already handled on the base;")
 
 
 def test_the_distilled_run_keeps_the_reviewer_s_coverage():

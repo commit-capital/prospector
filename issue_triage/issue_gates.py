@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from issue_triage.issue_freshness import is_current
 from pipeline import author_fix, diffpaths, gates, risktier, threats
@@ -292,7 +292,14 @@ def fix_proof_bar(result: dict) -> tuple[str | None, str]:
     return None, "proven on the base and safe under both lenses"
 
 
-COVERAGE_STATUSES = ("addressed", "not-addressed", "already-fixed")
+CoverageStatus = Literal["addressed", "not-addressed", "already-fixed"]
+COVERAGE_STATUSES: tuple[CoverageStatus, ...] = ("addressed", "not-addressed", "already-fixed")
+
+
+class CoverageEntry(TypedDict):
+    defect: str
+    status: CoverageStatus
+    evidence: str
 
 
 @dataclass(frozen=True)
@@ -302,23 +309,23 @@ class Coverage:
     already handled on the base, "partial" when one is neither, and "unchecked"
     when no review carries a usable account; only "complete" closes the issue."""
     state: Literal["complete", "partial", "unchecked"]
-    defects: list[dict]
+    defects: list[CoverageEntry]
 
     @property
     def closes(self) -> bool:
         return self.state == "complete"
 
-    def having(self, status: str) -> list[dict]:
+    def having(self, status: CoverageStatus) -> list[CoverageEntry]:
         return [d for d in self.defects if d["status"] == status]
 
 
-def coverage_entries(raw: object) -> list[dict] | None:
+def coverage_entries(raw: object) -> list[CoverageEntry] | None:
     """A reviewer's `reported_defects` as {"defect", "status", "evidence"}
     entries, or None when missing, empty or malformed — a report names at least
     the defect it was filed for."""
     if not isinstance(raw, list) or not raw:
         return None
-    out: list[dict] = []
+    out: list[CoverageEntry] = []
     for d in raw:
         if (not isinstance(d, dict) or d.get("status") not in COVERAGE_STATUSES
                 or not str(d.get("defect") or "").strip()):

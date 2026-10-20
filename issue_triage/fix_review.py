@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from issue_triage import dispute_question, issue_gates
+from issue_triage import dispute_question, fix_pr_body, issue_gates
 from pipeline import diffpaths, gates, settings, storekit
 
 if TYPE_CHECKING:
@@ -65,9 +65,12 @@ def partial_note(run: dict) -> str | None:
     if coverage.state != "partial":
         return None
     left = coverage.having("not-addressed")
-    return (f"partial fix: {len(coverage.defects) - len(left)} of {len(coverage.defects)} "
-            f"reported defects addressed; not addressed: "
-            + "; ".join(d["defect"] for d in left))
+    already = coverage.having("already-fixed")
+    return (f"partial fix: {len(coverage.having('addressed'))} of {len(coverage.defects)} "
+            "reported defects addressed"
+            + (f", {len(already)} already handled on the base" if already else "")
+            + "; not addressed: "
+            + fix_pr_body.inert("; ".join(d["defect"] for d in left)))
 
 
 def outcome(record: dict) -> str:
@@ -77,15 +80,20 @@ def outcome(record: dict) -> str:
     return f"{note} — {record['detail']}" if note else f"{record['ending']} — {record['detail']}"
 
 
+def partial(issue: Issue) -> str | None:
+    """`partial_note` while the attempt waits on a review or an open pull
+    request, the statuses that present it as a fix."""
+    status = _fix_status(issue)
+    return partial_note(issue.fix_run or {}) if status and status[0] in ("review",
+                                                                          "pr-open") else None
+
+
 def fix_status(issue: Issue) -> tuple[str, str] | None:
     """(status, reason) for issue's fix attempt, or None when it has none. The
-    reason of a partial fix's review or open pull request leads with what it
-    leaves (`partial_note`)."""
+    reason of a partial fix leads with what it leaves (`partial`)."""
     status = _fix_status(issue)
-    note = partial_note(issue.fix_run or {})
-    if status and note and status[0] in ("review", "pr-open"):
-        return status[0], f"{note} — {status[1]}"
-    return status
+    note = partial(issue)
+    return (status[0], f"{note} — {status[1]}") if status and note else status
 
 
 def _fix_status(issue: Issue) -> tuple[str, str] | None:

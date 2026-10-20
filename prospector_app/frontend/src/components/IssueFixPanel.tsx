@@ -105,7 +105,7 @@ function FixBanner({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) 
     );
   }
   if (!status) return null;
-  const partial = d.fix_partial && (status === "review" || status === "pr-open");
+  const partial = d.fix_partial;
   const tone = partial ? "v-caution"
     : status === "review" || status === "pr-open" || status === "pr-merged" ? "v-green"
     : status === "failed" ? "v-red" : status === "question" || status === "pr-closed" ? "v-caution"

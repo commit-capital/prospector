@@ -1416,7 +1416,7 @@ export interface IssueRow {
   /** Whose move the issue's fix attempt waits on (issue_triage/fix_review.py). */
   fix_status?: IssueFixStatus | null;
   fix_reason?: string | null;
-  /** The attempt is a proven fix for only part of its report (fix_review.partial_note). */
+  /** The attempt is a proven fix for only part of its report (fix_review.partial). */
   fix_partial?: boolean;
   /** Dup-group members folded under this row when the query collapsed dups. */
   dup_rows?: IssueRow[];

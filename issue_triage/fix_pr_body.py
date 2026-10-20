@@ -66,7 +66,7 @@ def commit_message(issue: int, summary: str, co_authors: Sequence[str] = (), *,
 def _coverage(issue: int, coverage: issue_gates.Coverage) -> list[str]:
     """What the fix leaves of the report, and what it argues the base already
     handles, each with the reviewer's evidence."""
-    def entries(status: str) -> list[str]:
+    def entries(status: issue_gates.CoverageStatus) -> list[str]:
         return [f"- {inert(d['defect'], 200)}"
                 + (f" ({inert(d['evidence'], 300)})" if d["evidence"] else "")
                 for d in coverage.having(status)]
