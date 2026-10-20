@@ -67,14 +67,14 @@ def test_failing_ci_is_re_run_once_per_head():
     assert after.kind == "wait" and after.jobs == [40, 50]
 
 
-# The failing job's log excerpt on paperclipai/paperclip#16929: the fix exported a
+# A fix pull request's failing job log excerpt (issue #16267's fix): the fix exported a
 # new function from services/issues.ts, and a route test that vi.doMock()s that
 # module without it got a 500 from the route.
 LOG_16929 = """\
      × uses the company-scope fast path on the issue list route 33ms
       "type": "TypeError",
           TypeError: instanceSettings.getExperimental is not a function
- FAIL   @paperclipai/server  src/__tests__/issue-agent-mutation-ownership-routes.test.ts > \
+ FAIL   @acme/server  src/__tests__/issue-agent-mutation-ownership-routes.test.ts > \
 agent issue mutation checkout ownership > uses the company-scope fast path on the issue list route
 AssertionError: {"error":"Internal server error"}: expected 500 to be 200 // Object.is equality
 ##[error]Process completed with exit code 1."""
