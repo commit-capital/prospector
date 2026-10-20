@@ -2,6 +2,8 @@
 workers, and every machine can tell which workers were left behind."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from pipeline import schema, settings
@@ -69,3 +71,24 @@ def test_a_beat_with_no_recorded_schema_is_not_judged(store):
     regs = store.load_worker_registries()
     regs["verify_worker"]["hosts"]["old"].pop("schema")
     assert schema_gate.outdated_hosts(regs, CODE_V + 1, "me") == {"me": CODE_V}
+
+
+def test_a_machine_reads_by_its_newest_beat_not_a_lane_left_behind(store):
+    days_ago = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat(timespec="seconds")
+    store._merge_beat("verify_worker", {}, {"host": "studio", "last_beat": days_ago})
+    store._merge_beat("issue_fix_worker", {}, {"host": "studio", "last_beat": _now()})
+    regs = store.load_worker_registries()
+    regs["verify_worker"]["hosts"]["studio"]["schema"] = CODE_V - 3
+    assert schema_gate.outdated_hosts(regs, CODE_V, "me") == {}
+    regs["issue_fix_worker"]["hosts"]["studio"]["schema"] = CODE_V - 1
+    assert schema_gate.outdated_hosts(regs, CODE_V, "me") == {"studio": CODE_V - 1}
+
+
+def test_a_newest_beat_with_no_schema_leaves_the_machine_unjudged(store):
+    days_ago = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat(timespec="seconds")
+    store._merge_beat("verify_worker", {}, {"host": "studio", "last_beat": days_ago})
+    store._merge_beat("issue_fix_worker", {}, {"host": "studio", "last_beat": _now()})
+    regs = store.load_worker_registries()
+    regs["verify_worker"]["hosts"]["studio"]["schema"] = CODE_V - 3
+    regs["issue_fix_worker"]["hosts"]["studio"].pop("schema")
+    assert schema_gate.outdated_hosts(regs, CODE_V, "me") == {}
