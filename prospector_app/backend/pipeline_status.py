@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from pipeline import cluster_driver
 from pipeline import diff_cache
 from pipeline import freshness
+from pipeline import gates
 from pipeline import storekit
 from pipeline import threat_scan
 from prospector_app.backend import data
@@ -275,19 +276,24 @@ def _pr_coverage(all_prs: dict[int, Pr], diffs_dir: Path) -> dict:
     phase acts on; `tracked` is the whole store, closed and merged included.
     For each per-PR fact, `current` counts stamps computed against the PR's
     present head, `stale` stamps outdated by a later push, and `never` PRs no
-    run has stamped. The threat scan reads diffs from this machine's local
-    cache and first fetches the current-head diff of every open PR it holds
-    none for, scanned or not, so `diff_uncached_here` counts the fetches the
-    next scan run from this app makes (less the automation bumps it leaves
-    unfetched) — a workload hint, not a coverage boundary."""
+    run has stamped. Clustering, analysis and security review leave out the
+    `exempt` dependency bumps (gates.bump_exempt). `blocked` counts the pending
+    PRs a phase's job cannot reach until the phase before it runs: automation
+    PRs clustering takes only once threat-scanned, and analysis's unclustered
+    PRs. The threat scan reads diffs from this machine's local cache and first
+    fetches the current-head diff of every open PR it holds none for, scanned
+    or not, so `diff_uncached_here` counts the fetches the next scan run from
+    this app makes (less the automation bumps it leaves unfetched) — a
+    workload hint, not a coverage boundary."""
     tracked = len(all_prs)
     all_prs = {n: pr for n, pr in all_prs.items() if pr.state == "open"}
     total = len(all_prs)
+    scoped = [pr for pr in all_prs.values() if not gates.bump_exempt(pr)]
 
     def split(section: str) -> dict[str, int]:
-        current = sum(1 for pr in all_prs.values() if freshness.is_current(pr, section))
-        present = sum(1 for pr in all_prs.values() if pr.section(section))
-        return {"current": current, "stale": present - current, "never": total - present}
+        current = sum(1 for pr in scoped if freshness.is_current(pr, section))
+        present = sum(1 for pr in scoped if pr.section(section))
+        return {"current": current, "stale": present - current, "never": len(scoped) - present}
 
     threat = {"current": 0, "stale": 0, "never": 0, "diff_uncached_here": 0}
     for pr in all_prs.values():
@@ -298,18 +304,19 @@ def _pr_coverage(all_prs: dict[int, Pr], diffs_dir: Path) -> dict:
         else:
             threat["stale" if pr.section("threat") else "never"] += 1
 
-    clustered = sum(1 for pr in all_prs.values() if pr.section("cluster"))
-    unclustered_work = sum(
-        1 for pr in all_prs.values()
-        if not pr.section("cluster")
-        and (freshness.is_current(pr, "summary") or cluster_driver.summarizable(pr)))
+    unclustered = [pr for pr in scoped if not pr.section("cluster")]
+    cluster = {"current": len(scoped) - len(unclustered), "stale": 0, "never": len(unclustered),
+               "blocked": sum(1 for pr in unclustered
+                              if not (freshness.is_current(pr, "summary")
+                                      or cluster_driver.summarizable(pr)))}
+    analysis = {**split("analysis"),
+                "blocked": sum(1 for pr in unclustered if not freshness.is_current(pr, "analysis"))}
     return {
         "tracked": tracked,
         "total": total,
-        "clustered": clustered,
-        "not_clustered": total - clustered,
-        "unclustered_work": unclustered_work,
-        "analysis": split("analysis"),
+        "exempt": total - len(scoped),
+        "cluster": cluster,
+        "analysis": analysis,
         "security": split("security"),
         "threat": threat,
     }

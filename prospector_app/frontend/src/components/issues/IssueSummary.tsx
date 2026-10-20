@@ -179,7 +179,7 @@ function IssueStory({ d, onWritten }: { d: IssueDetail; onWritten: () => void })
 /** "Prospector analysis:" — the triage verdict's chips, then its reasoning. */
 function IssueAnalysis({ d }: { d: IssueDetail }) {
   const a = d.analysis;
-  if (!a) return <div className="muted small">Not yet analyzed. Run Issue analyze from the Control tab.</div>;
+  if (!a) return <div className="muted small">Not yet analyzed. Run Issue analysis from the Control tab.</div>;
   return (
     <div className="issue-analysis">
       <div className="analysis-line">

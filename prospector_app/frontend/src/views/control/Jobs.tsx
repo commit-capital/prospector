@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { api, type JobRuntime, type JobSpec, type PipelineStatus, type SuggestedAction } from "../../api";
 import { Panel } from "./Panel";
 import { ago, fmtDuration } from "./format";
-import { layoutJobs } from "./jobLayout";
+import { layoutJobs, pipelineStep } from "./jobLayout";
 
 const REFRESH_LIVE = "refresh-live";
 const SCAN_RESPONSES = "scan-responses";
@@ -22,7 +22,7 @@ function duration(spec: JobSpec, count: string, runtime: JobRuntime | undefined,
   if (spec.kind === "analyze-clusters") {
     const cov = pipeline?.coverage;
     return cov && est?.analyze_clusters_seconds_per_cluster != null && Number.isFinite(n) && n > 0
-      ? fmtDuration(est.analyze_clusters_seconds_per_cluster * Math.min(n, cov.analysis.never)) : null;
+      ? fmtDuration(est.analyze_clusters_seconds_per_cluster * Math.min(n, analysisReady(cov))) : null;
   }
   if (spec.kind === "issue-analyze") {
     const icov = pipeline?.issue_coverage;
@@ -33,6 +33,13 @@ function duration(spec: JobSpec, count: string, runtime: JobRuntime | undefined,
   return typical && `${typical}${runtime?.typical_count != null && spec.count_noun
     ? ` for ${Math.round(runtime.typical_count)} ${spec.count_noun}` : ""}`;
 }
+
+const analysisReady = (cov: PipelineStatus["coverage"]) =>
+  cov.analysis.stale + cov.analysis.never - cov.analysis.blocked;
+
+/** "run X first" for the part of a backlog an earlier phase must reach first. */
+const blockedNote = (blocked: number, earlier: string) =>
+  blocked > 0 ? <> Run {earlier} first to reach {blocked.toLocaleString()} of them.</> : null;
 
 /** The backlog a job would work through, where the pipeline status counts one. */
 function backlogNote(spec: JobSpec, pipeline: PipelineStatus | null): ReactNode {
@@ -50,12 +57,14 @@ function backlogNote(spec: JobSpec, pipeline: PipelineStatus | null): ReactNode 
       </>
     );
   }
-  if (spec.kind === "analyze-clusters" && cov && cov.analysis.never > 0) {
+  if (spec.kind === "cluster-new" && cov && cov.cluster.never > 0) {
+    return <>{cov.cluster.never.toLocaleString()} PRs are not in a cluster.{blockedNote(cov.cluster.blocked, "Threat scan")}</>;
+  }
+  if (spec.kind === "analyze-clusters" && cov && cov.analysis.stale + cov.analysis.never > 0) {
     return (
       <>
-        {cov.analysis.never.toLocaleString()} PRs haven't been analyzed yet. Analysis works per cluster, so it
-        only reaches clustered PRs{cov.not_clustered > 0 && <> — {cov.not_clustered.toLocaleString()} PRs are
-        unclustered until Clustering runs</>}.
+        {(cov.analysis.stale + cov.analysis.never).toLocaleString()} PRs lack a current analysis. Analysis works per
+        cluster, so it only reaches clustered PRs.{blockedNote(cov.analysis.blocked, "Clustering")}
       </>
     );
   }
@@ -116,9 +125,11 @@ export function Jobs({ specs, runtimes, suggestions, pipeline, running, onStart 
     const runtime = runtimes?.[spec.kind];
     const takes = duration(spec, countFor(spec), runtime, pipeline);
     const note = suggestion ? null : backlogNote(spec, pipeline);
+    const step = pipelineStep(spec.kind);
     return (
       <div key={spec.kind} className={suggestion ? "job-recommended" : "job-open"}>
         <div className="job-row-head">
+          {step != null && <span className="phase-step" title={`Step ${step} of the PR pipeline — run the lower steps first`}>{step}</span>}
           <b>{spec.label}</b>
           {suggestion && <span className="chip chip-amber sm">recommended</span>}
           <span className="muted small">

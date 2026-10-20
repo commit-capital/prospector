@@ -126,8 +126,9 @@ def test_pr_coverage_splits_current_stale_never(tmp_path):
 
     assert cov["tracked"] == 6
     assert cov["total"] == 4
-    assert cov["clustered"] == 1 and cov["not_clustered"] == 3
-    assert cov["analysis"] == {"current": 1, "stale": 1, "never": 2}
+    assert cov["exempt"] == 0
+    assert cov["cluster"] == {"current": 1, "stale": 0, "never": 3, "blocked": 0}
+    assert cov["analysis"] == {"current": 1, "stale": 1, "never": 2, "blocked": 3}
     assert cov["security"] == {"current": 1, "stale": 0, "never": 3}
     # h1 is scanned at its head yet uncached here; the scan fetches it too.
     assert cov["threat"] == {"current": 1, "stale": 1, "never": 2,
@@ -448,11 +449,26 @@ def test_status_reads_the_pr_ledger_once(monkeypatch, tmp_path):
     assert len(reads) == 1
 
 
-def test_unclustered_work_leaves_out_automation_bumps(tmp_path):
-    """An automation author's PR without a summary is never summarized, so never
-    clustered; the clustering backlog leaves it out, as the lane does."""
+def test_clustering_waits_on_the_threat_scan_for_automation_prs(tmp_path):
+    """An automation author's PR is summarized only once its head is
+    threat-scanned, so it counts as pending clustering but blocked on the scan."""
     prs = {1: _cov_pr(1, "h1"), 2: _cov_pr(2, "h2")}
     prs[2].raw["meta"]["author"] = "dependabot[bot]"
     cov = pipeline_status._pr_coverage(prs, tmp_path)
-    assert cov["not_clustered"] == 2
-    assert cov["unclustered_work"] == 1
+    assert cov["cluster"]["never"] == 2
+    assert cov["cluster"]["blocked"] == 1
+
+
+def test_dependency_bumps_are_outside_the_later_phases(tmp_path):
+    """A head the threat scan exempted as a bump is never clustered, analyzed or
+    security-reviewed, so those phases leave it out of their counts."""
+    from pipeline import gates
+    threat = {"verdict": "clear", "signatures": [], "checked_at": "2026-07-01T00:00:00+00:00",
+              "against_head_sha": "h2", "detail": {"exempt": gates.BUMP_EXEMPT}}
+    prs = {1: _cov_pr(1, "h1"), 2: _cov_pr(2, "h2", threat=threat)}
+    cov = pipeline_status._pr_coverage(prs, tmp_path)
+    assert cov["exempt"] == 1
+    assert cov["threat"]["current"] == 1
+    assert cov["cluster"]["never"] == 1
+    assert cov["analysis"]["never"] == 1
+    assert cov["security"]["never"] == 1
