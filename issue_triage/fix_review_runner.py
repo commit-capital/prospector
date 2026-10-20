@@ -229,7 +229,9 @@ def revise(store: IssueStore, n: int, *, comments: str,
     """One agent revises the last attempt's change under a maintainer's
     `comments` and anyone else's `notes`, proven on the attempt's base or, when
     this machine no longer holds it, the current pin. The revision keeps the
-    attempt's `intake`."""
+    attempt's holds (`trust_boundary.held`): its `intake`, its lone
+    reproduction, and its `second_opinion`, which a caller that rechecks the
+    rivals replaces."""
     previous = _last_record(n)
     res_prev = previous.get("result") or {}
     if not res_prev.get("patch"):
@@ -245,8 +247,11 @@ def revise(store: IssueStore, n: int, *, comments: str,
                                  "root_cause": res_prev.get("root_cause"),
                                  "review": review or None},
                         review=True)
-    if res_prev.get("intake") is not None:
-        res.result = {**(res.result or {}), "intake": res_prev["intake"]}
+    kept = {k: res_prev[k] for k in ("intake", "second_opinion") if res_prev.get(k) is not None}
+    if (res_prev.get("agreement") or {}).get("single"):
+        kept["agreement"] = {"single": True}
+    if kept:
+        res.result = {**(res.result or {}), **kept}
     return fix_lane.record_result(
         store, workdir, issue=n, report=report, base=base, action="fix", lane="revise",
         models=[settings.agent_model() or "default"], res=res, started=started,

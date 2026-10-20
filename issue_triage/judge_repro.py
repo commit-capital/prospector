@@ -9,7 +9,9 @@ nothing but the CLI's own needs. The report and the failure output are text
 produced outside this project; the prompt states they are data.
 
 A crash, a timeout, or an unparseable answer is this machine's fault, so it
-returns {"failed": True, ...} for the lane to classify, never a verdict. An
+returns {"failed": True, ...} for the lane to classify, never a verdict. It
+runs on the first issue-fix reviewer model (`settings.issue_fix_review_model()`),
+apart from the agent that wrote the test. An
 agent outage or a declined prompt propagates, because those are the machine's
 condition and the prompt's own refusal — the lane trips or refuses on them.
 """
@@ -19,7 +21,7 @@ import os
 from collections.abc import Callable
 
 from issue_triage import reproduce_issue
-from pipeline import headless_agent
+from pipeline import headless_agent, settings
 from pipeline.wire import VerifyAuthoredFile
 
 # The failure output is the untrusted test's own stdout+stderr; a bounded tail
@@ -118,7 +120,8 @@ def judge(worktree: str, *, title: str, body: str,
     try:
         ratings, _ = headless_agent.json_reply(lambda: headless_agent.run_agent(
             prompt, allow_gh=False, cwd=worktree, read_root=[worktree],
-            env_allow=(), timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event))
+            env_allow=(), timeout=AGENT_TIMEOUT_SECONDS,
+            model=settings.issue_fix_review_model(), on_event=on_event))
     except (headless_agent.AgentUnavailable, headless_agent.AgentDeclined):
         raise
     except (RuntimeError, ValueError) as e:

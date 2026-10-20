@@ -312,10 +312,11 @@ def distill(record: dict, question: dict | None = None) -> dict:
             "tests": c.get("tests"), "summary": verdict.get("summary"),
             "root_cause": verdict.get("root_cause"), "changes": verdict.get("changes")})
     patch = str(res.get("patch") or "")
-    reviews = [{"lens": r.get("lens"), "verdict": r.get("verdict"), "failed": r.get("failed"),
+    reviews = [{"lens": r.get("lens"), "model": r.get("model"), "verdict": r.get("verdict"),
+                "failed": r.get("failed"),
                 "reason": r.get("reason"), "concerns": r.get("concerns") or [],
                 "unasked": r.get("unasked") or [], "coverage": r.get("coverage") or []}
-               for r in res.get("reviews") or []]
+               for r in issue_gates.latest_reviews(res.get("reviews"))]
     out: dict = {
         "lane": record.get("lane"), "ending": record.get("ending"),
         "fault": bool(record.get("fault")), "detail": record.get("detail"),

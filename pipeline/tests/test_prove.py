@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import gates, prove, verify_driver as vd
+from pipeline import gates, profile, prove, verify_driver as vd
 
 BASE = prove.PinnedBase(sha="a" * 40, tier=1, image="pr-verify-base:aaaaaaaaaaaa-t1",
                         clone=Path("/nonexistent"))
@@ -438,6 +438,16 @@ def test_another_pre_patch_is_another_tree(suite):
     answers[:] = [(0, _trailer("baseline", [])), (0, _trailer("baseline", ["x.test.ts"]))]
     assert prove.suite_baseline(BASE, "PRE-1", label="l") == []
     assert prove.suite_baseline(BASE, "PRE-2", label="l") == ["x.test.ts"]
+    assert len(calls) == 2
+
+
+def test_another_test_setup_is_another_tree(suite, monkeypatch):
+    calls, answers = suite
+    answers[:] = [(0, _trailer("baseline", ["server.test.ts"])), (0, _trailer("baseline", []))]
+    assert prove.suite_baseline(BASE, None, label="l") == ["server.test.ts"]
+    monkeypatch.setattr(profile, "active", lambda: profile.parse_profile(
+        {"version": 1, "verify": {"test_setup": "pnpm run build-deps"}}, "t"))
+    assert prove.suite_baseline(BASE, None, label="l") == []
     assert len(calls) == 2
 
 

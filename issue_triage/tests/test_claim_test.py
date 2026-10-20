@@ -116,3 +116,18 @@ def test_the_claim_reaches_the_agent_as_bounded_data_on_a_locked_down_run(monkey
     assert "x" * (claim_test.CLAIM_MAX + 10) not in seen["prompt"]
     assert seen["allow_gh"] is False and seen["edit_root"] == seen["cwd"]
     assert seen["read_root"] == [seen["cwd"]]
+
+
+@pytest.mark.parametrize("setting,want", [("codex:gpt-x", "codex:gpt-x"), ("", None)])
+def test_the_claim_agent_runs_on_the_review_model(monkeypatch, setting, want):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODELS", setting)
+    seen: dict = {}
+
+    def run_agent(prompt, **kw):
+        seen.update(kw)
+        return '```json\n{"give_up": "handled"}\n```'
+
+    monkeypatch.setattr(claim_test.headless_agent, "run_agent", run_agent)
+    claim_test.author("/wt", title="t", body="b", defect="d", evidence="e", env={},
+                      contributor_docs=[])
+    assert seen["model"] == want

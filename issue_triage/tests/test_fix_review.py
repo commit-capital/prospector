@@ -207,7 +207,7 @@ def test_the_distilled_run_carries_each_candidate_s_own_account(monkeypatch):
                       "summary": "Fix x", "root_cause": "rc",
                       "changes": [{"path": "src/x.ts", "rationale": "why"}]}}],
                   "reviews": [{"lens": "scope-safety", "verdict": "safe", "reason": "fine",
-                               "unasked": ["empty input"]}],
+                               "model": "codex:gpt-x", "unasked": ["empty input"]}],
                   "proof": {"compile": {"exit": 0}, "suite": {"excluded": 3, "confirmed": False},
                             "lint": {"exit": 20, "error": "fails on trunk itself",
                                      "error_kind": "base-lint", "error_excerpt": "raw hex"}}}}
@@ -219,6 +219,7 @@ def test_the_distilled_run_carries_each_candidate_s_own_account(monkeypatch):
     assert run["candidates"][0]["summary"] == "Fix x"
     assert run["candidates"][0]["changes"][0]["rationale"] == "why"
     assert run["reviews"][0]["unasked"] == ["empty input"]
+    assert run["reviews"][0]["model"] == "codex:gpt-x"
     assert run["proof"]["suite"]["excluded"] == 3
     assert run["question"]["labels"] == ["A", "B"]
 
@@ -624,6 +625,25 @@ def test_a_revision_keeps_the_attempt_s_intake(store, solving, tmp_path, monkeyp
         ending="fixed", fault=False, detail="d", result={"patch": "p"}))
     record = fix_review_runner.revise(store, 7, comments="handle empty", on_step=lambda s: None)
     assert record["result"]["intake"] == intake
+
+
+@pytest.mark.parametrize("kept, reason", [
+    ({"agreement": {"reproductions": [0], "agreed": [], "single": True}}, "only one candidate"),
+    ({"second_opinion": [{"pr": 12, "author": "contrib", "verdict": "gap-open", "why": "w"}]},
+     "#12"),
+])
+def test_a_send_back_keeps_the_attempt_s_hold(store, solving, tmp_path, monkeypatch, kept,
+                                               reason):
+    from issue_triage import fix_lane, solo_lane, trust_boundary
+    (tmp_path / "issue-7").mkdir()
+    (tmp_path / "issue-7" / "result.json").write_text(json.dumps(
+        {"ending": "fixed", "base_sha": "a" * 40, "base_tier": 2,
+         "result": {"patch": "diff --git a/x b/x\n", **kept}}))
+    monkeypatch.setattr(solo_lane, "run", lambda spec, **kw: fix_lane.LaneResult(
+        ending="fixed", fault=False, detail="d", result={"patch": "p"}))
+    record = fix_review_runner.revise(store, 7, comments="handle empty", on_step=lambda s: None)
+    fix_review_runner._write_run(store, 7, record, None)
+    assert reason in (trust_boundary.held(store.load_issue(7)) or "")
 
 
 # --- the second opinion ------------------------------------------------------------

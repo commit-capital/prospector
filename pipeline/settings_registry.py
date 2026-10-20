@@ -60,6 +60,12 @@ SETTINGS: tuple[Setting, ...] = (
             "opus,sonnet,opus",
             "One cross-tested issue-fix candidate per model, comma-separated; "
             "codex:<model> runs that candidate on the Codex CLI.", editable=True),
+    Setting("TRIAGE_ISSUE_FIX_REVIEW_MODELS", "behavior", "list", "Issue-fix reviewer models",
+            "(the agent model)",
+            "The models the issue-fix lane reviews every fix on, each apart from the fixers, "
+            "comma-separated; any one's rejection blocks. codex:<model> runs on the Codex "
+            "CLI. The first also writes claim tests and judges reproductions. Empty takes "
+            "the agent model.", editable=True),
     Setting("TRIAGE_ISSUE_FIX_FOLLOWUP", "behavior", "choice", "Follow up proposed PRs", "live",
             "What the issue-fix worker does with a pull request it opened that is not yet "
             "green: live, dry-run (notes only), or off.", editable=True,
@@ -270,6 +276,8 @@ INTERNAL: tuple[str, ...] = (
 RETIRED: dict[str, str] = {
     "TRIAGE_REVIEW_PROVIDER": "Which reviewers gate a merge is detected from the reviewers seen "
                               "on the repository's open PRs; delete this line.",
+    "TRIAGE_ISSUE_FIX_REVIEW_MODEL": "Renamed TRIAGE_ISSUE_FIX_REVIEW_MODELS, a comma-separated "
+                                     "list of reviewer models; rename this line.",
 }
 
 BY_NAME = {s.name: s for s in SETTINGS}

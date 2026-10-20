@@ -1467,6 +1467,8 @@ export interface IssueFixCandidate {
 }
 export interface IssueFixReview {
   lens: string | null;
+  /** The model that reviewed, e.g. `opus` or `codex:<model>`; absent on older runs. */
+  model?: string | null;
   verdict: string | null;
   failed?: boolean | null;
   reason: string | null;

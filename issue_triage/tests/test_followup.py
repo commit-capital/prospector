@@ -42,7 +42,7 @@ DESCRIBED = {"described_head": HEAD, "state": "watching"}
 
 
 def _decide(pr: PrState, fu: dict | None = None, **kw) -> followup.Step:
-    return followup.decide(pr, DESCRIBED if fu is None else fu, patch=PATCH, **kw)
+    return followup.decide(pr, DESCRIBED if fu is None else fu, **kw)
 
 
 def test_a_merged_or_closed_pull_request_ends_the_follow_up():
@@ -67,19 +67,147 @@ def test_failing_ci_is_re_run_once_per_head():
     assert after.kind == "wait" and after.jobs == [40, 50]
 
 
-def test_ci_still_failing_with_logs_that_never_name_the_change_is_handed_back():
-    pr = _pr([_check("chat", "failure", run_id=4)])
-    step = _decide(pr, {**DESCRIBED, "reruns": {HEAD: [4]}},
-                   logs={"job 40": "FAIL server/chat.test.ts > discord"})
-    assert step.kind == "hand-back" and "no failing log names" in step.reason
+# A fix pull request's failing job log excerpt (issue #16267's fix): the fix exported a
+# new function from services/issues.ts, and a route test that vi.doMock()s that
+# module without it got a 500 from the route.
+LOG_16929 = """\
+     × uses the company-scope fast path on the issue list route 33ms
+      "type": "TypeError",
+          TypeError: instanceSettings.getExperimental is not a function
+ FAIL   @acme/server  src/__tests__/issue-agent-mutation-ownership-routes.test.ts > \
+agent issue mutation checkout ownership > uses the company-scope fast path on the issue list route
+AssertionError: {"error":"Internal server error"}: expected 500 to be 200 // Object.is equality
+##[error]Process completed with exit code 1."""
+ROUTE_TEST = "src/__tests__/issue-agent-mutation-ownership-routes.test.ts"
+RERAN = {**DESCRIBED, "reruns": {HEAD: [4]}}
 
 
-def test_ci_still_failing_in_a_log_that_names_a_changed_file_is_revised():
-    pr = _pr([_check("ui", "failure", run_id=4)])
-    step = _decide(pr, {**DESCRIBED, "reruns": {HEAD: [4]}},
-                   logs={"job 40": "FAIL ui/src/EmailMessageCard.test.tsx"})
-    assert (step.kind, step.guidance) == ("revise", None)
-    assert "EmailMessageCard" in (step.notes or "") and "quoted evidence" in (step.notes or "")
+def _traced(**files: str) -> dict:
+    return {**RERAN, "ci_attribution": {"head_sha": HEAD, "files": files}}
+
+
+def test_the_failing_test_files_are_read_off_the_runner_s_lines():
+    assert followup.failing_tests({"job 40": LOG_16929, "job 41": "FAIL ui/src/a.test.tsx",
+                                   "job 42": " FAIL  |cli| src/b.spec.ts > x"}) \
+        == [ROUTE_TEST, "src/b.spec.ts", "ui/src/a.test.tsx"]
+
+
+def test_ci_still_failing_runs_the_failing_tests_in_the_sandbox():
+    step = _decide(_pr([_check("server", "failure", run_id=4)]), RERAN,
+                   logs={"job 40": LOG_16929})
+    assert (step.kind, step.tests) == ("wait", [ROUTE_TEST])
+
+
+def test_a_failure_the_sandbox_traces_to_the_change_is_revised():
+    step = _decide(_pr([_check("server", "failure", run_id=4)]),
+                   _traced(**{ROUTE_TEST: followup.CAUSED}), logs={"job 40": LOG_16929})
+    assert (step.kind, step.guidance, step.untraced) == ("revise", None, False)
+    assert ROUTE_TEST in step.reason
+    assert "pass without the change and fail with it" in (step.notes or "")
+    assert "expected 500 to be 200" in (step.notes or "")
+
+
+def test_a_failure_on_the_base_too_is_handed_back_with_the_evidence():
+    step = _decide(_pr([_check("server", "failure", run_id=4)]),
+                   _traced(**{ROUTE_TEST: followup.BASE_FAILS}), logs={"job 40": LOG_16929})
+    assert step.kind == "hand-back" and f"{ROUTE_TEST} fails on the base too" in step.reason
+
+
+def test_an_untraced_failure_gets_one_revision_before_it_is_handed_back():
+    logs = {"job 40": "src/x.ts(3,1): error TS2304: Cannot find name 'y'."}
+    pr = _pr([_check("typecheck", "failure", run_id=4)])
+    step = _decide(pr, RERAN, logs=logs)
+    assert (step.kind, step.untraced) == ("revise", True)
+    assert "could not trace the failure" in (step.notes or "")
+    step = _decide(pr, {**RERAN, "ci_untraced_revised": True}, logs=logs)
+    assert step.kind == "hand-back" and "traced no failure to the change" in step.reason
+    unknown = _decide(pr, {**_traced(**{ROUTE_TEST: followup.UNKNOWN})},
+                      logs={"job 40": LOG_16929})
+    assert (unknown.kind, unknown.untraced) == ("revise", True)
+
+
+@pytest.fixture
+def sandbox(tmp_path, monkeypatch):
+    """A held base whose clone carries the route test, and the sandbox's exits
+    queued per run: the change's run first, then the base's."""
+    clone = tmp_path / "clone"
+    (clone / "server" / "src" / "__tests__").mkdir(parents=True)
+    (clone / "server" / ROUTE_TEST).write_text("test")
+    base = followup.prove.PinnedBase(sha="c" * 40, tier=1, image="img", clone=clone)
+    held: list[tuple[str, int]] = []
+    monkeypatch.setattr(followup.prove, "held", lambda sha, tier: held.append((sha, tier)) or base)
+    monkeypatch.setattr(followup.prove, "compose", lambda label, *parts: tmp_path / "p.patch")
+    exits: list[int] = []
+    cmds: list[str] = []
+
+    def run_command(base_, patch, cmd, **kw):
+        cmds.append(cmd)
+        return {"exit": exits.pop(0)}
+
+    def run_phase(phase, image, **kw):
+        assert phase == "repro" and "patch" not in kw
+        cmds.append(kw["test_cmd"])
+        return exits.pop(0), ""
+
+    monkeypatch.setattr(followup.prove, "run_command", run_command)
+    monkeypatch.setattr(followup.verify_driver, "run_phase", run_phase)
+    return exits, cmds, held
+
+
+RECORD = {"issue": 16267, "base_sha": "c" * 40, "base_tier": 1, "result": {"patch": PATCH}}
+
+
+def test_a_test_that_fails_with_the_change_and_passes_on_the_base_is_the_change_s(sandbox):
+    exits, cmds, held = sandbox
+    exits[:] = [20, 0]
+    assert followup.attribute(RECORD, [ROUTE_TEST]) == {ROUTE_TEST: followup.CAUSED}
+    assert held == [("c" * 40, 1)]
+    assert len(cmds) == 2 and all(f"server/{ROUTE_TEST}" in c for c in cmds)
+
+
+def test_a_test_that_fails_on_the_base_too_or_passes_with_the_change_is_not(sandbox):
+    exits, cmds, _ = sandbox
+    exits[:] = [20, 20]
+    assert followup.attribute(RECORD, [ROUTE_TEST]) == {ROUTE_TEST: followup.BASE_FAILS}
+    exits[:] = [0]
+    assert followup.attribute(RECORD, [ROUTE_TEST]) == {ROUTE_TEST: followup.PASSES}
+
+
+def test_a_test_the_change_touches_is_the_change_s_without_a_run(sandbox):
+    _, cmds, _ = sandbox
+    assert followup.attribute(RECORD, ["ui/src/EmailMessageCard.tsx"]) \
+        == {"ui/src/EmailMessageCard.tsx": followup.CAUSED}
+    assert cmds == []
+
+
+def test_a_test_with_no_single_path_or_no_held_base_is_unknown(sandbox, monkeypatch):
+    _, cmds, _ = sandbox
+    assert followup.attribute(RECORD, ["nowhere.test.ts", "../x.test.ts"]) \
+        == {"nowhere.test.ts": followup.UNKNOWN, "../x.test.ts": followup.UNKNOWN}
+
+    def no_base(sha, tier):
+        raise followup.prove.NoBase("gone")
+
+    monkeypatch.setattr(followup.prove, "held", no_base)
+    assert followup.attribute(RECORD, [ROUTE_TEST]) == {ROUTE_TEST: followup.UNKNOWN}
+    assert cmds == []
+
+
+def test_a_poll_traces_the_failure_in_the_sandbox_and_revises(store, monkeypatch):
+    pr = _pr([_check("server", "failure", run_id=4)])
+    monkeypatch.setattr(followup, "read", lambda n: pr)
+    monkeypatch.setattr(followup, "_job_log", lambda job: LOG_16929)
+    traced = []
+    monkeypatch.setattr(followup, "attribute", lambda record, names: traced.append(names) or {
+        n: followup.CAUSED for n in names})
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching",
+                                             "described_head": HEAD, "reruns": {HEAD: [4]}})
+    followup.poll(store, mode="live")
+    fu = store.load_issue(7).fix_followup
+    assert traced == [[ROUTE_TEST]]
+    assert fu["ci_attribution"] == {"head_sha": HEAD, "files": {ROUTE_TEST: followup.CAUSED}}
+    assert fu["revisions"] == 1 and "ci_untraced_revised" not in fu
+    assert ROUTE_TEST in store.load_issue(7).fix_request["notes"]
 
 
 def test_a_reviewer_below_its_bar_sends_the_fix_back_with_its_findings():

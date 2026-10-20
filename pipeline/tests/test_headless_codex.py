@@ -119,16 +119,16 @@ def test_run_agent_sends_a_codex_model_to_codex(monkeypatch):
 
 
 def _fake_codex(tmp_path: Path, stream: list[dict], exit_code: int = 0) -> Path:
-    """A `codex` that records its argv, environment and Codex home, then
-    prints `stream`."""
+    """A `codex` that records its argv, environment, prompt and Codex home,
+    then prints `stream`."""
     record = tmp_path / "record.json"
     script = tmp_path / "codex"
     lines = "\n".join(json.dumps(e) for e in stream)
     script.write_text(f"""#!/usr/bin/env python3
 import json, os, sys
-sys.stdin.read()
+prompt = sys.stdin.read()
 home = os.environ["CODEX_HOME"]
-json.dump({{"argv": sys.argv[1:], "env": dict(os.environ),
+json.dump({{"argv": sys.argv[1:], "env": dict(os.environ), "prompt": prompt,
            "auth": os.path.realpath(os.path.join(home, "auth.json")),
            "rules": open(os.path.join(home, "rules", "default.rules")).read()}},
           open({str(record)!r}, "w"))
@@ -201,6 +201,71 @@ def test_a_missing_login_is_the_machine_s_condition(home, tmp_path, monkeypatch)
         _run(home, tmp_path, monkeypatch, DONE)
 
 
+def _profile(argv: list[str]) -> dict[str, str]:
+    """The permissions profile a recorded run was given, path to access."""
+    table = next(a for a in argv if a.startswith("permissions.lane.filesystem="))
+    body = table.split("=", 1)[1].strip("{}")
+    return {json.loads(k): json.loads(v) for k, v in
+            (pair.split(" = ") for pair in body.split(", "))}
+
+
+def _codex_reviewer(home, tmp_path, monkeypatch) -> dict:
+    """Point the issue-fix reviewer model at a recording fake Codex."""
+    record = _fake_codex(tmp_path, DONE)
+    monkeypatch.setattr(headless_codex, "CODEX_BIN", str(tmp_path / "codex"))
+    monkeypatch.setattr(headless_agent, "_store",
+                        lambda: type("S", (), {"append_agent_run": lambda self, r: None})())
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODELS", "codex:gpt-x")
+    monkeypatch.setenv("TRIAGE_STORE_URL", "postgresql://secret")
+    return {"record": record, "clone": os.path.realpath(home["clone"])}
+
+
+def _read_only(seen: dict, clone: str) -> None:
+    fs = _profile(seen["argv"])
+    assert fs[clone] == "read"
+    assert [p for p, access in fs.items() if access == "write"] == [
+        os.path.realpath(seen["env"]["TMPDIR"])]
+    assert "TRIAGE_STORE_URL" not in seen["env"]
+    assert seen["argv"][seen["argv"].index("-m") + 1] == "gpt-x"
+    assert "writes nothing" in seen["prompt"] and "apply_patch" not in seen["prompt"]
+
+
+@pytest.mark.parametrize("lens", ["root-cause", "scope-safety"])
+def test_a_codex_reviewer_reads_the_worktree_and_writes_nothing(home, tmp_path, monkeypatch,
+                                                                lens):
+    from issue_triage import review_issue_fix
+    run = _codex_reviewer(home, tmp_path, monkeypatch)
+    out = review_issue_fix.review(run["clone"], "diff", lens=lens, title="t", body="b",
+                                  root_cause="rc", test_paths=[], evidence="e")
+    assert out["model"] == "codex:gpt-x" and out["verdict"] == "unsafe"
+    _read_only(json.loads(run["record"].read_text()), run["clone"])
+
+
+def test_a_codex_judge_reads_the_worktree_and_writes_nothing(home, tmp_path, monkeypatch):
+    from issue_triage import judge_repro
+    run = _codex_reviewer(home, tmp_path, monkeypatch)
+    judge_repro.judge(run["clone"], title="t", body="b", files=[], claimed_symptom="s",
+                      expected_red_signature="e", red_tail="r")
+    _read_only(json.loads(run["record"].read_text()), run["clone"])
+
+
+def test_a_codex_claim_agent_writes_its_clone_and_runs_only_the_check(home, tmp_path,
+                                                                      monkeypatch):
+    from issue_triage import claim_test, lane_check
+    run = _codex_reviewer(home, tmp_path, monkeypatch)
+    with pytest.raises(ValueError):  # the fake answers neither files nor a give-up
+        claim_test.author(run["clone"], title="t", body="b", defect="d", evidence="e",
+                          env={"PROSPECTOR_ISSUE_CHECK_ISSUE": "7"}, contributor_docs=[])
+    seen = json.loads(run["record"].read_text())
+    fs = _profile(seen["argv"])
+    assert fs[run["clone"]] == "write"
+    assert sorted(p for p, access in fs.items() if access == "write") == sorted(
+        [run["clone"], os.path.realpath(seen["env"]["TMPDIR"])])
+    assert lane_check.TOOL not in seen["prompt"]
+    assert seen["env"]["PROSPECTOR_ISSUE_CHECK_ISSUE"] == "7"
+    assert "TRIAGE_STORE_URL" not in seen["env"]
+
+
 # The generated profile against the real sandbox: no model call is made.
 needs_codex = pytest.mark.skipif(shutil.which("codex") is None or os.uname().sysname != "Darwin",
                                  reason="needs the Codex CLI's macOS sandbox")
@@ -244,6 +309,11 @@ def test_the_real_sandbox_holds_the_profile_s_walls(tmp_path):
             return _sandboxed(fs, clone, *cmd).returncode == 0
 
         assert ok("cat", "a.txt") and ok("sh", "-c", "echo x > b.txt")
+        reviewer = headless_codex.filesystem([str(clone)], None, str(scratch),
+                                             str(clone.parent / "codex-home"))
+        assert _sandboxed(reviewer, clone, "cat", "a.txt").returncode == 0
+        assert _sandboxed(reviewer, clone, "sh", "-c", "echo x > c.txt").returncode != 0
+        assert not (clone / "c.txt").exists()
         assert not ok("cat", ".env")
         assert not ok("cat", str(clone.parent / "sibling.txt"))
         assert not ok("ls", str(real_home))

@@ -19,7 +19,7 @@ from collections.abc import Sequence
 
 from issue_triage import claim_test, issue_gates, link_prs, second_opinion
 from issue_triage.related_prs import RelatedPr
-from pipeline import describe_pr, settings
+from pipeline import describe_pr, headless_codex, settings
 
 TITLE_MAX = 120
 FIELD_MAX = 400
@@ -199,6 +199,16 @@ def _red_claims(result: dict) -> list[dict]:
             if c.get("status") == "shown" and c.get("fix") == shipped]
 
 
+def _family(models: list[str]) -> str:
+    """Who makes `models` and the CLI they ran in, as the PR body names them."""
+    names = [label for label, hit in (
+        ("Anthropic Claude, via Claude Code",
+         any(not m.startswith(headless_codex.PREFIX) for m in models) or not models),
+        ("OpenAI, via the Codex CLI", any(m.startswith(headless_codex.PREFIX) for m in models)))
+        if hit]
+    return "; ".join(names)
+
+
 def _rounds(result: dict) -> list[str]:
     rounds = result.get("revisions") or []
     if not rounds:
@@ -221,6 +231,7 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
     changes = [f"- `{inert(c.get('path', ''), 200)}`: {inert(c.get('rationale', ''))}"
                for c in (result.get("changes") or [])]
     model_list = ", ".join(sorted(set(models))) or "unrecorded"
+    reviewers = sorted({str(r["model"]) for r in result.get("reviews") or [] if r.get("model")})
     tier = (result.get("tier") or {}).get("tier")
     boundary = result.get("boundary") or {}
     crossings = boundary.get("crossings") or []
@@ -254,7 +265,9 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
               if tier == 0 else []),
             *[f"- The scope reviewer found it also changes, beyond the report: "
               f"{inert(item, 200)}"
-              for r in (result.get("reviews") or []) for item in (r.get("unasked") or [])[:5]],
+              for item in dict.fromkeys(
+                  i for r in issue_gates.latest_reviews(result.get("reviews"))
+                  for i in (r.get("unasked") or [])[:5])],
             *(["- It crosses a trust boundary. Check each crossing against what the issue "
                "asked for, and against who asked:"] if crossings else []),
             *[f"  - {inert(c.get('kind', ''), 40)} ({inert(c.get('where', ''), 160)}"
@@ -263,8 +276,9 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
             *(["- Its trust-boundary review did not finish: nothing has checked what this "
                "change lets the code reach."] if boundary.get("failed") else []),
         ],
-        "model": [f"- {model_list} (Anthropic Claude, via Claude Code), writing and "
-                  "checking the change in an isolated sandbox."],
+        "model": [f"- {model_list} ({_family(models)}), writing and checking the change "
+                  "in an isolated sandbox.",
+                  *[f"- {m} ({_family([m])}), reviewing it independently." for m in reviewers]],
     }
     sections: list[tuple[str, list[str]]] = []
     carried: set[str] = set()

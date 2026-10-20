@@ -10,7 +10,8 @@ runs them twice with the fix applied, and has `judge_repro` rate the failure;
 `issue_gates.reproduction_outcome` names the result. A claim is `shown` only
 when that reads `reproduced`: its test is then evidence the fixer must answer,
 and a revision has to pass it. Any other answer leaves the claim `unshown`
-with the reason, and an unshown claim never blocks a fix on its own.
+with the reason, and an unshown claim never blocks a fix on its own. The
+claim agent runs on the first reviewer model (`settings.issue_fix_review_model()`).
 """
 from __future__ import annotations
 
@@ -30,7 +31,16 @@ from issue_triage import (
     lane_tree,
     reproduce_issue,
 )
-from pipeline import authoring, diffpaths, gates, headless_agent, prove, threats, verify_driver
+from pipeline import (
+    authoring,
+    diffpaths,
+    gates,
+    headless_agent,
+    prove,
+    settings,
+    threats,
+    verify_driver,
+)
 
 if TYPE_CHECKING:
     from issue_triage.fix_lane import LaneSpec
@@ -119,7 +129,8 @@ def author(worktree: str, *, title: str, body: str, defect: str, evidence: str,
         prompt, allow_gh=False, cwd=worktree, read_root=[worktree],
         edit_root=worktree, allow=[f"Bash({lane_check.TOOL}:*)"],
         env_allow=[k for k in verify_driver.LAUNCHER_ENV_ALLOW if k.startswith("DOCKER_")],
-        env_extra=env, timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event))
+        env_extra=env, timeout=AGENT_TIMEOUT_SECONDS,
+        model=settings.issue_fix_review_model(), on_event=on_event))
     if "give_up" in verdict:
         return {"give_up": str(verdict["give_up"])}
     files = verdict.get("files")

@@ -472,6 +472,7 @@ a:hover { text-decoration: underline; }
 .fix-pr-facts .chip, .fix-pr-head .chip { cursor: help; }
 .issue-analysis { display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; line-height: 1.5; }
 .issue-asks { margin: 0 0 0 18px; }
+.issue-summary { gap: 14px; }
 
 /* buttons */
 /* Every button uses the app's typeface. Unclassed buttons get the panel look

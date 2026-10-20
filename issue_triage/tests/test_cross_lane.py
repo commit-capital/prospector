@@ -639,9 +639,9 @@ def reviser(cross, monkeypatch):
 
     def review(worktree, patch, **kw):
         if kw["lens"] != "scope-safety":
-            return ROOT_SAFE
+            return {**ROOT_SAFE, "model": kw.get("model")}
         cross["reviewed"].append({"patch": patch, **kw})
-        return cross["verdicts"].pop(0)
+        return {**cross["verdicts"].pop(0), "model": kw.get("model")}
 
     monkeypatch.setattr(solo_lane, "author", author)
     monkeypatch.setattr(review_issue_fix, "review", review)
@@ -786,6 +786,29 @@ def test_a_complete_safe_review_asks_for_no_revision(answered):
     res = answered["run"]()
     assert res.ending == "fixed" and answered["claims"] == []
     assert res.result.get("revisions") is None
+
+
+# --- reviewers on two models ---------------------------------------------------------
+
+def test_one_model_s_rejection_is_revised_though_the_other_passed(reviser, monkeypatch):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODELS", "opus,codex:gpt-x")
+    reviser["verdicts"] = [SAFE, UNSAFE, SAFE, SAFE]
+    res = reviser["run"]()
+    assert res.ending == "fixed" and "after 1 round(s) of revision" in res.detail
+    assert [why for _, why in reviser["revised_with"]] == ["- scope-safety (codex:gpt-x): x leaks"]
+    assert [r["model"] for r in reviser["reviewed"]] == ["opus", "codex:gpt-x"] * 2
+
+
+def test_a_defect_two_models_leave_is_put_to_one_test(answered, monkeypatch):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_REVIEW_MODELS", "opus,codex:gpt-x")
+    shouted = {**PARTIAL, "coverage": [PARTIAL["coverage"][0],
+                                       {**GAP, "defect": GAP["defect"].upper()}]}
+    answered.update(claim="shown", verdicts=[PARTIAL, shouted, COMPLETE, COMPLETE],
+                    reviser=_sets_y("changed"))
+    res = answered["run"]()
+    assert [c["defect"]["defect"] for c in answered["claims"]] == [GAP["defect"]]
+    assert res.ending == "fixed"
+    assert issue_gates.fix_coverage(res.result["reviews"]).state == "complete"
 
 
 # --- a trust-boundary crossing the report did not ask for (issue #15806's shape) -----

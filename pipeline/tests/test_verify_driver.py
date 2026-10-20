@@ -1148,7 +1148,7 @@ class TestRunPhase:
         def setup() -> str | None:
             argv = fake.seen["argv"]
             return argv[argv.index("--test-setup") + 1] if "--test-setup" in argv else None
-        for phase in ("red", "green", "repro", "coverage"):
+        for phase in ("red", "green", "repro", "coverage", "baseline", "regress"):
             vd.run_phase(phase, "img:t0")
             assert setup() == "pnpm run preflight"
         vd.run_phase("compile", "img:t1")

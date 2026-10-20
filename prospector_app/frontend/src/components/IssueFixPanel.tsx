@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   api, type IssueDetail, type IssueFixBody, type IssueFixBoundary, type IssueFixCandidate, type IssueFixCoverage,
   type IssueFixFollowup, type IssueFixIntake, type IssueFixRivalEntry, type IssueFixRound,
-  type IssueFixQuestion,
+  type IssueFixQuestion, type IssueFixReview,
   type IssueFixRun, type IssueFixStatus, type IssueFixThreadEntry,
 } from "../api";
 import { useExec } from "../ExecContext";
@@ -274,7 +274,6 @@ function followupLabel(f: IssueFixFollowup): string {
 
 function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFollowup | null }) {
   const { prUrl } = useRepoMeta();
-  const review = run.reviews[0];
   const proof = run.proof;
   return (
     <>
@@ -347,42 +346,46 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
           </ul>
         </>
       )}
-      {review && (
-        <>
-          <h4>Reviewer ({review.lens})</h4>
-          <div className={`chip sm chip-${review.verdict === "safe" ? "green" : "red"}`}>
-            {review.failed ? "didn't finish" : review.verdict}
-          </div>
-          {review.reason && <div style={{ marginTop: 4 }}>{review.reason}</div>}
-          {review.concerns.length > 0 && (
-            <ul style={{ margin: "4px 0 0 18px" }}>{review.concerns.map((c, i) => <li key={i}>{c}</li>)}</ul>
-          )}
-          {(review.coverage?.length ?? 0) > 0 && (
-            <>
-              <div className="muted small" style={{ marginTop: 4 }}>What the report names:</div>
-              <ul style={{ margin: "2px 0 0 18px" }}>
-                {review.coverage?.map((c, i) => (
-                  <li key={i}>
-                    <span className={`chip sm chip-${COVERAGE_TONE[c.status]}`}>{COVERAGE_LABEL[c.status]}</span>{" "}
-                    {c.defect}{c.evidence && <span className="muted"> — {c.evidence}</span>}
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-          {review.unasked.length > 0 && (
-            <>
-              <div className="muted small" style={{ marginTop: 4 }}>Also changes, beyond the report:</div>
-              <ul style={{ margin: "2px 0 0 18px" }}>{review.unasked.map((c, i) => <li key={i}>{c}</li>)}</ul>
-            </>
-          )}
-        </>
-      )}
+      {run.reviews.map((r, i) => <Review key={i} review={r} />)}
       {(run.revisions?.length ?? 0) > 0 && <ReviewRounds rounds={run.revisions ?? []} />}
       {run.intake && <Intake intake={run.intake} />}
       {run.boundary && <Boundary boundary={run.boundary} />}
       {(run.second_opinion?.length ?? 0) > 0 && <SecondOpinion entries={run.second_opinion ?? []} />}
       {run.candidates.length > 0 && <Candidates run={run} />}
+    </>
+  );
+}
+
+function Review({ review }: { review: IssueFixReview }) {
+  return (
+    <>
+      <h4>Reviewer ({review.lens}{review.model ? ` · ${review.model}` : ""})</h4>
+      <div className={`chip sm chip-${review.verdict === "safe" ? "green" : "red"}`}>
+        {review.failed ? "didn't finish" : review.verdict}
+      </div>
+      {review.reason && <div style={{ marginTop: 4 }}>{review.reason}</div>}
+      {review.concerns.length > 0 && (
+        <ul style={{ margin: "4px 0 0 18px" }}>{review.concerns.map((c, i) => <li key={i}>{c}</li>)}</ul>
+      )}
+      {(review.coverage?.length ?? 0) > 0 && (
+        <>
+          <div className="muted small" style={{ marginTop: 4 }}>What the report names:</div>
+          <ul style={{ margin: "2px 0 0 18px" }}>
+            {review.coverage?.map((c, i) => (
+              <li key={i}>
+                <span className={`chip sm chip-${COVERAGE_TONE[c.status]}`}>{COVERAGE_LABEL[c.status]}</span>{" "}
+                {c.defect}{c.evidence && <span className="muted"> — {c.evidence}</span>}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {review.unasked.length > 0 && (
+        <>
+          <div className="muted small" style={{ marginTop: 4 }}>Also changes, beyond the report:</div>
+          <ul style={{ margin: "2px 0 0 18px" }}>{review.unasked.map((c, i) => <li key={i}>{c}</li>)}</ul>
+        </>
+      )}
     </>
   );
 }

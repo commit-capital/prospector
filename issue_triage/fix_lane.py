@@ -485,19 +485,17 @@ def run(spec: LaneSpec, *, workdir: Path,
 
         reviews: list[dict] = []
         evidence = _proof_evidence(result["proof"], authored)
-        on_step("reviewing: root-cause")
-        agent_runs += 1
-        reviews.append(review_issue_fix.review(
-            str(fix_clone), fix_patch, lens="root-cause", title=spec.title, body=spec.body,
-            root_cause=str(fix_verdict["root_cause"]), test_paths=test_paths + preserve_paths,
-            evidence=evidence))
-        if not _is_judged_rejection(reviews[0]):
-            on_step("reviewing: scope-safety")
-            agent_runs += 1
-            reviews.append(review_issue_fix.review(
-                str(fix_clone), fix_patch, lens="scope-safety", title=spec.title,
-                body=spec.body, root_cause=str(fix_verdict["root_cause"]),
-                test_paths=test_paths + preserve_paths, evidence=evidence))
+        models = settings.issue_fix_review_models()
+        for lens in issue_gates.REVIEW_LENSES:
+            if any(_is_judged_rejection(r) for r in reviews):
+                break
+            for model in models:
+                on_step(f"reviewing: {lens}" + (f" on {model}" if len(models) > 1 else ""))
+                agent_runs += 1
+                reviews.append(review_issue_fix.review(
+                    str(fix_clone), fix_patch, lens=lens, title=spec.title, body=spec.body,
+                    root_cause=str(fix_verdict["root_cause"]),
+                    test_paths=test_paths + preserve_paths, evidence=evidence, model=model))
         result["reviews"] = reviews
 
         stalled = [r for r in reviews if r.get("failed")]

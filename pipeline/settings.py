@@ -513,6 +513,20 @@ def issue_fix_models() -> tuple[str, ...]:
     return models or ("opus", "sonnet", "opus")
 
 
+def issue_fix_review_models() -> tuple[str | None, ...]:
+    """The models every issue-fix review lens runs on, each in its own run:
+    TRIAGE_ISSUE_FIX_REVIEW_MODELS, comma-separated and deduplicated, or
+    `(None,)` to take `agent_model()`. A `codex:<model>` runs on Codex."""
+    raw = os.environ.get("TRIAGE_ISSUE_FIX_REVIEW_MODELS", "")
+    return tuple(dict.fromkeys(m.strip() for m in raw.split(",") if m.strip())) or (None,)
+
+
+def issue_fix_review_model() -> str | None:
+    """The one model the issue-fix lane's claim-test author and reproduction
+    judge run on: the first of `issue_fix_review_models()`."""
+    return issue_fix_review_models()[0]
+
+
 def issue_fix_suite() -> bool:
     """Whether the issue-fix lanes run the full suite over a fix that clears
     their other checks. On unless TRIAGE_ISSUE_FIX_SUITE=0."""

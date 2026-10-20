@@ -132,7 +132,7 @@ def lane(tmp_path, monkeypatch):
         return scripts.fix(worktree)
 
     def fake_review(worktree, patch, *, lens, title, body, root_cause, test_paths,
-                    evidence, on_event=None):
+                    evidence, model=None, on_event=None):
         calls["review"].append(lens)
         calls["evidence"].append(evidence)
         return scripts.review(worktree, patch, lens)
