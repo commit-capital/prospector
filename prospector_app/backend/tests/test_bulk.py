@@ -41,6 +41,15 @@ def test_per_pr_comments_override_shared(monkeypatch):
 
 
 
+def test_a_bulk_merge_goes_through_the_gated_merge(monkeypatch):
+    monkeypatch.setattr(executor, "merge_pr", lambda n, method, *, dry_run, reason=None: {
+        "pr": n, "action": "MERGE", "status": "blocked" if n == 2 else "merged"})
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    evs = _drain(bulk.run_bulk([1, 2], "MERGE", dry_run=False))
+    assert done_summary([e for e in evs if e["event"] == "done"][0]) == {
+        "merged": 1, "blocked": 1}
+
+
 def test_review_retrigger_routes_and_schedules_refresh(monkeypatch):
     baselines = {1: object(), 2: object()}
     seen = []

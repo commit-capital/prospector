@@ -142,6 +142,14 @@ class TestApply:
 
 
 class TestReadiness:
+    def test_the_docker_row_tells_missing_from_stopped(self, monkeypatch):
+        monkeypatch.setattr(worker_readiness.shutil, "which", lambda _: None)
+        assert worker_readiness._docker_daemon()[:2] == (False, "Docker is not installed")
+        monkeypatch.setattr(worker_readiness.shutil, "which", lambda _: "/usr/bin/docker")
+        monkeypatch.setattr(worker_readiness.verify_driver, "daemon_available", lambda: False)
+        assert worker_readiness._docker_daemon()[:2] == (
+            False, "Docker is installed but not running")
+
     def test_a_check_failure_is_logged_without_reaching_the_readiness_response(
             self, monkeypatch, caplog):
         """A check that cannot answer is not evidence the machine is ready."""
