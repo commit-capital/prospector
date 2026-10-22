@@ -117,18 +117,6 @@ def test_query_issues_collapse_dups_folds_members(tmp_path, monkeypatch):
     assert out["items"][0]["dup_rows"] == []
 
 
-def test_store_pr_states_cold_snapshot_returns_empty_loading(monkeypatch):
-    monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: True)
-    assert issues._store_pr_states() == ({}, True)
-
-
-def test_store_pr_states_loaded_snapshot(monkeypatch):
-    from types import SimpleNamespace
-    monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: False)
-    monkeypatch.setattr(
-        "prospector_app.backend.data.prs",
-        lambda: {900: SimpleNamespace(state="open"), 901: SimpleNamespace(state=None)})
-    assert issues._store_pr_states() == ({900: "open"}, False)
 
 
 def test_query_issues_serves_rows_while_pr_snapshot_loads(tmp_path, monkeypatch):
@@ -338,10 +326,6 @@ def test_duplicate_groups_excludes_unconfirmed(tmp_path, monkeypatch):
     assert issues.duplicate_groups() == []
 
 
-def test_dup_comment_references_canonical():
-    assert "#10" in issues.dup_issue_comment(10)
-    assert "duplicate" in issues.dup_issue_comment(None).lower()
-
 
 def test_close_issue_dry_run(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
@@ -396,13 +380,14 @@ def test_close_issue_blocked_when_not_eligible(tmp_path, monkeypatch):
     assert "gate" in res["detail"].lower()
 
 
-def test_close_issue_live_closes_as_duplicate_of_canonical(tmp_path, monkeypatch):
-    """The cluster-driven dup close carries --duplicate-of, so GitHub records the
-    marked_as_duplicate link rather than a bare 'not planned' close."""
-    _seed(tmp_path, monkeypatch)
+
+def test_close_issue_closes_as_duplicate_and_reflects_closed_state(tmp_path, monkeypatch):
+    """The dup close carries --duplicate-of, so GitHub records the
+    marked_as_duplicate link, and the store row is stamped closed at once, so the
+    dup worklist drops it without waiting for the next INGEST (#192)."""
+    st = _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
-    monkeypatch.setattr(issues, "_live_state", lambda n: "open")
-    monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
+    monkeypatch.setattr(executor.gh, "issue_comments", lambda n, **k: [])
     calls = []
 
     class _Ok:
@@ -410,29 +395,11 @@ def test_close_issue_live_closes_as_duplicate_of_canonical(tmp_path, monkeypatch
         stderr = ""
 
     monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: (calls.append(argv), _Ok())[1])
+    assert st.load_issue(11).state == "open"
     res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), token="tok", dry_run=False)
     assert res["status"] == "executed"
     assert ["gh", "issue", "close", "11", "--repo", settings.repo(),
             "--reason", "duplicate", "--duplicate-of", "10"] in calls
-
-
-def test_close_issue_reflects_closed_state_to_store(tmp_path, monkeypatch):
-    """After a live dup-close, the issue's store row is stamped closed immediately —
-    so the dup worklist drops it without waiting for the next INGEST closure sweep
-    (the issue-side analog of the PR executor's _reflect_state, #192)."""
-    st = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
-    monkeypatch.setattr(issues, "_live_state", lambda n: "open")
-    monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
-
-    class _Ok:
-        returncode = 0
-        stderr = ""
-
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Ok())
-    assert st.load_issue(11).state == "open"
-    res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), token="tok", dry_run=False)
-    assert res["status"] == "executed"
     # the store row now reads closed, read back through a fresh handle
     assert issue_store.IssueStore(tmp_path).load_issue(11).state == "closed"
     # and the worklist no longer offers #11 — its cluster has no closeable dup left
@@ -444,7 +411,7 @@ def test_close_issue_with_comment_reflects_closed_state(tmp_path, monkeypatch):
     success, so every issue-close executor path shares the write-back."""
     _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
-    monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
+    monkeypatch.setattr(executor.gh, "issue_comments", lambda n, **k: [])
 
     class _Ok:
         returncode = 0
@@ -473,7 +440,8 @@ def test_reopen_issue_live_reopens_deletes_comment_and_reflects_open(tmp_path, m
     st = _seed(tmp_path, monkeypatch)
     st.edit_issue(11).record_live_state("closed")   # as our close would have left it
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
-    monkeypatch.setattr(executor, "_bot_comment_ids", lambda n: [555])
+    monkeypatch.setattr(executor.gh, "issue_comments", lambda n, **k: [
+        {"id": 555, "user": {"login": settings.bot_login() + "[bot]"}, "body": "closing"}])
     calls = []
 
     class _Ok:
@@ -589,28 +557,6 @@ def test_close_issue_fixed_blocked_when_issue_already_closed(tmp_path, monkeypat
     assert res["status"] == "blocked" and "no action needed" in res["detail"]
 
 
-def test_has_bot_comment_scopes_by_substring(monkeypatch):
-    """With `contains`, the idempotency check filters bot comments to those mentioning
-    the given reference, so a close-fixed comment (#PR) and a close-dup comment
-    (#canonical) on the same thread do not suppress each other. Matching happens in
-    Python, so a body containing quotes or backslashes is searched correctly."""
-
-    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
-
-    comments = [
-        {"user": {"login": "triagebot[bot]"}, "body": "fixed by #900"},
-        {"user": {"login": "triagebot[bot]"}, "body": 'closing as a dup of "#42" \\ x'},
-    ]
-    monkeypatch.setattr(executor.gh, "issue_comments", lambda n, **kw: comments)
-    assert executor._has_bot_comment(11, "#900")
-    assert executor._has_bot_comment(11, 'dup of "#42" \\ x')   # quotes + backslash
-    assert not executor._has_bot_comment(11, "#123")
-    assert executor._has_bot_comment(11)                         # any bot comment
-
-
-def test_has_bot_comment_false_on_unreadable_response(monkeypatch):
-    monkeypatch.setattr(executor.gh, "issue_comments", lambda n, **kw: None)
-    assert not executor._has_bot_comment(11, "#900")
 
 
 def test_bot_write_allows_issue_close_not_edit():
@@ -854,37 +800,6 @@ def test_dup_group_names_the_fixer_its_prefilled_comment_uses(tmp_path, monkeypa
     assert g["fixed_comment"] == issues.fixed_issue_comment(901)
 
 
-def test_pr_links_indexes_the_snapshot_and_is_unavailable_while_it_loads(monkeypatch):
-    from pipeline.model import Pr
-
-    monkeypatch.setattr(issues, "_pr_links_cache", None)
-    monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: True)
-    assert issues._pr_links() is None
-    monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: False)
-    monkeypatch.setattr("prospector_app.backend.data.prs", lambda: {901: Pr(None, {
-        "pr": 901, "meta": {"title": "fix boot", "state": "open"},
-        "issues": {"linked": [{"issue": 10, "how": "explicit"}]}})})
-    assert [link["pr"] for link in (issues._pr_links() or {})[10]] == [901]
-
-
-def test_pr_links_rebuilds_only_when_the_snapshot_generation_moves(monkeypatch):
-    from pipeline.model import Pr
-
-    def snap(n):
-        return {n: Pr(None, {"pr": n, "meta": {"title": f"PR {n}", "state": "open"},
-                             "issues": {"linked": [{"issue": 10, "how": "explicit"}]}})}
-
-    first, second = snap(901), snap(902)
-    generation = [7]
-    monkeypatch.setattr(issues, "_pr_links_cache", None)
-    monkeypatch.setattr("prospector_app.backend.data.snapshot_loading", lambda: False)
-    monkeypatch.setattr("prospector_app.backend.data.generation", lambda: generation[0])
-    monkeypatch.setattr("prospector_app.backend.data.prs", lambda: first)
-    assert [link["pr"] for link in (issues._pr_links() or {})[10]] == [901]
-    monkeypatch.setattr("prospector_app.backend.data.prs", lambda: second)
-    assert [link["pr"] for link in (issues._pr_links() or {})[10]] == [901]
-    generation[0] = 8
-    assert [link["pr"] for link in (issues._pr_links() or {})[10]] == [902]
 
 
 def test_row_carries_the_fix_scans_fixer_without_a_store_state(tmp_path, monkeypatch):

@@ -3,6 +3,8 @@ snapshot and report divergences. The GraphQL fetch (live_states) is
 monkeypatched; we only test the comparison logic."""
 import logging
 
+import pytest
+
 from prospector_app.backend import data
 from prospector_app.backend import freshness_live
 from pipeline.model import Pr
@@ -32,63 +34,33 @@ def _patch(monkeypatch, store, live):
     monkeypatch.setattr(freshness_live, "persist_live", lambda *a, **k: [])
 
 
-def test_no_divergence_when_state_matches(monkeypatch):
-    _patch(monkeypatch, {1: _store_pr(1)},
-           {1: {"state": "open", "merged": False, "head": HEAD,
-                "mergeable": "MERGEABLE", "ci": "passing"}})
+LIVE = {"state": "open", "merged": False, "head": HEAD, "mergeable": "MERGEABLE",
+        "ci": "passing"}
+
+
+@pytest.mark.parametrize("stored, live, expect", [
+    ({}, {}, []),
+    ({}, {"state": "merged", "merged": True}, [("merged", None, None)]),
+    ({}, {"state": "closed"}, [("state", "open", "closed")]),
+    ({}, {"head": NEWHEAD}, [("head", None, NEWHEAD[:7])]),
+    ({}, {"mergeable": "CONFLICTING"}, [("conflicts", None, None)]),
+    ({}, {"ci": "failing"}, [("ci", "passing", "failing")]),
+    # The store never resolved CI, so a live "passing" is not a regression.
+    ({"ci": "unknown"}, {}, []),
+], ids=["matches", "merged", "closed", "new-head", "conflicts", "ci-regressed",
+        "ci-unknown-baseline"])
+def test_upstream_divergence_is_flagged(monkeypatch, stored, live, expect):
+    _patch(monkeypatch, {1: _store_pr(1, **stored)}, {1: {**LIVE, **live}})
     item = freshness_live.check([1])["items"][0]
     assert item["reachable"] is True
-    assert item["diverged"] == []
-
-
-def test_merged_upstream_is_flagged(monkeypatch):
-    _patch(monkeypatch, {1: _store_pr(1, state="open")},
-           {1: {"state": "merged", "merged": True, "head": HEAD,
-                "mergeable": "UNKNOWN", "ci": "passing"}})
-    kinds = [d["kind"] for d in freshness_live.check([1])["items"][0]["diverged"]]
-    assert "merged" in kinds
-
-
-def test_closed_upstream_is_flagged(monkeypatch):
-    _patch(monkeypatch, {1: _store_pr(1, state="open")},
-           {1: {"state": "closed", "merged": False, "head": HEAD,
-                "mergeable": "UNKNOWN", "ci": "passing"}})
-    div = freshness_live.check([1])["items"][0]["diverged"]
-    state = [d for d in div if d["kind"] == "state"][0]
-    assert state["was"] == "open" and state["now"] == "closed"
-
-
-def test_new_head_sha_is_flagged(monkeypatch):
-    _patch(monkeypatch, {1: _store_pr(1, head=HEAD)},
-           {1: {"state": "open", "merged": False, "head": NEWHEAD,
-                "mergeable": "MERGEABLE", "ci": "passing"}})
-    head = [d for d in freshness_live.check([1])["items"][0]["diverged"] if d["kind"] == "head"]
-    assert head and head[0]["now"] == NEWHEAD[:7]
-
-
-def test_new_conflicts_is_flagged(monkeypatch):
-    _patch(monkeypatch, {1: _store_pr(1, mergeable=True)},
-           {1: {"state": "open", "merged": False, "head": HEAD,
-                "mergeable": "CONFLICTING", "ci": "passing"}})
-    kinds = [d["kind"] for d in freshness_live.check([1])["items"][0]["diverged"]]
-    assert "conflicts" in kinds
-
-
-def test_ci_regression_is_flagged(monkeypatch):
-    _patch(monkeypatch, {1: _store_pr(1, ci="passing")},
-           {1: {"state": "open", "merged": False, "head": HEAD,
-                "mergeable": "MERGEABLE", "ci": "failing"}})
-    ci = [d for d in freshness_live.check([1])["items"][0]["diverged"] if d["kind"] == "ci"]
-    assert ci and ci[0]["was"] == "passing" and ci[0]["now"] == "failing"
-
-
-def test_ci_unknown_baseline_is_not_drift(monkeypatch):
-    # store never resolved CI ("unknown") — live "passing" is not a regression.
-    _patch(monkeypatch, {1: _store_pr(1, ci="unknown")},
-           {1: {"state": "open", "merged": False, "head": HEAD,
-                "mergeable": "MERGEABLE", "ci": "passing"}})
-    kinds = [d["kind"] for d in freshness_live.check([1])["items"][0]["diverged"]]
-    assert "ci" not in kinds
+    got = {d["kind"]: d for d in item["diverged"]}
+    assert set(got) >= {kind for kind, _, _ in expect}
+    assert bool(got) == bool(expect)
+    for kind, was, now in expect:
+        if was is not None:
+            assert got[kind]["was"] == was
+        if now is not None:
+            assert got[kind]["now"] == now
 
 
 class TestReviewDivergence:

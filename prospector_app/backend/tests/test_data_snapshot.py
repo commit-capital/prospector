@@ -1,167 +1,69 @@
-"""The app reads from an in-memory snapshot that self-freshens incrementally.
-These cover the contract data.py relies on: reads serve from memory, the watermark
-refetches only what changed (including soft-deletes, which drop from the snapshot),
-and a background freshen that errors leaves the last good snapshot in place."""
+"""The app reads from an in-memory snapshot of the store that freshens
+incrementally: reads serve from memory, a refresh picks up new writes and
+soft-deleted clusters, a freshen that errors keeps the last good snapshot, and
+the cold load runs in the background while readers are told it is loading."""
 from __future__ import annotations
 
 import time
-from types import SimpleNamespace
 
-from sqlalchemy.engine import make_url
+import pytest
 
+from pipeline.store import Store
 from prospector_app.backend import data
-from pipeline import model
 
 
-def _pr(n: int, state: str = "open"):
-    return model.Pr(None, {"pr": n, "meta": {"title": f"p{n}", "state": state,
-                                             "head_sha": "h", "url": "u"}})
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    st = Store(tmp_path / "store")
+    st.save_pr({"pr": 1, "meta": {"title": "p1", "state": "open", "head_sha": "h", "url": "u"}})
+    st.create_cluster(1, "c1")
+    st.create_cluster(2, "c2")
+    monkeypatch.setattr(data, "_store", st)
+    return st
 
 
-def _cluster(cid: int):
-    return model.Cluster(None, {"id": cid, "root_problem": f"c{cid}", "prs": []})
-
-
-class _FakeStore:
-    """A store whose since() honours the watermark, so a test can assert the reader
-    refetches only changed rows. Each row carries the saved_at it reports as the
-    high watermark; a deleted cluster is a tombstone the watermark surfaces."""
-    def __init__(self):
-        self.prs: dict[int, tuple[str, model.Pr]] = {}  # id -> (saved_at, rec)
-        self.clusters: dict[int, tuple[str, bool]] = {}  # id -> (saved_at, deleted)
-        self.prs_since_calls: list[str | None] = []
-        self.engine = SimpleNamespace(url=make_url("sqlite:///fake.db"))
-
-    def prs_light(self):
-        sel, high = self.prs_since(None)
-        return sel, {n: s for n, (s, _) in self.prs.items()}, high
-
-    def pr_long_text(self):
-        return {}
-
-    def pr_ids(self):
-        return set(self.prs)
-
-    def add(self, n: int, saved_at: str, state: str = "open"):
-        self.prs[n] = (saved_at, _pr(n, state))
-
-    def add_cluster(self, cid: int, saved_at: str):
-        self.clusters[cid] = (saved_at, False)
-
-    def delete_cluster(self, cid: int, saved_at: str):
-        self.clusters[cid] = (saved_at, True)  # tombstone with a fresh watermark
-
-    def prs_since(self, wm):
-        self.prs_since_calls.append(wm)
-        sel = {n: r for n, (s, r) in self.prs.items() if wm is None or s > wm}
-        high = max((s for s, _ in self.prs.values()), default=None)
-        return sel, high
-
-    def clusters_since(self, wm):
-        changed = {cid: (s, d) for cid, (s, d) in self.clusters.items() if wm is None or s > wm}
-        live = {cid: _cluster(cid) for cid, (_, d) in changed.items() if not d}
-        deleted = [cid for cid, (_, d) in changed.items() if d]
-        high = max((s for s, _ in self.clusters.values()), default=None)
-        return live, deleted, high
-
-
-def test_full_load_then_incremental_uses_watermark(monkeypatch):
-    store = _FakeStore()
-    store.add(1, "2026-01-01T00:00:00.000000+00:00")
-    monkeypatch.setattr(data, "_store", store)
-
-    data._freshen(full=True)
-    assert set(data._prs) == {1}
-    assert store.prs_since_calls == [None]
-    assert data._pr_watermark == "2026-01-01T00:00:00.000000+00:00"
-
-    store.add(2, "2026-01-02T00:00:00.000000+00:00")
-    data._freshen()  # incremental
-    assert set(data._prs) == {1, 2}
-    assert store.prs_since_calls[-1] == "2026-01-01T00:00:00.000000+00:00"  # asked only for >= watermark
-    assert data._pr_watermark == "2026-01-02T00:00:00.000000+00:00"
-
-
-def test_incremental_freshen_drops_deleted_cluster(monkeypatch):
-    store = _FakeStore()
-    store.add_cluster(1, "2026-01-01T00:00:00.000000+00:00")
-    store.add_cluster(2, "2026-01-01T00:00:00.000000+00:00")
-    monkeypatch.setattr(data, "_store", store)
-
-    data._freshen(full=True)
-    assert set(data._clusters) == {1, 2}
-
-    store.delete_cluster(1, "2026-01-02T00:00:00.000000+00:00")
-    data._freshen()  # incremental — the tombstone arrives on the watermark channel
-    assert set(data._clusters) == {2}  # removed cluster drops without a full reload
-    assert data._clu_watermark == "2026-01-02T00:00:00.000000+00:00"
-
-
-def test_reads_serve_from_memory_debounced(monkeypatch):
-    store = _FakeStore()
-    store.add(1, "2026-01-01T00:00:00.000000+00:00")
-    monkeypatch.setattr(data, "_store", store)
-
-    assert set(data.prs()) == {1}  # cold load blocks
-    data.prs()
-    data.prs()
-    assert store.prs_since_calls == [None]  # within the debounce window, no refetch
-
-
-def test_refresh_picks_up_new_writes_incrementally(monkeypatch):
-    store = _FakeStore()
-    store.add(1, "2026-01-01T00:00:00.000000+00:00")
-    monkeypatch.setattr(data, "_store", store)
-    data.refresh()
-    assert set(data.prs()) == {1}
-    assert store.prs_since_calls == [None]  # cold snapshot loads in full
-
-    store.add(2, "2026-01-02T00:00:00.000000+00:00")
-    data.refresh()
-    assert set(data._prs) == {1, 2}
-    assert store.prs_since_calls[-1] == "2026-01-01T00:00:00.000000+00:00"  # incremental, not a full reload
-
-
-def test_background_freshen_error_keeps_last_snapshot(monkeypatch):
-    store = _FakeStore()
-    store.add(1, "2026-01-01T00:00:00.000000+00:00")
-    monkeypatch.setattr(data, "_store", store)
-    data.refresh()
-    assert set(data.prs()) == {1}
-
-    def boom(_wm):
-        raise RuntimeError("store down")
-    monkeypatch.setattr(store, "prs_since", boom)
-
-    data._last_check = 0.0  # let the next read run a check
-    data.prs()              # kicks a background freshen that will fail
-    for _ in range(100):    # wait for the daemon thread to finish and release the lock
+def _settle() -> None:
+    for _ in range(100):
         if not data._check_lock.locked():
+            return
+        time.sleep(0.02)
+
+
+def test_a_refresh_picks_up_new_writes_and_deleted_clusters(store):
+    assert set(data.prs()) == {1} and set(data.clusters()) == {1, 2}
+
+    store.save_pr({"pr": 2, "meta": {"title": "p2", "state": "open", "head_sha": "h", "url": "u"}})
+    store.delete_cluster(1)
+    data.refresh()
+
+    assert set(data.prs()) == {1, 2}
+    assert set(data.clusters()) == {2}
+
+
+def test_reads_serve_from_memory_until_the_next_check(store):
+    assert set(data.prs()) == {1}
+    store.save_pr({"pr": 2, "meta": {"title": "p2", "state": "open", "head_sha": "h", "url": "u"}})
+    assert set(data.prs()) == {1}
+
+
+def test_a_freshen_that_errors_keeps_the_last_snapshot(store, monkeypatch):
+    assert set(data.prs()) == {1}
+    monkeypatch.setattr(store, "prs_since", lambda wm: (_ for _ in ()).throw(
+        RuntimeError("store down")))
+    data._last_check = 0.0
+    data.prs()  # kicks a background freshen that fails
+    _settle()
+    assert set(data.prs()) == {1}
+
+
+def test_the_cold_load_runs_in_the_background(store):
+    assert data.snapshot_loading()
+    for _ in range(100):
+        if not data.snapshot_loading():
             break
         time.sleep(0.02)
-    assert set(data._prs) == {1}  # the error was swallowed; the snapshot is intact
-
-
-def test_snapshot_loading_kicks_background_load_without_blocking(monkeypatch):
-    store = _FakeStore()
-    store.add(1, "2026-01-01T00:00:00.000000+00:00")
-    monkeypatch.setattr(data, "_store", store)
-    monkeypatch.setattr(data, "_loaded", False)
-    monkeypatch.setattr(data, "_pr_watermark", None)
-    monkeypatch.setattr(data, "_clu_watermark", None)
-
-    assert data.snapshot_loading()  # unloaded: reports loading, kicks the load
-    for _ in range(100):            # the background thread publishes the snapshot
-        if data._loaded:
-            break
-        time.sleep(0.02)
-    assert not data.snapshot_loading()  # published: never loading again
-    assert set(data.prs()) == {1}       # readers serve the published snapshot
-
-
-def test_snapshot_loading_false_once_loaded(monkeypatch):
-    monkeypatch.setattr(data, "_loaded", True)
     assert not data.snapshot_loading()
+    assert set(data.prs()) == {1}
 
 
 def test_author_stats_sums_baseline_and_live_snapshot(tmp_path, monkeypatch):

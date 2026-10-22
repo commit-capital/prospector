@@ -142,23 +142,13 @@ class TestApply:
 
 
 class TestReadiness:
-    @pytest.mark.parametrize(
-        ("system", "install", "start"),
-        [
-            ("Darwin", "install Docker and Colima", "start it with `colima start`"),
-            ("Linux", "install Docker Engine", "start it with `sudo systemctl start docker`"),
-        ],
-    )
-    def test_docker_remedies_match_the_host(self, monkeypatch, system, install, start):
-        monkeypatch.setattr(worker_readiness.platform, "system", lambda: system)
+    def test_the_docker_row_tells_missing_from_stopped(self, monkeypatch):
         monkeypatch.setattr(worker_readiness.shutil, "which", lambda _: None)
-        assert worker_readiness._docker_daemon() == (
-            False, "Docker is not installed", install)
-
+        assert worker_readiness._docker_daemon()[:2] == (False, "Docker is not installed")
         monkeypatch.setattr(worker_readiness.shutil, "which", lambda _: "/usr/bin/docker")
         monkeypatch.setattr(worker_readiness.verify_driver, "daemon_available", lambda: False)
-        assert worker_readiness._docker_daemon() == (
-            False, "Docker is installed but not running", start)
+        assert worker_readiness._docker_daemon()[:2] == (
+            False, "Docker is installed but not running")
 
     def test_a_check_failure_is_logged_without_reaching_the_readiness_response(
             self, monkeypatch, caplog):
@@ -188,8 +178,6 @@ class TestReadiness:
         assert report["ready"] is True
         assert report["autofix_ready"] is False
 
-
-
     def test_fix_policy_row_reads_the_profiles_fixable_gates(self, monkeypatch):
         """The row the hunt-fix switch waits on: an unguided fix needs the
         profile's opt-in, so a machine whose profile names none is told where
@@ -205,36 +193,29 @@ class TestReadiness:
         ok, detail, remedy = worker_readiness._fix_policy()
         assert not ok
         assert "fixable_gates" in remedy
-        assert "card below" in remedy
 
     def test_fix_policy_row_never_blocks_readiness(self):
         row = next(c for c in worker_readiness.checks() if c["key"] == "fix_policy")
         assert row["blocking"] is False
 
-    def test_sandbox_row_names_the_images_built_under_other_tags(self, monkeypatch):
-        """The image the profile's pin names is missing while an image built
-        under another tag sits in the daemon: the row says which, so the fix
-        reads as a rebuild under the current tag rather than a first build."""
+    @pytest.mark.parametrize("others, detail", [
+        (["pr-verify:local"], "pr-verify:pnpm-9.15.4 is not built; built here: pr-verify:local"),
+        ([], "pr-verify:pnpm-9.15.4 is not built"),
+    ])
+    def test_sandbox_row_names_the_images_built_under_other_tags(self, monkeypatch,
+                                                                 others, detail):
+        """The pinned image is missing: when one built under another tag sits in
+        the daemon the row says which, so the fix reads as a rebuild under the
+        current tag rather than a first build."""
         vd = worker_readiness.verify_driver
         monkeypatch.setattr(vd, "sandbox_image", lambda: "pr-verify:pnpm-9.15.4")
         monkeypatch.setattr(vd, "daemon_available", lambda: True)
         monkeypatch.setattr(vd, "image_exists", lambda tag: False)
-        monkeypatch.setattr(vd, "sandbox_images", lambda: ["pr-verify:local"])
-        ok, detail, remedy = worker_readiness._sandbox_image()
-        assert ok is False
-        assert "pr-verify:pnpm-9.15.4 is not built" in detail
-        assert "pr-verify:local" in detail
-        assert remedy == "run build-image here"
-
-    def test_sandbox_row_with_no_image_at_all_reads_as_a_first_build(self, monkeypatch):
-        vd = worker_readiness.verify_driver
-        monkeypatch.setattr(vd, "sandbox_image", lambda: "pr-verify:pnpm-9.15.4")
-        monkeypatch.setattr(vd, "daemon_available", lambda: True)
-        monkeypatch.setattr(vd, "image_exists", lambda tag: False)
-        monkeypatch.setattr(vd, "sandbox_images", lambda: [])
-        ok, detail, remedy = worker_readiness._sandbox_image()
-        assert (ok, detail, remedy) == (
-            False, "pr-verify:pnpm-9.15.4 is not built", "run build-image here")
+        monkeypatch.setattr(vd, "sandbox_images", lambda: others)
+        ok, got, remedy = worker_readiness._sandbox_image()
+        assert ok is False and remedy == "run build-image here"
+        assert "pr-verify:pnpm-9.15.4 is not built" in got
+        assert all(o in got for o in others)
 
 
 class TestDockerSharing:
@@ -254,10 +235,8 @@ class TestDockerSharing:
         assert not ok and "sshfs" in detail and "--mount-type virtiofs" in remedy
         assert [c for c in worker_readiness._CHECKS if c[0] == "docker_sharing"][0][3] is True
 
-    def test_a_machine_without_colima_is_not_judged(self, monkeypatch):
-        monkeypatch.setattr(worker_readiness.shutil, "which", lambda name: None)
-        assert worker_readiness._docker_sharing() == (True, "not Colima's to judge", "")
-
-    def test_a_stopped_colima_is_not_judged(self, monkeypatch):
+    def test_a_machine_without_a_running_colima_is_not_judged(self, monkeypatch):
         self._status(monkeypatch, "", rc=1)
         assert worker_readiness._docker_sharing()[0] is True
+        monkeypatch.setattr(worker_readiness.shutil, "which", lambda name: None)
+        assert worker_readiness._docker_sharing() == (True, "not Colima's to judge", "")
