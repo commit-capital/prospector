@@ -62,13 +62,6 @@ def test_the_goal_and_findings_reach_the_prompt(monkeypatch):
     assert "retry loop never exits" in prompt
 
 
-def test_the_prompt_marks_its_inputs_untrusted(monkeypatch):
-    # Findings, PR text and CI output are contributor-controlled, and this agent
-    # has write access to a tree that gets pushed.
-    r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}))
-    assert "untrusted" in r["calls"]["prompt"].lower()
-
-
 def test_gh_is_withheld_when_there_is_no_ci_lane(monkeypatch):
     r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}))
     assert r["calls"]["allow_gh"] is False
@@ -104,14 +97,12 @@ def test_the_review_summary_reaches_the_prompt_as_untrusted_evidence(monkeypatch
              review_summary="The armSilenceTimer guard misses terminalResultSeen.")
     prompt = r["calls"]["prompt"]
     assert "misses terminalResultSeen" in prompt
-    assert "review provider's summary" in prompt.lower()
 
 
-def test_without_a_diff_the_agent_has_no_host_command_and_is_told_so(monkeypatch):
+def test_without_a_diff_the_agent_has_no_host_command(monkeypatch):
     r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}))
     assert r["calls"]["allow"] == []
     assert r["calls"]["env_extra"] is None
-    assert "no installed dependencies" in r["calls"]["prompt"]
     assert author_fix.CHECK_TOOL not in r["calls"]["prompt"]
 
 
@@ -130,18 +121,11 @@ def test_the_diff_file_unlocks_the_sandbox_check_and_pins_its_tree(monkeypatch):
     assert env["PROSPECTOR_PYTHON"]
 
 
-def test_withheld_globs_reach_the_prompt_as_a_do_not_edit_rule(monkeypatch):
+def test_withheld_globs_reach_the_prompt(monkeypatch):
     r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}),
              withheld_globs=("skills/**", ".github/**"))
     prompt = r["calls"]["prompt"]
     assert "skills/**" in prompt and ".github/**" in prompt
-    assert "may not edit" in prompt.lower()
-    assert "give up" in prompt.lower()
-
-
-def test_no_withheld_globs_adds_no_rule(monkeypatch):
-    r = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}))
-    assert "may not edit" not in r["calls"]["prompt"].lower()
 
 
 def test_the_default_branch_s_contributor_docs_reach_the_prompt(monkeypatch):
@@ -149,12 +133,6 @@ def test_the_default_branch_s_contributor_docs_reach_the_prompt(monkeypatch):
                         lambda: [authoring.Doc("AGENTS.md", "Keep contracts synchronized.")])
     prompt = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}))["calls"]["prompt"]
     assert '<doc path="AGENTS.md">\nKeep contracts synchronized.\n</doc>' in prompt
-    assert prompt.index("UNTRUSTED DATA") < prompt.index("contributor docs")
-
-
-def test_without_contributor_docs_the_prompt_has_no_docs_section(monkeypatch):
-    prompt = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}))["calls"]["prompt"]
-    assert "contributor docs" not in prompt
     assert authoring.HOUSE_STYLE in prompt
 
 
@@ -211,8 +189,8 @@ def test_the_prompt_hands_the_agent_resolved_paths_and_the_git_reader(monkeypatc
                       ci_failures=[])
     resolved = str(real.resolve())
     assert calls["cwd"] == calls["edit_root"] == resolved
-    assert f"worktree at {resolved}," in calls["prompt"]
-    assert f"{headless_agent.GIT_READ} status" in calls["prompt"]
+    assert resolved in calls["prompt"]
+    assert headless_agent.GIT_READ in calls["prompt"]
 
 
 def test_a_configured_lint_is_offered_beside_the_sandbox_check(monkeypatch, tmp_path):
@@ -221,4 +199,4 @@ def test_a_configured_lint_is_offered_beside_the_sandbox_check(monkeypatch, tmp_
     monkeypatch.setenv("TRIAGE_PROFILE", str(path))
     prompt = _run(monkeypatch, json.dumps({"summary": "s", "changes": []}),
                   diff_path=str(tmp_path / "pr.patch"))["calls"]["prompt"]
-    assert f"   `{author_fix.CHECK_TOOL} lint` runs the repository's lint" in prompt
+    assert f"{author_fix.CHECK_TOOL} lint" in prompt

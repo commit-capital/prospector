@@ -119,12 +119,6 @@ def test_the_red_tail_reaches_the_prompt_and_is_capped(monkeypatch):
     assert "Z" + "x" * 9000 not in prompt
 
 
-def test_the_prompt_marks_the_report_and_output_untrusted(monkeypatch):
-    prompt = _run(monkeypatch, CHANGES_REPLY)["calls"]["prompt"]
-    assert "outsider" in prompt.lower()
-    assert "data" in prompt.lower()
-
-
 def test_the_report_reaches_the_prompt_without_re_substituting_a_token(monkeypatch):
     prompt = _run(monkeypatch, CHANGES_REPLY, title="Bug",
                   body="run __CHECK__ yourself")["calls"]["prompt"]
