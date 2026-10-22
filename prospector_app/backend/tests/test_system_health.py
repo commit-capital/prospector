@@ -206,15 +206,22 @@ def test_status_reads_every_worker_registry_in_one_statement(store, monkeypatch)
         r, "fix", kind="crash", reason="crashed"))
     statements: list[str] = []
 
-    def count(conn, cursor, statement, *rest) -> None:
-        statements.append(statement)
+    def worker_registry_param(p: object) -> bool:
+        # Only the worker registries count: status() also reads other registry
+        # rows (the schema stamp) through caches whose warmth depends on test order.
+        return isinstance(p, str) and (p in S.Store._WORKER_REGISTRIES
+                                       or p.startswith(S.Store._HEALTH_PREFIX))
+
+    def count(conn, cursor, statement, parameters, *rest) -> None:
+        if "FROM registries" in statement and any(map(worker_registry_param, parameters or ())):
+            statements.append(statement)
 
     event.listen(store.engine, "before_cursor_execute", count)
     try:
         out = system_health.status()
     finally:
         event.remove(store.engine, "before_cursor_execute", count)
-    assert sum("FROM registries" in s for s in statements) == 1
+    assert len(statements) == 1
     assert (out["lanes_total"], out["lanes_down"]) == (3, 3)
     assert [i["kind"] for i in out["items"]] == ["lanes", "offline", "trip"]
 
