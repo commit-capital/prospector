@@ -64,7 +64,7 @@ def _cold_data_snapshot(monkeypatch):
 def _no_merge_threat_rescan(monkeypatch):
     """Merge tests fake the store and the gate; the pre-merge threat rescan
     reads the real store, so it reads clean unless a test restores it
-    (test_executor_threat_rescan.py)."""
+    (test_executor_merge.py)."""
     from prospector_app.backend import executor
     monkeypatch.setattr(executor, "_threat_rescan", lambda n: None)
 
@@ -72,7 +72,7 @@ def _no_merge_threat_rescan(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_live_ci_read(monkeypatch):
     """The merge pre-flight's live CI read reaches GitHub; it reads clear
-    unless a test restores it (test_executor_merge_required_checks.py)."""
+    unless a test restores it (test_executor_merge.py)."""
     from prospector_app.backend import executor
     monkeypatch.setattr(executor, "_live_ci_block", lambda n, head: None)
 
