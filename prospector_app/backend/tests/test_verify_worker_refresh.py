@@ -14,27 +14,18 @@ from prospector_app.backend import lane_health, verify_worker, worker_selftest
 NOW = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
 
 
-class TestBaseRefreshDue:
-    def test_due_when_pin_is_older_than_a_day(self):
-        reg = {"base_sha": "a" * 40, "pinned_at": "2026-07-20T12:00:00+00:00"}
-        assert verify_worker.base_refresh_due(reg, NOW) is True
+PIN = {"base_sha": "a" * 40, "pinned_at": "2026-07-20T12:00:00+00:00"}
 
-    def test_not_due_when_pin_is_fresh(self):
-        reg = {"base_sha": "a" * 40, "pinned_at": "2026-07-22T02:00:00+00:00"}
-        assert verify_worker.base_refresh_due(reg, NOW) is False
 
-    def test_not_due_without_a_pin(self):
-        assert verify_worker.base_refresh_due({}, NOW) is False
-
-    def test_one_attempt_per_day(self):
-        reg = {"base_sha": "a" * 40, "pinned_at": "2026-07-20T12:00:00+00:00",
-               "refresh_attempted_at": "2026-07-22T01:00:00+00:00"}
-        assert verify_worker.base_refresh_due(reg, NOW) is False
-
-    def test_yesterdays_attempt_does_not_block(self):
-        reg = {"base_sha": "a" * 40, "pinned_at": "2026-07-20T12:00:00+00:00",
-               "refresh_attempted_at": "2026-07-21T23:00:00+00:00"}
-        assert verify_worker.base_refresh_due(reg, NOW) is True
+@pytest.mark.parametrize("reg, due", [
+    (PIN, True),
+    ({**PIN, "pinned_at": "2026-07-22T02:00:00+00:00"}, False),
+    ({}, False),
+    ({**PIN, "refresh_attempted_at": "2026-07-22T01:00:00+00:00"}, False),
+    ({**PIN, "refresh_attempted_at": "2026-07-21T23:00:00+00:00"}, True),
+], ids=["old-pin", "fresh-pin", "no-pin", "attempted-today", "attempted-yesterday"])
+def test_a_refresh_is_due_once_a_day_for_an_old_pin(reg, due):
+    assert verify_worker.base_refresh_due(reg, NOW) is due
 
 
 class FakeStore:
@@ -87,9 +78,11 @@ class TestMaybeRefreshBase:
         assert st.runs and st.runs[0]["phase"] == "verify:pin-refresh"
         assert st.runs[0]["stats"]["ok"] is True
 
-    def test_unmoved_head_stamps_and_skips(self, monkeypatch):
+    def test_an_unmoved_head_is_a_healthy_refresh_that_builds_nothing(self, monkeypatch):
+        """Upstream simply has not moved: the lane is tracking master fine, so
+        the pin is confirmed and must not read as a stalled refresh."""
         st = self._wire(monkeypatch, {
-            "base_sha": "a" * 40, "tier": 1,
+            "base_sha": "a" * 40, "tier": 1, "refresh_failures": 3,
             "pinned_at": "2026-07-20T12:00:00+00:00"})
         monkeypatch.setattr(verify_worker.verify_driver, "resolve_base_sha",
                             lambda: "a" * 40)
@@ -97,51 +90,31 @@ class TestMaybeRefreshBase:
                             lambda *a, **k: (_ for _ in ()).throw(AssertionError("built")))
         verify_worker.maybe_refresh_base()
         assert st.reg["refresh_attempted_at"]
+        assert st.reg["confirmed_at"] > "2026-07-20T12:00:00+00:00"
+        assert st.reg["refresh_ok"] is True and st.reg["refresh_failures"] == 0
         assert st.runs[0]["stats"].get("unmoved") is True
 
-    def test_failure_keeps_the_pin_and_ledgers(self, monkeypatch):
-        st = self._wire(monkeypatch, {
-            "base_sha": "a" * 40, "tier": 1,
-            "pinned_at": "2026-07-20T12:00:00+00:00"})
-        monkeypatch.setattr(verify_worker.verify_driver, "resolve_base_sha",
-                            lambda: "b" * 40)
-        def boom(*a, **k):
-            raise RuntimeError("baseline capture failed")
-        monkeypatch.setattr(verify_worker.verify_driver, "prepare_base", boom)
-        verify_worker.maybe_refresh_base()
-        assert st.reg["base_sha"] == "a" * 40
-        assert st.runs[0]["stats"]["ok"] is False
-        assert "baseline capture failed" in st.runs[0]["stats"]["error"]
-
-    def test_a_failed_refresh_records_its_error_on_the_pin(self, monkeypatch):
-        """The runs ledger is not a place anyone looks. The pin carries the
-        outcome too, so the app can show a lane that has stopped tracking
+    def test_a_failure_keeps_the_pin_and_records_the_error(self, monkeypatch):
+        """The runs ledger is not a place anyone looks, so the pin carries the
+        outcome too and the app can show a lane that has stopped tracking
         master."""
         st = self._wire(monkeypatch, {
-            "base_sha": "a" * 40, "tier": 1,
-            "pinned_at": "2026-07-20T12:00:00+00:00"})
-        monkeypatch.setattr(verify_worker.verify_driver, "resolve_base_sha",
-                            lambda: "b" * 40)
-
-        def boom(*a, **k):
-            raise RuntimeError("no space left on device")
-
-        monkeypatch.setattr(verify_worker.verify_driver, "prepare_base", boom)
-        verify_worker.maybe_refresh_base()
-        assert st.reg["refresh_ok"] is False
-        assert "no space left on device" in st.reg["refresh_error"]
-        assert st.reg["refresh_failures"] == 1
-
-    def test_consecutive_failures_accumulate(self, monkeypatch):
-        st = self._wire(monkeypatch, {
             "base_sha": "a" * 40, "tier": 1, "refresh_failures": 2,
-            "pinned_at": "2026-07-20T12:00:00+00:00"})
+            "pinned_at": "2026-07-20T12:00:00+00:00",
+            "confirmed_at": "2026-07-21T12:00:00+00:00"})
         monkeypatch.setattr(verify_worker.verify_driver, "resolve_base_sha",
                             lambda: "b" * 40)
         monkeypatch.setattr(verify_worker.verify_driver, "prepare_base",
-                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                RuntimeError("no space left on device")))
         verify_worker.maybe_refresh_base()
+        assert st.reg["base_sha"] == "a" * 40
+        assert st.reg["confirmed_at"] == "2026-07-21T12:00:00+00:00"
+        assert st.reg["refresh_ok"] is False
+        assert "no space left on device" in st.reg["refresh_error"]
         assert st.reg["refresh_failures"] == 3
+        assert st.runs[0]["stats"]["ok"] is False
+        assert "no space left on device" in st.runs[0]["stats"]["error"]
 
     def test_a_successful_refresh_clears_the_failure_run(self, monkeypatch):
         """Written after prepare_base returns, because prepare_base
@@ -166,18 +139,6 @@ class TestMaybeRefreshBase:
         assert st.reg["refresh_failures"] == 0
         assert st.reg["refresh_error"] is None
 
-    def test_an_unmoved_head_counts_as_a_healthy_refresh(self, monkeypatch):
-        """Upstream simply has not moved. The lane is tracking master fine, so
-        this must not read as a stalled refresh."""
-        st = self._wire(monkeypatch, {
-            "base_sha": "a" * 40, "tier": 1, "refresh_failures": 3,
-            "pinned_at": "2026-07-20T12:00:00+00:00"})
-        monkeypatch.setattr(verify_worker.verify_driver, "resolve_base_sha",
-                            lambda: "a" * 40)
-        verify_worker.maybe_refresh_base()
-        assert st.reg["refresh_ok"] is True
-        assert st.reg["refresh_failures"] == 0
-
     def test_preamble_failure_is_contained(self, monkeypatch):
         """A preamble failure (the store is unreachable) does not escape
         maybe_refresh_base — the drain tick must always reach next_queued()."""
@@ -186,34 +147,6 @@ class TestMaybeRefreshBase:
         monkeypatch.setattr(verify_worker.data, "store", boom)
         # Should not raise
         verify_worker.maybe_refresh_base()
-
-
-class TestRefreshConfirmsThePin:
-    def _wire(self, monkeypatch, reg):
-        st = FakeStore(reg)
-        monkeypatch.setattr(verify_worker.data, "store", lambda: st)
-        return st
-
-    def test_an_unmoved_head_confirms_the_pin(self, monkeypatch):
-        st = self._wire(monkeypatch, {
-            "base_sha": "a" * 40, "tier": 1,
-            "pinned_at": "2026-07-20T12:00:00+00:00"})
-        monkeypatch.setattr(verify_worker.verify_driver, "resolve_base_sha",
-                            lambda: "a" * 40)
-        verify_worker.maybe_refresh_base()
-        assert st.reg["confirmed_at"] > "2026-07-20T12:00:00+00:00"
-
-    def test_a_failed_refresh_keeps_the_last_confirmation(self, monkeypatch):
-        st = self._wire(monkeypatch, {
-            "base_sha": "a" * 40, "tier": 1,
-            "pinned_at": "2026-07-20T12:00:00+00:00",
-            "confirmed_at": "2026-07-21T12:00:00+00:00"})
-        monkeypatch.setattr(verify_worker.verify_driver, "resolve_base_sha",
-                            lambda: "b" * 40)
-        monkeypatch.setattr(verify_worker.verify_driver, "prepare_base",
-                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
-        verify_worker.maybe_refresh_base()
-        assert st.reg["confirmed_at"] == "2026-07-21T12:00:00+00:00"
 
 
 class TestStalePinHoldsTheLane:
