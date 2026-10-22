@@ -93,13 +93,6 @@ def _words(guidance: str | None, notes: str | None) -> dict[str, str] | None:
     return {k: v for k, v in (("guidance", guidance), ("notes", notes)) if v} or None
 
 
-def _held_base(record: dict) -> prove.PinnedBase:
-    try:
-        return prove.held(record["base_sha"], int(record.get("base_tier") or 0))
-    except prove.NoBase as e:
-        raise RequestFailed(f"the base this attempt was proven on is gone: {e}") from e
-
-
 def _revision_base(record: dict) -> prove.PinnedBase:
     """The base a revision is proven on: the attempt's own when this machine
     still holds it, else the current pin."""
@@ -261,17 +254,26 @@ def revise(store: IssueStore, n: int, *, comments: str,
 def answer(store: IssueStore, n: int, answer_: dict, *, on_step: Callable[[str], None],
            notes: str | None = None, unattended: bool = False) -> tuple[dict, dict | None]:
     """Resume a dispute on the chosen reading, or re-solve with a written
-    answer: a maintainer's in `answer_`, the issue author's in `notes`."""
+    answer: a maintainer's in `answer_`, the issue author's in `notes`. A
+    chosen reading whose base this machine no longer holds is re-solved with
+    that reading as the maintainer's answer."""
     previous = _last_record(n)
     qpath = propose.result_dir(n) / "question.json"
     saved = json.loads(qpath.read_text()) if qpath.exists() else {}
     question = saved.get("question") or {}
     options = [o["label"] for o in question.get("options") or []]
     label = answer_.get("label")
+    text = str(answer_.get("text") or "").strip()
+    base: prove.PinnedBase | None = None
     if label and label in options:
+        try:
+            base = prove.held(previous["base_sha"], int(previous.get("base_tier") or 0))
+        except prove.NoBase:
+            behavior = question["options"][options.index(label)].get("behavior")
+            text = "\n".join(w for w in (f"{label}: {behavior}" if behavior else label, text) if w)
+    if base is not None:
         readings = (previous.get("result") or {}).get("readings") or []
         reading = readings[options.index(label)]
-        base = _held_base(previous)
         spec, report = _spec(store, n, base, None)
         workdir = propose.result_dir(n)
         started = storekit.now()
@@ -282,7 +284,6 @@ def answer(store: IssueStore, n: int, answer_: dict, *, on_step: Callable[[str],
             models=previous.get("models") or [], res=res, started=started,
             finished=storekit.now(), trigger="answer", extra={"answer": answer_})
         return record, {**question, "answered": answer_}
-    text = str(answer_.get("text") or "").strip()
     asked = f"The fix attempt asked: {question.get('question') or '(no question)'}\n"
     return solve(store, n, guidance=asked + f"A maintainer answered: {text}" if text else None,
                  notes=asked + f"The issue's author answered:\n{notes}" if notes else None,
