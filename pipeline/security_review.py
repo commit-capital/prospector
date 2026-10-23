@@ -24,8 +24,10 @@ from pipeline import agent_wave
 from pipeline import diff_cache
 from pipeline import headless_agent
 from pipeline import progress
-from pipeline import security_driver
 from pipeline import reviewers
+from pipeline import security_driver
+from pipeline import settings
+from pipeline import verdict_log
 from pipeline.security_driver import (
     LENSES, REVIEW_FENCED_TAIL, REVIEW_PROMPT, VERIFY_CHUNK_SIZE,
     VERIFY_FENCED_TAIL, VERIFY_PROMPT)
@@ -204,9 +206,16 @@ def _verify(pr: int, diff_path: str, flagged: list[Finding]) -> tuple[list[Findi
     return confirmed, complete
 
 
+PROMPT_SHA = verdict_log.prompt_sha(
+    security_driver.REVIEW_TEMPLATE, security_driver.REVIEW_FENCED_TAIL,
+    security_driver.VERIFY_PROMPT, security_driver.VERIFY_FENCED_TAIL,
+    *(lens["prompt"] for lens in LENSES))
+
+
 def review_pr(pr: int, title: str, head: str,
               store: Store | None = None,
-              bot_evidence: list[dict] | None = None) -> tuple[VerdictItem, int] | None:
+              bot_evidence: list[dict] | None = None,
+              subject: verdict_log.Subject | None = None) -> tuple[VerdictItem, int] | None:
     """Run the 3-lens-then-refute review on ONE PR. Returns (verdict_item,
     lenses_ok) — the item is a VerdictItem ready for
     security_driver.commit_verdicts, and lenses_ok is how many of the lenses ran
@@ -291,6 +300,12 @@ def review_pr(pr: int, title: str, head: str,
 
     item = VerdictItem(pr=pr, head_sha=head, verdict=verdict,
                        findings=reds + yellows, tier="adversarial")
+    verdict_log.record("security", subject, verdict=verdict, prompt_sha=PROMPT_SHA,
+                       model=settings.agent_model(),
+                       data={"flagged": flagged, "confirmed": item.findings,
+                             "lenses_ok": lenses_ok},
+                       inputs={"title": title, "bot_evidence": json.dumps(bot_evidence or [])},
+                       head_sha=head, store=store)
     return item, lenses_ok
 
 
@@ -316,7 +331,8 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
     _say(f"  head {head[:7]}")
 
     reviewed = review_pr(pr, title, head, store=store,
-                         bot_evidence=reviewers.evidence(rec.reviews, rec.head_sha))
+                         bot_evidence=reviewers.evidence(rec.reviews, rec.head_sha),
+                         subject=verdict_log.Subject("pr", pr))
     if reviewed is None:
         return 1
     if _outages:

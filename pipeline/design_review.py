@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pipeline import (authoring, capacity, coverage, design_verify, diffpaths, freshness, gates,
-                      headless_agent, reviewers, storekit)
+                      headless_agent, reviewers, settings, storekit, verdict_log)
 
 if TYPE_CHECKING:
     from pipeline.coverage import CoverageRecord
@@ -157,8 +157,14 @@ def validate(answer: dict, *, touched: set[str], clone: Path) -> tuple[str, list
     return str(answer.get("summary") or ""), kept
 
 
+PROMPT_SHA = verdict_log.prompt_sha(
+    PROMPT, design_verify.PROMPT,
+    logic=reviewers.DESIGN_RUBRIC * 100 + reviewers.DESIGN_SEVERITY_RUBRIC)
+
+
 def review(clone: Path, diff: Path, *, pr: int, title: str, head_sha: str,
-           base_sha: str, coverage_record: CoverageRecord | None = None) -> dict:
+           base_sha: str, coverage_record: CoverageRecord | None = None,
+           subject: verdict_log.Subject | None = None) -> dict:
     """Review the diff at `diff` against the base checkout at `clone` and
     return the `reviews["design"]` entry for `head_sha`, carrying
     `coverage_record` (`pipeline/coverage.py`), which the prompt also hands the
@@ -167,10 +173,31 @@ def review(clone: Path, diff: Path, *, pr: int, title: str, head_sha: str,
     an agent outage, a decline, an overload, and a closed capacity gate
     propagate as headless_agent / capacity raise them."""
     clone, diff = clone.resolve(), diff.resolve()
+    inputs = {"title": title[:TITLE_CHARS], "coverage": coverage.prompt_block(coverage_record),
+              "docs": authoring.docs_block(authoring.docs_from_tree(clone))}
+
+    def note(verdict: str, data: dict) -> None:
+        verdict_log.record("design", subject, verdict=verdict, prompt_sha=PROMPT_SHA,
+                           model=settings.agent_model(), data=data, inputs=inputs,
+                           head_sha=head_sha, base_sha=base_sha)
+
+    try:
+        entry = _entry(clone, diff, pr=pr, head_sha=head_sha, base_sha=base_sha,
+                       coverage_record=coverage_record, inputs=inputs)
+    except DesignReviewFailed as e:
+        note("failed", {"error": str(e)})
+        raise
+    passed = reviewers._design_bar(entry, head_sha).status == reviewers.PASS
+    note("pass" if passed else "fail", {"summary": entry["summary"], "findings": entry["findings"]})
+    return entry
+
+
+def _entry(clone: Path, diff: Path, *, pr: int, head_sha: str, base_sha: str,
+           coverage_record: CoverageRecord | None, inputs: dict[str, str]) -> dict:
+    title = inputs["title"]
     prompt = headless_agent.fill(PROMPT, {
-        "__PR__": pr, "__TITLE__": title[:TITLE_CHARS], "__CLONE__": clone, "__DIFF__": diff,
-        "__COVERAGE__": coverage.prompt_block(coverage_record),
-        "__DOCS__": authoring.docs_block(authoring.docs_from_tree(clone))})
+        "__PR__": pr, "__TITLE__": title, "__CLONE__": clone, "__DIFF__": diff,
+        "__COVERAGE__": inputs["coverage"], "__DOCS__": inputs["docs"]})
 
     def run() -> str:
         return headless_agent.run_agent(
@@ -189,7 +216,7 @@ def review(clone: Path, diff: Path, *, pr: int, title: str, head_sha: str,
     touched = set(diffpaths.changed_paths(diff.read_text(errors="replace")))
     summary, findings = validate(answer, touched=touched, clone=clone)
     findings = design_verify.apply(findings, lambda f: design_verify.verify(
-        f, clone=clone, diff=diff, pr=pr, title=title[:TITLE_CHARS]))
+        f, clone=clone, diff=diff, pr=pr, title=title))
     return {"kind": reviewers.REVIEW, "reviewed_sha": head_sha, "observed_at": storekit.now(),
             "score": None, "findings": findings, "summary": summary[:reviewers.SUMMARY_CHARS] or None,
             "checks": [], "extra": {"base_sha": base_sha, "coverage": coverage_record,

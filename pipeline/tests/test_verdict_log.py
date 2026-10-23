@@ -57,3 +57,9 @@ def test_prompt_sha_stable_and_sensitive():
     assert sha == verdict_log.prompt_sha("A __X__", "B") and len(sha) == 16
     assert sha != verdict_log.prompt_sha("A __Y__", "B")
     assert sha != verdict_log.prompt_sha("A __X__", "B", logic=1)
+
+
+def test_cli_default_model_is_named(tmp_path):
+    store = Store(tmp_path)
+    _record(store, model=None)
+    assert store.review_verdicts()[0].model == "cli-default"

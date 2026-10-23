@@ -41,9 +41,10 @@ def prompt_sha(*templates: str, logic: int = 0) -> str:
 
 
 def record(reviewer: str, subject: Subject | None, *, verdict: str, prompt_sha: str,
-           model: str, data: dict, inputs: dict[str, str], head_sha: str | None = None,
+           model: str | None, data: dict, inputs: dict[str, str], head_sha: str | None = None,
            base_sha: str | None = None, store: Store | None = None) -> int | None:
-    """The new row's id, or None when there is no subject or the write failed."""
+    """The new row's id, or None when there is no subject or the write failed. A
+    None `model` (the CLI's own default) records as "cli-default"."""
     if verdict not in VERDICTS.get(reviewer, ()):
         raise ValueError(f"{reviewer!r} has no verdict {verdict!r}")
     if subject is None:
@@ -53,7 +54,8 @@ def record(reviewer: str, subject: Subject | None, *, verdict: str, prompt_sha: 
         return (store or Store()).append_review_verdict(
             at=storekit.now(), reviewer=reviewer, subject_kind=subject.kind,
             subject=subject.number, head_sha=head_sha, base_sha=base_sha,
-            prompt_sha=prompt_sha, model=model, verdict=verdict, data=data, inputs_gz=blob)
+            prompt_sha=prompt_sha, model=model or "cli-default", verdict=verdict, data=data,
+            inputs_gz=blob)
     except Exception as e:  # noqa: BLE001 — a lost record must never fail the review
         print(f"verdict_log: could not record {reviewer} on {subject.kind} "
               f"#{subject.number}: {e}", file=sys.stderr)
