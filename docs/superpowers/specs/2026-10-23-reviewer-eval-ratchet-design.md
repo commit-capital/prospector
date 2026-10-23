@@ -56,8 +56,9 @@ to gate on.
   stores it: every agent prompt in it (design review *and* design verify;
   security's lenses *and* verifier) and the deterministic adjustments
   (design's rubric bar, intake's blocklist and hidden-text overrides, trust
-  boundary's `maintainer_filed` rule). The verdict recorded is the one after
-  those adjustments.
+  boundary's host scan). The verdict recorded is the one after those
+  adjustments. A caller's policy exemption is not the reviewer: trust
+  boundary's verdict is `hold(…, maintainer_filed=False)`, whoever filed.
 - **Prompt identity** (`prompt_sha`): a hash of every prompt template constant
   in the chain as written in source (before per-run fills such as `__REPO__`),
   plus a hand-bumped logic version per reviewer for the deterministic part
@@ -107,6 +108,8 @@ One append-only table, `review_verdicts`, one row per reviewer run:
 
 Retention: `inputs_gz` is cleared after 30 days unless the row is labeled or a
 signal (below) currently points at it. Metadata rows stay; they are small.
+Retention lands with labeling (step 2): clearing inputs before anything can
+label them would throw away the first month of cases.
 
 This is history, not per-record state, so it is a table like `runs` and
 `activity`, not a record section. The current section on each record (e.g.
@@ -119,15 +122,20 @@ compressed input size) are for the builder to measure against
 
 ## Capture
 
-Each reviewer's call site that persists its verdict today also calls one
-helper, `verdict_log.record(reviewer, subject, …)`, in the same place:
+Each reviewer's own entry point records its run, because only it holds the
+exact filled inputs (issue-fix review's evidence string, for one, is built
+by the caller and never saved):
 
-- design: `verify_worker.run_design` after `save_design_review`
-- security: `security_driver.commit_verdicts`; also capture the raw lens and
-  verifier output that is dropped today, so a refuted finding is visible
-- fix-review, trust-boundary, intake: where `fix_lane.record_result` writes
-  `result.json` (the worktree still exists then)
-- fixability: `issue_fix_worker.triage_next` after `record_fix_triage`
+- design: `design_review.review`
+- security: `security_review.review_pr`, including the flagged findings the
+  verifier refuted, which are dropped today
+- fix-review: `review_issue_fix.full_review`
+- trust-boundary: `trust_boundary.judge`
+- intake: `intake_audit.judge`
+- fixability: `fixability.judge`
+
+Each takes an explicit `subject`. Production callers pass it, and an eval call
+without one records nothing, so red-team runs never pollute the table.
 
 `INCOMPLETE` / failed runs are recorded with that verdict so the scorecard can
 show failure rates, and are never cases.
