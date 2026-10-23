@@ -7,8 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import coverage, design_review, headless_agent, profile, reviewers, settings, storekit
+from pipeline import (coverage, design_review, headless_agent, profile, reviewers, settings,
+                      storekit, verdict_log)
 from pipeline.model import Pr
+from pipeline.store import Store
 
 
 def test_mode_defaults_to_gate(monkeypatch):
@@ -285,3 +287,31 @@ def test_reviewable_ignores_the_review_the_head_has():
 
 def test_profile_accepts_design_as_a_fixable_gate():
     assert "design" in profile.AUTOFIX_GATES
+
+
+def test_review_records_verdict_with_subject(monkeypatch, clone, diff):
+    _agents(monkeypatch, {"summary": "one dup", "findings": [_finding()]},
+            {"verdict": "confirmed", "reason": "same helper"})
+    design_review.review(clone, diff, pr=7, title="t", head_sha=HEAD, base_sha="b" * 40,
+                         subject=verdict_log.Subject("pr", 9101))
+    [rec] = Store().review_verdicts(subject_kind="pr", subject=9101)
+    assert (rec.reviewer, rec.verdict) == ("design", "fail")
+    assert (rec.head_sha, rec.base_sha) == (HEAD, "b" * 40)
+    assert rec.prompt_sha == design_review.PROMPT_SHA
+    assert rec.data["summary"] == "one dup" and len(rec.data["findings"]) == 1
+
+
+def test_review_without_subject_records_nothing(monkeypatch, clone, diff):
+    _agents(monkeypatch, {"findings": []}, {"verdict": "confirmed", "reason": "r"})
+    before = len(Store().review_verdicts(reviewer="design"))
+    design_review.review(clone, diff, pr=7, title="t", head_sha=HEAD, base_sha="b")
+    assert len(Store().review_verdicts(reviewer="design")) == before
+
+
+def test_a_failed_review_is_recorded_as_failed(monkeypatch, clone, diff):
+    monkeypatch.setattr(headless_agent, "run_agent", lambda prompt, **kw: "no json here")
+    with pytest.raises(design_review.DesignReviewFailed):
+        design_review.review(clone, diff, pr=7, title="t", head_sha=HEAD, base_sha="b",
+                             subject=verdict_log.Subject("pr", 9102))
+    [rec] = Store().review_verdicts(subject_kind="pr", subject=9102)
+    assert rec.verdict == "failed"

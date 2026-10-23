@@ -21,7 +21,9 @@ from issue_triage import (
     solo_lane,
     trust_boundary,
 )
-from pipeline import authoring, gates, headless_agent, prove, resolve_evidence, verify_driver
+from pipeline import (authoring, gates, headless_agent, prove, resolve_evidence, verdict_log,
+                      verify_driver)
+from pipeline.store import Store
 
 ROOT_SAFE = {"lens": "root-cause", "verdict": "safe", "reason": "cures it", "concerns": []}
 
@@ -184,8 +186,9 @@ def cross(tmp_path, monkeypatch):
 
     monkeypatch.setattr(review_issue_fix, "review", fake_review)
 
-    def run() -> fix_lane.LaneResult:
-        spec = fix_lane.LaneSpec(issue=7, title="x is wrong", body="x should be 2", base=base)
+    def run(**spec_kw) -> fix_lane.LaneResult:
+        spec = fix_lane.LaneSpec(issue=7, title="x is wrong", body="x should be 2", base=base,
+                                 **spec_kw)
         return cross_lane.run(spec, workdir=tmp_path / "work")
 
     state["run"] = run
@@ -851,3 +854,15 @@ def test_a_requested_crossing_asks_for_no_revision_and_holds_for_an_operator(cro
     assert res.ending == "fixed" and res.result.get("revisions") is None
     assert trust_boundary.hold(res.result["boundary"], maintainer_filed=True) is None
     assert trust_boundary.hold(res.result["boundary"], maintainer_filed=False)
+
+
+def test_a_run_without_a_verdict_subject_records_nothing(cross):
+    before = len(Store().review_verdicts(subject_kind="issue", subject=7))
+    assert cross["run"]().ending == "fixed"
+    assert len(Store().review_verdicts(subject_kind="issue", subject=7)) == before
+
+
+def test_a_run_records_its_reviews_under_its_verdict_subject(cross):
+    assert cross["run"](verdict_subject=verdict_log.Subject("issue", 9601)).ending == "fixed"
+    rows = Store().review_verdicts(subject_kind="issue", subject=9601)
+    assert sorted(r.reviewer for r in rows) == ["fix-review", "trust-boundary"]

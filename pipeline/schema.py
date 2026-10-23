@@ -115,7 +115,9 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #      pull request as it stands, perhaps as a partial fix) and hand-backs mark
 #      `judged.outside`; an older worker reads past both, keeps re-handing the
 #      pull request back, and re-renders a partial approval as "Fixes #N".
-STORE_SCHEMA_VERSION = 37
+# 38 — the review_verdicts table (one append-only row per run of Prospector's
+#      own reviewers); an older checkout's reviewers would run without recording.
+STORE_SCHEMA_VERSION = 38
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
@@ -282,6 +284,27 @@ training_decisions = Table(
     Column("by", String, index=True),
     Column("dry_run", Boolean, index=True),
     Column("data", _JSON, nullable=False),
+)
+
+# One row per run of a Prospector-run reviewer (pipeline/verdict_log.py is the
+# writer). Rows are append-only but for `label`, the one field a person sets
+# later. `inputs_gz` holds the run's filled inputs gzip-compressed; `data` is the
+# reviewer's output, which may quote them.
+review_verdicts = Table(
+    "review_verdicts", METADATA,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("at", String, index=True),
+    Column("reviewer", String, index=True),
+    Column("subject_kind", String, index=True),
+    Column("subject", Integer, index=True),
+    Column("head_sha", String),
+    Column("base_sha", String),
+    Column("prompt_sha", String, index=True),
+    Column("model", String),
+    Column("verdict", String, index=True),
+    Column("data", _JSON, nullable=False),
+    Column("inputs_gz", LargeBinary),
+    Column("label", _JSON),
 )
 
 

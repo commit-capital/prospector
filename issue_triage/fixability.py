@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from issue_triage import issue_freshness, reply_router, reproduce_issue
-from pipeline import headless_agent
+from pipeline import headless_agent, verdict_log
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue
@@ -115,17 +115,35 @@ def review(clone: Path, *, title: str, body: str,
     return out
 
 
-def judge(issue: Issue, clone: Path, *, base_sha: str,
-          replies: Sequence[Reply] = ()) -> dict:
+PROMPT_SHA = verdict_log.prompt_sha(PROMPT, REPLIES, logic=1)
+
+
+def judge(issue: Issue, clone: Path, *, base_sha: str, replies: Sequence[Reply] = (),
+          subject: verdict_log.Subject | None = None) -> dict:
     """The issue's `fix_triage` over the base `clone` at `base_sha`. An agent
-    outage or a declined prompt propagates."""
+    outage or a declined prompt propagates; an unusable answer is recorded as
+    `failed` and raises."""
     meta = issue.raw.get("meta") or {}
+    title, body = str(meta.get("title") or ""), str(meta.get("body") or "")
+    inputs = {"title": title, "body": body, "replies": _replies_block(replies)}
+
+    def note(verdict: str, data: dict) -> None:
+        verdict_log.record("fixability", subject, verdict=verdict, prompt_sha=PROMPT_SHA,
+                           model=MODEL, data=data, inputs=inputs, base_sha=base_sha)
+
+    try:
+        reviewed = review(clone, title=title, body=body, replies=replies)
+    except (ValueError, RuntimeError) as e:
+        if not isinstance(e, (headless_agent.AgentUnavailable, headless_agent.AgentDeclined,
+                              headless_agent.AgentTransient)):
+            note("failed", {"error": str(e)})
+        raise
     words = {k: reply_router.quoted([r for r in replies if r.maintainer is m])
              for k, m in (("guidance", True), ("notes", False))}
-    return {**review(clone, title=str(meta.get("title") or ""),
-                     body=str(meta.get("body") or ""), replies=replies),
-            "model": MODEL, "base_sha": base_sha, "replies": len(replies),
-            **{k: v for k, v in words.items() if v}}
+    out = {**reviewed, "model": MODEL, "base_sha": base_sha, "replies": len(replies),
+           **{k: v for k, v in words.items() if v}}
+    note(out["verdict"], out)
+    return out
 
 
 def current(issue: Issue) -> dict | None:

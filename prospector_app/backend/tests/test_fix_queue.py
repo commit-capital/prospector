@@ -857,3 +857,15 @@ def test_queue_entries_without_checks_carry_an_empty_list(store):
     fix_queue.queue_pr(1, "update")
     [entry] = fix_queue.queue_entries()
     assert entry["checks"] == []
+
+
+def test_ledger_entry_carries_guidance():
+    entry = fix_queue.ledger_entry(7, {"action": "fix", "guidance": "keep the old flag",
+                                       "against_head_sha": "h1"}, "pushed", None, "mac", "t")
+    assert entry["stats"]["guidance"] == "keep the old flag"
+
+
+def test_ledger_entry_omits_empty_guidance():
+    entry = fix_queue.ledger_entry(7, {"action": "fix", "guidance": None}, "pushed", None,
+                                   "mac", "t")
+    assert "guidance" not in entry["stats"]

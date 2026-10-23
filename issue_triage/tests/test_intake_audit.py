@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from issue_triage import intake_audit, reproduce_issue
-from pipeline import headless_agent
+from pipeline import headless_agent, verdict_log
+from pipeline.store import Store
 
 # The conftest stubs the reviewer for every other test; these test the real one.
 REVIEW = intake_audit.review
@@ -127,3 +128,33 @@ def test_a_report_longer_than_the_review_reads_is_at_least_suspicious(monkeypatc
     long_notes = "y" * (intake_audit.NOTES_MAX + 1)
     assert intake_audit.judge("t", "b", long_notes, blocked=False)["verdict"] == "suspicious"
     assert intake_audit.judge("t", "b", "short", blocked=False)["verdict"] == "clear"
+
+
+def _verdicts(n: int) -> list:
+    return Store().review_verdicts(subject_kind="issue", subject=n)
+
+
+def test_judge_records_with_subject():
+    out = intake_audit.judge("t", "b<!-- x -->", None, blocked=False,
+                             subject=verdict_log.Subject("issue", 9501))
+    [rec] = _verdicts(9501)
+    assert (rec.reviewer, rec.verdict) == ("intake", out["verdict"])
+    assert rec.prompt_sha == intake_audit.PROMPT_SHA and rec.data == out
+
+
+def test_judge_without_subject_records_nothing():
+    before = len(Store().review_verdicts(reviewer="intake"))
+    intake_audit.judge("t", "b", None, blocked=False)
+    assert len(Store().review_verdicts(reviewer="intake")) == before
+
+
+def test_blocklist_override_is_the_recorded_verdict():
+    intake_audit.judge("t", "b", None, blocked=True, subject=verdict_log.Subject("issue", 9502))
+    assert [r.verdict for r in _verdicts(9502)] == ["malicious"]
+
+
+def test_a_failed_review_records_failed(monkeypatch):
+    monkeypatch.setattr(intake_audit, "review", lambda *a, **k: {
+        "verdict": "suspicious", "findings": [], "failed": True, "reason": "no verdict"})
+    intake_audit.judge("t", "b", None, blocked=False, subject=verdict_log.Subject("issue", 9503))
+    assert [r.verdict for r in _verdicts(9503)] == ["failed"]

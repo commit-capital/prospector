@@ -46,6 +46,7 @@ from pipeline import security_review
 from pipeline import settings
 from pipeline import store
 from pipeline import storekit
+from pipeline import verdict_log
 from pipeline import verify_driver
 from pipeline import wire
 from pipeline import worker_health
@@ -756,7 +757,8 @@ def run_design(n: int, *, trigger: str = "autohunt", force: bool = False) -> boo
         with capacity.metered("design") if unattended else nullcontext():
             entry = design_review.review(base[1], diff, pr=n, title=rec.title or "",
                                          head_sha=head, base_sha=base[0],
-                                         coverage_record=measured)
+                                         coverage_record=measured,
+                                         subject=verdict_log.Subject("pr", n))
         saved = st.save_design_review(n, entry, head_sha=head)
         counts: dict[str, int] = {}
         verdicts: dict[str, int] = {}

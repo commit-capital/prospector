@@ -371,3 +371,39 @@ def test_cli_requires_an_explicit_valid_target(args: list[str]) -> None:
     with pytest.raises(SystemExit) as exc:
         rs.main(args)
     assert exc.value.code == 2
+
+
+def test_review_records_flagged_and_confirmed(tmp_path, monkeypatch):
+    store = Store(str(tmp_path))
+    _eligible_pr(store)
+    finding = {"severity": "red", "category": "authz", "title": "maybe", "detail": "d"}
+    _mock_agents(monkeypatch, lens_findings=[finding],
+                 verify_results=[{"index": i, "upheld": False,
+                                  "adjusted_severity": "not-an-issue", "reasoning": "fp"}
+                                 for i in range(len(rs.LENSES))])
+    assert rs.run(store, 100) == 0
+    [rec] = store.review_verdicts(reviewer="security")
+    assert (rec.subject_kind, rec.subject, rec.verdict, rec.head_sha) == ("pr", 100, "GREEN", "h1")
+    assert rec.prompt_sha == rs.PROMPT_SHA
+    assert [f["title"] for f in rec.data["flagged"]] == ["maybe"] * len(rs.LENSES)
+    assert rec.data["confirmed"] == [] and rec.data["lenses_ok"] == len(rs.LENSES)
+
+
+def test_incomplete_is_recorded(tmp_path, monkeypatch):
+    store = Store(str(tmp_path))
+    _eligible_pr(store)
+    monkeypatch.setattr(rs.diff_cache, "fetch_diff", lambda *a, **k: True)
+
+    def fake(prompt, *a, **k):
+        raise RuntimeError("claude exited 1")
+    monkeypatch.setattr(rs.headless_agent, "run_agent", fake)
+    assert rs.run(store, 100) == 0
+    [rec] = store.review_verdicts(reviewer="security")
+    assert rec.verdict == "INCOMPLETE" and rec.data["lenses_ok"] == 0
+
+
+def test_prompt_sha_hashes_the_unfilled_template():
+    from pipeline import security_driver
+    assert "__REPO__" in security_driver.REVIEW_TEMPLATE
+    assert security_driver.REVIEW_PROMPT == security_driver.REVIEW_TEMPLATE.replace(
+        "__REPO__", rs.settings.repo())

@@ -39,7 +39,7 @@ import os
 from collections.abc import Callable
 
 from issue_triage import issue_gates, reproduce_issue
-from pipeline import headless_agent, settings
+from pipeline import headless_agent, settings, verdict_log
 
 # Reading a patch and its surrounding code, without writing any.
 AGENT_TIMEOUT_SECONDS = 900
@@ -261,10 +261,17 @@ def _judge(prompt: str, worktree: str, *, lens: str, inventory_veto: bool,
     return out
 
 
+# `logic` covers `clip`, which shapes the patch every review reads.
+PROMPT_SHA = verdict_log.prompt_sha(PROMPT, HISTORY, *_QUESTIONS.values(), *_OUTPUT.values(),
+                                    logic=1)
+
+
 def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause: str,
                 test_paths: list[str], evidence: str, inventory_veto: bool = True,
                 history: str | None = None,
-                on_step: Callable[[str], None] = lambda step: None) -> list[dict]:
+                on_step: Callable[[str], None] = lambda step: None,
+                subject: verdict_log.Subject | None = None,
+                base_sha: str | None = None) -> list[dict]:
     """`review` under every lens in issue_gates.REVIEW_LENSES on every review
     model, each reading the whole change; `issue_gates.review_comments` reads
     the answers."""
@@ -277,4 +284,24 @@ def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause:
                                   root_cause=root_cause, test_paths=test_paths,
                                   evidence=evidence, inventory_veto=inventory_veto,
                                   history=history, model=model))
+    record(reviews, subject, patch=patch, title=title, body=body, root_cause=root_cause,
+           test_paths=test_paths, evidence=evidence, history=history, base_sha=base_sha)
     return reviews
+
+
+def record(reviews: list[dict], subject: verdict_log.Subject | None, *, patch: str, title: str,
+           body: str, root_cause: str, test_paths: list[str], evidence: str,
+           history: str | None = None, base_sha: str | None = None) -> None:
+    """Record one run's `reviews` as a single fix-review verdict: `unsafe` when a
+    review judged the change unsafe, else `failed` when any review did not
+    finish, as the lanes read them."""
+    judged = [r for r in reviews if not r.get("failed")]
+    verdict = ("unsafe" if any(r["verdict"] == "unsafe" for r in judged)
+               else "failed" if len(judged) < len(reviews) else "safe")
+    verdict_log.record(
+        "fix-review", subject, verdict=verdict, prompt_sha=PROMPT_SHA,
+        model=",".join(sorted({str(r.get("model")) for r in reviews})), data={"reviews": reviews},
+        inputs={"report": reproduce_issue.report_block(title, body), "root_cause": root_cause,
+                "test_paths": "\n".join(test_paths), "evidence": evidence,
+                "history": history or "", "patch": patch},
+        base_sha=base_sha)

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from issue_triage import intake_audit, reproduce_issue, review_issue_fix, second_opinion
-from pipeline import diffpaths, gates, headless_agent
+from pipeline import diffpaths, gates, headless_agent, settings, verdict_log
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue
@@ -143,8 +143,12 @@ def review(worktree: str, fix_patch: str, *, title: str, body: str,
     return {"crossings": crossings, "reason": str(verdict.get("reason") or "")}
 
 
+PROMPT_SHA = verdict_log.prompt_sha(PROMPT)
+
+
 def judge(worktree: str, base_dir: Path, fix_patch: str, *, title: str, body: str,
-          on_event: Callable[[tuple], None] | None = None) -> dict:
+          on_event: Callable[[tuple], None] | None = None,
+          subject: verdict_log.Subject | None = None, base_sha: str | None = None) -> dict:
     """The run's `boundary` record for `fix_patch`: the reviewer's crossings,
     then a `network` crossing for each host `new_hosts` finds, `requested` when
     the report names the host."""
@@ -154,7 +158,14 @@ def judge(worktree: str, base_dir: Path, fix_patch: str, *, title: str, body: st
                 "source": "scan"}
                for path, host in new_hosts(base_dir, fix_patch)]
     reviewed = review(worktree, fix_patch, title=title, body=body, on_event=on_event)
-    return {**reviewed, "crossings": [*reviewed["crossings"], *scanned]}
+    out = {**reviewed, "crossings": [*reviewed["crossings"], *scanned]}
+    verdict = ("failed" if out.get("failed")
+               else "hold" if hold(out, maintainer_filed=False) else "pass")
+    verdict_log.record("trust-boundary", subject, verdict=verdict, prompt_sha=PROMPT_SHA,
+                       model=settings.agent_model(), data=out,
+                       inputs={"title": title, "body": body, "patch": fix_patch},
+                       base_sha=base_sha)
+    return out
 
 
 def comments(boundary: dict | None) -> list[str]:

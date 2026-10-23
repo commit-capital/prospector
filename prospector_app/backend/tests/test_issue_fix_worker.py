@@ -285,7 +285,7 @@ def triaging(hunting, monkeypatch, tmp_path):
     judged: dict = {"verdict": {"verdict": "go", "kind": "defect", "fixability": 70},
                     "issues": [], "asked": []}
 
-    def judge(issue, clone, *, base_sha, replies=()):
+    def judge(issue, clone, *, base_sha, replies=(), subject=None):
         judged["issues"].append(issue.number)
         if isinstance(judged["verdict"], Exception):
             raise judged["verdict"]

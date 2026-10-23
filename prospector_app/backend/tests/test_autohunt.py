@@ -1326,7 +1326,7 @@ class TestDesignLane:
         return booked
 
     def test_a_review_lands_and_books_success(self, store, monkeypatch, tmp_path):
-        def review(clone, diff, *, pr, title, head_sha, base_sha, coverage_record):
+        def review(clone, diff, *, pr, title, head_sha, base_sha, coverage_record, subject):
             return {"kind": "review", "reviewed_sha": head_sha, "findings": [
                 {"severity": "blocking", "resolved": False, "outdated": False}],
                 "checks": [], "summary": "s",

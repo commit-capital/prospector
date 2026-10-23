@@ -41,11 +41,14 @@ def ledger_entry(n: int, req: dict, status: str, detail: str | None, host: str,
     """The runs-ledger entry for one ending of PR `n`'s fix request `req`. It
     names the head the request was pinned against and, when `judged` is given,
     whether the ending is a verdict on a change the automation prepared — the
-    two facts trust_ladder counts a judgment by."""
+    two facts trust_ladder counts a judgment by — and the operator's guidance,
+    which the next request would otherwise overwrite."""
     stats: dict = {"status": status, "action": req.get("action", "fix"), "detail": detail,
                    "host": host, "head_sha": req.get("against_head_sha")}
     if judged is not None:
         stats["judged"] = judged
+    if req.get("guidance"):
+        stats["guidance"] = req["guidance"]
     return {"phase": LEDGER_PHASE, "pr": n, "started": req.get("started_at"),
             "finished": finished, "trigger": trigger, "stats": stats}
 

@@ -44,7 +44,7 @@ from issue_triage import (
     solo_lane,
 )
 from issue_triage.issue_store import IssueStore
-from pipeline import gates, headless_agent, prove, settings, storekit, threats
+from pipeline import gates, headless_agent, prove, settings, storekit, threats, verdict_log
 from pipeline.store import Store
 
 ROUTE_PROMPT = """\
@@ -84,7 +84,7 @@ def _spec(store: IssueStore, n: int, base: prove.PinnedBase, guidance: str | Non
         raise RequestFailed(f"issue #{n} is not in the store and could not be fetched")
     title, body = reported
     return (fix_lane.LaneSpec(issue=n, title=title, body=body, base=base, guidance=guidance,
-                              notes=notes),
+                              notes=notes, verdict_subject=verdict_log.Subject("issue", n)),
             fix_lane.report_sha(title, body))
 
 
@@ -126,7 +126,8 @@ def _intake(store: IssueStore, n: int, spec: fix_lane.LaneSpec,
         return None
     on_step("auditing the report")
     blocked = threats.is_blocked_actor(Store().load_threats(), author)
-    return intake_audit.judge(spec.title, spec.body, spec.notes, blocked=blocked)
+    return intake_audit.judge(spec.title, spec.body, spec.notes, blocked=blocked,
+                              subject=verdict_log.Subject("issue", n))
 
 
 def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
