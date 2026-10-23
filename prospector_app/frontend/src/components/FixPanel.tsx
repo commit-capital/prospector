@@ -273,7 +273,7 @@ export function FixAction({ req, runner, busy, resolved, onQueue, onDequeue, onA
   }
   return (
     <>
-      {(["update", "fix", "describe"] as FixAction[]).map((action) => (
+      {(["update", "rebase", "fix", "describe"] as FixAction[]).map((action) => (
         <button key={action} className="btn-secondary sm"
           disabled={busy != null || why != null}
           onClick={() => (action === "fix" ? setGoal(DEFAULT_GOAL) : onQueue(action))}
