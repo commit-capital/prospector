@@ -175,3 +175,36 @@ def test_gather_makes_five_queries(monkeypatch):
         event.remove(Engine, "before_cursor_execute", count)
     assert {9801, 9802, 9803} <= set(facts.prs) and {9801, 9802, 9803} <= set(facts.issues)
     assert len(statements) == 5, statements
+
+
+def _labeled(verdict: str, expected: str, *, prompt: str = "p", vid: int = 1) -> VerdictRecord:
+    return replace(_row("design", verdict, vid=vid, label={"expected": expected}), prompt_sha=prompt)
+
+
+def test_scorecard_counts_by_configuration():
+    labeled = [_labeled("fail", "fail", vid=1), _labeled("pass", "fail", vid=2),
+               _labeled("fail", "pass", vid=3), _labeled("pass", "pass", prompt="q", vid=4)]
+    cards = {c.prompt_sha: c for c in rr.scorecard([], labeled)}
+    p = cards["p"]
+    assert (p.labeled, p.must_catch, p.caught, p.should_pass, p.blocked) == (3, 2, 1, 1, 1)
+    assert (p.under, p.over) == (1, 1)
+    assert (cards["q"].labeled, cards["q"].should_pass, cards["q"].blocked) == (1, 1, 0)
+
+
+def test_scorecard_counts_failures_from_the_window():
+    window = [_row("design", "pass", vid=1), _row("design", "failed", vid=2)]
+    [card] = rr.scorecard(window, [])
+    assert (card.runs, card.failed, card.labeled) == (2, 1, 0)
+
+
+def test_policy_reviewers_route(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from prospector_app.backend import app as appmod
+    monkeypatch.setattr(rr, "gather", lambda since: _facts(
+        _row("design", "fail"), prs={7: {"state": "merged", "head_sha": "h2"}}))
+    monkeypatch.setattr(rr, "_labeled_rows", lambda: [_labeled("fail", "fail")])
+    body = TestClient(appmod.app).get("/api/policy/reviewers").json()
+    assert body["min_cases"] == rr.MIN_CASES and body["window_days"] == rr.SIGNAL_WINDOW_DAYS
+    assert [s["key"] for s in body["queue"]] == ["merged-upstream"]
+    assert body["scorecard"][0]["reviewer"] == "design"

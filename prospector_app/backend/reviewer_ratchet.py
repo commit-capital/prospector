@@ -7,17 +7,27 @@ their PRs and issues in a fixed five queries. `signals` turns those into at
 most one suggestion per unlabeled run: what the reviewer probably should have
 said, and the outcome that says so. A suggestion is only that; an operator
 confirms it on the subject's page (verdict_labels).
+
+`scorecard` counts, per reviewer configuration (prompt and model), how its
+labeled runs fared: must-catch cases (labeled at or above the reviewer's
+blocking verdict) it blocked, should-pass cases it blocked anyway, and its
+under- and over-calls; and, over the window, how often it failed to judge.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
-from pipeline import storekit
+from pipeline import storekit, verdict_labels, verdict_log
 from pipeline.storekit import VerdictRecord
 from prospector_app.backend import activity, data, issue_data
 
 SIGNAL_WINDOW_DAYS = 60
+MIN_CASES = 10
+# The least severe verdict that blocks, per reviewer.
+BLOCKING: dict[str, str] = {"design": "fail", "security": "RED", "fix-review": "unsafe",
+                            "trust-boundary": "hold", "intake": "suspicious",
+                            "fixability": "skip"}
 QUOTE_MAX = 300
 # Thread authors that are the factory's own loops, not an operator.
 AUTOMATIC = ("followup", "hunter", "public")
@@ -47,6 +57,22 @@ class Signal:
     suggests: str
     why: str
     key: str
+
+
+@dataclass(frozen=True)
+class Card:
+    reviewer: str
+    prompt_sha: str
+    model: str
+    labeled: int = 0
+    runs: int = 0
+    failed: int = 0
+    must_catch: int = 0
+    caught: int = 0
+    should_pass: int = 0
+    blocked: int = 0
+    under: int = 0
+    over: int = 0
 
 
 def window_start(now: datetime | None = None) -> str:
@@ -156,3 +182,57 @@ def signals(facts: Facts) -> list[Signal]:
                               verdict=row.verdict, suggests=found[1], why=found[2],
                               key=found[0]))
     return out
+
+
+def _blocks(reviewer: str, verdict: str) -> bool:
+    order = verdict_log.VERDICTS[reviewer]
+    return order.index(verdict) >= order.index(BLOCKING[reviewer])
+
+
+def scorecard(window_rows: list[VerdictRecord],
+              labeled_rows: list[VerdictRecord]) -> list[Card]:
+    counts: dict[tuple[str, str, str], dict[str, int]] = {}
+
+    def tally(r: VerdictRecord) -> dict[str, int]:
+        return counts.setdefault((r.reviewer, r.prompt_sha, r.model), {})
+
+    def add(c: dict[str, int], key: str) -> None:
+        c[key] = c.get(key, 0) + 1
+
+    for r in window_rows:
+        c = tally(r)
+        add(c, "runs")
+        if r.verdict == verdict_log.VERDICTS[r.reviewer][-1]:
+            add(c, "failed")
+    for r in labeled_rows:
+        if r.label is None:
+            continue
+        c = tally(r)
+        add(c, "labeled")
+        blocked = _blocks(r.reviewer, r.verdict)
+        if _blocks(r.reviewer, r.label["expected"]):
+            add(c, "must_catch")
+            if blocked:
+                add(c, "caught")
+        else:
+            add(c, "should_pass")
+            if blocked:
+                add(c, "blocked")
+        call = verdict_labels.call(r.label, r.verdict, r.reviewer)
+        if call != "right":
+            add(c, call)
+    cards = [Card(reviewer=k[0], prompt_sha=k[1], model=k[2], **v) for k, v in counts.items()]
+    return sorted(cards, key=lambda c: (c.reviewer, -c.labeled, c.prompt_sha))
+
+
+def _labeled_rows() -> list[VerdictRecord]:
+    return data.store().review_verdicts(labeled=True)
+
+
+def policy() -> dict:
+    """The Policy page's reviewer section: each configuration's scorecard and
+    the runs whose outcome suggests a label."""
+    facts = gather(window_start())
+    return {"scorecard": [asdict(c) for c in scorecard(facts.rows, _labeled_rows())],
+            "queue": [asdict(s) for s in signals(facts)],
+            "min_cases": MIN_CASES, "window_days": SIGNAL_WINDOW_DAYS}
