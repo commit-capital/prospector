@@ -774,9 +774,9 @@ def test_reconcile_disposition_none_when_empty():
 
 
 def test_queue_rank_puts_maintainers_then_what_prospector_backs_first(monkeypatch):
-    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "commitperclip")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triage-app")
     maint = _pr(meta={"author": "m", "author_association": "MEMBER", "state": "open"})
-    ours = _pr(meta={"author": "app/commitperclip", "state": "open"})
+    ours = _pr(meta={"author": "app/triage-app", "state": "open"})
     chosen = _pr(backing={"issue": 7, "by": "op", "at": NOW, "reason": None})
     assert [gates.queue_rank(p) for p in (maint, ours, chosen, _pr())] == [0, 1, 1, 2]
     monkeypatch.setenv("TRIAGE_BOT_LOGIN", "")
