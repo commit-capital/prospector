@@ -2146,7 +2146,8 @@ export const api = {
   verdicts: (kind: "pr" | "issue", n: number) =>
     get<{ verdicts: ReviewVerdict[] }>(`/api/verdicts?subject_kind=${kind}&subject=${n}`),
   /** Label a recorded reviewer run; rejects with the server's reason (409). */
-  labelVerdict: (id: number, body: { expected: string; note?: string }) =>
+  labelVerdict: (id: number,
+    body: { expected: string; note?: string; findings?: Record<string, string>; source?: string }) =>
     postJson<{ ok: boolean; label: VerdictLabel }>(`/api/verdicts/${id}/label`, body),
   listAlerts: () => get<{ items: AlertRow[]; pr_states_loading: boolean }>("/api/alerts"),
   queryAlerts: (opts: {

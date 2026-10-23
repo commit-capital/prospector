@@ -139,3 +139,25 @@ def test_backfill_twice_adds_nothing(tmp_path):
 
 def test_backfill_without_fix_run_is_empty(tmp_path):
     assert verdict_labels.backfill_issue(Store(tmp_path), _issue(None)) == []
+
+
+def test_backfill_skips_reviewers_the_live_run_recorded(tmp_path):
+    store = Store(tmp_path)
+    verdict_log.record("fix-review", verdict_log.Subject("issue", 14867), verdict="safe",
+                       prompt_sha="p" * 16, model="opus", data={"reviews": []}, inputs={},
+                       store=store)
+    ids = verdict_labels.backfill_issue(store, _issue({**FIX_RUN, "started": "2000-01-01T00:00:00+00:00"}))
+    assert sorted(store.review_verdict(i).reviewer for i in ids) == ["intake", "trust-boundary"]  # type: ignore[union-attr]
+
+
+def test_backfill_carries_a_truncated_patch_flag(tmp_path):
+    store = Store(tmp_path)
+    verdict_labels.backfill_issue(store, _issue({**FIX_RUN, "patch_truncated": True}))
+    assert all(r.data["patch_truncated"] is True for r in store.review_verdicts())
+
+
+@pytest.mark.parametrize("key", ["9" * 5000, "０"])
+def test_only_plain_finding_indexes_are_marks(tmp_path, key):
+    store = Store(tmp_path)
+    with pytest.raises(LabelRefused):
+        verdict_labels.label(store, _row(store), expected="pass", by="op", findings={key: "real"})

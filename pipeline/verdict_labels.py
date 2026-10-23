@@ -58,8 +58,9 @@ def label(store: Store, verdict_id: int, *, expected: str, by: str, note: str = 
                            f"one of {', '.join(judging(row.reviewer))}")
     marks = findings or {}
     count = len(_findings(row.data))
+    indexes = {str(i) for i in range(count)}
     for key, mark in marks.items():
-        if not (key.isdecimal() and int(key) < count):
+        if key not in indexes:
             raise LabelRefused(f"finding {key!r} is not one of this run's {count} findings")
         if mark not in MARKS:
             raise LabelRefused(f"{mark!r} is not a finding mark; one of {', '.join(MARKS)}")
@@ -88,8 +89,11 @@ def backfill_issue(store: Store, issue: Issue) -> list[int]:
     if not run:
         return []
     started = str(run.get("started") or "")
+    # A reviewer already has this attempt when a backfill took it, or when live
+    # capture recorded a run at or after the attempt started.
     done = {r.reviewer for r in store.review_verdicts(subject_kind="issue", subject=issue.number)
-            if (r.data.get("backfill") or {}).get("fix_run_started") == started}
+            if (r.data.get("backfill") or {}).get("fix_run_started") == started
+            or ("backfill" not in r.data and r.at >= started)}
     meta = issue.raw.get("meta") or {}
     inputs = {"report": reproduce_issue.report_block(str(meta.get("title") or ""),
                                                      str(meta.get("body") or "")),
@@ -112,7 +116,8 @@ def backfill_issue(store: Store, issue: Issue) -> list[int]:
         vid = verdict_log.record(
             reviewer, verdict_log.Subject("issue", issue.number), verdict=verdict,
             prompt_sha="backfill", model=model,
-            data={**data, "backfill": {"fix_run_started": started}, "partial_inputs": True},
+            data={**data, "backfill": {"fix_run_started": started}, "partial_inputs": True,
+                  "patch_truncated": bool(run.get("patch_truncated"))},
             inputs=inputs, base_sha=run.get("base_sha"), store=store)
         if vid is not None:
             ids.append(vid)

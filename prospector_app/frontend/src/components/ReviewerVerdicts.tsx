@@ -47,7 +47,9 @@ function VerdictRow({ row, onSaved }: { row: ReviewVerdict; onSaved: () => void 
   const judged = choices.includes(row.verdict);
   const save = () => {
     setBusy(true);
-    api.labelVerdict(row.id, { expected, note })
+    // Marks and the source are set through the API; a save here keeps them.
+    api.labelVerdict(row.id, { expected, note, findings: row.label?.findings,
+      source: row.label?.source })
       .then(() => { pushToast("Label saved", "green"); onSaved(); })
       .catch((e: Error) => pushToast("Couldn't save the label", "red", { detail: e.message }))
       .finally(() => setBusy(false));
