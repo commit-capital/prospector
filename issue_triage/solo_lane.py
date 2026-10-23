@@ -43,6 +43,7 @@ from pipeline import (
     risktier,
     settings,
     threats,
+    verdict_log,
     verify_driver,
 )
 
@@ -390,6 +391,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                          f"compile, related tests and full suite pass.\n- {detail}.",
                 inventory_veto=result["tier"].get("tier") == 0,
                 history=_review_history(attempt, verdict.get("responses") or []),
+                subject=verdict_log.Subject("issue", spec.issue), base_sha=spec.base.sha,
                 on_step=on_step)
             agent_runs += len(reviews)
             result["reviews"] = reviews
@@ -404,7 +406,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
             on_step("reviewing: trust boundaries")
             agent_runs += 1
             result["boundary"] = trust_boundary.judge(str(clone), spec.base.clone, fix_patch,
-                                                      title=spec.title, body=spec.body)
+                                                      title=spec.title, body=spec.body,
+                                                      subject=verdict_log.Subject("issue", spec.issue), base_sha=spec.base.sha)
         return finish("fixed", detail)
     except headless_agent.AgentUnavailable as e:
         return finish("agent-unavailable", str(e))

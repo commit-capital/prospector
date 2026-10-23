@@ -9,7 +9,8 @@ import json
 import pytest
 
 from issue_triage import issue_gates, review_issue_fix
-from pipeline import headless_agent
+from pipeline import headless_agent, verdict_log
+from pipeline.store import Store
 
 PATCH = ("diff --git a/src/parse.ts b/src/parse.ts\n@@\n"
          "-  return xs[0]\n+  return xs[0] ?? null\n")
@@ -374,3 +375,36 @@ def test_every_lens_runs_on_every_review_model(monkeypatch):
         (lens, model) for lens in issue_gates.REVIEW_LENSES for model in ("opus", "codex:gpt-x")]
     assert seen == ["opus", "codex:gpt-x"] * len(issue_gates.REVIEW_LENSES)
     assert steps[1] == "reviewing: root-cause on codex:gpt-x"
+
+
+def _verdicts(n: int) -> list:
+    return Store().review_verdicts(subject_kind="issue", subject=n)
+
+
+def test_full_review_records_with_subject(monkeypatch):
+    monkeypatch.setattr(headless_agent, "run_agent",
+                        lambda prompt, **kw: json.dumps({"verdict": "unsafe", "reason": "r"}))
+    reviews = review_issue_fix.full_review(
+        "/wt", PATCH, title="t", body="b", root_cause="rc", test_paths=["a.test.ts"],
+        evidence="ev", subject=verdict_log.Subject("issue", 9201), base_sha="b" * 40)
+    [rec] = _verdicts(9201)
+    assert (rec.reviewer, rec.verdict, rec.base_sha) == ("fix-review", "unsafe", "b" * 40)
+    assert rec.prompt_sha == review_issue_fix.PROMPT_SHA
+    assert rec.data == {"reviews": reviews}
+
+
+def test_full_review_without_subject_records_nothing(monkeypatch):
+    monkeypatch.setattr(headless_agent, "run_agent",
+                        lambda prompt, **kw: json.dumps({"verdict": "safe", "reason": "r"}))
+    before = len(Store().review_verdicts(reviewer="fix-review"))
+    review_issue_fix.full_review("/wt", PATCH, title="t", body="b", root_cause="rc",
+                                 test_paths=[], evidence="")
+    assert len(Store().review_verdicts(reviewer="fix-review")) == before
+
+
+def test_all_failed_reviews_record_failed(monkeypatch):
+    monkeypatch.setattr(headless_agent, "run_agent", lambda prompt, **kw: "no json")
+    review_issue_fix.full_review("/wt", PATCH, title="t", body="b", root_cause="rc",
+                                 test_paths=[], evidence="",
+                                 subject=verdict_log.Subject("issue", 9202))
+    assert [r.verdict for r in _verdicts(9202)] == ["failed"]

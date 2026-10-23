@@ -39,7 +39,7 @@ import os
 from collections.abc import Callable
 
 from issue_triage import issue_gates, reproduce_issue
-from pipeline import headless_agent, settings
+from pipeline import headless_agent, settings, verdict_log
 
 # Reading a patch and its surrounding code, without writing any.
 AGENT_TIMEOUT_SECONDS = 900
@@ -261,10 +261,15 @@ def _judge(prompt: str, worktree: str, *, lens: str, inventory_veto: bool,
     return out
 
 
+PROMPT_SHA = verdict_log.prompt_sha(PROMPT, *_QUESTIONS.values(), *_OUTPUT.values())
+
+
 def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause: str,
                 test_paths: list[str], evidence: str, inventory_veto: bool = True,
                 history: str | None = None,
-                on_step: Callable[[str], None] = lambda step: None) -> list[dict]:
+                on_step: Callable[[str], None] = lambda step: None,
+                subject: verdict_log.Subject | None = None,
+                base_sha: str | None = None) -> list[dict]:
     """`review` under every lens in issue_gates.REVIEW_LENSES on every review
     model, each reading the whole change; `issue_gates.review_comments` reads
     the answers."""
@@ -277,4 +282,14 @@ def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause:
                                   root_cause=root_cause, test_paths=test_paths,
                                   evidence=evidence, inventory_veto=inventory_veto,
                                   history=history, model=model))
+    judged = [r for r in reviews if not r.get("failed")]
+    verdict = ("failed" if not judged
+               else "unsafe" if any(r["verdict"] == "unsafe" for r in judged) else "safe")
+    verdict_log.record(
+        "fix-review", subject, verdict=verdict, prompt_sha=PROMPT_SHA,
+        model=",".join(sorted({str(r.get("model")) for r in reviews})), data={"reviews": reviews},
+        inputs={"report": reproduce_issue.report_block(title, body), "root_cause": root_cause,
+                "test_paths": "\n".join(test_paths), "evidence": evidence,
+                "history": history or "", "patch": patch},
+        base_sha=base_sha)
     return reviews

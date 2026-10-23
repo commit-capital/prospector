@@ -6,7 +6,8 @@ import pytest
 
 from issue_triage import fix_review, trust_boundary
 from issue_triage.issue_store import IssueStore
-from pipeline import headless_agent
+from pipeline import headless_agent, verdict_log
+from pipeline.store import Store
 
 # The conftest stubs the reviewer for every other test; these test the real one.
 REVIEW = trust_boundary.review
@@ -158,3 +159,28 @@ def test_a_fix_one_reproduction_backs_is_held(tmp_path):
     store.edit_issue(7).record_fix_run({**run, "agreement": {"reproductions": [0, 1],
                                                              "agreed": [0, 1]}})
     assert trust_boundary.held(store.load_issue(7)) is None
+
+
+def _verdicts(n: int) -> list:
+    return Store().review_verdicts(subject_kind="issue", subject=n)
+
+
+@pytest.mark.parametrize("reviewed,verdict", [
+    ({"crossings": [], "reason": "none"}, "pass"),
+    ({"crossings": [NETWORK], "reason": "r"}, "hold"),
+    ({"crossings": [], "failed": True, "reason": "timed out"}, "failed"),
+])
+def test_judge_records_with_subject(monkeypatch, base, reviewed, verdict):
+    monkeypatch.setattr(trust_boundary, "review", lambda *a, **k: reviewed)
+    n = 9300 + ["pass", "hold", "failed"].index(verdict)
+    trust_boundary.judge(str(base), base, _patch("x"), title="t", body="b",
+                         subject=verdict_log.Subject("issue", n), base_sha="b" * 40)
+    [rec] = _verdicts(n)
+    assert (rec.reviewer, rec.verdict, rec.base_sha) == ("trust-boundary", verdict, "b" * 40)
+    assert rec.prompt_sha == trust_boundary.PROMPT_SHA
+
+
+def test_judge_without_subject_records_nothing(base):
+    before = len(Store().review_verdicts(reviewer="trust-boundary"))
+    trust_boundary.judge(str(base), base, _patch("x"), title="t", body="b")
+    assert len(Store().review_verdicts(reviewer="trust-boundary")) == before

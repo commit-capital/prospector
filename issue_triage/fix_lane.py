@@ -50,6 +50,7 @@ from pipeline import (
     settings,
     storekit,
     threats,
+    verdict_log,
     verify_driver,
 )
 from pipeline.store import Store
@@ -531,7 +532,8 @@ def _proof_bar(spec: LaneSpec, tree: Path, fix_patch: str, result: dict,
         return ending, reason, 0
     on_step("reviewing: trust boundaries")
     result["boundary"] = trust_boundary.judge(str(tree), spec.base.clone, fix_patch,
-                                              title=spec.title, body=spec.body)
+                                              title=spec.title, body=spec.body,
+                                              subject=verdict_log.Subject("issue", spec.issue), base_sha=spec.base.sha)
     return None, reason, 1
 
 
