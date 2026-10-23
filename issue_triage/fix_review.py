@@ -358,7 +358,7 @@ def _round(r: dict) -> dict:
             "answering": answering if isinstance(answering, list) else
             [str(answering)] if answering else [],
             "claims": r.get("claims") or [], "responses": r.get("responses") or [],
-            "required_pass": r.get("required_pass", r.get("reproductions_pass"))}
+            "required_pass": issue_gates.revision_passed(r)}
 
 
 def distill(record: dict, question: dict | None = None) -> dict:

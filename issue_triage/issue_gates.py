@@ -382,6 +382,17 @@ def fix_coverage(reviews: list[dict] | None) -> Coverage:
     return Coverage("partial" if partial else "complete", out)
 
 
+def revision_passed(round_: dict) -> bool | None:
+    """Whether a revision round passed the tests it was revised against; None
+    when it wrote no change to test. A round that failed them was discarded."""
+    return round_.get("required_pass", round_.get("reproductions_pass"))
+
+
+def counted_revisions(rounds: list[dict]) -> list[dict]:
+    """The revision rounds whose change stands."""
+    return [r for r in rounds if revision_passed(r) is True]
+
+
 def review_comments(reviews: list[dict] | None) -> tuple[bool, list[str]]:
     """What the reviews ask the fixer to change, as one code review's comments,
     and whether any of them rejects the fix: (rejected, comments). Each

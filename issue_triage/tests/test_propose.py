@@ -53,6 +53,13 @@ def _rendered(result: dict | None = None) -> tuple[str, str, str]:
             fix_pr_body.commit_message(7, res["summary"], closes=True))
 
 
+def test_the_body_counts_only_revision_rounds_that_passed_their_tests():
+    rounds = [{"round": 1, "ending": "fixed", "required_pass": True},
+              {"round": 2, "ending": "fixed", "required_pass": False}]
+    assert "Revised in 1 round(s)" in _rendered(_result(revisions=rounds))[1]
+    assert "Revised in" not in _rendered(_result(revisions=rounds[1:]))[1]
+
+
 def test_the_body_names_who_wrote_the_change_and_who_reviewed_it():
     reviews = [{**COVERED[0], "model": "codex:gpt-x"},
                {"lens": "root-cause", "verdict": "safe", "model": "codex:gpt-x"},
