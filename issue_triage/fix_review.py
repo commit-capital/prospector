@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from issue_triage import dispute_question, fix_pr_body, issue_gates
+from issue_triage import dispute_question, fix_choice, fix_pr_body, issue_gates
 from pipeline import diffpaths, gates, settings, storekit
 
 if TYPE_CHECKING:
@@ -35,8 +35,8 @@ FAULT_ENDINGS = ("agent-unavailable", "run-failed", "sandbox", "base-compile")
 # The largest picked change `fix_run` carries; a longer one is cut and flagged.
 PATCH_MAX = 60_000
 # The status of an issue's fix attempt, in the order the explorer groups them.
-STATUSES = ("review", "question", "running", "reporter", "pr-open", "pr-closed", "failed",
-            "declined", "pr-merged")
+STATUSES = ("review", "question", "running", "reporter", "pr-open", "chosen", "pr-closed",
+            "failed", "declined", "pr-merged")
 
 
 def followup_for(fu: dict | None, pr: object) -> dict:
@@ -102,6 +102,9 @@ def fix_status(issue: Issue) -> tuple[str, str] | None:
 
 
 def _fix_status(issue: Issue) -> tuple[str, str] | None:
+    pr = fix_choice.chosen(issue)
+    if pr is not None:
+        return "chosen", f"going with #{pr}"
     req, run = issue.fix_request, issue.fix_run
     if req and req.get("status") in IN_FLIGHT:
         return "running", f"{req.get('action')} {req.get('status')}"
@@ -264,6 +267,9 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
         return False, f"issue #{n} is not in the store"
     if (issue.raw.get("meta") or {}).get("state") != "open":
         return False, f"issue #{n} is closed"
+    chosen = fix_choice.chosen(issue)
+    if chosen is not None:
+        return False, f"an operator chose #{chosen} as the fix"
     req = issue.fix_request
     if req and req.get("status") in IN_FLIGHT:
         return False, f"a {req.get('action')} request is already {req.get('status')}"

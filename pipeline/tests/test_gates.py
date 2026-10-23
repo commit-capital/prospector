@@ -773,6 +773,16 @@ def test_reconcile_disposition_none_when_empty():
     assert gates.reconcile_disposition([{"disposition": "bogus", "cluster_id": 1}]) is None
 
 
+def test_queue_rank_puts_maintainers_then_what_prospector_backs_first(monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triage-app")
+    maint = _pr(meta={"author": "m", "author_association": "MEMBER", "state": "open"})
+    ours = _pr(meta={"author": "app/triage-app", "state": "open"})
+    chosen = _pr(backing={"issue": 7, "by": "op", "at": NOW, "reason": None})
+    assert [gates.queue_rank(p) for p in (maint, ours, chosen, _pr())] == [0, 1, 1, 2]
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "")
+    assert gates.queue_rank(_pr(meta={"author": "", "state": "open"})) == 2
+
+
 class TestPriorityAuthor:
     @pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR"])
     def test_maintainer_associations(self, association):

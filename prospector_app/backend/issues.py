@@ -22,7 +22,7 @@ from issue_triage import fix_review
 from issue_triage import issue_display
 from issue_triage import issue_links
 from issue_triage import pr_index
-from issue_triage import trust_boundary
+from issue_triage import fix_choice, trust_boundary
 from pipeline import gates
 from pipeline import gh
 from pipeline import settings
@@ -341,6 +341,7 @@ def get_issue(n: int) -> dict | None:
     row["fix_pr"] = fix_review.open_pr(i)
     row["fix_approved"] = fix_review.approval(i)
     row["fix_held"] = trust_boundary.held(i)
+    row["fix_choice"] = i.fix_choice if fix_choice.chosen(i) is not None else None
     return row
 
 

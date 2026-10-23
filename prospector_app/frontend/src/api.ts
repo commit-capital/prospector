@@ -472,6 +472,7 @@ export interface PRRow {
   age_days?: number | null;
   responses?: PRResponses | null;
   author_return?: OpenAuthorReturn | null;
+  backing?: PRBacking | null;
   pain_score?: number | null;
   automation?: AutomationStanding | null;
   pain_breakdown?: PainBreakdown | null;
@@ -1432,8 +1433,12 @@ export interface IssueRow {
   dup_rows?: IssueRow[];
 }
 /** fix_review.STATUSES — the operator's moves first. */
-export type IssueFixStatus = "review" | "question" | "running" | "reporter" | "pr-open" | "pr-closed"
-  | "failed" | "declined" | "pr-merged";
+export type IssueFixStatus = "review" | "question" | "running" | "reporter" | "pr-open" | "chosen"
+  | "pr-closed" | "failed" | "declined" | "pr-merged";
+/** Another author's PR an operator chose as the issue's fix (issue_triage/fix_choice.py). */
+export interface IssueFixChoice { pr: number; by: string; at: string; reason: string | null }
+/** The issue a PR was chosen as the fix for (issue_triage/fix_choice.py). */
+export interface PRBacking { issue: number; by: string; at: string; reason: string | null }
 export type IssueFixAction = "solve" | "send-back" | "answer" | "ask-reporter" | "propose";
 export interface IssueFixRequest {
   action: IssueFixAction;
@@ -1641,6 +1646,8 @@ export interface IssueDetail extends IssueRow {
   fix_pr?: number | null;
   /** Why the fixed attempt waits for an operator to open its PR (trust_boundary.held). */
   fix_held?: string | null;
+  /** The PR going ahead as the fix in place of ours, while the choice stands. */
+  fix_choice?: IssueFixChoice | null;
   /** The operator's approval of the open PR while it holds (fix_review.approval). */
   fix_approved?: IssueFixApproval | null;
 }
@@ -2117,6 +2124,9 @@ export const api = {
   issueFixApprove: (n: number, partial: boolean) =>
     postJson(`/api/issues/${n}/fix/approve`, { partial }),
   cancelIssueFix: (n: number) => postJson(`/api/issues/${n}/fix/cancel`, {}),
+  chooseIssuePR: (n: number, pr: number, reason: string, dryRun: boolean) =>
+    postJson(`/api/issues/${n}/fix/choose?dry_run=${dryRun}`, { pr, reason: reason || null }),
+  unchooseIssuePR: (n: number) => postJson(`/api/issues/${n}/fix/unchoose`, {}),
   listAlerts: () => get<{ items: AlertRow[]; pr_states_loading: boolean }>("/api/alerts"),
   queryAlerts: (opts: {
     q?: string; sort?: string; direction?: string; source?: string; state?: string;

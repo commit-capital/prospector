@@ -39,7 +39,7 @@ def candidates() -> list[int]:
                 pr.raw.get("design_run"), host=me,
                 stale_after=verify_worker.DESIGN_CLAIM_SECONDS)]
 
-    def key(item: tuple[int, Pr]) -> tuple[bool, tuple[bool, bool, float, int]]:
+    def key(item: tuple[int, Pr]) -> tuple[bool, tuple[int, bool, float, int]]:
         standing = automation.classify(item[1]) or {}
         return (standing.get("bucket") != "merge-ready", verify_worker.hunt_key(item))
 

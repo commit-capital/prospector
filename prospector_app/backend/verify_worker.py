@@ -368,7 +368,7 @@ def next_queued(skip_auto: bool = False) -> int | None:
     request is never gated by it, so its preflight is what records why it
     cannot proceed."""
     best_n: int | None = None
-    best_key: tuple[float, bool, bool, str] | None = None
+    best_key: tuple[float, bool, int, str] | None = None
     daemon: bool | None = None
     for n, rec in data.prs().items():
         req = rec.verify_request
@@ -547,11 +547,12 @@ def _rotate(live: list[str]) -> str | None:
     return live[0]
 
 
-def hunt_key(item: tuple[int, Pr]) -> tuple[bool, bool, float, int]:
-    """A maintainer's PR first, then an analyzed merge pick, then highest
-    community pain, then lowest PR number."""
+def hunt_key(item: tuple[int, Pr]) -> tuple[int, bool, float, int]:
+    """A maintainer's PR first, then one Prospector backs (gates.queue_rank),
+    then an analyzed merge pick, then highest community pain, then lowest PR
+    number."""
     n, pr = item
-    return (not gates.priority_author(pr.author, pr.author_association),
+    return (gates.queue_rank(pr),
             pr.disposition != "merge", -_pain(pr), n)
 
 

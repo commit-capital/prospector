@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 
 from issue_triage import (
     dispute_question,
+    fix_choice,
     fix_review,
     fix_review_runner,
     fixability,
@@ -296,15 +297,16 @@ def _retryable(req: dict | None) -> bool:
 
 def _huntable(issues: dict) -> list[tuple[bool, int, Issue]]:
     """The open issues the hunter may take, as (maintainer's, number, issue):
-    filed within HUNT_MAX_AGE, carrying no HUNT_SKIP_LABELS, with no attempt,
-    or one whose last `solve` failed and may be retried."""
+    filed within HUNT_MAX_AGE, carrying no HUNT_SKIP_LABELS, with no attempt
+    or chosen pull request, or one whose last `solve` failed and may be
+    retried."""
     since = (datetime.now(timezone.utc) - HUNT_MAX_AGE).isoformat()
     out = []
     for n, i in issues.items():
         meta = i.raw.get("meta") or {}
         if (meta.get("state") != "open" or (meta.get("created_at") or "") < since
                 or HUNT_SKIP_LABELS & set(meta.get("labels") or [])
-                or i.fix_run or not _retryable(i.fix_request)):
+                or i.fix_run or fix_choice.chosen(i) is not None or not _retryable(i.fix_request)):
             continue
         out.append((gates.priority_author(i.author, i.author_association), n, i))
     return out

@@ -182,7 +182,7 @@ def label_for(issue: Issue) -> str | None:
     if issue.state != "open":
         return None
     status = fix_review.fix_status(issue)
-    if status is None:
+    if status is None or status[0] == "chosen":
         return None
     run = issue.fix_run or {}
     kind = status[0]
@@ -296,7 +296,7 @@ def queue_due(issue: Issue, now: datetime, view: dict | None = None) -> Queued |
         return None
     status = fix_review.fix_status(issue)
     run = issue.fix_run or {}
-    if status is None:
+    if status is None or status[0] == "chosen":
         return None
     retry = _retry_of(issue, view or {})
     if retry is not None:
@@ -670,6 +670,8 @@ def _answerable(issue: Issue) -> bool:
         return False
     kind = (fix_review.fix_status(issue) or ("",))[0]
     ending = run.get("ending")
+    if kind == "chosen":
+        return False
     return kind == "reporter" or ending == "cancelled" or (
         kind == "declined" and ending != "refused")
 

@@ -38,7 +38,8 @@ TRIAGE_VERDICTS = ("go", "ask", "skip")
 FOLLOWUP_CLOSED_AS = ("merged", "closed")
 ISSUE_SECTIONS = ("meta", "summary", "repro", "cluster", "analysis", "links", "resolution",
                   "fix_scan", "fix_request", "fix_run", "fix_thread", "fix_followup",
-                  "fix_public", "fix_triage", "responses", "author_return", "display")
+                  "fix_public", "fix_triage", "fix_choice", "responses", "author_return",
+                  "display")
 
 
 def validate_issue(rec: dict) -> None:

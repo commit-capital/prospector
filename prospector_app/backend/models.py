@@ -125,6 +125,11 @@ class IssueFixApproveBody(BaseModel):
     partial: bool = False
 
 
+class IssueFixChooseBody(BaseModel):
+    pr: int
+    reason: str | None = None
+
+
 class AlertDismissBody(BaseModel):
     # The per-source reason vocabulary lives in alert_triage.alert_gates
     # (DISMISS_REASONS); the gate validates it, so this stays a plain string.

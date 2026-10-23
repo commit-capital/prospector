@@ -515,6 +515,12 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             ? <a href={pr.author_stats.url} target="_blank" rel="noreferrer" title={authorTip(pr.author_stats)}>@{pr.author}</a>
             : <span title={authorTip(pr.author_stats)}>@{pr.author}</span>}
           {pr.trusted_author && <span className="chip chip-gold sm" title="A contributor we trust. When two PRs are about equally good, theirs is preferred.">trusted</span>}
+          {pr.backing && (
+            <Link className="chip chip-purple sm" to={`/issues?issue=${pr.backing.issue}`}
+                  title={`${pr.backing.by} chose this PR as the fix for #${pr.backing.issue}${pr.backing.reason ? `: ${pr.backing.reason}` : ""}. It goes ahead in the review queues.`}>
+              Prospector's pick for #{pr.backing.issue}
+            </Link>
+          )}
           {pr.stacked && (pr.stacked_on != null
             ? <Link className="chip chip-muted" to={`/prs/${pr.stacked_on}`} title={`Stacked on #${pr.stacked_on} (base ${pr.base_ref}), not the default branch. It is never merge-ready and no hunter judges it until its base merges and GitHub retargets it.`}>stacked on #{pr.stacked_on}</Link>
             : <span className="chip chip-muted" title={`Targets ${pr.base_ref}, not the default branch. It is never merge-ready and no hunter judges it until GitHub retargets it.`}>stacked on {pr.base_ref}</span>)}

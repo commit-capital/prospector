@@ -109,7 +109,7 @@ FIX_REQUEST_SOURCES = {"operator", "auto", "objection"}
 PR_SECTIONS = ("meta", "signals", "reviews", "drift", "summary", "cluster", "analysis",
                "security", "issues", "threat", "greptile_review", "verify", "verify_request",
                "fix_request", "security_run", "design_run", "display", "responses",
-               "response_ack", "author_return")
+               "response_ack", "author_return", "backing")
 
 
 def run_claim_held_elsewhere(run: dict | None, *, host: str,

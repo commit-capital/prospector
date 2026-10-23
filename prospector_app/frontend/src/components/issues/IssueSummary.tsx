@@ -1,6 +1,7 @@
+import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { type IssueDetail, type IssueFixFollowup, type IssueFixRivalEntry, type IssueFixRun, type IssuePR } from "../../api";
+import { api, type IssueDetail, type IssueFixFollowup, type IssueFixRivalEntry, type IssueFixRun, type IssuePR } from "../../api";
 import { AnalyzeJobLink } from "../AnalyzeJobLink";
 import { Collapsible } from "../Collapsible";
 import { PRLink } from "../PRLink";
@@ -11,7 +12,8 @@ import { DispositionChip, ReproChip } from "../../views/Issues";
 import { EVIDENCE, REFERENCED, linkStateChip } from "./issueLinkChips";
 import { FixDecisionCards } from "./FixDecisionCards";
 import { fixDecision } from "./fixDecision";
-import { rivalRows } from "./rivalComparison";
+import { otherOpenPRs, rivalRows } from "./rivalComparison";
+import { useExec } from "../../ExecContext";
 
 type Tone = "green" | "amber" | "red" | "blue" | "purple" | "gold" | "muted";
 type Fact = { tone: Tone; text: string; tip: string };
@@ -216,7 +218,62 @@ function RivalComparison({ d }: { d: IssueDetail }) {
   );
 }
 
+/** Go with another author's open PR as the fix in place of ours, or take that
+ *  back (issue_triage/fix_choice.py). The bot recommends the chosen PR on it. */
+function ChoosePR({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) {
+  const { botLogin, dryRun } = useExec();
+  const others = otherOpenPRs(d);
+  const [pr, setPr] = useState<number | null>(others[0] ?? null);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (call: () => Promise<unknown>) => {
+    setBusy(true); setError(null);
+    try { await call(); onChanged(); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+  if (d.state !== "open") return null;
+  if (d.fix_choice) {
+    return (
+      <div className="choose-pr">
+        <button className="btn-secondary sm" disabled={busy}
+          title="Let the auto-fix take this issue again. The bot's comment stays on the PR."
+          onClick={() => run(() => api.unchooseIssuePR(d.number))}>
+          Undo: stop going with #{d.fix_choice.pr}
+        </button>
+        {error && <span className="small" style={{ color: "var(--red)" }}>{error}</span>}
+      </div>
+    );
+  }
+  if (!others.length || d.fix_status === "running") return null;
+  const choose = () => {
+    if (pr == null) return;
+    if (!dryRun && !window.confirm(`Go with #${pr} as the fix for #${d.number}? `
+        + `${botLogin} will comment on #${pr} recommending it.`)) return;
+    void run(() => api.chooseIssuePR(d.number, pr, reason.trim(), dryRun));
+  };
+  return (
+    <div className="choose-pr">
+      {others.length > 1 && (
+        <select value={pr ?? ""} disabled={busy} onChange={(e) => setPr(Number(e.target.value))}>
+          {others.map((n) => <option key={n} value={n}>#{n}</option>)}
+        </select>
+      )}
+      <input value={reason} disabled={busy}
+        placeholder="Why (optional, kept in Prospector)" onChange={(e) => setReason(e.target.value)} />
+      <button className="btn-primary sm" disabled={busy || pr == null} onClick={choose}
+        title="Stop the auto-fix on this issue, move the PR up the review queues, and have the bot recommend it on the PR">
+        {dryRun ? `Go with #${pr} (dry run)` : `Go with #${pr}`}
+      </button>
+      {error && <span className="small" style={{ color: "var(--red)" }}>{error}</span>}
+    </div>
+  );
+}
+
 function suggestedAction(d: IssueDetail): string {
+  if (d.fix_choice) return `Going with #${d.fix_choice.pr} as the fix`
+    + (d.fix_choice.reason ? `: ${d.fix_choice.reason}` : "");
   if (fixDecision(d)) return "Needs your review: approve as-is or request a full fix";
   if (d.fix_approved && d.fix_pr != null) return `Approved: #${d.fix_pr} is with the maintainers`;
   if (d.fix_pr == null && d.fix_held) return "Needs your review: open the fix's PR or send it back";
@@ -254,7 +311,8 @@ export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () =
       <RivalComparison d={d} />
       <div className="summary-action">
         <div className="sug-headline"><span className="analysis-label">Suggested action:</span> <b>{suggestedAction(d)}</b></div>
-        {d.fix_pr == null && d.fix_held && <div className="muted small">Held: {d.fix_held}</div>}
+        {d.fix_pr == null && d.fix_held && !d.fix_choice && <div className="muted small">Held: {d.fix_held}</div>}
+        <ChoosePR d={d} onChanged={onChanged} />
         {decision ? (
           <>
             <FixDecisionCards key={`${decision.pr}:${d.fix_reason ?? ""}`} d={d} decision={decision}
