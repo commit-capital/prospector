@@ -54,6 +54,9 @@ DESCRIPTIONS: dict[str, str] = {
     "threat_evidence": "Append-only evidence of each PR the threat scan flagged "
                        "malicious: the capture's record in `data`, its diffs "
                        "gzip-compressed in binary columns (shown as sizes only).",
+    "review_verdicts": "Append-only record of each run of Prospector's own reviewers: "
+                       "verdict, prompt and model in columns, output in `data`, filled "
+                       "inputs gzip-compressed (shown as sizes only).",
 }
 
 PREVIEW_ROWS = 5

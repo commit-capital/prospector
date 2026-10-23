@@ -210,6 +210,25 @@ class EvidenceBlobs:
     prior_gz: bytes | None
 
 
+# -- Review verdict rows ------------------------------------------------------
+
+@dataclass(frozen=True)
+class VerdictRecord:
+    """One review_verdicts row without its inputs blob."""
+    id: int
+    at: str
+    reviewer: str
+    subject_kind: str
+    subject: int
+    head_sha: str | None
+    base_sha: str | None
+    prompt_sha: str
+    model: str
+    verdict: str
+    data: dict
+    label: dict | None
+
+
 # -- Runs ledger records ------------------------------------------------------
 # The `runs` table holds exactly two record shapes, discriminated on read by
 # parse_run and enforced on write (both stores' append_run parse before

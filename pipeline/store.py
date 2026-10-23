@@ -425,6 +425,15 @@ def _evidence_record(row: Row[*tuple[Any, ...]]) -> storekit.EvidenceRecord:
                                    complete=bool(row[5]), data=row[6])
 
 
+_VERDICT_META = ("id", "at", "reviewer", "subject_kind", "subject", "head_sha", "base_sha",
+                 "prompt_sha", "model", "verdict", "data", "label")
+SUBJECT_KINDS = ("pr", "issue", "replay")
+
+
+def _verdict_record(row: Row[*tuple[Any, ...]]) -> storekit.VerdictRecord:
+    return storekit.VerdictRecord(**dict(zip(_VERDICT_META, row, strict=True)))
+
+
 class Store:
     def __init__(self, root: Path | str | None = None):
         self.root = Path(root) if root is not None else DEFAULT_ROOT
@@ -1166,6 +1175,61 @@ class Store:
         stmt = select(t.c.diff_gz, t.c.prior_gz).where(t.c.id == capture_id)
         row = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).first())
         return None if row is None else storekit.EvidenceBlobs(diff_gz=row[0], prior_gz=row[1])
+
+    # -- Review verdicts ------------------------------------------------------
+    # One row per run of a Prospector-run reviewer (`review_verdicts` table;
+    # pipeline/verdict_log.py is the writer).
+    def append_review_verdict(self, *, at: str, reviewer: str, subject_kind: str, subject: int,
+                              head_sha: str | None, base_sha: str | None, prompt_sha: str,
+                              model: str, verdict: str, data: dict,
+                              inputs_gz: bytes | None) -> int:
+        """Insert one run and return its id. Validated."""
+        from sqlalchemy import insert
+        if subject_kind not in SUBJECT_KINDS:
+            raise ValidationError(f"review_verdicts.subject_kind: one of {SUBJECT_KINDS}")
+        if not isinstance(subject, int) or isinstance(subject, bool):
+            raise ValidationError("review_verdicts.subject: required int")
+        for name, value in (("at", at), ("reviewer", reviewer), ("prompt_sha", prompt_sha),
+                            ("model", model), ("verdict", verdict)):
+            if not value or not isinstance(value, str):
+                raise ValidationError(f"review_verdicts.{name}: required str")
+        if not isinstance(data, dict):
+            raise ValidationError("review_verdicts.data: required dict")
+        if inputs_gz is not None and not isinstance(inputs_gz, bytes):
+            raise ValidationError("review_verdicts.inputs_gz: bytes or None")
+        storekit.assert_writable(self.engine)
+        with self.engine.begin() as conn:
+            return int(conn.execute(insert(schema.review_verdicts).values(
+                at=at, reviewer=reviewer, subject_kind=subject_kind, subject=subject,
+                head_sha=head_sha, base_sha=base_sha, prompt_sha=prompt_sha, model=model,
+                verdict=verdict, data=data, inputs_gz=inputs_gz,
+            ).returning(schema.review_verdicts.c.id)).scalar_one())
+
+    def review_verdicts(self, *, reviewer: str | None = None, subject_kind: str | None = None,
+                        subject: int | None = None,
+                        since: str | None = None) -> list[storekit.VerdictRecord]:
+        """Runs, newest first, without their inputs; each argument filters."""
+        from sqlalchemy import select
+        t = schema.review_verdicts
+        stmt = select(*(t.c[name] for name in _VERDICT_META))
+        if reviewer is not None:
+            stmt = stmt.where(t.c.reviewer == reviewer)
+        if subject_kind is not None:
+            stmt = stmt.where(t.c.subject_kind == subject_kind)
+        if subject is not None:
+            stmt = stmt.where(t.c.subject == subject)
+        if since is not None:
+            stmt = stmt.where(t.c.at >= since)
+        stmt = stmt.order_by(t.c.at.desc(), t.c.id.desc())
+        rows = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).all())
+        return [_verdict_record(r) for r in rows]
+
+    def review_verdict_inputs(self, verdict_id: int) -> bytes | None:
+        from sqlalchemy import select
+        t = schema.review_verdicts
+        stmt = select(t.c.inputs_gz).where(t.c.id == verdict_id)
+        row = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).first())
+        return None if row is None else row[0]
 
     def load_author_baseline(self) -> dict:
         """Per-author PR counts for PRs closed/merged before our first ingest —
