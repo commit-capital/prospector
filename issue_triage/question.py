@@ -18,7 +18,7 @@ import sys
 
 from issue_triage import cross_lane, dispute_question, fetch_issues, fix_lane, propose
 from issue_triage.issue_store import IssueStore
-from pipeline import prove, settings, storekit
+from pipeline import prove, settings, storekit, verdict_log
 
 
 def resume(issue: int) -> int:
@@ -54,7 +54,7 @@ def resume(issue: int) -> int:
         print(str(e), file=sys.stderr)
         return 2
     spec = fix_lane.LaneSpec(issue=issue, title=live["title"], body=live.get("body") or "",
-                             base=base)
+                             base=base, verdict_subject=verdict_log.Subject("issue", issue))
     workdir = propose.result_dir(issue)
     started = storekit.now()
     res = cross_lane.judge_reading(spec, workdir=workdir, result=record["result"],

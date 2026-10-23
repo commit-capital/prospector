@@ -20,7 +20,8 @@ from issue_triage import (
     reproduce_issue,
     review_issue_fix,
 )
-from pipeline import authoring, gates, headless_agent, prove, verify_driver
+from pipeline import authoring, gates, headless_agent, prove, verdict_log, verify_driver
+from pipeline.store import Store
 
 
 def _keep(worktree: str) -> list[dict]:
@@ -78,9 +79,11 @@ class Harness:
     def run(self, *, action: str = "fix", title: str = "Crash on empty",
             body: str = "It throws when given nothing.",
             pre_patch: str | None = None,
-            still_valid=None) -> fix_lane.LaneResult:
+            still_valid=None,
+            verdict_subject: verdict_log.Subject | None = None) -> fix_lane.LaneResult:
         spec = fix_lane.LaneSpec(issue=7, title=title, body=body, base=self.base,
-                                 action=action, pre_patch=pre_patch)
+                                 action=action, pre_patch=pre_patch,
+                                 verdict_subject=verdict_subject)
         return fix_lane.run(spec, workdir=self.workdir,
                             on_step=lambda s: self.calls["steps"].append(s),
                             still_valid=still_valid or (lambda: None))
@@ -898,3 +901,10 @@ def test_a_live_lane_asks_no_pre_fix_tree_about_its_compile(lane, monkeypatch):
     assert res.ending == "fix-unproven"
     compiles = [c for c in lane.calls["run_command"] if c["phase"] == "compile"]
     assert len(compiles) == 1
+
+
+def test_the_staged_lane_records_its_reviews_under_its_verdict_subject(lane):
+    res = lane.run(verdict_subject=verdict_log.Subject("issue", 9701))
+    assert res.ending == "fixed"
+    rows = Store().review_verdicts(subject_kind="issue", subject=9701)
+    assert sorted(r.reviewer for r in rows) == ["fix-review", "trust-boundary"]

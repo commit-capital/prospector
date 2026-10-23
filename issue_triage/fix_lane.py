@@ -85,6 +85,8 @@ class LaneSpec:
     pre_patch: str | None = None
     guidance: str | None = None
     notes: str | None = None
+    # The subject the run's reviews are recorded under; None records nothing.
+    verdict_subject: verdict_log.Subject | None = None
 
 
 @dataclass
@@ -484,19 +486,12 @@ def run(spec: LaneSpec, *, workdir: Path,
         on_step("full suite")
         record_suite(result["proof"], suite_proof(spec, test_text + fix_patch, label))
 
-        reviews: list[dict] = []
-        evidence = _proof_evidence(result["proof"], authored)
-        models = settings.issue_fix_review_models()
-        for lens in issue_gates.REVIEW_LENSES:
-            if any(_is_judged_rejection(r) for r in reviews):
-                break
-            for model in models:
-                on_step(f"reviewing: {lens}" + (f" on {model}" if len(models) > 1 else ""))
-                agent_runs += 1
-                reviews.append(review_issue_fix.review(
-                    str(fix_clone), fix_patch, lens=lens, title=spec.title, body=spec.body,
-                    root_cause=str(fix_verdict["root_cause"]),
-                    test_paths=test_paths + preserve_paths, evidence=evidence, model=model))
+        reviews = _staged_reviews(spec, str(fix_clone), fix_patch,
+                                  root_cause=str(fix_verdict["root_cause"]),
+                                  test_paths=test_paths + preserve_paths,
+                                  evidence=_proof_evidence(result["proof"], authored),
+                                  on_step=on_step)
+        agent_runs += len(reviews)
         result["reviews"] = reviews
 
         stalled = [r for r in reviews if r.get("failed")]
@@ -533,7 +528,7 @@ def _proof_bar(spec: LaneSpec, tree: Path, fix_patch: str, result: dict,
     on_step("reviewing: trust boundaries")
     result["boundary"] = trust_boundary.judge(str(tree), spec.base.clone, fix_patch,
                                               title=spec.title, body=spec.body,
-                                              subject=verdict_log.Subject("issue", spec.issue), base_sha=spec.base.sha)
+                                              subject=spec.verdict_subject, base_sha=spec.base.sha)
     return None, reason, 1
 
 
@@ -579,6 +574,27 @@ def still_valid_for(n: int, reported_sha: str) -> str | None:
     if report_sha(live["title"], live.get("body") or "") != reported_sha:
         return "report-edited"
     return None
+
+
+def _staged_reviews(spec: LaneSpec, worktree: str, fix_patch: str, *, root_cause: str,
+                    test_paths: list[str], evidence: str,
+                    on_step: Callable[[str], None]) -> list[dict]:
+    """The staged lane's reviews, lens by lens on every review model, stopping
+    after the first lens a review rejects; recorded as one verdict."""
+    reviews: list[dict] = []
+    models = settings.issue_fix_review_models()
+    for lens in issue_gates.REVIEW_LENSES:
+        if any(_is_judged_rejection(r) for r in reviews):
+            break
+        for model in models:
+            on_step(f"reviewing: {lens}" + (f" on {model}" if len(models) > 1 else ""))
+            reviews.append(review_issue_fix.review(
+                worktree, fix_patch, lens=lens, title=spec.title, body=spec.body,
+                root_cause=root_cause, test_paths=test_paths, evidence=evidence, model=model))
+    review_issue_fix.record(reviews, spec.verdict_subject, patch=fix_patch, title=spec.title,
+                            body=spec.body, root_cause=root_cause, test_paths=test_paths,
+                            evidence=evidence, base_sha=spec.base.sha)
+    return reviews
 
 
 def record_result(store: IssueStore, workdir: Path, *, issue: int, report: str,
@@ -631,7 +647,8 @@ def main(argv: list[str]) -> int:
     def still_valid() -> str | None:
         return still_valid_for(n, reported_sha)
 
-    spec = LaneSpec(issue=n, title=title, body=body, base=base, action=action)
+    spec = LaneSpec(issue=n, title=title, body=body, base=base, action=action,
+                    verdict_subject=verdict_log.Subject("issue", n))
     workdir = settings.verify_scratch() / "issue-fix" / f"issue-{n}"
     started = storekit.now()
     on_step: Callable[[str], None] = lambda step: print(step, flush=True)

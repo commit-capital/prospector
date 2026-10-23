@@ -84,7 +84,7 @@ def _spec(store: IssueStore, n: int, base: prove.PinnedBase, guidance: str | Non
         raise RequestFailed(f"issue #{n} is not in the store and could not be fetched")
     title, body = reported
     return (fix_lane.LaneSpec(issue=n, title=title, body=body, base=base, guidance=guidance,
-                              notes=notes),
+                              notes=notes, verdict_subject=verdict_log.Subject("issue", n)),
             fix_lane.report_sha(title, body))
 
 

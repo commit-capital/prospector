@@ -116,7 +116,7 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #      `judged.outside`; an older worker reads past both, keeps re-handing the
 #      pull request back, and re-renders a partial approval as "Fixes #N".
 # 38 — the review_verdicts table (one append-only row per run of Prospector's
-#      own reviewers); an older reviewer runs without recording.
+#      own reviewers); an older checkout's reviewers would run without recording.
 STORE_SCHEMA_VERSION = 38
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
@@ -288,8 +288,8 @@ training_decisions = Table(
 
 # One row per run of a Prospector-run reviewer (pipeline/verdict_log.py is the
 # writer). Rows are append-only but for `label`, the one field a person sets
-# later. `inputs_gz` holds the run's filled inputs gzip-compressed, so outsiders'
-# text never sits in `data`.
+# later. `inputs_gz` holds the run's filled inputs gzip-compressed; `data` is the
+# reviewer's output, which may quote them.
 review_verdicts = Table(
     "review_verdicts", METADATA,
     Column("id", Integer, primary_key=True, autoincrement=True),

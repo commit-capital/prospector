@@ -408,3 +408,19 @@ def test_all_failed_reviews_record_failed(monkeypatch):
                                  test_paths=[], evidence="",
                                  subject=verdict_log.Subject("issue", 9202))
     assert [r.verdict for r in _verdicts(9202)] == ["failed"]
+
+
+def test_a_partly_failed_review_records_failed(monkeypatch):
+    replies = iter([json.dumps({"verdict": "safe", "reason": "r"}), "no json", "no json"] * 2)
+    monkeypatch.setattr(headless_agent, "run_agent", lambda prompt, **kw: next(replies))
+    reviews = review_issue_fix.full_review("/wt", PATCH, title="t", body="b", root_cause="rc",
+                                           test_paths=[], evidence="",
+                                           subject=verdict_log.Subject("issue", 9203))
+    assert any(r.get("failed") for r in reviews) and not all(r.get("failed") for r in reviews)
+    assert [r.verdict for r in _verdicts(9203)] == ["failed"]
+
+
+def test_prompt_sha_covers_the_history_template():
+    assert review_issue_fix.PROMPT_SHA == verdict_log.prompt_sha(
+        review_issue_fix.PROMPT, review_issue_fix.HISTORY, *review_issue_fix._QUESTIONS.values(),
+        *review_issue_fix._OUTPUT.values(), logic=1)
