@@ -165,7 +165,8 @@ def replay(case: Case, repo: EvalRepo, store: Store) -> str:
                 test_paths=[p for p in inputs.get("test_paths", "").split("\n") if p],
                 evidence=inputs.get("evidence", ""),
                 inventory_veto=inputs.get("inventory_veto", "1") == "1",
-                history=inputs.get("history") or None))
+                history=inputs.get("history") or None,
+                alternatives=inputs.get("alternatives") or ()))
     if reviewer == "trust-boundary":
         from issue_triage import trust_boundary
         title, body = _report(inputs)

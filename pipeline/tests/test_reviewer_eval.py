@@ -389,3 +389,22 @@ def test_provisional_counts_only_replayed_cases(tmp_path, pinned):
             raise re_.Unreplayable("gone")
         return c.row.verdict
     assert _gate(store, pinned, candidate).provisional
+
+
+def test_replay_fix_review_hands_the_design_lens_the_recorded_alternatives(
+        tmp_path, origin, evalrepo, monkeypatch):
+    _, sha = origin
+    store = Store(tmp_path / "s")
+    prompts: list[str] = []
+
+    def fake(prompt: str, **kw) -> str:
+        prompts.append(prompt)
+        return json.dumps({"verdict": "unsafe", "reason": "r"})
+    monkeypatch.setattr(headless_agent, "run_agent", fake)
+    case = _case(store, "fix-review", "unsafe",
+                 {"title": "t", "body": "b", "root_cause": "rc", "test_paths": "",
+                  "evidence": "", "history": "", "patch": DIFF, "worktree_patch": DIFF,
+                  "lane": "cross", "inventory_veto": "1",
+                  "alternatives": "### Fix 2: reuse pad\n```\nRIVAL PATCH\n```"}, base=sha)
+    re_.replay(case, evalrepo, store)
+    assert any("RIVAL PATCH" in p for p in prompts)
