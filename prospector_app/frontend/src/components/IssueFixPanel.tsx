@@ -401,7 +401,7 @@ function ReviewRounds({ rounds }: { rounds: IssueFixRound[] }) {
       {rounds.map((r) => (
         <div key={r.round} style={{ marginBottom: 8 }}>
           <div className="small"><b>Round {r.round}</b> · {r.ending}
-            {r.required_pass === false && " · fails the tests it answers"}</div>
+            {r.required_pass === false && " · discarded: fails the tests it answers"}</div>
           <ul style={{ margin: "2px 0 0 18px" }}>
             {r.answering.map((c, i) => <li key={`c${i}`}>{c}</li>)}
             {r.claims.map((c, i) => (

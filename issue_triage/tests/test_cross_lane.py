@@ -848,6 +848,16 @@ def test_a_crossing_a_revision_keeps_stays_an_operator_hold(crossing):
     assert trust_boundary.hold(res.result["boundary"], maintainer_filed=True)
 
 
+def test_a_discarded_revision_is_not_reported_as_a_round_of_revision(crossing):
+    crossing.update(verdicts=[SAFE, SAFE], boundaries=[[IMAGES], []])
+    crossing["reviser"] = _writes("a.test.ts", 3)
+    res = crossing["run"]()
+    assert res.ending == "fixed" and "export const x = 3" not in res.result["patch"]
+    assert res.detail.endswith("a full code review; round 1 discarded: it did not pass "
+                               "its pinned tests")
+    assert trust_boundary.hold(res.result["boundary"], maintainer_filed=True)
+
+
 def test_a_requested_crossing_asks_for_no_revision_and_holds_for_an_operator(crossing):
     crossing.update(verdicts=[SAFE], boundaries=[[{**IMAGES, "requested": True}]])
     res = crossing["run"]()

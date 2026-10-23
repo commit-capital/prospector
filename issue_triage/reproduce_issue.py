@@ -52,7 +52,7 @@ __CONTRIBUTOR_DOCS__# Behavior
 
 - NEW file(s) only, at most 3, at repo-relative paths that follow this repository's test conventions (__TEST_PATHS__). Never edit or delete an existing file; the host rejects a run that did.
 - Put each file in the package's existing test directory so that project's config, setup files and fixtures apply. Read a neighbouring test there and write yours the way it is written, importing its existing helpers instead of rebuilding a harness. Import only modules that exist in this tree.
-- Assert the behavior the report says is correct, so the test fails here for the defect's own reason. Never assert on a marker a future fix would create. Keep it minimal and deterministic: no network, no timers left running, no dependence on test order.
+- Assert the behavior the report says is correct, so the test fails here for the defect's own reason. Never assert on a marker a future fix would create. Never assert on log or note text. Keep it minimal and deterministic: no network, no timers left running, no dependence on test order.
 
 ## Preservation tests
 
