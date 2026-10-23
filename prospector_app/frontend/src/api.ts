@@ -1590,6 +1590,32 @@ export interface IssueFixThreadEntry {
   action?: IssueFixAction;
   text: string;
 }
+/** A label on a recorded reviewer run (pipeline/verdict_labels.py). */
+export interface VerdictLabel {
+  expected: string;
+  findings: Record<string, string>;
+  note: string;
+  by: string;
+  at: string;
+  source: string;
+}
+
+/** One recorded run of a Prospector-run reviewer (`review_verdicts`). */
+export interface ReviewVerdict {
+  id: number;
+  at: string;
+  reviewer: string;
+  subject_kind: "pr" | "issue" | "replay";
+  subject: number;
+  head_sha: string | null;
+  base_sha: string | null;
+  prompt_sha: string;
+  model: string;
+  verdict: string;
+  data: Record<string, unknown>;
+  label: VerdictLabel | null;
+}
+
 export interface IssueFixBody {
   action: IssueFixAction;
   guidance?: string;
@@ -2117,6 +2143,11 @@ export const api = {
   issueFixApprove: (n: number, partial: boolean) =>
     postJson(`/api/issues/${n}/fix/approve`, { partial }),
   cancelIssueFix: (n: number) => postJson(`/api/issues/${n}/fix/cancel`, {}),
+  verdicts: (kind: "pr" | "issue", n: number) =>
+    get<{ verdicts: ReviewVerdict[] }>(`/api/verdicts?subject_kind=${kind}&subject=${n}`),
+  /** Label a recorded reviewer run; rejects with the server's reason (409). */
+  labelVerdict: (id: number, body: { expected: string; note?: string }) =>
+    postJson<{ ok: boolean; label: VerdictLabel }>(`/api/verdicts/${id}/label`, body),
   listAlerts: () => get<{ items: AlertRow[]; pr_states_loading: boolean }>("/api/alerts"),
   queryAlerts: (opts: {
     q?: string; sort?: string; direction?: string; source?: string; state?: string;

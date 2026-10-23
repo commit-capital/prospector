@@ -4,6 +4,7 @@ import { api, type IssueDetail } from "../api";
 import { TrustedAuthorName } from "../components/TrustedAuthor";
 import { IssueSummary } from "../components/issues/IssueSummary";
 import { FixStatusChip, IssueFixPanel } from "../components/IssueFixPanel";
+import { ReviewerVerdicts } from "../components/ReviewerVerdicts";
 import { FlyoutIssueLink } from "../components/FlyoutIssueLink";
 
 /** One issue's full detail: the Summary panel, the auto-fix lane, and the
@@ -51,6 +52,8 @@ export function IssueDetailContent({ issue }: { issue: number }) {
         <h4>Auto-fix</h4>
         <IssueFixPanel d={d} onChanged={reload} />
       </section>
+
+      <ReviewerVerdicts kind="issue" subject={d.number} />
 
       {(d.cluster != null || d.duplicates.length > 0) && (
         <>
