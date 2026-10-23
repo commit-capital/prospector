@@ -151,7 +151,8 @@ def judge(title: str, body: str, notes: str | None, *, blocked: bool,
         out = {**reviewed, "hidden": found}
     verdict_log.record("intake", subject, verdict=verdict_of(out),
                        prompt_sha=PROMPT_SHA, model=settings.agent_model(), data=out,
-                       inputs={"title": title, "body": body, "notes": notes or ""})
+                       inputs={"title": title, "body": body, "notes": notes or "",
+                               "blocked": "1" if blocked else "0"})
     return out
 
 

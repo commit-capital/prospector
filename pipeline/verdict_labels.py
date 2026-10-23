@@ -27,6 +27,12 @@ if TYPE_CHECKING:
     from issue_triage.issue_model import Issue
 
 MARKS: tuple[str, ...] = ("real", "wrong", "intentional", "didnt-matter")
+# The fewest labeled cases on a side before a rate is read, or a gate refuses.
+MIN_CASES = 10
+# The least severe verdict that blocks, per reviewer.
+BLOCKING: dict[str, str] = {"design": "fail", "security": "RED", "fix-review": "unsafe",
+                            "trust-boundary": "hold", "intake": "suspicious",
+                            "fixability": "skip"}
 SOURCES: tuple[str, ...] = ("operator", "case-study")
 NOTE_MAX = 4000
 
@@ -72,6 +78,11 @@ def label(store: Store, verdict_id: int, *, expected: str, by: str, note: str = 
            "by": by.strip(), "at": storekit.now(), "source": source}
     store.set_review_verdict_label(verdict_id, out)
     return out
+
+
+def blocks(reviewer: str, verdict: str) -> bool:
+    order = verdict_log.VERDICTS[reviewer]
+    return order.index(verdict) >= order.index(BLOCKING[reviewer])
 
 
 def call(label: dict, verdict: str, reviewer: str) -> Literal["right", "under", "over"]:

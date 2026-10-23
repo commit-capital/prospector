@@ -902,3 +902,11 @@ def test_a_run_records_its_reviews_under_its_verdict_subject(cross):
     assert cross["run"](verdict_subject=verdict_log.Subject("issue", 9601)).ending == "fixed"
     rows = Store().review_verdicts(subject_kind="issue", subject=9601)
     assert sorted(r.reviewer for r in rows) == ["fix-review", "trust-boundary"]
+    import gzip
+    import json
+    for r in rows:
+        blob = Store().review_verdict_inputs(r.id)
+        assert blob is not None
+        got = json.loads(gzip.decompress(blob))
+        assert got["lane"] == "cross" and "src/x.ts" in got["worktree_patch"]
+        assert ".test.ts" in got["worktree_patch"]

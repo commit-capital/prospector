@@ -909,3 +909,10 @@ def test_the_staged_lane_records_its_reviews_under_its_verdict_subject(lane):
     assert res.ending == "fixed"
     rows = Store().review_verdicts(subject_kind="issue", subject=9701)
     assert sorted(r.reviewer for r in rows) == ["fix-review", "trust-boundary"]
+    import gzip
+    import json
+    for r in rows:
+        blob = Store().review_verdict_inputs(r.id)
+        assert blob is not None
+        got = json.loads(gzip.decompress(blob))
+        assert got["lane"] == "staged" and got["worktree_patch"] == res.result["patch"]

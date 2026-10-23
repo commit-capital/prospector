@@ -477,3 +477,23 @@ def test_prompt_sha_covers_the_history_and_alternatives_templates():
     assert review_issue_fix.PROMPT_SHA == verdict_log.prompt_sha(
         review_issue_fix.PROMPT, review_issue_fix.HISTORY, review_issue_fix.ALTERNATIVES,
         *review_issue_fix._QUESTIONS.values(), *review_issue_fix._OUTPUT.values(), logic=1)
+
+
+def _inputs(n: int) -> dict:
+    import gzip
+    [rec] = _verdicts(n)
+    blob = Store().review_verdict_inputs(rec.id)
+    assert blob is not None
+    return json.loads(gzip.decompress(blob))
+
+
+def test_full_review_records_what_its_worktree_held(monkeypatch):
+    monkeypatch.setattr(headless_agent, "run_agent",
+                        lambda prompt, **kw: json.dumps({"verdict": "safe", "reason": "r"}))
+    review_issue_fix.full_review("/wt", PATCH, title="t", body="b", root_cause="rc",
+                                 test_paths=[], evidence="", inventory_veto=False,
+                                 subject=verdict_log.Subject("issue", 9204),
+                                 worktree_patch="TESTS\n" + PATCH, lane="cross")
+    got = _inputs(9204)
+    assert (got["title"], got["body"], got["lane"], got["inventory_veto"]) == ("t", "b", "cross", "0")
+    assert got["worktree_patch"] == "TESTS\n" + PATCH

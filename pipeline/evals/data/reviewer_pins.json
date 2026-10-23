@@ -1,0 +1,44 @@
+{
+  "design": {
+    "model": "opus",
+    "prompt_sha": "35749fbe44dddef1",
+    "provisional": true,
+    "run": null,
+    "score": null
+  },
+  "fix-review": {
+    "model": "opus",
+    "prompt_sha": "b686c8c84ac985e9",
+    "provisional": true,
+    "run": null,
+    "score": null
+  },
+  "fixability": {
+    "model": "sonnet",
+    "prompt_sha": "2a121dabb0841ff2",
+    "provisional": true,
+    "run": null,
+    "score": null
+  },
+  "intake": {
+    "model": "opus",
+    "prompt_sha": "fe7876c06481565a",
+    "provisional": true,
+    "run": null,
+    "score": null
+  },
+  "security": {
+    "model": "opus",
+    "prompt_sha": "4c1ef53cb669380b",
+    "provisional": true,
+    "run": null,
+    "score": null
+  },
+  "trust-boundary": {
+    "model": "opus",
+    "prompt_sha": "8f968234e12de58f",
+    "provisional": true,
+    "run": null,
+    "score": null
+  }
+}

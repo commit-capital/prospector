@@ -184,3 +184,17 @@ def test_judge_without_subject_records_nothing(base):
     before = len(Store().review_verdicts(reviewer="trust-boundary"))
     trust_boundary.judge(str(base), base, _patch("x"), title="t", body="b")
     assert len(Store().review_verdicts(reviewer="trust-boundary")) == before
+
+
+def test_judge_records_what_its_worktree_held(monkeypatch, base):
+    import gzip
+    import json
+    monkeypatch.setattr(trust_boundary, "review", lambda *a, **k: {"crossings": [], "reason": ""})
+    trust_boundary.judge(str(base), base, _patch("x"), title="t", body="b",
+                         subject=verdict_log.Subject("issue", 9304), worktree_patch="WP",
+                         lane="solo")
+    [rec] = _verdicts(9304)
+    blob = Store().review_verdict_inputs(rec.id)
+    assert blob is not None
+    got = json.loads(gzip.decompress(blob))
+    assert (got["worktree_patch"], got["lane"]) == ("WP", "solo")

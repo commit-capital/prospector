@@ -191,6 +191,12 @@ Your final message must be exactly one JSON object, nothing else:
 """
 
 
+def rendered_fixes(fixes: Sequence[Fix] | str) -> str:
+    """`fixes` as the reviewer reads them; a string is taken as already rendered,
+    as a recorded run keeps them."""
+    return fixes if isinstance(fixes, str) else fixes_block(fixes)
+
+
 def fixes_block(fixes: Sequence[Fix]) -> str:
     """`fixes` as a reviewer reads them, each summary on one line and each
     patch clipped."""
@@ -235,7 +241,7 @@ def _broken(changes: object) -> list[str] | None:
 def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
            root_cause: str, test_paths: list[str], evidence: str,
            inventory_veto: bool = True, history: str | None = None,
-           alternatives: Sequence[Fix] = (), model: str | None = None,
+           alternatives: Sequence[Fix] | str = (), model: str | None = None,
            on_event: Callable[[tuple], None] | None = None) -> dict:
     """Judge `patch` under one `lens` on `model` (else the first review model),
     returning {"lens", "model",
@@ -267,7 +273,7 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
         "__HISTORY__": headless_agent.fill(HISTORY, {"__TEXT__": history.strip()})
                        if history and history.strip() else "",
         "__ALTERNATIVES__": headless_agent.fill(ALTERNATIVES, {
-            "__FIXES__": fixes_block(alternatives)}) if lens == "design" and alternatives else "",
+            "__FIXES__": rendered_fixes(alternatives)}) if lens == "design" and alternatives else "",
         "__WORKTREE__": worktree,
         "__PATCH__": clip(patch),
         "__OUTPUT__": _OUTPUT[lens],
@@ -365,13 +371,15 @@ def preferred_fix(worktree: str, fixes: Sequence[Fix], *, title: str, body: str)
 
 def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause: str,
                 test_paths: list[str], evidence: str, inventory_veto: bool = True,
-                history: str | None = None, alternatives: Sequence[Fix] = (),
+                history: str | None = None, alternatives: Sequence[Fix] | str = (),
                 on_step: Callable[[str], None] = lambda step: None,
                 subject: verdict_log.Subject | None = None,
-                base_sha: str | None = None) -> list[dict]:
+                base_sha: str | None = None, worktree_patch: str | None = None,
+                lane: str | None = None) -> list[dict]:
     """`review` under every lens in issue_gates.REVIEW_LENSES on every review
     model, each reading the whole change; `issue_gates.review_comments` reads
-    the answers."""
+    the answers. `worktree_patch` (all `worktree` holds over the base) and
+    `lane` ride the recorded run, so it replays."""
     models = settings.issue_fix_review_models()
     reviews = []
     for lens in issue_gates.REVIEW_LENSES:
@@ -383,20 +391,24 @@ def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause:
                                   history=history, alternatives=alternatives, model=model))
     record(reviews, subject, patch=patch, title=title, body=body, root_cause=root_cause,
            test_paths=test_paths, evidence=evidence, history=history,
-           alternatives=alternatives, base_sha=base_sha)
+           alternatives=alternatives, base_sha=base_sha,
+           worktree_patch=worktree_patch, lane=lane, inventory_veto=inventory_veto)
     return reviews
 
 
 def record(reviews: list[dict], subject: verdict_log.Subject | None, *, patch: str, title: str,
            body: str, root_cause: str, test_paths: list[str], evidence: str,
-           history: str | None = None, alternatives: Sequence[Fix] = (),
-           base_sha: str | None = None) -> None:
+           history: str | None = None, alternatives: Sequence[Fix] | str = (),
+           base_sha: str | None = None, worktree_patch: str | None = None,
+           lane: str | None = None, inventory_veto: bool = True) -> None:
     """Record one run's `reviews` as a single fix-review verdict (`verdict_of`)."""
     verdict_log.record(
         "fix-review", subject, verdict=verdict_of(reviews), prompt_sha=PROMPT_SHA,
         model=",".join(sorted({str(r.get("model")) for r in reviews})), data={"reviews": reviews},
         inputs={"report": reproduce_issue.report_block(title, body), "root_cause": root_cause,
                 "test_paths": "\n".join(test_paths), "evidence": evidence,
-                "history": history or "", "alternatives": fixes_block(alternatives),
-                "patch": patch},
+                "history": history or "", "alternatives": rendered_fixes(alternatives),
+                "patch": patch, "title": title, "body": body,
+                "worktree_patch": worktree_patch or "", "lane": lane or "",
+                "inventory_veto": "1" if inventory_veto else "0"},
         base_sha=base_sha)

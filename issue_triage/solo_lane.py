@@ -403,7 +403,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                 history=_review_history(attempt, verdict.get("responses") or []),
                 alternatives=(attempt or {}).get("alternatives", ()),
                 subject=spec.verdict_subject, base_sha=spec.base.sha,
-                on_step=on_step)
+                worktree_patch=patch, lane="solo", on_step=on_step)
             agent_runs += len(reviews)
             result["reviews"] = reviews
             rejected, comments = issue_gates.review_comments(reviews)
@@ -418,7 +418,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
             agent_runs += 1
             result["boundary"] = trust_boundary.judge(str(clone), spec.base.clone, fix_patch,
                                                       title=spec.title, body=spec.body,
-                                                      subject=spec.verdict_subject, base_sha=spec.base.sha)
+                                                      subject=spec.verdict_subject, base_sha=spec.base.sha,
+                                                      worktree_patch=patch, lane="solo")
         return finish("fixed", detail)
     except headless_agent.AgentUnavailable as e:
         return finish("agent-unavailable", str(e))
