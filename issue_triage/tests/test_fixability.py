@@ -11,7 +11,8 @@ import pytest
 from issue_triage import fixability, related_prs
 from issue_triage.issue_store import IssueStore
 from issue_triage.reply_router import Reply
-from pipeline import headless_agent
+from pipeline import headless_agent, verdict_log
+from pipeline.store import Store
 
 NOW = datetime(2026, 10, 16, tzinfo=timezone.utc)
 
@@ -126,3 +127,29 @@ def test_the_store_refuses_a_verdict_it_does_not_know(tmp_path):
     _issue(store)
     with pytest.raises(Exception):
         store.edit_issue(7).record_fix_triage({"verdict": "perhaps"})
+
+
+def test_judge_records_with_subject(tmp_path, clone, monkeypatch):
+    _agent(monkeypatch, GO)
+    out = fixability.judge(_issue(IssueStore(tmp_path)), clone, base_sha="b" * 40,
+                           subject=verdict_log.Subject("issue", 9401))
+    [rec] = Store().review_verdicts(subject_kind="issue", subject=9401)
+    assert (rec.reviewer, rec.verdict, rec.model, rec.base_sha) == (
+        "fixability", "go", fixability.MODEL, "b" * 40)
+    assert rec.prompt_sha == fixability.PROMPT_SHA and rec.data == out
+
+
+def test_judge_without_subject_records_nothing(tmp_path, clone, monkeypatch):
+    _agent(monkeypatch, GO)
+    before = len(Store().review_verdicts(reviewer="fixability"))
+    fixability.judge(_issue(IssueStore(tmp_path)), clone, base_sha="b" * 40)
+    assert len(Store().review_verdicts(reviewer="fixability")) == before
+
+
+def test_failed_review_records_failed_and_raises(tmp_path, clone, monkeypatch):
+    _agent(monkeypatch, {**GO, "verdict": "maybe"})
+    with pytest.raises(ValueError):
+        fixability.judge(_issue(IssueStore(tmp_path)), clone, base_sha="b" * 40,
+                         subject=verdict_log.Subject("issue", 9402))
+    [rec] = Store().review_verdicts(subject_kind="issue", subject=9402)
+    assert rec.verdict == "failed"

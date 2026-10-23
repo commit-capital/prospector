@@ -44,7 +44,7 @@ from issue_triage import (
 )
 from issue_triage.issue_model import Issue
 from issue_triage.issue_store import IssueStore
-from pipeline import capacity, gates, headless_agent, prove, settings, storekit
+from pipeline import capacity, gates, headless_agent, prove, settings, storekit, verdict_log
 from pipeline.store import Store
 from prospector_app.backend import (data, lane_health, profile_gate, schema_gate, verify_worker, worker_log,
                                     worker_loops)
@@ -341,7 +341,8 @@ def triage_next(store: IssueStore) -> int | None:
     replies = (public_loop.read_replies(issue, created) or []) if created else []
     try:
         with capacity.metered(LANE):
-            record = fixability.judge(issue, base.clone, base_sha=base.sha, replies=replies)
+            record = fixability.judge(issue, base.clone, base_sha=base.sha, replies=replies,
+                                      subject=verdict_log.Subject("issue", n))
     except (ValueError, RuntimeError) as e:
         if isinstance(e, headless_agent.AgentUnavailable):
             raise

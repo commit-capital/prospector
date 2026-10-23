@@ -17,7 +17,7 @@ from __future__ import annotations
 import itertools
 import re
 
-from pipeline import headless_agent
+from pipeline import headless_agent, settings, verdict_log
 
 TIMEOUT_SECONDS = 300
 REPORT_MAX = 16_000
@@ -130,7 +130,11 @@ def review(title: str, body: str, notes: str | None) -> dict:
             "reason": str(verdict.get("reason") or "")}
 
 
-def judge(title: str, body: str, notes: str | None, *, blocked: bool) -> dict:
+PROMPT_SHA = verdict_log.prompt_sha(PROMPT, NOTES, logic=1)
+
+
+def judge(title: str, body: str, notes: str | None, *, blocked: bool,
+          subject: verdict_log.Subject | None = None) -> dict:
     """The run's `intake` record for an outsider's report. `blocked` when the
     author is on the threat blocklist. A report or notes longer than the review
     reads count as hidden content."""
@@ -138,12 +142,18 @@ def judge(title: str, body: str, notes: str | None, *, blocked: bool) -> dict:
     if len(f"Title: {title}\n\n{body}") > REPORT_MAX or len(notes or "") > NOTES_MAX:
         found.append("the report runs past what the intake review reads")
     if blocked:
-        return {"verdict": "malicious", "blocked": True, "findings": [], "hidden": found,
-                "reason": "the issue's author is on the threat blocklist"}
-    reviewed = review(title, body, notes)
-    if found and reviewed["verdict"] == "clear":
-        reviewed["verdict"] = "suspicious"
-    return {**reviewed, "hidden": found}
+        out = {"verdict": "malicious", "blocked": True, "findings": [], "hidden": found,
+               "reason": "the issue's author is on the threat blocklist"}
+    else:
+        reviewed = review(title, body, notes)
+        if found and reviewed["verdict"] == "clear":
+            reviewed["verdict"] = "suspicious"
+        out = {**reviewed, "hidden": found}
+    verdict_log.record("intake", subject,
+                       verdict="failed" if out.get("failed") else out["verdict"],
+                       prompt_sha=PROMPT_SHA, model=settings.agent_model(), data=out,
+                       inputs={"title": title, "body": body, "notes": notes or ""})
+    return out
 
 
 def _why(intake: dict) -> str:

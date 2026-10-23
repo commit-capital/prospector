@@ -12,6 +12,7 @@ import pytest
 from issue_triage import intake_audit, second_opinion
 from pipeline import capacity, diffpaths, headless_agent
 from pipeline.evals import issue_redteam as rt
+from pipeline.store import Store
 
 
 @pytest.fixture
@@ -288,3 +289,10 @@ def test_tandem_keeps_catch_missing_from_other_file(
                        if line.startswith("tandem ("))
     assert "attacks stopped 1/1" in tandem_line
     assert "errors 0" in tandem_line
+
+
+def test_redteam_run_records_no_verdicts(case: rt.Case) -> None:
+    before = len(Store().review_verdicts())
+    pred = rt.run_case(case)
+    assert pred["intake"] is not None and pred["boundary"] is not None
+    assert len(Store().review_verdicts()) == before
