@@ -50,6 +50,11 @@ finished more than QUEUE_MAX_AGE ago starts nothing on its own. An issue that
 leaves scope has the labels recorded for it taken off, and only a clean fix's
 pull request opens.
 
+A label another worker set from the facts this one reads (`label_facts`) is
+never reverted: the two disagree only when they run different code or settings,
+and fighting would flip the label every pass. The issue's thread notes the
+disagreement once per set of facts.
+
 Under `TRIAGE_ISSUE_FIX_PUBLIC=dry-run` each write is logged as a dry-run and
 noted once on the issue's thread, and the record of what it would have written
 (`fix_public.dry`) is kept apart from the live one. A pass holds a short lease
@@ -58,9 +63,11 @@ on each issue it writes for, so two workers never write for one issue at once.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -209,6 +216,12 @@ def label_targets(issue: Issue) -> dict[int, str | None]:
     return out
 
 
+def label_facts(issue: Issue) -> str:
+    """A fingerprint of the sections `label_targets` derives the labels from."""
+    facts = [issue.state, issue.fix_request, issue.fix_run, issue.fix_followup]
+    return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
 def _when(at: object) -> datetime | None:
     try:
         when = datetime.fromisoformat(str(at))
@@ -315,34 +328,51 @@ class _Work:
     labels: dict[int, tuple[str | None, str | None]]  # number -> (add, remove)
     comments: list[Due]
     queue: Queued | None
+    # number -> (the host whose label stands, the label this host reads), not yet noted
+    disputes: dict[int, tuple[str, str | None]] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
-        return bool(self.labels or self.comments or self.queue)
+        return bool(self.labels or self.comments or self.queue or self.disputes)
 
 
-def work_for(issue: Issue, mode: str, now: datetime) -> _Work:
-    """What `sync` would write for `issue` in `mode`, against its record. An
-    issue out of scope only has the labels recorded for it taken off."""
+def work_for(issue: Issue, mode: str, now: datetime, host: str) -> _Work:
+    """What `sync` on `host` would write for `issue` in `mode`, against its
+    record. An issue out of scope only has the labels recorded for it taken
+    off."""
     view = _view(issue.fix_public, mode)
     have = {int(k): v for k, v in (view.get("labels") or {}).items()}
     scoped = in_scope(issue)
     want = label_targets(issue) if scoped else {}
     for number in have:
         want.setdefault(number, None)
-    labels = {number: (label, have.get(number)) for number, label in want.items()
-              if have.get(number) != label}
+    facts = label_facts(issue)
+    labels: dict[int, tuple[str | None, str | None]] = {}
+    disputes: dict[int, tuple[str, str | None]] = {}
+    for number, label in want.items():
+        if have.get(number) == label:
+            continue
+        by = (view.get("label_by") or {}).get(str(number))
+        if by and by.get("facts") == facts:
+            # A standing label other than the one `by` set came from a worker
+            # that records no `label_by`.
+            writer = by.get("host") if by.get("label") == have.get(number) else "another worker"
+            if writer != host:
+                if (view.get("label_disputes") or {}).get(str(number)) != facts:
+                    disputes[number] = (str(writer), label)
+                continue
+        labels[number] = (label, have.get(number))
     queue = queue_due(issue, now, view)
     if not scoped:
         # Out of scope, a clean fix still opens its pull request; nothing else.
         queue = queue if queue and queue.action == "propose" else None
         if queue and _queued(view, queue.key):
             queue = None
-        return _Work(labels=labels, comments=[], queue=queue)
+        return _Work(labels=labels, comments=[], queue=queue, disputes=disputes)
     posted = view.get("posted") or {}
     comments = [d for d in comments_due(issue, now, view) if d.key not in posted]
     if queue and _queued(view, queue.key):
         queue = None
-    return _Work(labels=labels, comments=comments, queue=queue)
+    return _Work(labels=labels, comments=comments, queue=queue, disputes=disputes)
 
 
 def _queued(view: dict, key: str) -> bool:
@@ -387,6 +417,15 @@ def _record(store: IssueStore, n: int, mode: str, field: str, key: str,
     `key` is now `value`."""
     def change(pub: dict) -> None:
         _edit_view(pub, mode).setdefault(field, {})[key] = value
+    _update(store, n, change)
+
+
+def _record_label(store: IssueStore, n: int, mode: str, number: int, by: dict) -> None:
+    """Record that `by["host"]` set `number`'s label to `by["label"]`."""
+    def change(pub: dict) -> None:
+        view = _edit_view(pub, mode)
+        view.setdefault("labels", {})[str(number)] = by["label"]
+        view.setdefault("label_by", {})[str(number)] = by
     _update(store, n, change)
 
 
@@ -451,23 +490,30 @@ def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
     in dry-run noted, anything."""
     from prospector_app.backend import executor
 
-    if not work_for(issue, mode, now) or _backing_off(issue, now):
+    if not work_for(issue, mode, now, host) or _backing_off(issue, now):
         return False
     n = issue.number
     leased = _take_lease(store, n, host, now)
     if leased is None:
         return False
-    work = work_for(leased, mode, now)
+    work = work_for(leased, mode, now, host)
+    facts = label_facts(leased)
     dry = mode == "dry-run"
     failed: str | None = None
     try:
+        for number, (by, ours) in sorted(work.disputes.items()):
+            _record(store, n, mode, "label_disputes", str(number), facts)
+            what = f"label #{number} {ours!r}" if ours else f"take the label off #{number}"
+            _note(store, n, f"Did not {what}: {by} set it otherwise from the same facts, "
+                            "so the two likely run different code or settings.")
         for number, (add, remove) in sorted(work.labels.items()):
             res = executor.set_fix_label(number, add=add, remove=remove, issue=n,
                                          token=token, dry_run=dry)
             if res.get("status") not in ("executed", "dry-run"):
                 failed = str(res.get("detail") or "the label write failed")
                 break
-            _record(store, n, mode, "labels", str(number), add)
+            _record_label(store, n, mode, number,
+                          {"host": host, "label": add, "facts": facts})
             if dry:
                 what = f"label #{number} {add!r}" if add else f"take {remove!r} off #{number}"
                 _note(store, n, f"Dry run: would {what}.")

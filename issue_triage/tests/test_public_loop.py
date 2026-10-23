@@ -366,6 +366,55 @@ def test_a_couldn_t_fix_label_set_earlier_is_taken_off(store, writes):
     assert writes == [("label", 1, None, "couldn't fix", False)]
 
 
+def _labelled_by(store: IssueStore, host: str, label: str | None) -> None:
+    """Record that `host` set issue 1's label to `label` from its current facts."""
+    issue = store.load_issue(1)
+    store.edit_issue(1).record_fix_public({
+        "labels": {"1": label},
+        "label_by": {"1": {"host": host, "label": label,
+                           "facts": public_loop.label_facts(issue)}}})
+
+
+def test_a_label_another_host_set_from_the_same_facts_is_not_reverted(store, writes):
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
+    _labelled_by(store, "laptop", None)
+    assert public_loop.sync(store, mode="live", now=NOW) == 1
+    assert writes == []
+    [note] = [e["text"] for e in store.load_issue(1).fix_thread]
+    assert "laptop" in note and repr(NEEDS_ANSWER) in note
+    assert public_loop.sync(store, mode="live", now=NOW) == 0
+    assert len(store.load_issue(1).fix_thread) == 1
+
+
+def test_a_label_another_host_set_from_older_facts_follows_the_new_ones(store, writes):
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
+    _labelled_by(store, "laptop", NEEDS_ANSWER)
+    store.edit_issue(1).record_fix_request({"action": "answer", "status": "running",
+                                            "source": "reporter"})
+    public_loop.sync(store, mode="live", now=NOW)
+    assert writes == [("label", 1, IN_PROGRESS, NEEDS_ANSWER, False)]
+    by = store.load_issue(1).fix_public["label_by"]["1"]
+    assert by == {"host": "studio", "label": IN_PROGRESS,
+                  "facts": public_loop.label_facts(store.load_issue(1))}
+
+
+def test_a_label_a_worker_on_older_code_took_off_is_not_put_back(store, writes):
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
+    public_loop.sync(store, mode="live", now=NOW)
+    pub = store.load_issue(1).fix_public
+    store.edit_issue(1).record_fix_public({**pub, "labels": {"1": None}})
+    public_loop.sync(store, mode="live", now=NOW)
+    assert writes == [("label", 1, NEEDS_ANSWER, None, False)]
+    assert "another worker" in store.load_issue(1).fix_thread[-1]["text"]
+
+
+def test_this_host_s_own_label_follows_its_reading(store, writes):
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
+    _labelled_by(store, "studio", None)
+    public_loop.sync(store, mode="live", now=NOW)
+    assert writes == [("label", 1, NEEDS_ANSWER, None, False)]
+
+
 def test_another_worker_s_lease_holds_the_issue(store, writes):
     store.edit_issue(1).record_fix_run(_run(**ASKED))
     store.edit_issue(1).record_fix_public({"lease": {
