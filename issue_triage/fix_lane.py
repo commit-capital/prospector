@@ -245,12 +245,8 @@ def _proof_evidence(proof: dict, authored: Authored) -> str:
     ]
     related = proof.get("related_tests")
     if related:
-        run = related.get("run") or {}
-        verdict = ("passed" if run.get("exit") == gates.SENTINEL_PASS
-                   else "failed, and fails on the base too" if related.get("base_fails")
-                   else f"failed (exit {run.get('exit')})")
         lines.append(f"- Related existing tests ({', '.join(related.get('files') or [])}): "
-                     f"{verdict}.")
+                     f"{issue_gates.related_tests_outcome(related)}.")
     else:
         lines.append("- Related existing tests: none were found for the changed paths.")
     return "\n".join(lines)

@@ -260,8 +260,8 @@ PROVEN = {"proof": {"red": {"exit": 20, "exit_confirm": 20},
                     "green": {"exit": 0, "exit_confirm": 0},
                     "preserve": {"exit": 0, "exit_confirm": 0}, "compile": None,
                     "related_tests": None},
-          "reviews": [{"lens": "root-cause", "verdict": "safe", "reason": "", "concerns": []},
-                      {"lens": "scope-safety", "verdict": "safe", "reason": "", "concerns": []}]}
+          "reviews": [{"lens": lens, "verdict": "safe", "reason": "", "concerns": []}
+                      for lens in issue_gates.REVIEW_LENSES]}
 
 
 def _result(**over):
@@ -446,7 +446,7 @@ def test_a_revision_answers_each_model_s_review_apart():
     first = _two_models(**{"root-cause@opus": {"verdict": "unsafe", "reason": "masks"}})
     assert issue_gates.fix_proof_bar(_result(reviews=first))[0] == "fix-rejected"
     revised = first + _two_models()
-    assert len(issue_gates.latest_reviews(revised)) == 4
+    assert len(issue_gates.latest_reviews(revised)) == 2 * len(issue_gates.REVIEW_LENSES)
     assert issue_gates.fix_proof_bar(_result(reviews=revised))[0] is None
 
 
@@ -496,3 +496,24 @@ def test_each_model_s_latest_account_counts_and_a_defect_both_leave_is_one_claim
     assert issue_gates.fix_coverage(reviews).having("not-addressed") == [
         {"defect": "a", "status": "not-addressed", "evidence": "opus:a"}]
     assert issue_gates.review_comments(reviews) == (False, ["not addressed: a (opus:a)"])
+
+
+def test_a_fix_without_a_design_review_falls_short():
+    """#669: a fix that works but a maintainer would not merge is rejected like
+    one that misses the cause."""
+    reviews = [r for r in PROVEN["reviews"] if r["lens"] != "design"]
+    assert issue_gates.fix_proof_bar(_result(reviews=reviews)) == ("fix-rejected", "no design review")
+    reviews.append({"lens": "design", "verdict": "unsafe", "concerns": [],
+                    "reason": "writes the same predicate three times"})
+    ending, why = issue_gates.fix_proof_bar(_result(reviews=reviews))
+    assert ending == "fix-rejected" and "three times" in why
+
+
+@pytest.mark.parametrize("related, words", [
+    ({"run": {"exit": 0}}, "passed"),
+    ({"run": {"exit": 20}, "base_fails": True},
+     "failed, and fail on the base too, so they cannot show whether the change breaks them"),
+    ({"run": {"exit": 20}}, "failed (exit 20)"),
+])
+def test_related_tests_are_worded_by_their_outcome(related, words):
+    assert issue_gates.related_tests_outcome(related) == words

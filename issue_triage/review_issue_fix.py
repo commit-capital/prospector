@@ -12,6 +12,10 @@ explicit `safe` — a refusal, a malformed answer, a timeout, a crashed process 
 returns `unsafe`, so the push side is unreachable by breaking the reviewer. An
 unknown lens is the caller's error and raises.
 
+The design lens reads the change as a maintainer's code review would: a fix
+that works but duplicates its own rule or redoes work it already holds is not
+one to push under our name.
+
 The scope-safety lens also returns an inventory of every behavior the change
 alters, each marked as asked for by the report or not, and as working before
 the change or not. The reviewer rates; the host decides: a `safe` whose
@@ -65,11 +69,23 @@ _QUESTIONS = {
                      "defect or symptom the report names — a report may name several — and "
                      "say whether this change addresses it; one argued already handled on "
                      "the base counts only when you found the code that handles it."),
+    "design": ("Would a careful maintainer of this repository merge the change as written? "
+               "Look for a rule or predicate written more than once, in the change or across "
+               "languages and files, where one definition could be shared; code that "
+               "re-implements what the worktree already has (search for it); work redone on "
+               "data the code already holds, such as a re-query or re-read; code in the wrong "
+               "module or layer for this repository; names, structure or idioms that do not "
+               "match the surrounding code; and size a smaller change would not need. Judge "
+               "what a maintainer would hold the merge for, not taste. Name each problem with "
+               "its file:line, and for duplication the code it repeats."),
 }
 
 # What each lens returns beyond the verdict, keyed by issue_gates.REVIEW_LENSES.
 _OUTPUT = {
     "root-cause": """  {"verdict": "safe" | "unsafe",
+   "reason": "<one or two sentences: what you checked, or what is wrong>",
+   "concerns": ["<each specific problem, if any>"]}""",
+    "design": """  {"verdict": "safe" | "unsafe",
    "reason": "<one or two sentences: what you checked, or what is wrong>",
    "concerns": ["<each specific problem, if any>"]}""",
     "scope-safety": """  {"verdict": "safe" | "unsafe",

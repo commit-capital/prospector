@@ -116,7 +116,7 @@ def _verification(result: dict, tests: list[str], test_cmd: str | None) -> list[
     related = proof.get("related_tests")
     if related:
         lines.append(f"- {len(related.get('files') or [])} existing test file(s) near the "
-                     "change pass.")
+                     f"change {issue_gates.related_tests_outcome(related)}.")
     suite = proof.get("suite")
     if suite and not suite.get("skipped"):
         lines.append(f"- The full test suite passes except for the {suite.get('excluded', 0)} "
