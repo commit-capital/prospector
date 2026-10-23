@@ -25,6 +25,7 @@ COLUMNS = ("act", "auto", "handed")
 # the automation itself.
 OWNERS: dict[str, str] = {
     "malicious": "you", "merge-ready": "you", "approve-parked": "you", "approve-ci": "you",
+    "rerun-ci": "you",
     "queued": "worker", "hunt": "worker", "waiting": "worker", "retry": "worker",
     "budgeted": "worker",
     "author-conflicts": "author", "author-ci": "author", "author-declined": "author",
@@ -117,6 +118,8 @@ def classify(pr: Pr) -> dict | None:
         return _r("auto", "queued", f"in the verify queue ({vr.get('status')})")
     if pr.ci == "awaiting-approval" and freshness.is_current(pr, "signals"):
         return _r("act", "approve-ci", gates.CI_AWAITING_APPROVAL)
+    if pr.ci_stale_checks and freshness.is_current(pr, "signals"):
+        return _r("act", "rerun-ci", gates.ci_stale_reason(pr.ci_stale_checks))
 
     if pr.mergeable is False:
         action = "rebase"

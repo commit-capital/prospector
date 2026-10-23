@@ -136,6 +136,8 @@ def _rows(rec: Pr) -> list[dict]:
                   else "fail" if ci in ("failing", "unreported", "awaiting-approval") else "na")
         detail = {"unreported": gates.CI_UNREPORTED,
                   "awaiting-approval": gates.CI_AWAITING_APPROVAL}.get(ci, ci)
+        if rec.ci_stale_checks:
+            detail = gates.ci_stale_reason(rec.ci_stale_checks)
         by_key["ci"] = _c("ci", "CI", status, detail, sig_at)
     else:
         by_key["ci"] = _c("ci", "CI", "na", "no CI signal recorded yet", None)

@@ -127,7 +127,9 @@ def persist_live(live: dict[int, dict], committed: dict[int, Pr]) -> list[int]:
             state_arg = state if (state and state != (pr.state if pr else None)) else None
             same_head = pr is not None and lv.get("head") == pr.head_sha
             live_ci = lv.get("ci") if same_head else None
-            ci_arg = live_ci if live_ci is not None and live_ci != sig.get("ci") else None
+            live_cf = lv.get("ci_failures")
+            ci_arg = (live_ci if live_ci is not None and (
+                live_ci != sig.get("ci") or live_cf != sig.get("ci_failures")) else None)
             live_mrg = _LIVE_MERGEABLE.get(lv.get("mergeable") or "") if same_head else None
             mergeable_arg = (live_mrg if live_mrg is not None
                               and live_mrg != (pr.mergeable if pr else None) else None)
@@ -153,7 +155,7 @@ def persist_live(live: dict[int, dict], committed: dict[int, Pr]) -> list[int]:
             if store.load_pr(n) is None:
                 continue
             store.edit_pr(n).record_live_state(
-                state=state_arg, ci=ci_arg, mergeable=mergeable_arg,
+                state=state_arg, ci=ci_arg, ci_failures=live_cf, mergeable=mergeable_arg,
                 diffstat=diffstat_arg, has_tests=has_tests_arg,
                 live_head_sha=live_head_arg)
             changed.append(n)

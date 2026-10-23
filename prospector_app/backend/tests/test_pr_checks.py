@@ -403,3 +403,14 @@ def test_a_sibling_that_moved_puts_the_analysis_due():
     sibling.rec["pr"] = 2
     row = _stages(rec, {7: _Cluster([1, 2], {1, 2})}, {1: rec, 2: sibling})["analysis"]
     assert row["status"] == "warn" and "#2 changed since" in row["detail"]
+
+
+def test_ci_red_only_on_a_check_older_than_the_description_edit_says_so():
+    rec = _pr(signals={"ci": "failing", "mergeable": True, "has_tests": True,
+                       "checked_at": NOW, "against_head_sha": HEAD,
+                       "ci_failures": {"failures": [{"name": "review",
+                                                     "started_at": "2026-10-09T16:28:07Z"}],
+                                       "body_edited_at": "2026-10-09T16:31:24Z"}})
+    ci = next(x for x in pr_checks.checks_for_record(rec)["checks"] if x["key"] == "ci")
+    assert ci["status"] == "fail"
+    assert "review" in ci["detail"] and "may be stale" in ci["detail"]

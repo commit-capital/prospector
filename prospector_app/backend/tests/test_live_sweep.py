@@ -289,6 +289,23 @@ def test_sweep_persists_new_ci_verdict(tmp_path, monkeypatch):
     assert res["changed"] == 1 and res["prs"] == [5]
 
 
+def test_sweep_records_new_failure_facts_under_an_unchanged_verdict(tmp_path, monkeypatch):
+    """#664: CI stays failing, but the description edit after the failing run is
+    a new fact the stale-check reading needs."""
+    seed = _raw(5, "open")
+    seed["signals"]["ci"] = "failing"
+    facts = {"failures": [{"name": "review", "started_at": "2026-10-09T16:28:07Z"}],
+             "body_edited_at": "2026-10-09T16:31:24Z"}
+    st = _wire(tmp_path, monkeypatch, [seed],
+               {5: {"state": "open", "merged": False, "head": HEAD,
+                    "mergeable": "MERGEABLE", "ci": "failing", "ci_failures": facts}})
+
+    freshness_live.sweep()
+
+    assert st.load_pr(5).signals["ci_failures"] == facts
+    assert st.load_pr(5).ci_stale_checks == ["review"]
+
+
 def test_sweep_preserves_ci_when_live_rollup_is_missing(tmp_path, monkeypatch):
     st = _wire(tmp_path, monkeypatch, [_raw(5, "open")],
                {5: {"state": "open", "merged": False, "head": HEAD,

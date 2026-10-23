@@ -240,7 +240,8 @@ def bundle(store: Store, cid: int, prs: dict[int, Pr] | None = None,
             "paths": e.paths,
             "primary_change": e.primary_change,
             "secondary_changes": e.secondary_changes,
-            "signals": {k: sig.get(k) for k in ("ci", "mergeable", "has_tests")},
+            "signals": {**{k: sig.get(k) for k in ("ci", "mergeable", "has_tests")},
+                        "ci_stale_checks": rec.ci_stale_checks},
             "reviews": reviewers.digests(rec),
             "greptile_review": ({"severity": rec.greptile_review["severity"],
                                   "findings": rec.greptile_review.get("findings", [])}
@@ -263,7 +264,7 @@ You are the triage analyst for ONE cluster of pull requests on the open-source r
 
 ## Input
 
-Read the JSON file at __BUNDLE_PATH__ — it is {cluster:{id,root_problem}, members:[...]}. Each member has a mechanism-level summary, signals (ci, mergeable, has_tests), `reviews` — every automated code reviewer and security scanner active on the repository, keyed by id ({label, kind: review|scanner, status: pass|fail|stale|pending, reason, score (Greptile only), open: {severity: count}, summary_line}); a scanner's open findings are security evidence, a reviewer's are quality feedback — drift, linked issues with pain, a `trusted` flag (true = a trusted contributor named in the repository profile), a `greptile_review` ({severity: defects|nits|clean, findings:[{headline,class,why}]} or null) — the semantic read of Greptile's comments — an `already_on_master` count ({hunks, redundant, unchecked, files} or null) — how many of the PR's diff hunks produce a result that is ALREADY present on the current default branch (a "redundant" hunk applies as a no-op; "unchecked" hunks could not be compared) — and diff_path. READ the diffs of at least the top merge candidates to compare them line-by-line before declaring duplicates or picking a winner. A null diff_path means the member's diff could not be read: never give that member "merge" — use "needs-human" and say its diff could not be read.
+Read the JSON file at __BUNDLE_PATH__ — it is {cluster:{id,root_problem}, members:[...]}. Each member has a mechanism-level summary, signals (ci, mergeable, has_tests, and ci_stale_checks: the failing checks when every one ran before the PR description's last edit, so CI may be red only because nobody re-ran a description check — still not passing), `reviews` — every automated code reviewer and security scanner active on the repository, keyed by id ({label, kind: review|scanner, status: pass|fail|stale|pending, reason, score (Greptile only), open: {severity: count}, summary_line}); a scanner's open findings are security evidence, a reviewer's are quality feedback — drift, linked issues with pain, a `trusted` flag (true = a trusted contributor named in the repository profile), a `greptile_review` ({severity: defects|nits|clean, findings:[{headline,class,why}]} or null) — the semantic read of Greptile's comments — an `already_on_master` count ({hunks, redundant, unchecked, files} or null) — how many of the PR's diff hunks produce a result that is ALREADY present on the current default branch (a "redundant" hunk applies as a no-op; "unchecked" hunks could not be compared) — and diff_path. READ the diffs of at least the top merge candidates to compare them line-by-line before declaring duplicates or picking a winner. A null diff_path means the member's diff could not be read: never give that member "merge" — use "needs-human" and say its diff could not be read.
 
 # Behavior
 

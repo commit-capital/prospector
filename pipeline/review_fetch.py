@@ -24,10 +24,11 @@ class PrFeed:
     reviews: list[dict] = field(default_factory=list)     # {id, login, association, state, commit, body, at, url}
     threads: list[dict] = field(default_factory=list)     # {id, login, association, path, line, body, commit, original_commit, resolved, outdated, at, url}
     comments: list[dict] = field(default_factory=list)    # {id, login, association, body, at, updated_at, url}
-    check_runs: list[dict] = field(default_factory=list)  # {app, name, status, conclusion, title, summary, url}
+    check_runs: list[dict] = field(default_factory=list)  # {app, name, status, conclusion, started_at, title, summary, url}
     statuses: list[dict] = field(default_factory=list)    # {context, state}
     required: list[str] | None = field(default_factory=list)  # contexts the base branch requires; None unread
     awaiting_approval: bool = False                       # a head workflow run waits on approval
+    body_edited_at: str | None = None                     # the description's last edit
     conversation: bool = True
 
 
@@ -88,7 +89,7 @@ def feed_from_node(n: int, node: dict) -> PrFeed:
     return PrFeed(pr=int(n), head_sha=node.get("headRefOid"), updated_at=node.get("updatedAt"),
                   reviews=reviews, threads=threads, comments=comments, check_runs=runs,
                   statuses=statuses, awaiting_approval=ci_signal.awaiting_approval(node),
-                  conversation=True)
+                  body_edited_at=node.get("lastEditedAt"), conversation=True)
 
 
 def fetch_feeds(numbers: list[int], *,

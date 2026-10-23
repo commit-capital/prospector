@@ -22,21 +22,23 @@ def test_failure_outranks_pending_and_statuses_count():
 
 def test_from_graphql_contexts():
     nodes = [{"__typename": "CheckRun", "name": "Build", "status": "COMPLETED", "conclusion": "SUCCESS",
-              "title": "ok", "summary": "s", "detailsUrl": "d", "url": "u",
+              "startedAt": "2026-10-09T16:28:07Z", "title": "ok", "summary": "s", "detailsUrl": "d", "url": "u",
               "checkSuite": {"app": {"slug": "github-actions"}}},
              {"__typename": "StatusContext", "context": "lint", "state": "PENDING"}]
     runs, statuses = ci_signal.from_graphql_contexts(nodes)
     assert runs == [{"app": "github-actions", "name": "Build", "status": "completed",
-                     "conclusion": "success", "title": "ok", "summary": "s", "url": "u"}]
+                     "conclusion": "success", "started_at": "2026-10-09T16:28:07Z",
+                     "title": "ok", "summary": "s", "url": "u"}]
     assert statuses == [{"context": "lint", "state": "pending"}]
 
 
 def test_from_rest_check_runs():
     rest = [{"app": {"slug": "socket-security"}, "name": "n", "status": "completed", "conclusion": "neutral",
+             "started_at": "2026-10-09T16:28:07Z",
              "output": {"title": "t", "summary": "s"}, "html_url": "h"}]
     assert ci_signal.from_rest_check_runs(rest) == [
         {"app": "socket-security", "name": "n", "status": "completed", "conclusion": "neutral",
-         "title": "t", "summary": "s", "url": "h"}]
+         "started_at": "2026-10-09T16:28:07Z", "title": "t", "summary": "s", "url": "h"}]
 
 
 def test_required_context_nothing_reported_is_unreported():
@@ -85,3 +87,32 @@ def test_required_contexts_merges_protection_and_rulesets():
                                                         {"context": "ci / e2e"}]}}]}}
     assert ci_signal.required_contexts(ref) == ["lint", "build", "ci / e2e"]
     assert ci_signal.required_contexts({}) == []
+
+
+def test_failure_facts_keep_each_counted_failure_and_the_body_edit():
+    runs = [{**_run("github-actions", "failure", name="review"), "started_at": "2026-10-09T16:28:07Z"},
+            _run("github-actions", "success", name="build"),
+            _run("greptile-apps", "failure", name="Greptile")]
+    facts = ci_signal.failure_facts(runs, [{"context": "lint", "state": "error"}],
+                                    "2026-10-09T16:31:24Z")
+    assert facts == {"failures": [{"name": "review", "started_at": "2026-10-09T16:28:07Z"},
+                                  {"name": "lint", "started_at": None}],
+                     "body_edited_at": "2026-10-09T16:31:24Z"}
+
+
+def test_a_failure_that_predates_the_description_edit_is_stale():
+    """#664: the description gate failed at 16:28 and the author fixed the body
+    at 16:31; GitHub re-ran nothing, so the red check may already pass."""
+    facts = {"failures": [{"name": "review", "started_at": "2026-10-09T16:28:07Z"}],
+             "body_edited_at": "2026-10-09T16:31:24Z"}
+    assert ci_signal.stale_failures(facts) == ["review"]
+
+
+def test_any_failure_after_the_edit_or_without_a_start_keeps_ci_at_face_value():
+    early = {"name": "review", "started_at": "2026-10-09T16:28:07Z"}
+    for failures in ([early, {"name": "build", "started_at": "2026-10-09T16:40:00Z"}],
+                     [early, {"name": "lint", "started_at": None}]):
+        assert ci_signal.stale_failures(
+            {"failures": failures, "body_edited_at": "2026-10-09T16:31:24Z"}) == []
+    assert ci_signal.stale_failures({"failures": [early], "body_edited_at": None}) == []
+    assert ci_signal.stale_failures(None) == []

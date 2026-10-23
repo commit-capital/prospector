@@ -258,6 +258,14 @@ class TestBuildSignals:
             ci_override="passing")
         assert sig == {"ci": "passing"}
 
+    def test_ci_failures_travel_with_ci(self):
+        facts = {"failures": [{"name": "review", "started_at": "t"}], "body_edited_at": "u"}
+        sig = ingest._build_signals(existing_signals={}, ci_override="failing",
+                                    ci_failures_override=facts)
+        assert sig == {"ci": "failing", "ci_failures": facts}
+        # A verdict without failure facts drops the old ones.
+        assert ingest._build_signals(existing_signals=sig, ci_override="passing") == {"ci": "passing"}
+
 
 class TestUpsert:
     def test_upsert_new_pr(self, tmp_path):
