@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pipeline import diff_cache, reviewers, settings, storekit, verdict_labels, verdict_log
+from pipeline import (diff_cache, reviewers, settings, settings_registry, storekit,
+                      verdict_labels, verdict_log)
 from pipeline.store import Store
 from pipeline.storekit import VerdictRecord
 
@@ -265,3 +266,31 @@ def score(results: dict[int, str], cases: list[Case]) -> Score:
         else:
             add(verdict_labels.call(label, verdict, reviewer))
     return Score(**counts)
+
+
+PINS = Path(__file__).resolve().parent / "data" / "reviewer_pins.json"
+
+
+def configs() -> dict[str, dict[str, str]]:
+    """Each reviewer's prompt and default model as the code sets them, ignoring
+    the environment: the configuration a pin is checked against."""
+    from issue_triage import fixability, intake_audit, review_issue_fix, trust_boundary
+    from pipeline import design_review, security_review
+    agent = str(settings_registry.BY_NAME["TRIAGE_AGENT_MODEL"].default)
+    return {
+        "design": {"prompt_sha": design_review.PROMPT_SHA, "model": agent},
+        "security": {"prompt_sha": security_review.PROMPT_SHA, "model": agent},
+        # The review models default to the agent model.
+        "fix-review": {"prompt_sha": review_issue_fix.PROMPT_SHA, "model": agent},
+        "trust-boundary": {"prompt_sha": trust_boundary.PROMPT_SHA, "model": agent},
+        "intake": {"prompt_sha": intake_audit.PROMPT_SHA, "model": agent},
+        "fixability": {"prompt_sha": fixability.PROMPT_SHA, "model": fixability.MODEL},
+    }
+
+
+def init_pins(path: Path = PINS) -> None:
+    """Pin every reviewer without a pin to the code's configuration, provisionally."""
+    pins = json.loads(path.read_text()) if path.exists() else {}
+    for reviewer, config in configs().items():
+        pins.setdefault(reviewer, {**config, "provisional": True, "score": None, "run": None})
+    path.write_text(json.dumps(pins, indent=2, sort_keys=True) + "\n")
