@@ -116,6 +116,7 @@ def issues_by_pr(links: list[dict]) -> dict[int, list[dict]]:
 
 
 def _build_signals(*, existing_signals: dict | None, ci_override: str | None,
+                   ci_failures_override: dict | None = None,
                    mergeable_override: bool | None = None,
                    diffstat_override: dict | None = None,
                    has_tests_override: bool | None = None,
@@ -125,7 +126,8 @@ def _build_signals(*, existing_signals: dict | None, ci_override: str | None,
     existing signals with those current-head facts overlaid.
     Diff-derived fields are never carried into a newly stamped section: they are
     replaced with values computed at the fetched head, or removed when that data
-    was unavailable."""
+    was unavailable. `ci_failures` is written with `ci`, and removed when the
+    caller has no failure facts for that verdict."""
     has_override = (ci_override is not None or mergeable_override is not None
                     or diffstat_override is not None
                     or has_tests_override is not None)
@@ -134,6 +136,7 @@ def _build_signals(*, existing_signals: dict | None, ci_override: str | None,
     sig = dict(existing_signals or {})
     if head_moved:
         sig.pop("ci", None)
+        sig.pop("ci_failures", None)
         sig.pop("mergeable", None)
     # These values describe one exact diff. Keeping them while `_stage_pr`
     # stamps the whole section at a moved head would make stale data look fresh.
@@ -141,6 +144,10 @@ def _build_signals(*, existing_signals: dict | None, ci_override: str | None,
     sig.pop("has_tests", None)
     if ci_override is not None:
         sig["ci"] = ci_override
+        if ci_failures_override is None:
+            sig.pop("ci_failures", None)
+        else:
+            sig["ci_failures"] = ci_failures_override
     if mergeable_override is not None:
         sig["mergeable"] = mergeable_override
     if diffstat_override is not None:
@@ -181,6 +188,7 @@ def stage_reviews(existing: Pr | None, feed: PrFeed, head_sha: str | None) -> di
 def _stage_pr(store: Store, gh_pr: dict, existing: Pr | None,
               issues: list[dict] | None = None, *,
               ci_override: str | None = None,
+              ci_failures_override: dict | None = None,
               mergeable_override: bool | None = None,
               diffstat_override: dict | None = None,
               has_tests_override: bool | None = None,
@@ -193,7 +201,8 @@ def _stage_pr(store: Store, gh_pr: dict, existing: Pr | None,
     head_moved = existing is not None and existing.head_sha != meta.get("head_sha")
     sig = _build_signals(
         existing_signals=existing.signals if existing is not None else None,
-        ci_override=ci_override, mergeable_override=mergeable_override,
+        ci_override=ci_override, ci_failures_override=ci_failures_override,
+        mergeable_override=mergeable_override,
         diffstat_override=diffstat_override, has_tests_override=has_tests_override,
         head_moved=head_moved)
     drift = drift_from_signals(sig) if sig is not None else None
@@ -205,6 +214,7 @@ def _stage_pr(store: Store, gh_pr: dict, existing: Pr | None,
 def upsert_pr(store: Store, gh_pr: dict,
               issues: list[dict] | None = None,
               *, ci_override: str | None = None,
+              ci_failures_override: dict | None = None,
               mergeable_override: bool | None = None,
               diffstat_override: dict | None = None,
               has_tests_override: bool | None = None,
@@ -218,7 +228,8 @@ def upsert_pr(store: Store, gh_pr: dict,
     existing = store.load_pr(int(gh_pr["number"]))
     pr = _stage_pr(
         store, gh_pr, existing, issues,
-        ci_override=ci_override, mergeable_override=mergeable_override,
+        ci_override=ci_override, ci_failures_override=ci_failures_override,
+        mergeable_override=mergeable_override,
         diffstat_override=diffstat_override, has_tests_override=has_tests_override,
         reviews_override=reviews_override)
     store.save_pr(pr)
@@ -250,9 +261,12 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
         # stale 'failing' can't false-block and every bot's verdict is current.
         head_sha = (gh_pr.get("head") or {}).get("sha")
         feed = review_fetch.fetch_feeds([n]).get(n)
+        ci_failures = None
         if feed is not None:
             ci = ci_signal.verdict(feed.check_runs, feed.statuses, required=feed.required,
                                    awaiting_approval=feed.awaiting_approval)
+            ci_failures = ci_signal.failure_facts(feed.check_runs, feed.statuses,
+                                                  feed.body_edited_at)
         else:
             ci = "unknown"
         raw_mergeable = gh_pr.get("mergeable")
@@ -269,7 +283,8 @@ def refresh_prs(store: Store, numbers: list[int]) -> list[dict]:
                 has_tests = diffpaths.has_tests(paths)
         reviews = stage_reviews(before, feed, head_sha) if feed is not None else None
         rec = upsert_pr(store, gh_pr, issue_links.get(n, []),
-                        ci_override=ci, mergeable_override=mergeable,
+                        ci_override=ci, ci_failures_override=ci_failures,
+                        mergeable_override=mergeable,
                         diffstat_override=diffstat, has_tests_override=has_tests,
                         reviews_override=reviews)
         new_sha = rec.head_sha
@@ -473,7 +488,8 @@ def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]
             gh_pr = {**gh_pr, "maintainer_can_modify": live["maintainer_can_modify"]}
         rec = _stage_pr(
             store, gh_pr, existing, issue_links.get(n, []),
-            ci_override=current.get("ci"), mergeable_override=live_mergeable,
+            ci_override=current.get("ci"), ci_failures_override=current.get("ci_failures"),
+            mergeable_override=live_mergeable,
             diffstat_override=current.get("diffstat"),
             has_tests_override=current.get("has_tests"),
             reviews_override=reviews)

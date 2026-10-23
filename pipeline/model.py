@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from pipeline import ci_signal
 from pipeline import gates
 from pipeline import settings
 from pipeline import storekit
@@ -235,6 +236,14 @@ class Pr:
     @property
     def ci(self) -> str | None:
         return (self.rec.get("signals") or {}).get("ci")
+
+    @property
+    def ci_stale_checks(self) -> list[str]:
+        """The failing CI checks, when all of them ran before the description's
+        last edit and so may be stale (ci_signal.stale_failures)."""
+        if self.ci != "failing":
+            return []
+        return ci_signal.stale_failures((self.rec.get("signals") or {}).get("ci_failures"))
 
     @property
     def mergeable(self) -> bool | None:
@@ -683,13 +692,15 @@ class Pr:
 
     def record_live_state(self, *, state: str | None = None,
                           ci: str | None = None,
+                          ci_failures: dict | None = None,
                           mergeable: bool | None = None,
                           diffstat: dict | None = None,
                           has_tests: bool | None = None,
                           live_head_sha: str | None = None) -> None:
         """Persist GitHub-owned live facts into the shared store: the PR's
         open/closed/merged `meta.state`, the head GitHub reports
-        (`meta.live_head_sha`), and its `signals` verdicts — `ci`, `mergeable`,
+        (`meta.live_head_sha`), and its `signals` verdicts — `ci` (with its
+        `ci_failures` facts, dropped when not given), `mergeable`,
         `diffstat` ({additions, deletions, changed_files}), and `has_tests`. The
         app's live sweep and executor actions call this so upstream drift is
         shared with every operator at once — no per-machine overlay. Each touched
@@ -720,6 +731,10 @@ class Pr:
             signals = dict(self.section("signals") or {})
             if ci is not None:
                 signals["ci"] = ci
+                if ci_failures is None:
+                    signals.pop("ci_failures", None)
+                else:
+                    signals["ci_failures"] = ci_failures
             if mergeable is not None:
                 signals["mergeable"] = mergeable
             if diffstat is not None:

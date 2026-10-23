@@ -117,6 +117,16 @@ def test_a_head_whose_workflow_runs_await_approval_is_your_click(store):
     assert "approve the workflow run" in out["reason"]
 
 
+def test_ci_red_only_on_a_check_older_than_the_description_edit_is_your_rerun(store):
+    rec = _rec(ci="failing")
+    rec["signals"]["ci_failures"] = {
+        "failures": [{"name": "review", "started_at": "2026-10-09T16:28:07Z"}],
+        "body_edited_at": "2026-10-09T16:31:24Z"}
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"], out["owner"]) == ("act", "rerun-ci", "you")
+    assert "review" in out["reason"] and "re-run it" in out["reason"]
+
+
 def test_a_refusal_the_agent_declined_is_handed_to_the_author_with_its_reasoning(store):
     rec = _rec(greptile=4)
     rec["fix_request"] = {"action": "fix", "status": "refused", "source": "auto",

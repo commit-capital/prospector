@@ -128,6 +128,26 @@ class TestPRClean:
         ok, reasons = gates.pr_clean(_pr(), today="2026-06-10")
         assert ok and reasons == []
 
+    def test_a_failure_that_predates_the_description_edit_reads_as_possibly_stale(self):
+        """#664: the PR stays blocked, but the reason and the author ask name the
+        stale check instead of a dead-end 'CI failing'."""
+        rec = _pr()
+        rec.raw["signals"].update(ci="failing", ci_failures={
+            "failures": [{"name": "review", "started_at": "2026-10-09T16:28:07Z"}],
+            "body_edited_at": "2026-10-09T16:31:24Z"})
+        ok, reasons = gates.pr_clean(rec, today="2026-06-10")
+        assert not ok
+        assert reasons == ["ci failing, possibly stale: review ran before the last description edit"]
+        assert "re-run it" in gates.bar_asks(reasons, rec)[0]
+
+    def test_a_failure_after_the_description_edit_is_plain_ci_failing(self):
+        rec = _pr()
+        rec.raw["signals"].update(ci="failing", ci_failures={
+            "failures": [{"name": "build", "started_at": "2026-10-09T16:40:00Z"}],
+            "body_edited_at": "2026-10-09T16:31:24Z"})
+        assert gates.pr_clean(rec, today="2026-06-10")[1] == ["ci failing"]
+        assert rec.ci_stale_checks == []
+
     def test_greptile_must_be_5(self):
         rec = _pr()
         rec.raw["reviews"]["greptile"]["score"] = 4

@@ -2,12 +2,18 @@
 
 Runs owned by a registry reviewer (pipeline.reviewers) are left out: a
 reviewer's own check reads under the reviewer's name, so CI reflects the
-repository's own workflows."""
+repository's own workflows.
+
+A failing verdict is stored with the facts that judge whether it may be stale
+(`failure_facts`): GitHub re-runs no workflow when a PR's description is
+edited, so a check that lints the description can stay red after the author
+fixed it."""
 from __future__ import annotations
 
 from collections.abc import Sequence
 
 from pipeline import reviewers
+from pipeline import storekit
 
 FAIL_CONCLUSIONS = frozenset(
     {"failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale"})
@@ -15,12 +21,13 @@ OK_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 
 CONTEXT_FIELDS = (
     "pageInfo { hasNextPage endCursor } "
-    "nodes { __typename ... on CheckRun { name status conclusion title summary detailsUrl url "
+    "nodes { __typename ... on CheckRun { name status conclusion startedAt title summary detailsUrl url "
     "checkSuite { app { slug } } } ... on StatusContext { context state } }")
 
-# GraphQL pullRequest fields `from_graphql_pr` reads: the head's checks.
+# GraphQL pullRequest fields `from_graphql_pr` reads: the head's checks, plus
+# when the description was last edited.
 PR_FIELDS = (
-    "baseRefName commits(last: 1) { nodes { commit { "
+    "baseRefName lastEditedAt commits(last: 1) { nodes { commit { "
     "checkSuites(first: 50) { nodes { conclusion } } "
     "statusCheckRollup { contexts(first: 100) { " + CONTEXT_FIELDS + " } } } } }")
 
@@ -74,14 +81,43 @@ def verdict(check_runs: list[dict], statuses: list[dict], *,
     return "passing" if saw_any else None
 
 
+def failure_facts(check_runs: list[dict], statuses: list[dict], body_edited_at: str | None, *,
+                  exclude_apps: frozenset[str] | None = None) -> dict:
+    """Each failing check run and status the verdict counts, as {name,
+    started_at} (a status has no start), and when the PR body was last edited."""
+    excluded = reviewers.app_slugs() if exclude_apps is None else exclude_apps
+    failures = [{"name": r.get("name"), "started_at": r.get("started_at")} for r in check_runs
+                if r.get("app") not in excluded and r.get("status") == "completed"
+                and r.get("conclusion") in FAIL_CONCLUSIONS]
+    failures += [{"name": st.get("context"), "started_at": None} for st in statuses
+                 if st.get("state") in ("failure", "error")]
+    return {"failures": failures, "body_edited_at": body_edited_at}
+
+
+def stale_failures(facts: dict | None) -> list[str]:
+    """The failing checks' names when every one is a check run that started
+    before the PR body's last edit, so each may already pass if re-run. Never a
+    reason to read CI as passing."""
+    facts = facts or {}
+    edited = storekit.parse_ts(facts.get("body_edited_at"))
+    failures = facts.get("failures") or []
+    if edited is None or not failures:
+        return []
+    for f in failures:
+        started = storekit.parse_ts(f.get("started_at"))
+        if started is None or started >= edited:
+            return []
+    return [str(f.get("name")) for f in failures]
+
+
 def from_rest_check_runs(check_runs: list[dict]) -> list[dict]:
-    """REST `check_runs` items → `{app, name, status, conclusion, title, summary, url}`."""
+    """REST `check_runs` items → `{app, name, status, conclusion, started_at, title, summary, url}`."""
     out: list[dict] = []
     for r in check_runs:
         output = r.get("output") or {}
         out.append({"app": (r.get("app") or {}).get("slug"), "name": r.get("name"),
                     "status": r.get("status"), "conclusion": r.get("conclusion"),
-                    "title": output.get("title"), "summary": output.get("summary"),
+                    "started_at": r.get("started_at"), "title": output.get("title"), "summary": output.get("summary"),
                     "url": r.get("html_url")})
     return out
 
@@ -98,6 +134,7 @@ def from_graphql_contexts(nodes: list[dict]) -> tuple[list[dict], list[dict]]:
                          "name": node.get("name"),
                          "status": (node.get("status") or "").lower() or None,
                          "conclusion": (node.get("conclusion") or "").lower() or None,
+                         "started_at": node.get("startedAt"),
                          "title": node.get("title"), "summary": node.get("summary"),
                          "url": node.get("url") or node.get("detailsUrl")})
         elif node.get("__typename") == "StatusContext":

@@ -144,10 +144,10 @@ export const HOME_CARDS: HomeCard[] = [
   },
   {
     key: "approve-ci",
-    title: "Approve a workflow run",
-    blurb: "A first-time contributor's CI waits on a maintainer's approval, so the checks the base branch requires never ran. Approve the run on the PR's Checks tab on GitHub.",
+    title: "Approve or re-run CI",
+    blurb: "A first-time contributor's CI waits on a maintainer's approval, or CI fails only on checks that ran before the PR description's last edit, which re-runs nothing. Approve or re-run the checks on the PR's Checks tab on GitHub.",
     column: "act",
-    spec: bucket("approve-ci"),
+    spec: bucket("approve-ci", "rerun-ci"),
     hideWhenEmpty: true,
   },
   {

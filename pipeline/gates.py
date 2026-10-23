@@ -401,6 +401,13 @@ CI_AWAITING_APPROVAL = ("the head's workflow runs wait on a maintainer's approva
                         "(a first-time contributor) — approve the workflow run on GitHub")
 
 
+def ci_stale_reason(checks: list[str]) -> str:
+    """Why CI may be red only because nothing re-ran it (Pr.ci_stale_checks)."""
+    return (f"CI fails only on {', '.join(checks)}, which ran before the PR description's "
+            "last edit — an edit re-runs no workflow, so it may be stale; re-run it on the "
+            "PR's Checks tab")
+
+
 def stacked_block(pr: Pr) -> str | None:
     """Why a stacked PR is out of every merge and idle hunt, or None for a PR
     that targets the default branch. A stacked PR's diff is against another
@@ -421,7 +428,10 @@ def pr_clean(pr: Pr, today: str | None = None) -> tuple[bool, list[str]]:
     if not is_current(pr, "signals"):
         reasons.append("signals stale or missing")
     else:
-        if pr.ci != "passing":
+        if pr.ci_stale_checks:
+            reasons.append(f"ci failing, possibly stale: {', '.join(pr.ci_stale_checks)} "
+                           "ran before the last description edit")
+        elif pr.ci != "passing":
             reasons.append(f"ci {pr.ci}")
         if not pr.mergeable:
             reasons.append("merge conflicts")
@@ -1045,7 +1055,7 @@ def fix_huntable(pr: Pr, action: str,
             failing = [b for b in review_blockers if b.bar.status == reviewers.FAIL
                        and b.reviewer.source == reviewers.GITHUB]
             review_fixable = "review" in fixable and bool(failing)
-            ci_fixable = "ci" in fixable and pr.ci == "failing"
+            ci_fixable = "ci" in fixable and pr.ci == "failing" and not pr.ci_stale_checks
             design_fixable = ("design" in fixable and review_policy.own_bar(
                 pr, reviewers.DESIGN).status == reviewers.FAIL)
             if not (review_fixable or ci_fixable or design_fixable):
@@ -1941,6 +1951,10 @@ def bar_asks(reasons: list[str], pr: Pr | None = None) -> list[str]:
             asks.append(CI_UNREPORTED[0].upper() + CI_UNREPORTED[1:] + ".")
         elif r == "ci awaiting-approval":
             asks.append(CI_AWAITING_APPROVAL[0].upper() + CI_AWAITING_APPROVAL[1:] + ".")
+        elif r.startswith("ci") and pr is not None and pr.ci_stale_checks:
+            asks.append(f"The failing {', '.join(pr.ci_stale_checks)} check ran before the "
+                        "description's last edit, and an edit does not re-run it — push a "
+                        "commit or ask a maintainer to re-run it.")
         elif r.startswith("ci"):
             asks.append("CI is not green — fix the failing/unknown checks.")
         elif "conflict" in r:

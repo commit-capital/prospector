@@ -34,6 +34,7 @@ from prospector_app.backend import models
 from prospector_app.backend import safety_guard
 from prospector_app.backend import service
 from prospector_app.backend.safety_guard import bot_merge_run, bot_run
+from pipeline import ci_signal
 from pipeline import gh
 from pipeline import live_prs
 from pipeline import settings
@@ -232,7 +233,7 @@ def _live_ci_block(n: int, head: str | None) -> str | None:
     ci = live["ci"] or "unknown"
     store = data.store()
     if store.load_pr(n) is not None:
-        store.edit_pr(n).record_live_state(ci=ci)
+        store.edit_pr(n).record_live_state(ci=ci, ci_failures=live.get("ci_failures"))
     data.refresh()
     if ci == "awaiting-approval":
         from pipeline import gates
@@ -240,6 +241,10 @@ def _live_ci_block(n: int, head: str | None) -> str | None:
     if live["unreported"]:
         return (f"GitHub requires {', '.join(live['unreported'])}, which never ran at this "
                 "head — update the branch so CI runs them")
+    stale = ci_signal.stale_failures(live.get("ci_failures")) if ci == "failing" else []
+    if stale:
+        from pipeline import gates
+        return gates.ci_stale_reason(stale)
     return ("could not read all CI checks and branch requirements — retry the merge"
             if ci == "unknown" else f"CI is {ci} at this head")
 
