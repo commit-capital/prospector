@@ -973,7 +973,18 @@ def chat_history(pr: int | None = None, cluster: int | None = None, issue: int |
     # `chat_id` selects an operator-named session's own thread (#343). Without
     # one, the subject selects its default thread.
     ctx_id = chat._thread_key(chat_id, pr, cluster, issue, advisory, alert_source, alert)
-    return {"messages": chat.load_thread(ctx_id), "session": chat._session_id(ctx_id), "ctx": ctx_id}
+    return {"messages": chat.load_thread(ctx_id), "session": chat._session_id(ctx_id), "ctx": ctx_id,
+            "running": chat.turn_running(ctx_id)}
+
+
+@app.get("/api/chat/follow")
+async def chat_follow(pr: int | None = None, cluster: int | None = None, issue: int | None = None,
+                      advisory: str | None = None, alert_source: str | None = None,
+                      alert: int | None = None,
+                      chat_id: str | None = None) -> EventSourceResponse:
+    """Re-attach to a thread's in-flight answer, replayed from its start."""
+    ctx_id = chat._thread_key(chat_id, pr, cluster, issue, advisory, alert_source, alert)
+    return EventSourceResponse(chat.follow_turn(ctx_id))
 
 
 @app.get("/api/chat")

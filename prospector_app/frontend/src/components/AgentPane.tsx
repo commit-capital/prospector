@@ -6,8 +6,8 @@ import { addSubjectParams, subjectFromLocation } from "../agentSubject";
 import { api, type ChatReady, type FilterSpec } from "../api";
 import { shouldFollowChatAfterScroll } from "../chatScroll";
 import {
-  archiveSession, archivedSessions, capSessions, liveSessions, restoreSession, touchSession,
-  type ChatSession,
+  archiveSession, archivedSessions, capSessions, liveSessions, restoreSession, sessionForSubject,
+  touchSession, type ChatSession,
 } from "../chatSessions";
 import { chatName, parseTitles, titleKey, type ChatTitles } from "../chatTitles";
 import { useRepoMeta } from "../RepoMetaContext";
@@ -77,8 +77,9 @@ interface Msg { role: "user" | "assistant"; text: string }
 // The session list and the active session belong to a deployment, so their
 // keys carry the repository: two deployments served from one origin (two
 // checkouts taking turns on a port) never hand each other their threads. The
-// bare keys are the pre-scoping stores — read once when a scoped one is
-// absent, removed on the first scoped save.
+// bare session key is the pre-scoping store — read once when the scoped one is
+// absent, removed on the first scoped save. The active session is per tab
+// (sessionStorage), so each tab holds its own conversation.
 const SESSIONS_KEY = "agentpane-sessions-v2";
 const ACTIVE_SESSION_KEY = "agentpane-active-session";
 const TITLES_KEY = "agentpane-titles";
@@ -102,8 +103,11 @@ function loadSessions(repo: string): ChatSession[] {
 }
 
 function loadActiveSessionId(repo: string): string | null {
-  return localStorage.getItem(scopedKey(ACTIVE_SESSION_KEY, repo))
-    || localStorage.getItem(ACTIVE_SESSION_KEY) || null;
+  try {
+    return sessionStorage.getItem(scopedKey(ACTIVE_SESSION_KEY, repo));
+  } catch {
+    return null;
+  }
 }
 
 function loadTitles(repo: string): ChatTitles {
@@ -183,12 +187,12 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const speech = useSpeechInput((text) => setInput((p) => p ? p + " " + text : text));
-  // Named sessions (#343): an operator-created thread that keeps its own subject
-  // and history regardless of what page they're on. `sessions` is the stored
-  // list (most-recently-active first); `activeSessionId` names the one currently
-  // shown, or null for the default "whatever page I'm on" thread (unchanged
-  // behavior for an operator who never opens Recent). `effectiveActiveId`
-  // guards against a stale id left over from a session removed on another tab.
+  // Named sessions (#343): a thread that keeps its own subject and history
+  // regardless of what page the operator is on. `sessions` is the stored list
+  // (most-recently-active first); `activeSessionId` names the one this tab
+  // shows, or null for the empty "whatever page I'm on" thread, which becomes a
+  // session on its first message. `effectiveActiveId` guards against a stale id
+  // left over from a session removed on another tab.
   const [sessions, setSessions] = useState<ChatSession[]>(() => loadSessions(repo));
   const [activeSessionId, setActiveSessionId] = useState<string | null>(
     () => loadActiveSessionId(repo));
@@ -204,6 +208,15 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   useEffect(() => {
     localStorage.setItem(scopedKey(TITLES_KEY, repo), JSON.stringify(titles));
   }, [titles, repo]);
+  // Sessions and titles another tab creates show up here too.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === scopedKey(SESSIONS_KEY, repo)) setSessions(loadSessions(repo));
+      else if (e.key === scopedKey(TITLES_KEY, repo)) setTitles(loadTitles(repo));
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [repo]);
   const [recentOpen, setRecentOpen] = useState(false);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const recentRef = useRef<HTMLDivElement>(null);
@@ -222,14 +235,15 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   }, [recentOpen]);
   useEffect(() => {
     const key = scopedKey(ACTIVE_SESSION_KEY, repo);
-    if (effectiveActiveId) localStorage.setItem(key, effectiveActiveId);
-    else localStorage.removeItem(key);
-    localStorage.removeItem(ACTIVE_SESSION_KEY);
+    try {
+      if (effectiveActiveId) sessionStorage.setItem(key, effectiveActiveId);
+      else sessionStorage.removeItem(key);
+    } catch { /* storage blocked: the tab just won't remember its session */ }
   }, [effectiveActiveId, repo]);
-  // Subject stays frozen while streaming or while the thread has messages, so navigating
-  // the UI doesn't reset an active conversation. The pane re-anchors to the current URL
-  // only when the thread is empty — on first load or after "New chat". A named session
-  // never drifts with the URL at all: its subject was frozen at creation.
+  // A page thread's subject stays frozen while streaming or while it has messages. The
+  // pane re-anchors to the current URL only when the thread is empty — on first load or
+  // after "New chat". A named session never drifts with the URL: its subject was frozen
+  // at creation, and opening another item switches the pane to that item's thread.
   const liveSubj = subjectFromLocation(loc.pathname, loc.search);
   const [frozenSubj, setFrozenSubj] = useState(liveSubj);
   const hasConversation = msgs.length > 0;
@@ -239,6 +253,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   const subj = activeSession
     ? { ...activeSession.subject, label: activeSession.label }
     : (streaming || hasConversation) ? frozenSubj : liveSubj;
+  const threadId = effectiveActiveId ?? subj.key;
   // Whatever PR list the operator is currently viewing (e.g. PR Explorer's
   // active filters) rides along regardless of subject — including when a PR's
   // flyout happens to be open on top of that list, which does NOT mean the
@@ -257,14 +272,14 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   const currentName = chatName(titles, currentTitleKey, subj.label, hasConversation);
   const [paneW, setPaneW] = useState(() => Number(localStorage.getItem("agentpane-w")) || 360);
   // A turn that was cut off before the backend sent its `done` event (server
-  // reload, dropped connection, killed subprocess). Distinct from a clean finish
-  // so the operator sees it happened and can resume the claude session (-r)
-  // rather than facing a silently-idle box.
+  // reload, killed subprocess). Distinct from a clean finish so the operator
+  // sees it happened and can resume the claude session (-r) rather than facing
+  // a silently-idle box.
   const [interrupted, setInterrupted] = useState(false);
+  // The stream this pane is showing, and the thread it belongs to. Closing it
+  // only detaches: the backend turn keeps running and can be followed again.
   const esRef = useRef<EventSource | null>(null);
-  // Set true only when a `done` event arrives; `onerror` after this is a normal
-  // post-completion socket close, not an interruption.
-  const settledRef = useRef(false);
+  const esThreadRef = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const followLatestRef = useRef(true);
   const lastScrollTopRef = useRef(0);
@@ -314,24 +329,60 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     window.addEventListener("mouseup", up);
   };
 
-  const ctxParams = () => {
+  const ctxParams = (chatId: string | null = effectiveActiveId) => {
     const p = new URLSearchParams();
     addSubjectParams(p, subj);
-    if (effectiveActiveId) p.set("chat_id", effectiveActiveId);
+    if (chatId) p.set("chat_id", chatId);
     return p;
   };
 
-  // load this thread's history when the subject or the active session changes
-  useEffect(() => {
-    const p = ctxParams();
-    api.chatHistory(p).catch(() => ({ messages: [] })).then((d) => {
-      setFollowLatest(true);
-      setMsgs(d.messages);
+  // Show a turn's stream: its deltas grow the trailing assistant bubble. Only
+  // a stream that ends without `done` counts as cut off.
+  const listen = useCallback((es: EventSource, thread: string) => {
+    esRef.current = es;
+    esThreadRef.current = thread;
+    setStreaming(true);
+    setInterrupted(false);
+    let settled = false;
+    const live = () => esRef.current === es;
+    const end = () => {
+      es.close();
+      if (!live()) return;
+      esRef.current = null;
+      setStreaming(false);
+      if (!settled) setInterrupted(true);
+    };
+    es.addEventListener("delta", (e: MessageEvent) => {
+      if (!live()) return;
+      setMsgs((m) => { const c = [...m]; c[c.length - 1] = { role: "assistant", text: c[c.length - 1].text + e.data }; return c; });
     });
+    es.addEventListener("done", () => { settled = true; end(); });
+    es.onerror = end;
+  }, []);
+
+  // Load the thread's history when the shown thread changes, re-attaching to
+  // an answer still running in the background.
+  useEffect(() => {
+    // send() already streams the thread it just started.
+    if (esRef.current && esThreadRef.current === threadId) return;
+    esRef.current?.close();
+    esRef.current = null;
+    setStreaming(false);
+    setInterrupted(false);
     clearAnchor();
-    return () => esRef.current?.close();
+    let stale = false;
+    const p = ctxParams();
+    api.chatHistory(p).catch(() => ({ messages: [], running: false })).then((d) => {
+      if (stale) return;
+      setFollowLatest(true);
+      if (!d.running) { setMsgs(d.messages); return; }
+      setMsgs([...d.messages, { role: "assistant", text: "" }]);
+      listen(new EventSource(`/api/chat/follow?${p}`), threadId);
+    });
+    return () => { stale = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subj.key, effectiveActiveId]);
+  }, [threadId]);
+  useEffect(() => () => esRef.current?.close(), []);
 
   useLayoutEffect(() => {
     if (!open || !followLatestRef.current) return;
@@ -369,36 +420,37 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     setFollowLatest(true);
     setMsgs((m) => [...m, { role: "user", text: (anchor ? `[${anchor.file}:${anchor.line}] ` : "") + text }, { role: "assistant", text: "" }]);
     setInput("");
-    setStreaming(true);
-    setInterrupted(false);
-    settledRef.current = false;
+    let chatId = effectiveActiveId;
+    let key = currentTitleKey;
+    if (chatId) {
+      // Fresh activity floats a named session back to the top of Recent.
+      const id = chatId;
+      setSessions((prev) => touchSession(prev, id, Date.now()));
+    } else if (!hasConversation) {
+      // A page thread's first message makes it a session of its own, so it
+      // stays under Recent after the operator moves on.
+      const session: ChatSession = {
+        id: newSessionId(), label: subj.label, subject: subj, lastActiveAt: Date.now(),
+      };
+      chatId = key = session.id;
+      setSessions((prev) => capSessions([session, ...prev]));
+      setActiveSessionId(chatId);
+    }
     // The thread's first message names it; later messages keep that name.
-    if (!hasConversation && !titles[currentTitleKey]) {
-      const key = currentTitleKey;
+    if (!hasConversation && !titles[key]) {
       api.chatTitle(text)
         .then(({ title }) => { if (title) setTitles((t) => ({ ...t, [key]: title })); })
         .catch(() => {});
     }
-    const p = ctxParams();
+    const p = ctxParams(chatId);
     p.set("q", text);
     if (anchor) { p.set("file", anchor.file); p.set("line", String(anchor.line)); }
     // PR Explorer's filter grounds agent sessions; the backend evaluates it.
     if (visible && visible.ids.length) p.set("spec", JSON.stringify(visible.spec));
-    const es = new EventSource(`/api/chat?${p}`);
-    esRef.current = es;
-    es.addEventListener("delta", (e: MessageEvent) => {
-      setMsgs((m) => { const c = [...m]; c[c.length - 1] = { role: "assistant", text: c[c.length - 1].text + e.data }; return c; });
-    });
-    es.addEventListener("done", () => { settledRef.current = true; es.close(); setStreaming(false); });
-    es.onerror = () => { es.close(); setStreaming(false); if (!settledRef.current) setInterrupted(true); };
-    // Fresh activity floats a named session back to the top of Recent.
-    if (effectiveActiveId) {
-      const id = effectiveActiveId;
-      setSessions((prev) => touchSession(prev, id, Date.now()));
-    }
+    listen(new EventSource(`/api/chat?${p}`), chatId ?? subj.key);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streaming, anchor, subj.key, effectiveActiveId, speech.stop, visible, setFollowLatest,
-    hasConversation, titles, currentTitleKey]);
+    hasConversation, titles, currentTitleKey, listen]);
 
   // Resume a cut-off turn: nudge the (still-resumable) claude session to continue
   // where it left off. The backend re-attaches via -r, so the agent keeps its
@@ -414,6 +466,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   const stop = useCallback(() => {
     if (!streaming) return;
     esRef.current?.close();
+    esRef.current = null;
     setStreaming(false);
     const p = ctxParams();
     fetch(`/api/chat/stop?${p}`, { method: "POST" }).catch(() => {});
@@ -427,9 +480,6 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   // operator is looking right now; that subject is then frozen for this session.
   const createSession = useCallback(() => {
     setRecentOpen(false);
-    esRef.current?.close();
-    setStreaming(false);
-    setInterrupted(false);
     clearAnchor();
     speech.stop();
     const s = subjectFromLocation(loc.pathname, loc.search);
@@ -445,13 +495,10 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
 
   // Switch to another stored session, or back to the live "whatever page I'm on"
   // thread (id null) — the entry always listed first under Recent. An archived
-  // session comes back to the live list.
+  // session comes back to the live list. The thread left behind keeps running.
   const switchSession = useCallback((id: string | null) => {
     setRecentOpen(false);
-    if (id === effectiveActiveId) return;
-    esRef.current?.close();
-    setStreaming(false);
-    setInterrupted(false);
+    if (id === effectiveActiveId && (id !== null || subj.key === liveSubj.key)) return;
     clearAnchor();
     speech.stop();
     setInput("");
@@ -463,7 +510,16 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     }
     setActiveSessionId(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveActiveId, clearAnchor, speech.stop, loc.pathname, loc.search]);
+  }, [effectiveActiveId, subj.key, liveSubj.key, clearAnchor, speech.stop, loc.pathname, loc.search]);
+
+  // Opening a PR, issue, cluster or alert shows its latest session, or its page
+  // thread when it has none. General pages keep whatever conversation is open.
+  useEffect(() => {
+    if (liveSubj.kind === "general" || activeSession?.subject.key === liveSubj.key) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- follow the operator to the item they opened
+    switchSession(sessionForSubject(sessions, liveSubj.key)?.id ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveSubj.key]);
 
   // Archive a named session: it moves from Recent to Recent's Archived flyout,
   // keeping its title. If it is the session the operator is currently viewing,
@@ -473,13 +529,10 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   const archive = useCallback((id: string) => {
     const removingActive = id === effectiveActiveId;
     if (removingActive) {
-      esRef.current?.close();
       if (streaming) {
         const p = new URLSearchParams({ chat_id: id });
         fetch(`/api/chat/stop?${p}`, { method: "POST" }).catch(() => {});
       }
-      setStreaming(false);
-      setInterrupted(false);
       clearAnchor();
       speech.stop();
       setInput("");

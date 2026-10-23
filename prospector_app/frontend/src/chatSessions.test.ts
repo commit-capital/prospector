@@ -8,6 +8,7 @@ import {
   capSessions,
   liveSessions,
   restoreSession,
+  sessionForSubject,
   type ChatSession,
 } from "./chatSessions.ts";
 
@@ -42,4 +43,15 @@ test("the archive never pushes a live session out of storage", () => {
   assert.equal(liveSessions(out).length, MAX_STORED_SESSIONS);
   assert.equal(archivedSessions(out).length, MAX_ARCHIVED_SESSIONS);
   assert.equal(archivedSessions(out)[0].id, `x${MAX_ARCHIVED_SESSIONS + 4}`);
+});
+
+test("a subject's session is its most recently active live one", () => {
+  const about = (id: string, key: string, lastActiveAt: number, archivedAt?: number): ChatSession => ({
+    ...session(id, lastActiveAt, archivedAt),
+    subject: { kind: "pr", key, number: 1, label: key },
+  });
+  const sessions = [about("old", "pr:1", 1), about("new", "pr:1", 5), about("gone", "pr:1", 9, 10),
+    about("other", "pr:2", 7)];
+  assert.equal(sessionForSubject(sessions, "pr:1")?.id, "new");
+  assert.equal(sessionForSubject(sessions, "pr:3"), null);
 });

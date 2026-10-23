@@ -6,7 +6,9 @@ plus an optional diff anchor (file:line). Requests from PR Explorer carry the op
 a new or reconstructed session includes it in the prompt, so "review these"
 doesn't need the numbers spelled out (#355, #507). The list doesn't change the
 thread identity. We build the right context block, start the configured backend,
-and stream the answer. Threads and provider sessions are kept per thread key —
+and stream the answer. A turn runs as a background task that outlives the
+stream watching it, so an operator can leave a conversation mid-answer and
+re-attach later (`follow_turn`). Threads and provider sessions are kept per thread key —
 a subject's context id by default, or
 an explicit `chat_id` for an operator-named session
 (#343) — so each has its own running conversation.
@@ -44,8 +46,10 @@ import asyncio
 import json
 import os
 import re
+import logging
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -278,13 +282,7 @@ def load_thread(ctx_id: str) -> list[dict]:
             select(c.role, c.text, c.at)
             .where((c.operator == _op_slug()) & (c.ctx_id == ctx_id))
             .order_by(c.rowid)).all()
-    thread = [{"role": r[0], "text": r[1], "at": r[2]} for r in rows]
-    # While a stream is live, show its current partial as a trailing bubble.
-    if pp.exists() and running:
-        partial = pp.read_text()
-        if partial.strip():
-            thread.append({"role": "assistant", "text": partial, "at": datetime.now(timezone.utc).isoformat()})
-    return thread
+    return [{"role": r[0], "text": r[1], "at": r[2]} for r in rows]
 
 
 def _session_id(ctx_id: str) -> str | None:
@@ -603,6 +601,61 @@ def _build_context(pr: int | None, cluster: int | None, issue: int | None,
             "operator's general question about the codebase or triage.")
 
 
+@dataclass
+class _Turn:
+    """One in-flight answer: every event it has produced, for any number of
+    followers to replay from the start."""
+    events: list[dict[str, str]] = field(default_factory=list)
+    finished: bool = False
+    changed: asyncio.Condition = field(default_factory=asyncio.Condition)
+
+
+_TURNS: dict[str, _Turn] = {}
+# Strong references, so a turn nobody is watching is not garbage-collected.
+_TASKS: set[asyncio.Task[None]] = set()
+BUSY_NOTE = ("_This conversation is still answering an earlier question. "
+             "Wait for it to finish, then ask again._")
+
+
+def turn_running(ctx_id: str) -> bool:
+    return ctx_id in _TURNS
+
+
+async def _drive_turn(ctx_id: str, turn: _Turn, events: AsyncIterator[dict[str, str]]) -> None:
+    try:
+        async for event in events:
+            async with turn.changed:
+                turn.events.append(event)
+                turn.changed.notify_all()
+    except Exception:
+        logging.getLogger(__name__).exception("chat turn failed for %s", ctx_id)
+    finally:
+        _TURNS.pop(ctx_id, None)
+        async with turn.changed:
+            turn.finished = True
+            turn.changed.notify_all()
+
+
+async def follow_turn(ctx_id: str) -> AsyncIterator[dict[str, str]]:
+    """Replay the thread's in-flight turn from its first event, then stream it
+    live until it finishes. A thread with nothing running gets a bare `done`.
+    A turn that fails ends without `done`, which the pane reads as a cut-off."""
+    turn = _TURNS.get(ctx_id)
+    if turn is None:
+        yield {"event": "done", "data": json.dumps({"session_id": None, "stopped": False})}
+        return
+    seen = 0
+    while True:
+        async with turn.changed:
+            await turn.changed.wait_for(lambda: len(turn.events) > seen or turn.finished)
+            fresh = turn.events[seen:]
+        seen += len(fresh)
+        for event in fresh:
+            yield event
+        if not fresh and turn.finished:
+            return
+
+
 async def stream_chat(question: str, pr: int | None = None, cluster: int | None = None,
                       issue: int | None = None,
                       advisory: str | None = None, alert_source: str | None = None,
@@ -615,7 +668,26 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
     if backend is None:
         raise RuntimeError("agent support is off")
     ctx_id = _thread_key(chat_id, pr, cluster, issue, advisory, alert_source, alert)
+    if turn_running(ctx_id):
+        yield {"event": "delta", "data": BUSY_NOTE}
+        yield {"event": "done", "data": json.dumps({"session_id": None, "stopped": False})}
+        return
+    turn = _TURNS[ctx_id] = _Turn()
+    task = asyncio.create_task(_drive_turn(ctx_id, turn, _run_turn(
+        backend, ctx_id, question, pr, cluster, issue, advisory, alert_source, alert,
+        file, line, prs, prs_total, spec)))
+    _TASKS.add(task)
+    task.add_done_callback(_TASKS.discard)
+    async for event in follow_turn(ctx_id):
+        yield event
 
+
+async def _run_turn(backend: agent_backend.AgentBackend, ctx_id: str, question: str,
+                    pr: int | None, cluster: int | None, issue: int | None,
+                    advisory: str | None, alert_source: str | None, alert: int | None,
+                    file: str | None, line: int | None,
+                    prs: list[int] | None, prs_total: int | None,
+                    spec: dict | None) -> AsyncIterator[dict[str, str]]:
     def prepare() -> tuple[str, str | None, str, str | None]:
         """The prompt, bot token, system prompt, and session to resume, with the
         question saved to the thread."""
@@ -710,8 +782,8 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
             if receipt_suffix:
                 yield {"event": "delta", "data": receipt_suffix}
     finally:
-        # SSE disconnects close this generator during iteration. Persistence and
-        # re-ground state are committed before the provider process is reaped.
+        # Persistence and re-ground state are committed before the provider
+        # process is reaped, including when the server shuts the turn down.
         stopped = run.stopped
         if final_text is None:
             final_text = issue_receipts.attach_verified_summary(
@@ -722,8 +794,7 @@ async def stream_chat(question: str, pr: int | None = None, cluster: int | None 
         resume_lost = bool(
             resumed_sid and run.session_id and run.session_id != resumed_sid
         )
-        # Shielded: a dropped connection cancels this await, and the thread
-        # still records the turn.
+        # Shielded: a cancelled turn still records its reply.
         await asyncio.shield(asyncio.to_thread(
             _finish_turn, ctx_id, final_text, run.session_id,
             not run.completed or resume_lost))
