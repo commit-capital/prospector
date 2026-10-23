@@ -182,7 +182,7 @@ def cross(tmp_path, monkeypatch):
     def fake_review(worktree, patch, **kw):
         state["reviewed"].append({"worktree": worktree, "patch": patch, **kw})
         assert (Path(worktree) / "src" / "x.ts").read_text() != "export const x = 1;\n"
-        return state["review"] if kw["lens"] == "scope-safety" else ROOT_SAFE
+        return state["review"] if kw["lens"] == "scope-safety" else {**ROOT_SAFE, "lens": kw["lens"]}
 
     monkeypatch.setattr(review_issue_fix, "review", fake_review)
 
@@ -200,7 +200,7 @@ def cross(tmp_path, monkeypatch):
 def test_candidates_that_agree_end_fixed_with_the_smallest_fix(cross):
     res = cross["run"]()
     assert res.ending == "fixed" and res.fault is False
-    assert res.agent_runs == 6
+    assert res.agent_runs == 7
     assert res.result["boundary"]["crossings"] == []
     assert res.result["pick"] in (0, 1)  # candidate 2's fix is the largest
     pick = res.result["pick"]
@@ -436,7 +436,7 @@ def test_the_picked_fix_faces_a_full_code_review_with_it_applied(cross):
     assert [r["lens"] for r in cross["reviewed"]] == list(issue_gates.REVIEW_LENSES)
     for review in cross["reviewed"]:
         assert "src/x.ts" in review["patch"] and "reproduction" in review["evidence"]
-    assert res.result["reviews"] == [ROOT_SAFE, cross["review"]]
+    assert res.result["reviews"] == [ROOT_SAFE, cross["review"], {**ROOT_SAFE, "lens": "design"}]
 
 
 def test_the_inventory_vetoes_only_on_tier_0_paths(cross, monkeypatch):
@@ -495,7 +495,7 @@ def test_an_answer_resumes_a_dispute_on_the_reading_it_chose(cross, reading, shi
     assert res.ending == "fixed", res.detail
     assert res.result["pick"] == reading[0] and res.result["reading"] == reading
     assert res.result["agreement"]["shipped"] == shipped
-    assert res.agent_runs == 3 and res.result["boundary"]["crossings"] == []
+    assert res.agent_runs == 4 and res.result["boundary"]["crossings"] == []
     assert cross["green_runs"] == before  # the cross-test results are read, not re-run
 
 
