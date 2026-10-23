@@ -47,7 +47,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from issue_triage import issue_gates, reproduce_issue
-from pipeline import headless_agent, settings, verdict_log
+from pipeline import authoring, headless_agent, settings, verdict_log
+# A run's fix-review verdict, read the way the PR autofix lane reads its lenses.
+from pipeline.review_fix import verdict_of
 
 # Reading a patch and its surrounding code, without writing any.
 AGENT_TIMEOUT_SECONDS = 900
@@ -86,18 +88,7 @@ _QUESTIONS = {
                      "defect or symptom the report names — a report may name several — and "
                      "say whether this change addresses it; one argued already handled on "
                      "the base counts only when you found the code that handles it."),
-    "design": ("Would a careful maintainer of this repository merge the change as written? "
-               "Look for a rule or predicate written more than once, in the change or across "
-               "languages and files, where one definition could be shared; code that "
-               "re-implements what the worktree already has (search for it); work redone on "
-               "data the code already holds, such as a re-query or re-read; a case inferred "
-               "from many fields, queries or absences where the code already records a direct "
-               "fact for it, such as a status, a source or a receipt; a constant or list "
-               "restated where the code already defines one; code in the wrong "
-               "module or layer for this repository; names, structure or idioms that do not "
-               "match the surrounding code; and size a smaller change would not need. Judge "
-               "what a maintainer would hold the merge for, not taste. Name each problem with "
-               "its file:line, and for duplication the code it repeats."),
+    "design": authoring.DESIGN_QUESTION,
 }
 
 # What each lens returns beyond the verdict, keyed by issue_gates.REVIEW_LENSES.
@@ -409,12 +400,3 @@ def record(reviews: list[dict], subject: verdict_log.Subject | None, *, patch: s
                 "history": history or "", "alternatives": fixes_block(alternatives),
                 "patch": patch},
         base_sha=base_sha)
-
-
-def verdict_of(reviews: list[dict]) -> str:
-    """A run's fix-review verdict as the lanes read its reviews: `unsafe` when a
-    review judged the change unsafe, else `failed` when any review did not
-    finish."""
-    judged = [r for r in reviews if not r.get("failed")]
-    return ("unsafe" if any(r["verdict"] == "unsafe" for r in judged)
-            else "failed" if len(judged) < len(reviews) else "safe")
