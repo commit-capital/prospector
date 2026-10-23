@@ -30,13 +30,13 @@ BLOCKING: dict[str, str] = {"design": "fail", "security": "RED", "fix-review": "
                             "trust-boundary": "hold", "intake": "suspicious",
                             "fixability": "skip"}
 QUOTE_MAX = 300
-# Thread authors that are the factory's own loops, not an operator.
-AUTOMATIC = ("followup", "hunter", "public")
+# Second-opinion verdicts saying a rival's tests catch what our fix misses.
+GAPS = ("gap", "gap-open")
 _ISSUE_PATHS: list[tuple[str, ...]] = [
     ("fix_followup",), ("fix_run", "proposal"), ("fix_run", "second_opinion"), ("fix_choice",),
-    ("fix_scan",), ("links", "github"), ("fix_thread", "entries")]
+    ("fix_scan",), ("fix_thread", "entries")]
 _ISSUE_KEYS = ("fix_followup", "fix_run_proposal", "second_opinion", "fix_choice", "fix_scan",
-               "links_github", "fix_thread")
+               "fix_thread")
 
 
 @dataclass(frozen=True)
@@ -101,12 +101,13 @@ def gather(since: str) -> Facts:
 
 
 def _fix_runs(st: Store, rows: list[VerdictRecord]) -> list[dict]:
-    """The PR fix-request endings a `guidance-after-pass` signal can match: from
-    the earliest design pass in `rows` on, and none without one."""
-    passed = [r.at for r in rows if r.reviewer == "design" and r.verdict == "pass"]
+    """The PR fix-request endings a `guidance-after-pass` signal can match: on
+    the PRs with a design pass in `rows`, from the earliest one on."""
+    passed = [r for r in rows if r.reviewer == "design" and r.verdict == "pass"]
     if not passed:
         return []
-    return [run.raw for run in st.runs(since=min(passed), phase="fix:single")
+    return [run.raw for run in st.runs(since=min(r.at for r in passed), phase="fix:single",
+                                       prs=sorted({r.subject for r in passed}))
             if isinstance(run, storekit.PhaseRun)]
 
 
@@ -125,9 +126,11 @@ def _landed_merges(events: list[dict]) -> list[dict]:
 
 def _pr_signal(row: VerdictRecord, f: Facts) -> tuple[str, str, str] | None:
     merges = _landed_merges(f.pr_events.get(row.subject, []))
-    if row.reviewer == "security" and row.verdict == "YELLOW":
-        for e in merges:
-            if e.get("security_override") and _after(e.get("at"), row):
+    if row.reviewer == "security" and row.verdict == "YELLOW" and merges:
+        # Only a merge's `started` event names the head it merged.
+        for e in f.pr_events.get(row.subject, []):
+            if (e.get("kind") == "merge" and e.get("status") == "started"
+                    and e.get("head_sha") == row.head_sha and e.get("security_override")):
                 return ("merged-over-yellow", "GREEN",
                         "An operator merged over this YELLOW" + _quoted(e["security_override"]))
     blocked = (row.reviewer == "security" and row.verdict in ("RED", "YELLOW")) or (
@@ -145,47 +148,61 @@ def _pr_signal(row: VerdictRecord, f: Facts) -> tuple[str, str, str] | None:
     return None
 
 
-def _issue_signal(row: VerdictRecord, f: Facts) -> tuple[str, str, str] | None:
+def _issue_signal(row: VerdictRecord, f: Facts, *, latest: bool,
+                  until: str | None) -> tuple[str, str, str] | None:
+    """`latest`: the row is its reviewer's newest on the issue, so the issue's
+    latest-attempt sections (follow-up, proposal, second opinion) speak to it.
+    `until`: when that reviewer next ran on the issue, which ends this row's turn."""
     i = f.issues.get(row.subject)
     if i is None:
         return None
     if row.reviewer == "fix-review" and row.verdict == "safe":
         followup = i["fix_followup"] or {}
         caused = "caused" in ((followup.get("ci_attribution") or {}).get("files") or {}).values()
-        if followup.get("closed_as") == "closed" or caused:
+        if latest and (followup.get("closed_as") == "closed" or caused):
             return ("closed-unmerged", "unsafe",
                     "Our proposed PR's CI failed on the change" if caused
                     else "A maintainer closed our proposed PR unmerged")
-        gaps = [o for o in i["second_opinion"] or []
-                if o.get("verdict") in ("gap", "gap-open", "gap-closed")]
-        if gaps or i["fix_choice"]:
-            why = (f"Went with #{i['fix_choice'].get('pr')}" + _quoted(i["fix_choice"].get("reason"))
-                   if i["fix_choice"] else
-                   f"#{gaps[0].get('pr')}'s tests found cases our fix misses" + _quoted(gaps[0].get("why")))
-            return ("rival-better", "unsafe", why)
+        gaps = [o for o in i["second_opinion"] or [] if o.get("verdict") in GAPS]
+        choice = i["fix_choice"] or {}
+        if latest and gaps:
+            return ("rival-better", "unsafe", f"#{gaps[0].get('pr')}'s tests found cases our fix "
+                    "misses" + _quoted(gaps[0].get("why")))
+        if latest and choice and _after(choice.get("at"), row):
+            return ("rival-better", "unsafe",
+                    f"Went with #{choice.get('pr')}" + _quoted(choice.get("reason")))
         for e in i["fix_thread"] or []:
-            if (e.get("action") in ("send-back", "solve") and e.get("by") not in AUTOMATIC
-                    and _after(e.get("at"), row)):
+            if (e.get("action") == "send-back" and e.get("source") == "operator"
+                    and _after(e.get("at"), row)
+                    and (until is None or str(e.get("at")) < until)):
                 return ("sent-back", "unsafe",
                         f"{e.get('by')} sent the fix back" + _quoted(e.get("text")))
-    if row.reviewer == "trust-boundary" and row.verdict == "hold" and (
-            (i["fix_run_proposal"] or {}).get("pr")):
+    if (latest and row.reviewer == "trust-boundary" and row.verdict == "hold"
+            and (i["fix_run_proposal"] or {}).get("pr")):
         return ("proposed-over-hold", "pass", "The held fix was proposed anyway")
-    if row.reviewer == "fixability" and row.verdict == "skip":
+    if (row.reviewer == "fixability" and row.verdict == "skip"
+            and row.data.get("kind") != "already-fixed"):
         scan = i["fix_scan"] or {}
-        merged = [g for g in i["links_github"] or [] if str(g.get("state") or "").lower() == "merged"]
-        if scan.get("status") == "fixed" or merged:
-            pr = scan.get("fixed_by") or (merged[0].get("pr") if merged else None)
-            return ("fixed-elsewhere", "go", f"The issue was fixed by #{pr}")
+        if scan.get("status") == "fixed" and _after(scan.get("checked_at"), row):
+            return ("fixed-elsewhere", "go", f"The issue was fixed by #{scan.get('fixed_by')}")
     return None
 
 
 def signals(facts: Facts) -> list[Signal]:
     out: list[Signal] = []
+    newer: dict[tuple[str, int, str], str] = {}  # (kind, subject, reviewer) -> next run's `at`
     for row in sorted(facts.rows, key=lambda r: (r.at, r.id), reverse=True):
+        key = (row.subject_kind, row.subject, row.reviewer)
+        until = newer.get(key)
+        newer[key] = row.at
         if row.label is not None:
             continue
-        found = (_pr_signal if row.subject_kind == "pr" else _issue_signal)(row, facts)
+        if row.subject_kind == "pr":
+            found = _pr_signal(row, facts)
+        elif row.subject_kind == "issue":
+            found = _issue_signal(row, facts, latest=until is None, until=until)
+        else:
+            continue
         if found and found[1] != row.verdict:
             out.append(Signal(verdict_id=row.id, reviewer=row.reviewer,
                               subject_kind=row.subject_kind, subject=row.subject,

@@ -41,10 +41,18 @@ def _one(facts: rr.Facts) -> rr.Signal:
     return sig
 
 
+def _override(head: str) -> list[dict]:
+    return [_merge(security_override="known risk"),
+            _merge(status="started", head_sha=head, security_override="known risk")]
+
+
 def test_merged_over_yellow():
-    sig = _one(_facts(_row("security", "YELLOW"),
-                      pr_events={7: [_merge(security_override="known risk")]}))
+    sig = _one(_facts(_row("security", "YELLOW"), pr_events={7: _override("h1")}))
     assert (sig.key, sig.suggests) == ("merged-over-yellow", "GREEN")
+
+
+def test_a_merge_over_another_heads_yellow_is_no_signal():
+    assert rr.signals(_facts(_row("security", "YELLOW"), pr_events={7: _override("h9")})) == []
 
 
 @pytest.mark.parametrize("reviewer,verdict,suggests", [
@@ -85,29 +93,31 @@ def test_closed_unmerged(followup):
 
 @pytest.mark.parametrize("over", [
     {"second_opinion": [{"pr": 15440, "verdict": "gap", "why": "misses the skip branch"}]},
-    {"fix_choice": {"pr": 15440, "by": "op", "reason": "theirs is complete"}}])
+    {"fix_choice": {"pr": 15440, "by": "op", "at": LATER, "reason": "theirs is complete"}}])
 def test_rival_better(over):
     sig = _one(_facts(_row("fix-review", "safe", kind="issue", n=9), issues={9: _issue(**over)}))
     assert (sig.key, sig.suggests) == ("rival-better", "unsafe")
 
 
 def test_sent_back_by_an_operator():
-    entry = {"at": LATER, "by": "Alex", "action": "send-back", "text": "test the call site"}
+    entry = {"at": LATER, "by": "Alex", "source": "operator", "action": "send-back",
+             "text": "test the call site"}
     sig = _one(_facts(_row("fix-review", "safe", kind="issue", n=9),
                       issues={9: _issue(fix_thread=[entry])}))
     assert (sig.key, sig.suggests) == ("sent-back", "unsafe")
     assert "test the call site" in sig.why
 
 
-@pytest.mark.parametrize("by", ["followup", "hunter", "public"])
-def test_an_automatic_send_back_is_no_signal(by):
-    entry = {"at": LATER, "by": by, "action": "send-back", "text": "x"}
+@pytest.mark.parametrize("source", ["followup", "hunter", "public", None])
+def test_only_an_operators_send_back_is_a_signal(source):
+    entry = {"at": LATER, "by": "alice", "source": source, "action": "send-back", "text": "x"}
     assert rr.signals(_facts(_row("fix-review", "safe", kind="issue", n=9),
                              issues={9: _issue(fix_thread=[entry])})) == []
 
 
 def test_a_send_back_before_the_run_is_no_signal():
-    entry = {"at": "2026-10-01T00:00:00+00:00", "by": "Alex", "action": "send-back", "text": "x"}
+    entry = {"at": "2026-10-01T00:00:00+00:00", "by": "Alex", "source": "operator",
+             "action": "send-back", "text": "x"}
     assert rr.signals(_facts(_row("fix-review", "safe", kind="issue", n=9),
                              issues={9: _issue(fix_thread=[entry])})) == []
 
@@ -118,12 +128,50 @@ def test_proposed_over_hold():
     assert (sig.key, sig.suggests) == ("proposed-over-hold", "pass")
 
 
-@pytest.mark.parametrize("over", [
-    {"fix_scan": {"status": "fixed", "fixed_by": 31}},
-    {"links_github": [{"pr": 31, "state": "MERGED"}]}])
-def test_fixed_elsewhere(over):
-    sig = _one(_facts(_row("fixability", "skip", kind="issue", n=9), issues={9: _issue(**over)}))
+def test_fixed_elsewhere():
+    scan = {"status": "fixed", "fixed_by": 31, "checked_at": LATER}
+    sig = _one(_facts(_row("fixability", "skip", kind="issue", n=9),
+                      issues={9: _issue(fix_scan=scan)}))
     assert (sig.key, sig.suggests) == ("fixed-elsewhere", "go")
+
+
+def test_a_skip_as_already_fixed_or_a_fix_found_before_it_is_no_signal():
+    scan = {"status": "fixed", "fixed_by": 31, "checked_at": LATER}
+    already = replace(_row("fixability", "skip", kind="issue", n=9),
+                      data={"kind": "already-fixed"})
+    assert rr.signals(_facts(already, issues={9: _issue(fix_scan=scan)})) == []
+    early = {**scan, "checked_at": "2026-10-01T00:00:00+00:00"}
+    assert rr.signals(_facts(_row("fixability", "skip", kind="issue", n=9),
+                             issues={9: _issue(fix_scan=early)})) == []
+
+
+def test_attempt_outcomes_judge_only_the_latest_run():
+    old = _row("fix-review", "safe", kind="issue", n=9, vid=1)
+    new = _row("fix-review", "safe", kind="issue", n=9, vid=2, at=LATER)
+    facts = _facts(old, new, issues={9: _issue(fix_followup={"closed_as": "closed"})})
+    assert [s.verdict_id for s in rr.signals(facts)] == [2]
+
+
+def test_a_gap_the_revision_closed_or_an_earlier_choice_is_no_signal():
+    closed = [{"pr": 15440, "verdict": "gap-closed", "why": "answered"}]
+    early = {"pr": 15440, "by": "op", "at": "2026-10-01T00:00:00+00:00"}
+    for over in ({"second_opinion": closed}, {"fix_choice": early}):
+        assert rr.signals(_facts(_row("fix-review", "safe", kind="issue", n=9),
+                                 issues={9: _issue(**over)})) == []
+
+
+def test_a_send_back_belongs_to_the_run_before_it():
+    first = _row("fix-review", "safe", kind="issue", n=9, vid=1)
+    second = _row("fix-review", "safe", kind="issue", n=9, vid=2,
+                  at="2026-10-20T12:00:00+00:00")
+    entry = {"at": LATER, "by": "Alex", "source": "operator", "action": "send-back", "text": "x"}
+    facts = _facts(first, second, issues={9: _issue(fix_thread=[entry])})
+    assert [s.verdict_id for s in rr.signals(facts)] == [2]
+
+
+def test_replay_rows_get_no_signals():
+    row = _row("fix-review", "safe", kind="replay", n=9)
+    assert rr.signals(_facts(row, issues={9: _issue(fix_followup={"closed_as": "closed"})})) == []
 
 
 def test_labeled_rows_are_never_suggested():
@@ -225,4 +273,4 @@ def test_gather_skips_the_ledger_without_a_design_pass(monkeypatch):
     monkeypatch.setattr(st, "review_verdicts", lambda **kw: [
         _row("design", "pass", at=LATER), _row("design", "pass", vid=2)])
     rr.gather(rr.window_start())
-    assert calls == [{"since": AT, "phase": "fix:single"}]
+    assert calls == [{"since": AT, "phase": "fix:single", "prs": [7]}]

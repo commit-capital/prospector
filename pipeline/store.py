@@ -747,7 +747,8 @@ class Store:
                 kind="pr", data=record, ts=record.get("ts") or storekit.now()))
 
     def runs(self, limit: int | None = None, since: str | None = None,
-             phase: str | None = None) -> list[storekit.RunRecord]:
+             phase: str | None = None,
+             prs: Iterable[int] | None = None) -> list[storekit.RunRecord]:
         """The run-ledger records, typed (PhaseRun | StoreEdit), oldest first.
         With `limit` omitted, every record; with `limit` given, only the last
         `limit` records — read newest-first with a bounded query, then
@@ -755,9 +756,12 @@ class Store:
         records inserted at or after that ISO instant, against the ledger's
         indexed `ts` column — cheap regardless of the ledger's total size —
         and composes with `limit`. `phase` keeps only that phase's records,
-        filtered server-side, so a caller after one phase never ships the rest."""
+        filtered server-side, so a caller after one phase never ships the rest;
+        `prs` likewise keeps only records naming one of those PRs."""
         from sqlalchemy import select
         query = select(schema.runs.c.data).where(schema.runs.c.kind == "pr")
+        if prs is not None:
+            query = query.where(schema.runs.c.data["pr"].as_integer().in_(sorted(set(prs))))
         if since is not None:
             query = query.where(schema.runs.c.ts >= since)
         if phase is not None:
