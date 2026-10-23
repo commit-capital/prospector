@@ -83,6 +83,7 @@ from prospector_app.backend import work_status
 from pipeline import actions as pipeline_actions
 from pipeline import reviewers
 from pipeline import settings
+from pipeline import storekit
 from pipeline import threat_evidence
 from pipeline import threat_scan
 
@@ -165,6 +166,14 @@ async def no_store_api(request, call_next):
     if request.url.path.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-store, must-revalidate"
     return resp
+
+
+@app.exception_handler(storekit.StaleSchemaError)
+@app.exception_handler(storekit.ForeignRepoError)
+async def store_write_refused(_: Request, exc: RuntimeError) -> JSONResponse:
+    """The store guard's refusal of a write, as a 409 whose detail says why
+    (pull main and restart, or point at the right repo)."""
+    return JSONResponse({"detail": str(exc)}, status_code=409)
 
 
 def _launch_live_sweep():

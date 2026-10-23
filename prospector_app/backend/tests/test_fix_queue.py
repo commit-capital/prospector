@@ -869,3 +869,15 @@ def test_ledger_entry_omits_empty_guidance():
     entry = fix_queue.ledger_entry(7, {"action": "fix", "guidance": None}, "pushed", None,
                                    "mac", "t")
     assert "guidance" not in entry["stats"]
+
+
+def test_a_write_refused_by_a_newer_store_says_so(store, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from pipeline import schema
+    from prospector_app.backend import app as app_mod
+    monkeypatch.setattr(schema, "STORE_SCHEMA_VERSION", schema.STORE_SCHEMA_VERSION - 1)
+    r = TestClient(app_mod.app, raise_server_exceptions=False).post(
+        "/api/prs/1/fix/queue?action=rebase", json={})
+    assert r.status_code == 409 and "pull main" in r.json()["detail"]
+    assert store.load_pr(1).fix_request is None
