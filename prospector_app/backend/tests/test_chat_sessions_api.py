@@ -72,3 +72,13 @@ def test_stop_with_chat_id_targets_the_named_session_not_the_subject(
         assert "sess-alpha" not in claude_backend.CLAUDE_BACKEND.running
     finally:
         claude_backend.CLAUDE_BACKEND.running.pop("sess-alpha", None)
+
+
+def test_history_reports_whether_the_thread_is_answering(temp_store, tmp_path, monkeypatch):
+    monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
+    monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
+    monkeypatch.setitem(chat._TURNS, "sess-busy", chat._Turn())
+
+    c = TestClient(appmod.app)
+    assert c.get("/api/chat/history", params={"chat_id": "sess-busy"}).json()["running"] is True
+    assert c.get("/api/chat/history", params={"chat_id": "sess-idle"}).json()["running"] is False

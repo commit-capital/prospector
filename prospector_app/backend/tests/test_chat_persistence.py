@@ -46,9 +46,9 @@ def test_orphaned_partial_recovered_on_load(temp_store, tmp_path, monkeypatch):
     assert [m["role"] for m in chat.load_thread("pr-9")] == ["user", "assistant"]
 
 
-def test_live_partial_shown_but_not_finalized(temp_store, tmp_path, monkeypatch):
-    """While a stream is live, the partial shows as a trailing bubble but stays a
-    sidecar — the running stream commits the final reply itself."""
+def test_live_partial_stays_a_sidecar_while_its_stream_runs(temp_store, tmp_path, monkeypatch):
+    """While a stream is live its partial stays a sidecar, which the running
+    stream commits itself; the pane re-attaches with follow_turn to see it."""
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
 
@@ -56,9 +56,8 @@ def test_live_partial_shown_but_not_finalized(temp_store, tmp_path, monkeypatch)
     chat._write_partial("pr-9", "Looking…")
     claude_backend.CLAUDE_BACKEND.running["pr-9"] = object()  # a stream is live for this ctx
     try:
-        thread = chat.load_thread("pr-9")
-        assert [m["text"] for m in thread] == ["explain the gate", "Looking…"]
-        assert chat._partial_path("pr-9").exists()  # NOT finalized — the live stream owns it
+        assert [m["text"] for m in chat.load_thread("pr-9")] == ["explain the gate"]
+        assert chat._partial_path("pr-9").exists()
     finally:
         claude_backend.CLAUDE_BACKEND.running.pop("pr-9", None)
 
@@ -185,20 +184,9 @@ def test_stopped_turn_flags_reground(temp_store, tmp_path, monkeypatch):
     assert chat._reground_path("pr-6744").exists()  # the stop armed a re-ground
 
 
-def test_cancelled_stream_persists_partial_and_flags_reground(temp_store, tmp_path, monkeypatch):
-    """#547: a dropped SSE connection — not an operator Stop — cancels the
-    generator mid-stream, before claude's own "result" event ever arrives.
-    sse_starlette does this by calling `aclose()` on the streaming generator
-    when the client disconnects. The old code put its bookkeeping (save the
-    partial reply, decide whether to re-ground) AFTER the try/finally, so the
-    GeneratorExit skipped it — the next turn resumed a session with no context
-    and no transcript replay, which is exactly "the agent forgot everything"."""
-    monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
-    monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat, "_bot_token", lambda: None)
-    monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
-    monkeypatch.setattr(chat, "_build_context", lambda *a, **k: "SUBJECT-CONTEXT-555")
-
+def _gated_proc(release: asyncio.Event, session: str):
+    """A provider process that streams one delta, waits for `release`, then
+    finishes its answer."""
     class FakeProc:
         pid = 4321
         def __init__(self):
@@ -207,9 +195,12 @@ def test_cancelled_stream_persists_partial_and_flags_reground(temp_store, tmp_pa
         async def _gen(self):
             yield b'{"type":"stream_event","event":{"type":"content_block_delta",' \
                   b'"delta":{"type":"text_delta","text":"Looking at the diff"}},' \
-                  b'"session_id":"sess-CUT"}\n'
-            # A real subprocess keeps streaming; the consumer disappears first.
-            await asyncio.sleep(3600)
+                  b'"session_id":"' + session.encode() + b'"}\n'
+            await release.wait()
+            yield b'{"type":"stream_event","event":{"type":"content_block_delta",' \
+                  b'"delta":{"type":"text_delta","text":" and it is fine."}},' \
+                  b'"session_id":"' + session.encode() + b'"}\n'
+            yield b'{"type":"result","session_id":"' + session.encode() + b'"}\n'
         async def wait(self):
             self.returncode = 0
             return 0
@@ -218,20 +209,74 @@ def test_cancelled_stream_persists_partial_and_flags_reground(temp_store, tmp_pa
 
     async def fake_exec(*cmd, **kw):
         return FakeProc()
+    return fake_exec
 
-    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
 
-    async def drive():
+def _turn_setup(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
+    monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
+    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
+    monkeypatch.setattr(chat, "_build_context", lambda *a, **k: "SUBJECT-CONTEXT")
+
+
+def test_turn_keeps_running_after_its_stream_disconnects(temp_store, tmp_path, monkeypatch):
+    """#666: leaving a conversation mid-answer (a dropped SSE connection, which
+    sse_starlette delivers as `aclose()`) does not stop the turn; it finishes
+    and records the whole reply, and a later follower replays it from the start."""
+    _turn_setup(monkeypatch, tmp_path)
+
+    async def drive() -> list[dict[str, str]]:
+        release = asyncio.Event()
+        monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec",
+                            _gated_proc(release, "sess-BG"))
         gen = chat.stream_chat("explain this PR", pr=555)
-        ev = await gen.__anext__()
-        assert ev == {"event": "delta", "data": "Looking at the diff"}
-        await gen.aclose()  # what sse_starlette does when the client disconnects
-    asyncio.run(drive())
+        assert await gen.__anext__() == {"event": "delta", "data": "Looking at the diff"}
+        await gen.aclose()  # the operator switched away
+        assert chat.turn_running("pr-555")
 
+        follower = chat.follow_turn("pr-555")  # the operator came back
+        assert await follower.__anext__() == {"event": "delta", "data": "Looking at the diff"}
+        release.set()
+        return [ev async for ev in follower]
+    rest = asyncio.run(drive())
+
+    assert rest[0] == {"event": "delta", "data": " and it is fine."}
+    assert rest[-1]["event"] == "done"
+    assert not chat.turn_running("pr-555")
     thread = chat.load_thread("pr-555")
-    assert thread[-1]["text"] == "Looking at the diff"    # partial reply persisted, not lost
-    assert chat._reground_path("pr-555").exists()         # next turn must re-ground
-    assert "pr-555" not in claude_backend.CLAUDE_BACKEND.running                   # cleaned up, not left dangling
+    assert [m["role"] for m in thread] == ["user", "assistant"]
+    assert thread[-1]["text"] == "Looking at the diff and it is fine."
+    assert not chat._reground_path("pr-555").exists()  # it completed; nothing to re-ground
+    assert "pr-555" not in claude_backend.CLAUDE_BACKEND.running
+
+
+def test_a_second_question_while_a_turn_runs_is_turned_away(temp_store, tmp_path, monkeypatch):
+    _turn_setup(monkeypatch, tmp_path)
+
+    async def drive() -> list[dict[str, str]]:
+        release = asyncio.Event()
+        monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec",
+                            _gated_proc(release, "sess-ONE"))
+        first = chat.stream_chat("explain this PR", pr=556)
+        await first.__anext__()
+        second = [ev async for ev in chat.stream_chat("and the tests?", pr=556)]
+        release.set()
+        async for _ in first:
+            pass
+        return second
+    second = asyncio.run(drive())
+
+    assert second[0] == {"event": "delta", "data": chat.BUSY_NOTE}
+    assert second[-1]["event"] == "done"
+    assert [m["text"] for m in chat.load_thread("pr-556")] == [
+        "explain this PR", "Looking at the diff and it is fine."]
+
+
+def test_following_an_idle_thread_settles_at_once():
+    async def drive() -> list[dict[str, str]]:
+        return [ev async for ev in chat.follow_turn("pr-404")]
+    assert [ev["event"] for ev in asyncio.run(drive())] == ["done"]
 
 
 def test_reground_turn_reinjects_context_and_replay_without_resume(
