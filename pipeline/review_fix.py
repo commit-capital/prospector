@@ -135,33 +135,50 @@ def _unsafe(reason: str, failed: bool = False) -> dict:
 
 def review(worktree: str, patch: str, *, pr: int, goal: str,
            findings: list[dict] | None = None, review_summary: str = "",
+           on_step: Callable[[str], None] = lambda step: None,
            on_event: Callable[[tuple], None] | None = None) -> dict:
-    """Judge `patch` against `goal` under every lens in LENSES, returning
+    """Judge `patch` against `goal` under every lens in LENSES, one reviewer
+    after another (`on_step` names each as it starts), returning
     {"verdict": "safe"|"unsafe", "reason": str, "concerns": list[str]}.
 
     Only a well-formed, explicit `safe` from every lens returns safe. A lens
     that rejects the change rejects it, its reason and concerns named by lens.
     A lens that never reached a verdict — it crashed, timed out, or answered
     without one — makes the answer unsafe with `failed: True` when no other
-    lens judged it unsafe, so the caller can tell a judgment on the change from
-    the machine's failure to judge it."""
+    lens judged it unsafe (`verdict_of`), so the caller can tell a judgment on
+    the change from the machine's failure to judge it."""
     worktree = os.path.realpath(worktree)
-    answers = {lens: _judge(_prompt(worktree, patch, pr, goal, findings, review_summary, lens),
-                            worktree, on_event)
-               for lens in LENSES}
-    rejected = {lens: a for lens, a in answers.items()
-                if a["verdict"] != "safe" and not a.get("failed")}
-    failed = {lens: a for lens, a in answers.items() if a.get("failed")}
-    named = rejected or failed or answers
+    answers: dict[str, dict] = {}
+    for lens in LENSES:
+        on_step(f"reviewing the authored change: {lens}")
+        answers[lens] = _judge(
+            _prompt(worktree, patch, pr, goal, findings, review_summary, lens),
+            worktree, on_event)
+    verdict = verdict_of(list(answers.values()))
+    # The lenses the answer speaks for: every one when all passed, else the
+    # rejections, else the failures.
+    named = {lens: a for lens, a in answers.items()
+             if verdict == "safe"
+             or (a.get("failed") if verdict == "failed" else a["verdict"] == "unsafe"
+                 and not a.get("failed"))}
     out: dict = {
-        "verdict": "unsafe" if rejected or failed else "safe",
+        "verdict": "safe" if verdict == "safe" else "unsafe",
         "reason": "; ".join(f"{lens}: {a['reason']}" for lens, a in named.items()
                             if a["reason"]),
         "concerns": [f"{lens}: {c}" for lens, a in named.items() for c in a["concerns"]],
     }
-    if failed and not rejected:
+    if verdict == "failed":
         out["failed"] = True
     return out
+
+
+def verdict_of(reviews: list[dict]) -> str:
+    """A run's fix-review verdict over its per-lens `reviews`: `unsafe` when a
+    review judged the change unsafe, else `failed` when any review did not
+    finish."""
+    judged = [r for r in reviews if not r.get("failed")]
+    return ("unsafe" if any(r["verdict"] == "unsafe" for r in judged)
+            else "failed" if len(judged) < len(reviews) else "safe")
 
 
 def _judge(prompt: str, worktree: str,

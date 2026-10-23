@@ -1215,9 +1215,9 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
                             f"push: {why}", result={"patch": patch, **_checks_only(verdict["checks"])})
         return None
 
-    _running_step(n, claimed, "reviewing the authored change", action="fix")
     review = review_fix.review(worktree, patch, pr=n, goal=goal, findings=findings,
-                               review_summary=review_summary)
+                               review_summary=review_summary,
+                               on_step=lambda step: _running_step(n, claimed, step, action="fix"))
     if review.get("failed"):
         _resubmit(n, "abort")
         _fail(n, claimed, f"The reviewing agent did not reach a verdict: "

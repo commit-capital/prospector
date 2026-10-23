@@ -158,3 +158,9 @@ def test_the_design_question_is_the_issue_fix_lanes(monkeypatch):
     from issue_triage import review_issue_fix
     assert review_issue_fix._QUESTIONS["design"] == authoring.DESIGN_QUESTION
     assert authoring.DESIGN_QUESTION in review_fix._QUESTIONS["design"]
+
+
+def test_each_lens_is_announced_as_it_starts(monkeypatch):
+    steps: list[str] = []
+    _run(monkeypatch, SAFE, on_step=steps.append)
+    assert steps == [f"reviewing the authored change: {lens}" for lens in review_fix.LENSES]

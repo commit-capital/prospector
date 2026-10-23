@@ -44,6 +44,8 @@ from collections.abc import Callable
 
 from issue_triage import issue_gates, reproduce_issue
 from pipeline import authoring, headless_agent, settings, verdict_log
+# A run's fix-review verdict, read the way the PR autofix lane reads its lenses.
+from pipeline.review_fix import verdict_of
 
 # Reading a patch and its surrounding code, without writing any.
 AGENT_TIMEOUT_SECONDS = 900
@@ -308,12 +310,3 @@ def record(reviews: list[dict], subject: verdict_log.Subject | None, *, patch: s
                 "test_paths": "\n".join(test_paths), "evidence": evidence,
                 "history": history or "", "patch": patch},
         base_sha=base_sha)
-
-
-def verdict_of(reviews: list[dict]) -> str:
-    """A run's fix-review verdict as the lanes read its reviews: `unsafe` when a
-    review judged the change unsafe, else `failed` when any review did not
-    finish."""
-    judged = [r for r in reviews if not r.get("failed")]
-    return ("unsafe" if any(r["verdict"] == "unsafe" for r in judged)
-            else "failed" if len(judged) < len(reviews) else "safe")
