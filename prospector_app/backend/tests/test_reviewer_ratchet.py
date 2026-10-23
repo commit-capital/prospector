@@ -208,3 +208,21 @@ def test_policy_reviewers_route(monkeypatch):
     assert body["min_cases"] == rr.MIN_CASES and body["window_days"] == rr.SIGNAL_WINDOW_DAYS
     assert [s["key"] for s in body["queue"]] == ["merged-upstream"]
     assert body["scorecard"][0]["reviewer"] == "design"
+
+
+def test_gather_skips_the_ledger_without_a_design_pass(monkeypatch):
+    from pipeline.store import Store
+    from prospector_app.backend import data
+
+    st = Store()
+    monkeypatch.setattr(data, "_store", st)
+    calls: list[dict] = []
+    monkeypatch.setattr(st, "runs", lambda **kw: calls.append(kw) or [])
+    monkeypatch.setattr(st, "review_verdicts", lambda **kw: [_row("design", "fail")])
+    monkeypatch.setattr(st, "pr_rows", lambda paths, numbers: [])
+    rr.gather(rr.window_start())
+    assert calls == []
+    monkeypatch.setattr(st, "review_verdicts", lambda **kw: [
+        _row("design", "pass", at=LATER), _row("design", "pass", vid=2)])
+    rr.gather(rr.window_start())
+    assert calls == [{"since": AT, "phase": "fix:single"}]

@@ -3,7 +3,7 @@ configuration's scorecard, derived on read (docs/superpowers/specs/
 2026-10-23-reviewer-eval-ratchet-design.md: Labels, Scorecard).
 
 `gather` reads the runs of the last SIGNAL_WINDOW_DAYS and the outcomes on
-their PRs and issues in a fixed five queries. `signals` turns those into at
+their PRs and issues in at most five queries. `signals` turns those into at
 most one suggestion per unlabeled run: what the reviewer probably should have
 said, and the outcome that says so. A suggestion is only that; an operator
 confirms it on the subject's page (verdict_labels).
@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
 from pipeline import storekit, verdict_labels, verdict_log
+from pipeline.store import Store
 from pipeline.storekit import VerdictRecord
 from prospector_app.backend import activity, data, issue_data
 
@@ -96,8 +97,17 @@ def gather(since: str) -> Facts:
                              **dict(zip(_ISSUE_KEYS, vals, strict=True))}
                 for r, vals in issue_data.store().issue_rows(_ISSUE_PATHS, numbers=issues)}
         if issues else {},
-        fix_runs=[run.raw for run in st.runs(since=since, phase="fix:single")
-                  if isinstance(run, storekit.PhaseRun)])
+        fix_runs=_fix_runs(st, rows))
+
+
+def _fix_runs(st: Store, rows: list[VerdictRecord]) -> list[dict]:
+    """The PR fix-request endings a `guidance-after-pass` signal can match: from
+    the earliest design pass in `rows` on, and none without one."""
+    passed = [r.at for r in rows if r.reviewer == "design" and r.verdict == "pass"]
+    if not passed:
+        return []
+    return [run.raw for run in st.runs(since=min(passed), phase="fix:single")
+            if isinstance(run, storekit.PhaseRun)]
 
 
 def _after(at: str | None, row: VerdictRecord) -> bool:
