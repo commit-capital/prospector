@@ -1,5 +1,6 @@
 """What every agent that writes code for the triaged repository is told about
-writing it the repository's way: the house-style rules (`HOUSE_STYLE`), the
+writing it the repository's way: the house-style rules (`HOUSE_STYLE`) and the
+question a design reviewer holds a change to (`DESIGN_QUESTION`), the
 repository's own contributor docs — the files the profile's
 `authoring.contributor_docs` names, such as AGENTS.md and CONTRIBUTING.md — and
 the repository's lint, when the profile names one (`lint_note`).
@@ -21,10 +22,27 @@ from pipeline import gh, profile
 HOUSE_STYLE = """\
 Write the change the way this repository's own code is written:
 - Before you add a function, type, constant, or test helper, search the tree for one that already does the job, and use it. Extend an existing one only when every other caller keeps working.
+- Decide a case from the fact the code already records for it (a status, a source, a receipt), not by re-deriving it from many other fields or a fresh query.
 - Put the change in the module and layer that owns the behavior, where the code around it would put it, not wherever is closest to the symptom.
 - Read a neighbouring file or two of the same kind first, and match their naming, structure, error handling, comment density and idioms. Prefer a pattern the code already uses over a new one.
 - A test you add is written the way the neighbouring tests are: the same directory, runner, fixtures and helpers.
 None of this licenses a refactor: leave alone any code the change does not need."""
+
+# What a reviewer asks of an agent-authored change on HOUSE_STYLE's grounds, in
+# every lane that reviews one.
+DESIGN_QUESTION = (
+    "Would a careful maintainer of this repository merge the change as written? "
+    "Look for a rule or predicate written more than once, in the change or across "
+    "languages and files, where one definition could be shared; code that "
+    "re-implements what the worktree already has (search for it); work redone on "
+    "data the code already holds, such as a re-query or re-read; a case inferred "
+    "from many fields, queries or absences where the code already records a direct "
+    "fact for it, such as a status, a source or a receipt; a constant or list "
+    "restated where the code already defines one; code in the wrong "
+    "module or layer for this repository; names, structure or idioms that do not "
+    "match the surrounding code; and size a smaller change would not need. Judge "
+    "what a maintainer would hold the merge for, not taste. Name each problem with "
+    "its file:line, and for duplication the code it repeats.")
 
 # The docs' combined size in a prompt. Past it the rest is cut, so a long
 # handbook cannot crowd the task out of the model's attention.

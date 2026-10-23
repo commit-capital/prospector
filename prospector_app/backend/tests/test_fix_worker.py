@@ -2448,6 +2448,19 @@ class TestFixRetry:
         assert len(calls["author"]) == 2 and "it removed the guard" in calls["author"][1]
         assert req["objection"]["kind"] == "fix-review"
 
+    def test_a_design_rejection_reaches_the_retry_with_its_concerns(self, store, monkeypatch):
+        # The design reviewer names each problem by file:line; the author can
+        # only answer what it is shown.
+        calls = self._setup(store, monkeypatch, [
+            {"verdict": "unsafe", "reason": "design: restates an exported constant",
+             "concerns": ["design: a.ts:4 repeats MAX_RETRIES from limits.ts:2"]},
+            {"verdict": "safe", "reason": "ok", "concerns": []}])
+        fix_worker.run_one(1)
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "awaiting-review"
+        assert "restates an exported constant" in calls["author"][1]
+        assert "a.ts:4 repeats MAX_RETRIES" in calls["author"][1]
+
     def test_two_rejections_refuse_with_both_reasons(self, store, monkeypatch):
         self._setup(store, monkeypatch, [
             {"verdict": "unsafe", "reason": "first", "concerns": []},

@@ -1026,8 +1026,10 @@ def _author_fix(n: int, claimed: dict) -> None:
     verdict, patch, review = authored
     rounds: list[dict] = []
     if review["verdict"] != "safe":
-        objection = objections.build("fix-review", str(review.get("reason") or ""),
-                                     origin={"concerns": list(review.get("concerns") or [])})
+        concerns = [str(c) for c in review.get("concerns") or []]
+        objection = objections.build("fix-review", "\n".join(
+            [str(review.get("reason") or "")] + [f"- {c}" for c in concerns]),
+            origin={"concerns": concerns})
         if not _may_continue(rec, objection):
             _resubmit(n, "abort")
             _hand_back(n, claimed, f"The reviewing agent rejected the change: "
@@ -1213,9 +1215,9 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
                             f"push: {why}", result={"patch": patch, **_checks_only(verdict["checks"])})
         return None
 
-    _running_step(n, claimed, "reviewing the authored change", action="fix")
     review = review_fix.review(worktree, patch, pr=n, goal=goal, findings=findings,
-                               review_summary=review_summary)
+                               review_summary=review_summary,
+                               on_step=lambda step: _running_step(n, claimed, step, action="fix"))
     if review.get("failed"):
         _resubmit(n, "abort")
         _fail(n, claimed, f"The reviewing agent did not reach a verdict: "
