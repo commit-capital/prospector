@@ -11,13 +11,16 @@ run, or security, whose lenses read live upstream.
 """
 from __future__ import annotations
 
+import argparse
 import contextlib
 import gzip
 import json
+import os
 import subprocess
+import sys
 import tempfile
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -294,3 +297,200 @@ def init_pins(path: Path = PINS) -> None:
     for reviewer, config in configs().items():
         pins.setdefault(reviewer, {**config, "provisional": True, "score": None, "run": None})
     path.write_text(json.dumps(pins, indent=2, sort_keys=True) + "\n")
+
+
+EVAL_RUN = "reviewer-eval:run"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class PinUnreplayable(RuntimeError):
+    """No code on main ran the pinned configuration, so its side cannot replay."""
+
+
+@dataclass(frozen=True)
+class GateResult:
+    reviewer: str
+    pinned: Score
+    candidate: Score
+    passed: bool
+    provisional: bool
+    reasons: list[str]
+
+
+@contextlib.contextmanager
+def _agent_model(model: str) -> Iterator[None]:
+    """Run every agent on `model`, with usage bookkept in a throwaway store; the
+    review models follow the agent model."""
+    from pipeline.evals import providers
+    saved = {k: os.environ.get(k) for k in ("TRIAGE_AGENT_MODEL", "TRIAGE_ISSUE_FIX_REVIEW_MODELS")}
+    os.environ["TRIAGE_AGENT_MODEL"] = model
+    os.environ.pop("TRIAGE_ISSUE_FIX_REVIEW_MODELS", None)
+    try:
+        with providers.provider("claude", codex_bin="", model=None):
+            yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def eval_repo() -> EvalRepo:
+    return EvalRepo(settings.verify_scratch() / "reviewer-eval" / "repo")
+
+
+def replay_current(case: Case, store: Store, model: str) -> str:
+    with _agent_model(model):
+        return replay(case, eval_repo(), store)
+
+
+def pinned_commit(pin: dict) -> str | None:
+    """The latest main commit whose pins file holds `pin`'s prompt: its code ran
+    that prompt, since CI keeps every main commit's code equal to its pins."""
+    subprocess.run(["git", "-C", str(REPO_ROOT), "fetch", "-q", "origin", "main"],
+                   capture_output=True, check=False)
+    found = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "log", "-n1", "--format=%H",
+         f"-S\"prompt_sha\": \"{pin['prompt_sha']}\"", "origin/main", "--",
+         str(PINS.relative_to(REPO_ROOT))],
+        capture_output=True, text=True, check=False).stdout.strip()
+    return found or None
+
+
+def pinned_replay(pin: dict, case: Case) -> str:
+    """`case` replayed by the code main ran under `pin`, in a checkout of it."""
+    commit = pinned_commit(pin)
+    if commit is None:
+        raise PinUnreplayable(f"no main commit pins prompt {pin['prompt_sha']}; re-pin "
+                              "provisionally with --init after removing that pin")
+    with tempfile.TemporaryDirectory(prefix="reviewer-eval-pin-") as tmp:
+        wt = Path(tmp) / "code"
+        subprocess.run(["git", "-C", str(REPO_ROOT), "worktree", "add", "-q", "--detach",
+                        str(wt), commit], check=True, capture_output=True)
+        try:
+            done = subprocess.run(
+                ["uv", "run", "--project", str(wt), "python", "-m", "pipeline.evals.reviewer_eval",
+                 "replay", "--verdict-id", str(case.row.id), "--model", pin["model"]],
+                cwd=wt, capture_output=True, text=True, check=False)
+        finally:
+            subprocess.run(["git", "-C", str(REPO_ROOT), "worktree", "remove", "--force",
+                            str(wt)], capture_output=True, check=False)
+    lines = done.stdout.strip().splitlines()
+    if done.returncode != 0 or not lines:
+        raise RuntimeError(f"pinned replay of run {case.row.id} failed: {done.stderr[-400:]}")
+    return lines[-1].strip()
+
+
+def gate(store: Store, reviewer: str, *, k: int = 3, pins_path: Path = PINS,
+         replay_candidate: Callable[[Case], str] | None = None,
+         replay_pinned: Callable[[Case], str] | None = None) -> GateResult:
+    """Score `reviewer`'s labeled cases under its pin and under the code's
+    configuration, sampling each side until it has a verdict and, where the two
+    disagree, `k`. The candidate passes when it under-calls no case the pin
+    called right and over-calls no more often; with fewer than MIN_CASES
+    must-catch or should-pass cases the gate is provisional and passes,
+    reporting what it would have refused."""
+    pin = json.loads(pins_path.read_text())[reviewer]
+    cand = configs()[reviewer]
+    run_cand = replay_candidate or (lambda c: replay_current(c, store, cand["model"]))
+    run_pin = replay_pinned or (lambda c: pinned_replay(pin, c))
+    cases = load_cases(store, reviewer)
+    ledger = ledger_samples(store)
+    results: dict[str, dict[int, str]] = {"pinned": {}, "candidate": {}}
+
+    def top_up(case: Case, side: str, want: int) -> str | None:
+        config, run = (pin, run_pin) if side == "pinned" else (cand, run_cand)
+        got = samples(case, config["prompt_sha"], config["model"], ledger)
+        while len(got) < want:
+            verdict = run(case)
+            add_sample(store, case, config["prompt_sha"], config["model"], verdict)
+            ledger.setdefault((case.row.id, config["prompt_sha"], config["model"]),
+                              []).append(verdict)
+            got.append(verdict)
+        return majority(reviewer, got)
+
+    for case in cases:
+        try:
+            p, c = top_up(case, "pinned", 1), top_up(case, "candidate", 1)
+            if p != c:
+                p, c = top_up(case, "pinned", k), top_up(case, "candidate", k)
+        except Unreplayable:
+            continue
+        if p is not None and c is not None:
+            results["pinned"][case.row.id], results["candidate"][case.row.id] = p, c
+    pinned_score, cand_score = score(results["pinned"], cases), score(results["candidate"], cases)
+    reasons = []
+    for case in cases:
+        label = case.row.label or {}
+        p, c = results["pinned"].get(case.row.id), results["candidate"].get(case.row.id)
+        if (p and c and p != verdict_log.VERDICTS[reviewer][-1]
+                and verdict_labels.call(label, p, reviewer) == "right"
+                and c != verdict_log.VERDICTS[reviewer][-1]
+                and verdict_labels.call(label, c, reviewer) == "under"):
+            reasons.append(f"run {case.row.id} ({case.row.subject_kind} #{case.row.subject}): "
+                           f"the pin said {p}, right; the candidate says {c}")
+    if cand_score.over > pinned_score.over:
+        reasons.append(f"{cand_score.over} over-calls against the pin's {pinned_score.over}")
+    provisional = (pinned_score.must_catch < verdict_labels.MIN_CASES
+                   or pinned_score.should_pass < verdict_labels.MIN_CASES)
+    return GateResult(reviewer=reviewer, pinned=pinned_score, candidate=cand_score,
+                      passed=provisional or not reasons, provisional=provisional, reasons=reasons)
+
+
+def write_pin(reviewer: str, result: GateResult, pins_path: Path = PINS) -> None:
+    pins = json.loads(pins_path.read_text())
+    pins[reviewer] = {**configs()[reviewer], "provisional": result.provisional,
+                      "score": asdict(result.candidate), "run": storekit.now()}
+    pins_path.write_text(json.dumps(pins, indent=2, sort_keys=True) + "\n")
+
+
+def _summary(result: GateResult) -> str:
+    lines = [f"{result.reviewer}: {'PASS' if result.passed else 'REFUSED'}"
+             + (" (provisional)" if result.provisional else ""),
+             f"  pinned:    {asdict(result.pinned)}", f"  candidate: {asdict(result.candidate)}"]
+    lines += [f"  - {r}" for r in result.reasons]
+    return "\n".join(lines)
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="python -m pipeline.evals.reviewer_eval")
+    ap.add_argument("--init", action="store_true", help="pin every unpinned reviewer, provisionally")
+    ap.add_argument("--reviewer", choices=verdict_log.REVIEWERS)
+    ap.add_argument("--live", action="store_true", help="run the gate, calling agents")
+    ap.add_argument("--k", type=int, default=3, help="samples per side where they disagree")
+    sub = ap.add_subparsers(dest="cmd")
+    one = sub.add_parser("replay", help="print one run's verdict under this checkout's code")
+    one.add_argument("--verdict-id", type=int, required=True)
+    one.add_argument("--model", required=True)
+    args = ap.parse_args(argv)
+    if args.init:
+        init_pins()
+        return 0
+    store = Store()
+    if args.cmd == "replay":
+        row = store.review_verdict(args.verdict_id)
+        case = next((c for c in load_cases(store, row.reviewer) if c.row.id == row.id), None) if row else None
+        if case is None:
+            print(f"no labeled run {args.verdict_id} with inputs", file=sys.stderr)
+            return 2
+        print(replay_current(case, store, args.model))
+        return 0
+    if not (args.reviewer and args.live):
+        ap.error("give --init, replay, or --reviewer X --live")
+    started = storekit.now()
+    result = gate(store, args.reviewer, k=args.k)
+    store.append_run({"phase": EVAL_RUN, "started": started, "finished": storekit.now(),
+                      "stats": {"reviewer": args.reviewer, "passed": result.passed,
+                                "provisional": result.provisional,
+                                "pinned": asdict(result.pinned),
+                                "candidate": asdict(result.candidate), "reasons": result.reasons}})
+    print(_summary(result))
+    if result.passed:
+        write_pin(args.reviewer, result)
+        print(f"re-pinned {args.reviewer}; commit {PINS.relative_to(REPO_ROOT)}")
+    return 0 if result.passed else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

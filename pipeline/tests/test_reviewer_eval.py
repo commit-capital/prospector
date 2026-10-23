@@ -203,3 +203,86 @@ def test_blocking_has_one_owner():
     from prospector_app.backend import reviewer_ratchet
     assert "BLOCKING" not in vars(reviewer_ratchet)
     assert reviewer_ratchet.MIN_CASES is verdict_labels.MIN_CASES
+
+
+@pytest.fixture
+def pinned(tmp_path, monkeypatch) -> Path:
+    """Intake pinned at prompt `p` (the cases' own), the code at prompt `cand`."""
+    path = tmp_path / "pins.json"
+    path.write_text(json.dumps({"intake": {"prompt_sha": "p", "model": "opus",
+                                           "provisional": True, "score": None, "run": None}}))
+    monkeypatch.setattr(re_, "configs", lambda: {"intake": {"prompt_sha": "cand", "model": "opus"}})
+    return path
+
+
+def _cases(store: Store, n_catch: int, n_pass: int) -> list[re_.Case]:
+    return ([_labeled(store, "intake", "suspicious", "suspicious") for _ in range(n_catch)]
+            + [_labeled(store, "intake", "clear", "clear") for _ in range(n_pass)])
+
+
+def _gate(store, pins, candidate, **kw) -> re_.GateResult:
+    return re_.gate(store, "intake", pins_path=pins, replay_candidate=candidate,
+                    replay_pinned=lambda case: case.row.verdict, **kw)
+
+
+def test_gate_refuses_a_new_under_call(tmp_path, pinned):
+    store = Store(tmp_path / "s")
+    cases = _cases(store, 10, 10)
+    miss = cases[0].row.id
+    result = _gate(store, pinned, lambda c: "clear" if c.row.id == miss else c.row.verdict)
+    assert not result.passed and not result.provisional
+    assert any(str(miss) in r for r in result.reasons)
+
+
+def test_gate_refuses_more_over_calls(tmp_path, pinned):
+    store = Store(tmp_path / "s")
+    cases = _cases(store, 10, 10)
+    strict = cases[-1].row.id
+    result = _gate(store, pinned, lambda c: "suspicious" if c.row.id == strict else c.row.verdict)
+    assert not result.passed and any("over" in r for r in result.reasons)
+
+
+def test_gate_passes_and_repins(tmp_path, pinned):
+    store = Store(tmp_path / "s")
+    _cases(store, 10, 10)
+    result = _gate(store, pinned, lambda c: c.row.verdict)
+    assert result.passed and not result.provisional
+    re_.write_pin("intake", result, pinned)
+    pin = json.loads(pinned.read_text())["intake"]
+    assert (pin["prompt_sha"], pin["provisional"], pin["score"]["right"]) == ("cand", False, 20)
+
+
+def test_disagreements_get_k_samples(tmp_path, pinned):
+    store = Store(tmp_path / "s")
+    [case] = _cases(store, 1, 0)
+    calls: list[int] = []
+
+    def candidate(c: re_.Case) -> str:
+        calls.append(c.row.id)
+        return "clear"
+    result = re_.gate(store, "intake", pins_path=pinned, k=3, replay_candidate=candidate,
+                      replay_pinned=lambda c: "suspicious")
+    assert len(calls) == 3
+    assert result.candidate.under == 1
+
+
+def test_provisional_passes_and_reports(tmp_path, pinned):
+    store = Store(tmp_path / "s")
+    _cases(store, 2, 2)
+    result = _gate(store, pinned, lambda c: "clear")
+    assert result.passed and result.provisional and result.reasons
+
+
+def test_samples_are_kept_for_the_next_run(tmp_path, pinned):
+    store = Store(tmp_path / "s")
+    _cases(store, 1, 1)
+    _gate(store, pinned, lambda c: c.row.verdict)
+    _gate(store, pinned, lambda c: pytest.fail("the candidate's sample was kept"))
+
+
+def test_a_pin_main_never_held_refuses(tmp_path, monkeypatch):
+    store = Store(tmp_path / "s")
+    [case] = _cases(store, 1, 0)
+    monkeypatch.setattr(re_, "pinned_commit", lambda pin: None)
+    with pytest.raises(re_.PinUnreplayable):
+        re_.pinned_replay({"prompt_sha": "zzz", "model": "opus"}, case)

@@ -64,3 +64,25 @@ finding can stop a case. Use `--case ID` (repeatable), `--golden PATH`, and
 ignores user config. Claude usage bookkeeping uses a disposable local store;
 the evaluation does not write to the deployment store. Unit tests use canned
 reviews and never call a model.
+
+## Reviewer eval gate
+
+`data/reviewer_pins.json` pins each Prospector-run reviewer's prompt hash and
+default model, and `pipeline/tests/test_reviewer_pins.py` fails when the code
+no longer matches. To change a reviewer's prompt or default model:
+
+1. Make the change; the pin test fails and names the reviewer.
+2. On an operator machine with the store and the Claude CLI, run
+   `uv run python -m pipeline.evals.reviewer_eval --reviewer <name> --live`.
+   It replays the reviewer's labeled runs under the new code and under the
+   pinned configuration (from the latest main commit that pinned it), samples
+   each side three times where they disagree, and keeps every sample in the
+   runs ledger so the next run reuses it.
+3. It re-pins when the new configuration under-calls no case the pin called
+   right and over-calls no more often. Until a reviewer has ten labeled
+   must-catch and ten should-pass cases the gate is provisional: it passes and
+   lists what it would have refused. Commit the re-pinned file.
+
+`--init` pins any unpinned reviewer provisionally. A run whose inputs cannot be
+rebuilt as the reviewer saw them (recorded before its worktree patch was,
+backfilled, or security, whose lenses read live upstream) counts as `partial`.
