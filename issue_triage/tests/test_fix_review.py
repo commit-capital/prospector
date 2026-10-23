@@ -726,6 +726,23 @@ def test_a_revision_that_does_not_end_fixed_keeps_the_fix_and_holds_it(store, ri
     assert "#12" in (trust_boundary.held(store.load_issue(7)) or "")
 
 
+def test_a_fix_resumed_on_its_chosen_reading_faces_the_rivals_too(store, rival_gap, tmp_path,
+                                                                  monkeypatch):
+    from issue_triage import cross_lane, fix_lane
+    (tmp_path / "issue-7").mkdir()
+    (tmp_path / "issue-7" / "result.json").write_text(json.dumps(
+        {"ending": "fix-disputed", "base_sha": "a" * 40, "base_tier": 2,
+         "result": {"readings": [[0], [1]]}}))
+    (tmp_path / "issue-7" / "question.json").write_text(json.dumps({"question": QUESTION}))
+    monkeypatch.setattr(prove, "held", lambda sha, tier: prove.PinnedBase(
+        sha=sha, tier=tier, image="img", clone=tmp_path))
+    monkeypatch.setattr(cross_lane, "judge_reading", lambda spec, **kw: fix_lane.LaneResult(
+        ending="fixed", fault=False, detail="d", result={"summary": "s", "patch": "ours"}))
+    record, _ = fix_review_runner.answer(store, 7, {"label": "B"}, on_step=lambda s: None)
+    assert record["result"]["patch"] == "revised"
+    assert [e["verdict"] for e in record["result"]["second_opinion"]] == ["skipped", "gap-closed"]
+
+
 # --- a rival that opened after the proposal ------------------------------------------
 
 @pytest.fixture

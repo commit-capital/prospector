@@ -17,7 +17,7 @@ the sandbox, and write what happened back to the issue.
   way the follow-up's own revisions do, and a restart is refused: the pull
   request and its reviews belong to the approach the comments discard.
 - `answer` resumes a dispute on the chosen reading (`cross_lane.judge_reading`),
-  or re-solves with the question and a written answer: a maintainer's as
+  whose fixed run faces the same `second_opinion`, or re-solves with the question and a written answer: a maintainer's as
   guidance, the issue author's as notes.
 - `ask-reporter` and `propose` take the executor's bot paths.
 
@@ -283,6 +283,8 @@ def answer(store: IssueStore, n: int, answer_: dict, *, on_step: Callable[[str],
             store, workdir, issue=n, report=report, base=base, action="fix", lane="cross",
             models=previous.get("models") or [], res=res, started=started,
             finished=storekit.now(), trigger="answer", extra={"answer": answer_})
+        if record["ending"] == "fixed":
+            record = _second_opinion(store, n, base, record, trigger="answer", on_step=on_step)
         return record, {**question, "answered": answer_}
     asked = f"The fix attempt asked: {question.get('question') or '(no question)'}\n"
     return solve(store, n, guidance=asked + f"A maintainer answered: {text}" if text else None,

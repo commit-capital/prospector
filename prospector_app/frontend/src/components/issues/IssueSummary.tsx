@@ -1,6 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { type IssueDetail, type IssueFixFollowup, type IssueFixRun, type IssuePR } from "../../api";
+import { type IssueDetail, type IssueFixFollowup, type IssueFixRivalEntry, type IssueFixRun, type IssuePR } from "../../api";
 import { AnalyzeJobLink } from "../AnalyzeJobLink";
 import { Collapsible } from "../Collapsible";
 import { PRLink } from "../PRLink";
@@ -11,6 +11,7 @@ import { DispositionChip, ReproChip } from "../../views/Issues";
 import { EVIDENCE, REFERENCED, linkStateChip } from "./issueLinkChips";
 import { FixDecisionCards } from "./FixDecisionCards";
 import { fixDecision } from "./fixDecision";
+import { rivalRows } from "./rivalComparison";
 
 type Tone = "green" | "amber" | "red" | "blue" | "purple" | "gold" | "muted";
 type Fact = { tone: Tone; text: string; tip: string };
@@ -183,9 +184,42 @@ function IssueAnalysis({ d }: { d: IssueDetail }) {
   );
 }
 
+const RIVAL_TONE: Record<IssueFixRivalEntry["verdict"], Tone> = {
+  covered: "green", "gap-closed": "green", gap: "red", "gap-open": "red", skipped: "muted",
+};
+
+/** Our fix against the other open PRs on the issue, in their tests' words
+ *  (issue_triage/second_opinion.py). */
+function RivalComparison({ d }: { d: IssueDetail }) {
+  const rows = rivalRows(d);
+  if (!rows.length) return null;
+  return (
+    <div className="issue-analysis">
+      <div className="analysis-label">Our fix vs. the other open PRs</div>
+      <ul style={{ margin: "0 0 0 18px" }}>
+        {rows.map(({ pr, entry }) => (
+          <li key={pr}>
+            <GitHubPRLink n={pr} />{entry?.author ? ` by ${entry.author}` : ""}{" "}
+            {entry ? (
+              <>
+                <span className={`chip sm chip-${RIVAL_TONE[entry.verdict]}`}>{entry.verdict}</span>{" "}
+                <span className="muted">{entry.why}</span>
+                {(entry.missed?.length ?? 0) > 0 && (
+                  <ul style={{ margin: "2px 0 0 18px" }}>{entry.missed?.map((m, i) => <li key={i}>{m}</li>)}</ul>
+                )}
+              </>
+            ) : <span className="muted">not compared: the fix hasn't been run against its tests</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function suggestedAction(d: IssueDetail): string {
   if (fixDecision(d)) return "Needs your review: approve as-is or request a full fix";
   if (d.fix_approved && d.fix_pr != null) return `Approved: #${d.fix_pr} is with the maintainers`;
+  if (d.fix_pr == null && d.fix_held) return "Needs your review: open the fix's PR or send it back";
   const a = d.analysis;
   switch (a?.disposition) {
     case "close-dup": return `Close as a duplicate of #${a.canonical}`;
@@ -217,8 +251,10 @@ export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () =
         <FixPRs d={d} />
       </div>
       <IssueAnalysis d={d} />
+      <RivalComparison d={d} />
       <div className="summary-action">
         <div className="sug-headline"><span className="analysis-label">Suggested action:</span> <b>{suggestedAction(d)}</b></div>
+        {d.fix_pr == null && d.fix_held && <div className="muted small">Held: {d.fix_held}</div>}
         {decision ? (
           <>
             <FixDecisionCards key={`${decision.pr}:${d.fix_reason ?? ""}`} d={d} decision={decision}
