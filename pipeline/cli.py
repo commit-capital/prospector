@@ -25,6 +25,7 @@ commands:
   recluster        re-summarize + re-cluster one cluster's members
   security-review  3-lens adversarial security review of one PR
   activity-backfill  reconstruct missing activity-log entries for bot closes (dry-run default)
+  triage-backfill  judge the fixability of every huntable issue not yet triaged, while AI capacity allows
 
 `prospector <command> --help` shows the command's own options.
 """
@@ -105,6 +106,21 @@ def _activity_backfill(argv: list[str]) -> int:
     return activity_backfill.main(argv)
 
 
+def _triage_backfill(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="prospector triage-backfill",
+        description="Judge the fixability of the huntable issues with no current triage, newest "
+                    "first, on this machine's pinned base. Stops when AI capacity closes; rerun to resume.")
+    parser.add_argument("--limit", type=int, default=None, help="judge at most this many")
+    args = parser.parse_args(argv)
+    from issue_triage.issue_store import IssueStore
+    from prospector_app.backend import issue_fix_worker
+
+    judged = issue_fix_worker.triage(IssueStore(), args.limit, trigger="backfill")
+    print(f"triaged {len(judged)} issues")
+    return 0
+
+
 COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "serve": _serve,
     "ingest": _ingest,
@@ -114,6 +130,7 @@ COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "recluster": _recluster,
     "security-review": _security_review,
     "activity-backfill": _activity_backfill,
+    "triage-backfill": _triage_backfill,
 }
 
 

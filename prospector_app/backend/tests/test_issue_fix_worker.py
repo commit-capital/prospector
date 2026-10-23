@@ -303,31 +303,67 @@ def triaging(hunting, monkeypatch, tmp_path):
 
 
 def test_the_triage_judges_the_newest_untriaged_issue_and_books_it(hunting, triaging):
-    assert issue_fix_worker.triage_next(hunting) == 2
+    assert issue_fix_worker.triage(hunting, 1) == [2]
     assert hunting.load_issue(2).fix_triage["verdict"] == "go"
-    assert issue_fix_worker.triage_next(hunting) == 1
-    assert issue_fix_worker.triage_next(hunting) is None
+    assert issue_fix_worker.triage(hunting, 1) == [1]
+    assert issue_fix_worker.triage(hunting, 1) == []
     phases = [r.raw.get("phase") for r in hunting.runs() if hasattr(r, "raw")]
     assert phases.count("issue-triage:run") == 2
 
 
+def test_a_batch_judges_each_issue_once_newest_first(hunting, triaging):
+    assert issue_fix_worker.triage(hunting, 5) == [2, 1]
+    assert triaging["issues"] == [2, 1]
+
+
+def test_a_batch_stops_when_capacity_closes(hunting, triaging, capacity, monkeypatch):
+    judge = fixability.judge
+
+    def judge_then_close(*a, **kw):
+        capacity["open"] = False
+        return judge(*a, **kw)
+
+    monkeypatch.setattr(fixability, "judge", judge_then_close)
+    assert issue_fix_worker.triage(hunting, 5) == [2]
+
+
 def test_an_ask_posts_its_question_and_counts_it(hunting, triaging):
     triaging["verdict"] = {"verdict": "ask", "kind": "defect", "question": "A or B?"}
-    issue_fix_worker.triage_next(hunting)
+    issue_fix_worker.triage(hunting, 1)
     tri = hunting.load_issue(2).fix_triage
     assert triaging["asked"] == [2] and tri["asked"] == "posted" and tri["asks"] == 1
 
 
 def test_a_triage_that_cannot_finish_rests_the_issue(hunting, triaging):
     triaging["verdict"] = ValueError("no JSON object found in agent output")
-    assert issue_fix_worker.triage_next(hunting) is None
-    assert issue_fix_worker.triage_next(hunting) is None
+    assert issue_fix_worker.triage(hunting, 1) == []
+    assert issue_fix_worker.triage(hunting, 1) == []
     assert triaging["issues"] == [2, 1]  # 2 rests; 1 is tried next
 
 
 def test_no_triage_runs_while_capacity_is_paused(hunting, triaging, capacity):
     capacity["open"] = False
-    assert issue_fix_worker.triage_next(hunting) is None and triaging["issues"] == []
+    assert issue_fix_worker.triage(hunting, 5) == [] and triaging["issues"] == []
+
+
+def test_the_backfill_judges_every_untriaged_issue(hunting, triaging, monkeypatch, capsys):
+    from issue_triage import issue_store
+    from pipeline import cli
+    monkeypatch.setattr(issue_store, "IssueStore", lambda: hunting)
+    assert cli.main(["triage-backfill"]) == 0
+    assert triaging["issues"] == [2, 1] and "triaged 2 issues" in capsys.readouterr().out
+    triggers = [r.raw.get("trigger") for r in hunting.runs()
+                if hasattr(r, "raw") and r.raw.get("phase") == "issue-triage:run"]
+    assert triggers == ["backfill", "backfill"]
+
+
+def test_a_triage_write_keeps_a_request_claimed_meanwhile(store):
+    handle = store.edit_issue(1)
+    fix_review.queue(store, 1, "solve", by="op")
+    assert store.claim_fix_request(1, host="studio") is not None
+    handle.record_fix_triage({"verdict": "go", "kind": "defect", "fixability": 70})
+    issue = store.load_issue(1)
+    assert issue.fix_request["status"] == "running" and issue.fix_triage["verdict"] == "go"
 
 
 def test_a_priority_author_s_queued_request_runs_first(store, monkeypatch):

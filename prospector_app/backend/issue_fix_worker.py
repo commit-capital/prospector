@@ -13,7 +13,9 @@ since, starts another attempt where a reply or an edited
 report calls for one, and brings GitHub in line with their attempts
 (`issue_triage.public_loop`, as `TRIAGE_ISSUE_FIX_PUBLIC` allows); and, with `TRIAGE_ISSUE_FIX_HUNT=1`, it
 queues one `solve` for a fresh issue (`hunt`) within
-`settings.issue_fix_hunt_budget()` a UTC day. The lane books every ending
+`settings.issue_fix_hunt_budget()` a UTC day, from the issues the triage
+judged fixable (`triage`, TRIAGE_BATCH of the newest before each hunt; the
+older backlog once, by `prospector triage-backfill`). The lane books every ending
 on the machine's `issue-fix` health and picks nothing while that lane is
 tripped. Agent work no operator asked for — a request automation queued, the
 hunter's pick, the routing of replies — waits while the machine's AI capacity
@@ -316,28 +318,45 @@ def _huntable(issues: dict) -> list[tuple[bool, int, Issue]]:
 # cannot finish is not retried every tick.
 _triage_failed: dict[int, float] = {}
 TRIAGE_RETRY_SECONDS = 6 * 3600
+# Issues triaged before each hunt: above the daily intake over the day's hunts.
+TRIAGE_BATCH = 5
 
 
-def triage_next(store: IssueStore) -> int | None:
-    """Judge the next huntable issue with no current fixability triage, a
-    maintainer's and the newest first, over this machine's pinned base, while
-    the lane's AI capacity is open, and post the question an `ask` carries
-    (`public_loop.ask_triage`). The issue judged, or None. A base this machine
-    lacks leaves every issue untriaged; an agent outage propagates."""
+def triage(store: IssueStore, limit: int | None, *, trigger: str = "worker") -> list[int]:
+    """Judge up to `limit` (None: every) huntable issues with no current
+    fixability triage, a maintainer's and the newest first, over this
+    machine's pinned base, each while the lane's AI capacity is open, and post
+    the question an `ask` carries (`public_loop.ask_triage`). The issues
+    judged. A base this machine lacks leaves every issue untriaged; an agent
+    outage propagates."""
     from prospector_app.backend import issue_data
 
+    if not lane_health.capacity_open(LANE):
+        return []
     now = time.monotonic()
-    pending = [(m, (i.raw.get("meta") or {}).get("created_at") or "", n, i)
-               for m, n, i in _huntable(issue_data.issues())
-               if fixability.current(i) is None
-               and now - _triage_failed.get(n, -TRIAGE_RETRY_SECONDS) >= TRIAGE_RETRY_SECONDS]
-    if not pending or not lane_health.capacity_open(LANE):
-        return None
-    *_, n, issue = max(pending, key=lambda p: p[:3])
+    pending = sorted(((m, (i.raw.get("meta") or {}).get("created_at") or "", n, i)
+                      for m, n, i in _huntable(issue_data.issues())
+                      if fixability.current(i) is None
+                      and now - _triage_failed.get(n, -TRIAGE_RETRY_SECONDS) >= TRIAGE_RETRY_SECONDS),
+                     key=lambda p: p[:3], reverse=True)[:limit]
+    if not pending:
+        return []
     try:
         base = prove.pinned(Store())
     except prove.NoBase:
-        return None
+        return []
+    judged = []
+    for *_, n, issue in pending:
+        if not lane_health.capacity_open(LANE):
+            break
+        if _judge(store, issue, base, trigger):
+            judged.append(n)
+    return judged
+
+
+def _judge(store: IssueStore, issue: Issue, base: prove.PinnedBase, trigger: str) -> bool:
+    """Triage one issue and book it. Whether the agent finished."""
+    n = issue.number
     started = storekit.now()
     created = storekit.parse_ts((issue.raw.get("meta") or {}).get("created_at"))
     replies = (public_loop.read_replies(issue, created) or []) if created else []
@@ -350,19 +369,19 @@ def triage_next(store: IssueStore) -> int | None:
             raise
         _triage_failed[n] = time.monotonic()
         traceback.print_exc()
-        return None
+        return False
     record["asks"] = int((issue.fix_triage or {}).get("asks") or 0)
     if record["verdict"] == "ask":
         record["asked"] = public_loop.ask_triage(issue, record)
         record["asks"] += record["asked"] == "posted"
     store.edit_issue(n).record_fix_triage(record)
     store.append_run({"phase": "issue-triage:run", "issue": n, "started": started,
-                      "finished": storekit.now(), "trigger": "worker",
+                      "finished": storekit.now(), "trigger": trigger,
                       "stats": {"verdict": record["verdict"], "kind": record.get("kind"),
                                 "fixability": record.get("fixability"),
                                 "easy": fixability.easy(record),
                                 "asked": record.get("asked")}})
-    return n
+    return True
 
 
 def hunt(store: IssueStore) -> int | None:
@@ -464,7 +483,7 @@ def _drain() -> None:
                         _every_ten_minutes(store)
                         last_followup = time.monotonic()
                     if settings.issue_fix_hunt():
-                        triage_next(store)
+                        triage(store, TRIAGE_BATCH)
                         hunt(store)
         except Exception:
             traceback.print_exc()

@@ -241,8 +241,10 @@ class Issue:
         self._persist()
 
     def record_fix_triage(self, section: dict) -> None:
+        """Write the triage alone, so a request claimed meanwhile survives."""
+        assert self._store is not None, "a store-less Issue view is read-only"
         _stamp(self.rec, "fix_triage", section, None)
-        self._persist()
+        self._store.set_issue_section(self.number, "fix_triage", self.rec["fix_triage"])
 
     def stage_fix_public(self, section: dict) -> None:
         """Stage the public-loop record without persisting, for a
