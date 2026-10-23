@@ -1224,6 +1224,24 @@ class Store:
         rows = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).all())
         return [_verdict_record(r) for r in rows]
 
+    def review_verdict(self, verdict_id: int) -> storekit.VerdictRecord | None:
+        from sqlalchemy import select
+        t = schema.review_verdicts
+        stmt = select(*(t.c[name] for name in _VERDICT_META)).where(t.c.id == verdict_id)
+        row = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).first())
+        return None if row is None else _verdict_record(row)
+
+    def set_review_verdict_label(self, verdict_id: int, label: dict) -> bool:
+        """Set a run's label, the table's one mutable field; True when the row exists."""
+        from sqlalchemy import update
+        if not isinstance(label, dict):
+            raise ValidationError("review_verdicts.label: required dict")
+        storekit.assert_writable(self.engine)
+        t = schema.review_verdicts
+        with self.engine.begin() as conn:
+            done = conn.execute(update(t).where(t.c.id == verdict_id).values(label=label))
+        return done.rowcount == 1
+
     def review_verdict_inputs(self, verdict_id: int) -> bytes | None:
         from sqlalchemy import select
         t = schema.review_verdicts

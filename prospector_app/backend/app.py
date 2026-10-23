@@ -8,11 +8,13 @@ Run:  uv run uvicorn prospector_app.backend.app:app --reload --port 8787   (from
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,6 +87,7 @@ from pipeline import reviewers
 from pipeline import settings
 from pipeline import threat_evidence
 from pipeline import threat_scan
+from pipeline import verdict_labels
 
 class SurrogateSafeJSONResponse(JSONResponse):
     """JSON render that survives unpaired UTF-16 surrogates. GitHub text (review
@@ -1739,6 +1742,35 @@ def clear_secret_leak(n: int, payload: dict = Body(...)):
         raise HTTPException(409, why)
     data.refresh()
     return {"ok": True}
+
+
+@app.get("/api/verdicts")
+def verdicts_get(subject_kind: Literal["pr", "issue"], subject: int):
+    """The recorded runs of Prospector's own reviewers on one PR or issue,
+    newest first, without their inputs."""
+    rows = data.store().review_verdicts(subject_kind=subject_kind, subject=subject)
+    return {"verdicts": [dataclasses.asdict(r) for r in rows]}
+
+
+@app.post("/api/verdicts/{verdict_id}/label")
+def verdict_label(verdict_id: int, payload: dict = Body(...)):
+    """Set a recorded reviewer run's label in the operator's name
+    (verdict_labels.label). 404 for no such run, 409 when the label is refused."""
+    findings = payload.get("findings")
+    if findings is not None and not (isinstance(findings, dict) and all(
+            isinstance(k, str) and isinstance(v, str) for k, v in findings.items())):
+        raise HTTPException(422, "findings: an object of finding index to mark")
+    try:
+        label = verdict_labels.label(
+            data.store(), verdict_id, expected=str(payload.get("expected") or ""),
+            by=activity.operator()["name"], note=str(payload.get("note") or ""),
+            findings=findings or None,
+            source=str(payload.get("source") or "operator"))
+    except KeyError:
+        raise HTTPException(404, f"no reviewer run {verdict_id}") from None
+    except verdict_labels.LabelRefused as e:
+        raise HTTPException(409, str(e)) from None
+    return {"ok": True, "label": label}
 
 
 @app.get("/api/action-items")

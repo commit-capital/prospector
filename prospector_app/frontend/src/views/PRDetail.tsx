@@ -16,6 +16,7 @@ import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixActionButton, FixBody } from "../components/FixPanel";
 import { designFixGoal, unavailable as fixUnavailable } from "../components/fixAvailability";
 import { withLiveConflicts } from "../components/liveChecks";
+import { ReviewerVerdicts } from "../components/ReviewerVerdicts";
 import { ThreatEvidencePanel } from "../components/ThreatEvidencePanel";
 import { PRLink } from "../components/PRLink";
 import { coverageLabel, coverageTone } from "../dupCoverage";
@@ -675,6 +676,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
           action that unblocks each one, right there. */}
       <ChecksPanel c={checks} stages={pr.stages} headSha={pr.live_head_sha ?? pr.head_sha}
         actions={checksActions} bodies={checksBodies} opened={openedCheck} />
+      <ReviewerVerdicts kind="pr" subject={prNum} />
 
       {/* Other actions: have the configured machine user push a change to the
           contributor's branch. Authored changes park their diff here for
