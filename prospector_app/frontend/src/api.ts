@@ -1595,6 +1595,41 @@ export interface IssueFixThreadEntry {
   action?: IssueFixAction;
   text: string;
 }
+/** One reviewer configuration's counts (reviewer_ratchet.Card). */
+export interface ReviewerCard {
+  reviewer: string;
+  prompt_sha: string;
+  model: string;
+  labeled: number;
+  runs: number;
+  failed: number;
+  must_catch: number;
+  caught: number;
+  should_pass: number;
+  blocked: number;
+  under: number;
+  over: number;
+}
+
+/** A recorded run whose outcome suggests a label (reviewer_ratchet.Signal). */
+export interface ReviewerSignal {
+  verdict_id: number;
+  reviewer: string;
+  subject_kind: "pr" | "issue";
+  subject: number;
+  verdict: string;
+  suggests: string;
+  why: string;
+  key: string;
+}
+
+export interface ReviewerPolicy {
+  scorecard: ReviewerCard[];
+  queue: ReviewerSignal[];
+  min_cases: number;
+  window_days: number;
+}
+
 /** A label on a recorded reviewer run (pipeline/verdict_labels.py). */
 export interface VerdictLabel {
   expected: string;
@@ -2424,6 +2459,7 @@ export const api = {
   stopJob: (id: number) => postJson<JobRec>(`/api/jobs/${id}/stop`, {}),
   identities: () => get<IdentitiesResult>("/api/identities"),
   trustLadder: () => get<TrustLadder>("/api/policy/trust-ladder"),
+  reviewerPolicy: () => get<ReviewerPolicy>("/api/policy/reviewers"),
   // "Retry live mode" — re-probes whether this machine can mint a bot
   // token, since the backend only probes once and caches the result for its
   // whole lifetime otherwise (see /api/identities/refresh).

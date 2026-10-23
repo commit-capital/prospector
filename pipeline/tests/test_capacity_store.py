@@ -93,3 +93,10 @@ def test_runs_keeps_only_the_named_phase_server_side(store):
     store.append_run({"phase": "fix:single", "pr": 2, "ts": "2026-09-30T11:00:00+00:00"})
     got = store.runs(since="2026-10-01T00:00:00+00:00", phase="fix:single")
     assert [r.raw.get("pr") for r in got] == [1]
+
+
+def test_runs_keeps_only_the_named_prs_server_side(store):
+    for n in (1, 2, 3):
+        store.append_run({"phase": "fix:single", "pr": n, "ts": "2026-10-01T11:00:00+00:00"})
+    got = store.runs(phase="fix:single", prs=[1, 3])
+    assert [r.raw.get("pr") for r in got] == [1, 3]

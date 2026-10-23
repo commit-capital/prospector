@@ -747,7 +747,8 @@ class Store:
                 kind="pr", data=record, ts=record.get("ts") or storekit.now()))
 
     def runs(self, limit: int | None = None, since: str | None = None,
-             phase: str | None = None) -> list[storekit.RunRecord]:
+             phase: str | None = None,
+             prs: Iterable[int] | None = None) -> list[storekit.RunRecord]:
         """The run-ledger records, typed (PhaseRun | StoreEdit), oldest first.
         With `limit` omitted, every record; with `limit` given, only the last
         `limit` records — read newest-first with a bounded query, then
@@ -755,9 +756,12 @@ class Store:
         records inserted at or after that ISO instant, against the ledger's
         indexed `ts` column — cheap regardless of the ledger's total size —
         and composes with `limit`. `phase` keeps only that phase's records,
-        filtered server-side, so a caller after one phase never ships the rest."""
+        filtered server-side, so a caller after one phase never ships the rest;
+        `prs` likewise keeps only records naming one of those PRs."""
         from sqlalchemy import select
         query = select(schema.runs.c.data).where(schema.runs.c.kind == "pr")
+        if prs is not None:
+            query = query.where(schema.runs.c.data["pr"].as_integer().in_(sorted(set(prs))))
         if since is not None:
             query = query.where(schema.runs.c.ts >= since)
         if phase is not None:
@@ -1206,8 +1210,8 @@ class Store:
             ).returning(schema.review_verdicts.c.id)).scalar_one())
 
     def review_verdicts(self, *, reviewer: str | None = None, subject_kind: str | None = None,
-                        subject: int | None = None,
-                        since: str | None = None) -> list[storekit.VerdictRecord]:
+                        subject: int | None = None, since: str | None = None,
+                        labeled: bool | None = None) -> list[storekit.VerdictRecord]:
         """Runs, newest first, without their inputs; each argument filters."""
         from sqlalchemy import select
         t = schema.review_verdicts
@@ -1220,6 +1224,8 @@ class Store:
             stmt = stmt.where(t.c.subject == subject)
         if since is not None:
             stmt = stmt.where(t.c.at >= since)
+        if labeled is not None:
+            stmt = stmt.where(t.c.label.is_not(None) if labeled else t.c.label.is_(None))
         stmt = stmt.order_by(t.c.at.desc(), t.c.id.desc())
         rows = storekit.read_retrying(self.engine, lambda conn: conn.execute(stmt).all())
         return [_verdict_record(r) for r in rows]
@@ -1241,6 +1247,17 @@ class Store:
         with self.engine.begin() as conn:
             done = conn.execute(update(t).where(t.c.id == verdict_id).values(label=label))
         return done.rowcount == 1
+
+    def clear_review_verdict_inputs(self, before: str) -> int:
+        """Drop the inputs of unlabeled runs older than `before`; how many."""
+        from sqlalchemy import update
+        storekit.assert_writable(self.engine)
+        t = schema.review_verdicts
+        with self.engine.begin() as conn:
+            done = conn.execute(update(t).where(
+                t.c.at < before, t.c.label.is_(None), t.c.inputs_gz.is_not(None),
+            ).values(inputs_gz=None))
+        return done.rowcount
 
     def review_verdict_inputs(self, verdict_id: int) -> bytes | None:
         from sqlalchemy import select
