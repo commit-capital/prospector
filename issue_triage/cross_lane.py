@@ -290,8 +290,8 @@ def _as_fix(c: Candidate) -> review_issue_fix.Fix:
 
 
 def alternatives(pick: Candidate, cands: list[Candidate]) -> list[review_issue_fix.Fix]:
-    """The other trusted fixes written for the report, whatever reading they
-    pinned, as the design lens reads them beside `pick`."""
+    """The other fixes written for the report that passed the re-gate,
+    whatever reading they pinned, as the design lens reads them beside `pick`."""
     return [_as_fix(c) for c in cands
             if c.index != pick.index and c.ending is None and c.verdict and c.fix_patch]
 
@@ -322,11 +322,10 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
                 on_step: Callable[[str], None]) -> tuple[str | None, str, dict, int]:
     """Ship `pick` with the tests of `repros` and put it through the host's
     checks and a full code review that reads `others` beside it, recording both
-    on `result`, then record the
-    trust boundaries a pick the reviews do not reject crosses. Returns the
-    ending it stops at (None when it clears every check) with the reason, the
-    reproduction record, and the agent runs spent. The review tree is removed on
-    the way out."""
+    on `result`, then record the trust boundaries a pick the reviews do not
+    reject crosses. Returns the ending it stops at (None when it clears every
+    check) with the reason, the reproduction record, and the agent runs spent.
+    The review tree is removed on the way out."""
     shipped = shipped_reproductions(pick, repros)
     test_patch = "".join(r.test_patch for r in shipped)
     test_paths = [p for r in shipped for p in r.test_paths]
@@ -732,7 +731,8 @@ def judge_reading(spec: fix_lane.LaneSpec, *, workdir: Path, result: dict, readi
                                    detail=detail, reproduction=reproduction, result=result,
                                    agent_runs=agent_runs)
 
-    group = [c for c in _restore(result) if c.index in reading and c.ending is None]
+    cands = _restore(result)
+    group = [c for c in cands if c.index in reading and c.ending is None]
     repros = [c for c in group if c.reproduces]
     fits = [c for c in group if c.verdict and all(c.passes.get(r.index) for r in repros)]
     if not repros or not fits:
@@ -742,7 +742,7 @@ def judge_reading(spec: fix_lane.LaneSpec, *, workdir: Path, result: dict, readi
     proof_patch = _proof_patcher(spec, label)
     try:
         pick, how, agent_runs = _choose(spec, fits, result, on_step)
-        others = alternatives(pick, _restore(result))
+        others = alternatives(pick, cands)
         ending, detail, reproduction, spent = _judge_pick(
             spec, workdir, pick, repros, result, others=others, proof_patch=proof_patch,
             label=label, on_step=on_step)
