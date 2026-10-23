@@ -8,7 +8,7 @@ import pytest
 
 from issue_triage import fix_review, fix_review_runner, propose
 from issue_triage.issue_store import IssueStore
-from pipeline import settings
+from pipeline import prove, settings
 from pipeline.storekit import ValidationError
 
 QUESTION = {"question": "Should x read 2 or 3?",
@@ -345,6 +345,33 @@ def test_a_written_answer_keeps_who_wrote_it(store, tmp_path, monkeypatch, words
     fix_review.queue(store, 7, "answer", by="op", **words)
     fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
     assert (seen["guidance"], seen["notes"]) == (guidance, notes)
+
+
+@pytest.mark.parametrize("behavior,answer,said", [
+    ("3", {"label": "B"}, "B: 3"),
+    ("3", {"label": "B", "text": "keep 2 as a fallback"}, "B: 3\nkeep 2 as a fallback"),
+    ("", {"label": "B"}, "B"),
+])
+def test_a_chosen_reading_whose_base_is_gone_is_re_solved_on_it(store, tmp_path, monkeypatch,
+                                                                 behavior, answer, said):
+    question = {**QUESTION, "options": [QUESTION["options"][0],
+                                        {"label": "B", "behavior": behavior}]}
+    _run(store, ending="fix-disputed", question=question)
+    monkeypatch.setattr(propose, "result_dir", lambda n: tmp_path / f"issue-{n}")
+    (tmp_path / "issue-7").mkdir()
+    (tmp_path / "issue-7" / "result.json").write_text(
+        json.dumps({"ending": "fix-disputed", "base_sha": "a" * 40, "base_tier": 1}))
+    (tmp_path / "issue-7" / "question.json").write_text(json.dumps({"question": question}))
+
+    def gone(sha: str, tier: int) -> prove.PinnedBase:
+        raise prove.NoBase("the base image is not on this machine")
+    monkeypatch.setattr(prove, "held", gone)
+    seen = {}
+    monkeypatch.setattr(fix_review_runner, "solve", lambda s, n, **kw: seen.update(kw) or (
+        {"ending": "no-fix", "detail": "d", "result": {}}, None))
+    fix_review.queue(store, 7, "answer", by="op", answer=answer)
+    status, _ = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
+    assert status == "done" and seen["guidance"] == ASKED + "A maintainer answered: " + said
 
 
 def _taken_back(store: IssueStore, req: dict) -> None:
