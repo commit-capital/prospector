@@ -43,7 +43,7 @@ import os
 from collections.abc import Callable
 
 from issue_triage import issue_gates, reproduce_issue
-from pipeline import headless_agent, settings, verdict_log
+from pipeline import authoring, headless_agent, settings, verdict_log
 
 # Reading a patch and its surrounding code, without writing any.
 AGENT_TIMEOUT_SECONDS = 900
@@ -69,15 +69,7 @@ _QUESTIONS = {
                      "defect or symptom the report names — a report may name several — and "
                      "say whether this change addresses it; one argued already handled on "
                      "the base counts only when you found the code that handles it."),
-    "design": ("Would a careful maintainer of this repository merge the change as written? "
-               "Look for a rule or predicate written more than once, in the change or across "
-               "languages and files, where one definition could be shared; code that "
-               "re-implements what the worktree already has (search for it); work redone on "
-               "data the code already holds, such as a re-query or re-read; code in the wrong "
-               "module or layer for this repository; names, structure or idioms that do not "
-               "match the surrounding code; and size a smaller change would not need. Judge "
-               "what a maintainer would hold the merge for, not taste. Name each problem with "
-               "its file:line, and for duplication the code it repeats."),
+    "design": authoring.DESIGN_QUESTION,
 }
 
 # What each lens returns beyond the verdict, keyed by issue_gates.REVIEW_LENSES.

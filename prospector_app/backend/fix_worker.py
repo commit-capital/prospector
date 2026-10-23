@@ -1026,8 +1026,10 @@ def _author_fix(n: int, claimed: dict) -> None:
     verdict, patch, review = authored
     rounds: list[dict] = []
     if review["verdict"] != "safe":
-        objection = objections.build("fix-review", str(review.get("reason") or ""),
-                                     origin={"concerns": list(review.get("concerns") or [])})
+        concerns = [str(c) for c in review.get("concerns") or []]
+        objection = objections.build("fix-review", "\n".join(
+            [str(review.get("reason") or "")] + [f"- {c}" for c in concerns]),
+            origin={"concerns": concerns})
         if not _may_continue(rec, objection):
             _resubmit(n, "abort")
             _hand_back(n, claimed, f"The reviewing agent rejected the change: "

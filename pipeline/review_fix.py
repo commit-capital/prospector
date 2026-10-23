@@ -8,16 +8,21 @@ lands in. Its prompt asks for a reason to reject
 rather than an opinion, because an author grading its own work is the one
 verdict worth nothing.
 
-`review` never raises. Every way of not getting an explicit `safe` — a refusal,
-a malformed answer, a timeout, a crashed process — returns `unsafe`, so the
-push side is unreachable by breaking the reviewer.
+The change is read twice, by a reviewer per lens (`LENSES`): `scope-safety`
+looks for harm beyond the goal, and `design` asks whether a maintainer would
+merge it as written (`authoring.DESIGN_QUESTION`, the question the issue-fix
+lane asks too). Either one's rejection rejects the change.
+
+`review` never raises. Every way of not getting an explicit `safe` from both —
+a refusal, a malformed answer, a timeout, a crashed process — returns `unsafe`,
+so the push side is unreachable by breaking a reviewer.
 """
 from __future__ import annotations
 
 import os
 from collections.abc import Callable
 
-from pipeline import headless_agent
+from pipeline import authoring, headless_agent
 
 # Reading a patch and its surrounding code, without writing any.
 AGENT_TIMEOUT_SECONDS = 900
@@ -39,15 +44,7 @@ __GOAL__
 __FINDINGS____SUMMARY__The worktree at __WORKTREE__ holds the code this change applies to. Read
 whatever you need there.
 
-Your job is to REFUTE this change — to find the reason it must not be pushed.
-Look for:
-  - behavior that changes beyond what the goal asked for
-  - edits to files, lines, or formatting the goal did not require
-  - callers, subclasses, or tests outside the diff that this breaks
-  - a test weakened, skipped, deleted, or made to pass without fixing anything
-  - error handling, validation, or a boundary check quietly removed
-  - a guess at intent that the pull request's author would dispute
-  - anything that reads as plausible but that you cannot verify against the code
+__QUESTION__
 
 Judge the change as written, not the goal it was aimed at: a change that fixes
 the right problem the wrong way is unsafe.
@@ -66,6 +63,24 @@ Your final message must be exactly one JSON object, nothing else:
    "reason": "<one or two sentences: what you checked, or what is wrong>",
    "concerns": ["<each specific problem, if any>"]}
 """
+
+# The one question each reviewer asks of the change, keyed by LENSES.
+_QUESTIONS = {
+    "scope-safety": """\
+Your job is to REFUTE this change — to find the reason it must not be pushed.
+Look for:
+  - behavior that changes beyond what the goal asked for
+  - edits to files, lines, or formatting the goal did not require
+  - callers, subclasses, or tests outside the diff that this breaks
+  - a test weakened, skipped, deleted, or made to pass without fixing anything
+  - error handling, validation, or a boundary check quietly removed
+  - a guess at intent that the pull request's author would dispute
+  - anything that reads as plausible but that you cannot verify against the code""",
+    "design": ("Your job is to REFUTE this change on its design alone — to find the "
+               "reason a maintainer would not merge it. " + authoring.DESIGN_QUESTION),
+}
+
+LENSES = tuple(_QUESTIONS)
 
 
 # The review provider's summary is prose the reviewer reads for context only.
@@ -99,13 +114,14 @@ def _summary_block(review_summary: str) -> str:
 
 
 def _prompt(worktree: str, patch: str, pr: int, goal: str,
-            findings: list[dict] | None, review_summary: str) -> str:
+            findings: list[dict] | None, review_summary: str, lens: str) -> str:
     return headless_agent.fill(PROMPT, {
         "__PR__": pr,
         "__GOAL__": goal.strip(),
         "__FINDINGS__": _findings_block(findings),
         "__SUMMARY__": _summary_block(review_summary),
         "__WORKTREE__": worktree,
+        "__QUESTION__": _QUESTIONS[lens],
         "__PATCH__": _clip(patch),
     })
 
@@ -120,20 +136,40 @@ def _unsafe(reason: str, failed: bool = False) -> dict:
 def review(worktree: str, patch: str, *, pr: int, goal: str,
            findings: list[dict] | None = None, review_summary: str = "",
            on_event: Callable[[tuple], None] | None = None) -> dict:
-    """Judge `patch` against `goal`, returning
+    """Judge `patch` against `goal` under every lens in LENSES, returning
     {"verdict": "safe"|"unsafe", "reason": str, "concerns": list[str]}.
 
-    Only a well-formed, explicit `safe` returns safe; every other outcome,
-    including a failure of the reviewer itself, returns unsafe with what went
-    wrong as the reason. A reviewer that never reached a verdict — it crashed,
-    timed out, or answered without one — also carries `failed: True`, so the
-    caller can tell a judgment on the change from the machine's failure to
-    judge it."""
+    Only a well-formed, explicit `safe` from every lens returns safe. A lens
+    that rejects the change rejects it, its reason and concerns named by lens.
+    A lens that never reached a verdict — it crashed, timed out, or answered
+    without one — makes the answer unsafe with `failed: True` when no other
+    lens judged it unsafe, so the caller can tell a judgment on the change from
+    the machine's failure to judge it."""
     worktree = os.path.realpath(worktree)
+    answers = {lens: _judge(_prompt(worktree, patch, pr, goal, findings, review_summary, lens),
+                            worktree, on_event)
+               for lens in LENSES}
+    rejected = {lens: a for lens, a in answers.items()
+                if a["verdict"] != "safe" and not a.get("failed")}
+    failed = {lens: a for lens, a in answers.items() if a.get("failed")}
+    named = rejected or failed or answers
+    out: dict = {
+        "verdict": "unsafe" if rejected or failed else "safe",
+        "reason": "; ".join(f"{lens}: {a['reason']}" for lens, a in named.items()
+                            if a["reason"]),
+        "concerns": [f"{lens}: {c}" for lens, a in named.items() for c in a["concerns"]],
+    }
+    if failed and not rejected:
+        out["failed"] = True
+    return out
+
+
+def _judge(prompt: str, worktree: str,
+           on_event: Callable[[tuple], None] | None) -> dict:
+    """One reviewer's answer to `prompt`, as `review` reads it."""
     try:
         text = headless_agent.run_agent(
-            _prompt(worktree, patch, pr, goal, findings, review_summary),
-            allow_gh=False, cwd=worktree, edit_root=None, read_root=worktree,
+            prompt, allow_gh=False, cwd=worktree, edit_root=None, read_root=worktree,
             env_allow=(),
             timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event)
     except RuntimeError as e:
@@ -143,13 +179,12 @@ def review(worktree: str, patch: str, *, pr: int, goal: str,
     except ValueError:
         return _unsafe(f"the reviewing agent gave no usable verdict: {text[-300:]}",
                        failed=True)
+    raw = verdict.get("concerns")
+    concerns = [str(c) for c in raw] if isinstance(raw, list) else []
     if verdict.get("verdict") != "safe":
-        raw = verdict.get("concerns")
-        concerns = [str(c) for c in raw] if isinstance(raw, list) else []
         return {"verdict": "unsafe",
                 "reason": str(verdict.get("reason")
                               or "the reviewing agent did not return a verdict"),
                 "concerns": concerns}
-    raw = verdict.get("concerns")
     return {"verdict": "safe", "reason": str(verdict.get("reason") or ""),
-            "concerns": [str(c) for c in raw] if isinstance(raw, list) else []}
+            "concerns": concerns}
