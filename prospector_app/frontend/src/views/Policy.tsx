@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
-import { api, type TrustBar, type TrustLadder, type TrustRate, type TrustType } from "../api";
+import {
+  api, type ReviewerCard, type ReviewerPolicy, type TrustBar, type TrustLadder, type TrustRate,
+  type TrustType,
+} from "../api";
 
 /** What each action type does, for an operator meeting the ladder cold. */
 const TYPE_LABELS: Record<string, { label: string; hint: string }> = {
@@ -61,6 +64,82 @@ function RungCell({ t, ladder }: { t: TrustType; ladder: TrustLadder }) {
   );
 }
 
+/** `hits` of `n` as a rate, or "too few cases" below the floor. */
+function Ratio({ hits, n, min }: { hits: number; n: number; min: number }) {
+  if (n < min) return <span className="muted small">too few cases ({n})</span>;
+  return <span>{pct(hits / n)} <span className="muted small">of {n}</span></span>;
+}
+
+function subjectHref(kind: "pr" | "issue", n: number): string {
+  return kind === "pr" ? `/prs/list?pr=${n}` : `/issues?issue=${n}`;
+}
+
+/** Prospector's own reviewers: how each prompt and model has fared against
+ *  operator labels, and the recent runs whose outcome suggests a label. */
+function Reviewers() {
+  const [policy, setPolicy] = useState<ReviewerPolicy | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api.reviewerPolicy().then(setPolicy)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+  }, []);
+  if (error) return <p className="chip chip-red">{error}</p>;
+  if (!policy) return <p className="muted">reading reviewer runs…</p>;
+  const min = policy.min_cases;
+  const row = (c: ReviewerCard) => (
+    <tr key={`${c.reviewer}-${c.prompt_sha}-${c.model}`}>
+      <td>{c.reviewer}</td>
+      <td><code>{c.prompt_sha.slice(0, 7)}</code></td>
+      <td>{c.model}</td>
+      <td>{c.runs}</td>
+      <td>{c.runs ? pct(c.failed / c.runs) : "—"}</td>
+      <td>{c.labeled}</td>
+      <td><Ratio hits={c.caught} n={c.must_catch} min={min} /></td>
+      <td><Ratio hits={c.blocked} n={c.should_pass} min={min} /></td>
+      <td>{c.under}</td>
+      <td>{c.over}</td>
+    </tr>
+  );
+  return (
+    <>
+      <h2>Reviewers</h2>
+      <p className="muted small" style={{ maxWidth: 720 }}>
+        Each prompt and model of Prospector&rsquo;s own reviewers, scored against the
+        verdicts operators labeled. Catch rate is how often it blocked a case that
+        should block; false blocks, how often it blocked one that should pass. Runs
+        and failures count the last {policy.window_days} days.
+      </p>
+      {policy.scorecard.length === 0 ? <p className="muted">No reviewer runs recorded yet.</p> : (
+        <table className="trust-table">
+          <thead>
+            <tr>
+              <th>Reviewer</th><th>Prompt</th><th>Model</th><th>Runs</th><th>Failed</th>
+              <th>Labeled</th><th>Catch rate</th><th>False blocks</th><th>Too lenient</th>
+              <th>Too strict</th>
+            </tr>
+          </thead>
+          <tbody>{policy.scorecard.map(row)}</tbody>
+        </table>
+      )}
+      <h3>Runs to label</h3>
+      {policy.queue.length === 0 ? <p className="muted">Nothing to label right now.</p> : (
+        <ul>
+          {policy.queue.map((s) => (
+            <li key={s.verdict_id}>
+              <b>{s.reviewer}</b> said <b>{s.verdict}</b> on{" "}
+              <a href={subjectHref(s.subject_kind, s.subject)}>
+                {s.subject_kind === "pr" ? "PR" : "issue"} #{s.subject}
+              </a>
+              {" "}· suggests <b>{s.suggests}</b>
+              <div className="muted small">{s.why}</div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
 export default function Policy() {
   const [ladder, setLadder] = useState<TrustLadder | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -115,6 +194,7 @@ export default function Policy() {
       <p className="muted small" style={{ maxWidth: 720 }}>
         Rungs: {ladder.rungs.map((r) => `${r} — ${RUNG_HINTS[r] ?? ""}`).join("; ")}.
       </p>
+      <Reviewers />
     </div>
   );
 }

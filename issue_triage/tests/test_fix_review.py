@@ -912,3 +912,14 @@ def test_a_hand_back_s_status_gives_the_reason_it_was_judged_for(store):
     _handed_back(store, reason="handed-back at this head")
     assert fix_review.fix_status(store.load_issue(7)) == (
         "review", "#9 handed back: CI still fails after a re-run")
+
+
+def test_a_queued_request_names_its_source_in_the_thread(tmp_path):
+    store = IssueStore(tmp_path)
+    store.save_issue({"issue": 5, "meta": {"title": "t", "state": "open", "body": "b",
+                                           "updated_at": "2026-10-01T00:00:00Z"}})
+    ok, why = fix_review.queue(store, 5, "solve", by="alice", source="public",
+                               guidance="please retry")
+    assert ok, why
+    issue = store.load_issue(5)
+    assert issue is not None and issue.fix_thread[-1]["source"] == "public"

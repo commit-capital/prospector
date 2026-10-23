@@ -86,3 +86,24 @@ def test_set_label_validates(tmp_path):
 
 def test_single_row_read_missing_is_none(tmp_path):
     assert Store(tmp_path).review_verdict(999) is None
+
+
+def test_labeled_filter(tmp_path):
+    store = Store(tmp_path)
+    vid = _append(store)
+    _append(store, subject=8)
+    store.set_review_verdict_label(vid, {"expected": "fail"})
+    assert [r.id for r in store.review_verdicts(labeled=True)] == [vid]
+    assert [r.subject for r in store.review_verdicts(labeled=False)] == [8]
+
+
+def test_clear_inputs_spares_labeled_and_recent(tmp_path):
+    store = Store(tmp_path)
+    blob = gzip.compress(b"{}")
+    old = _append(store, at="2026-01-01T00:00:00+00:00", inputs_gz=blob)
+    kept = _append(store, at="2026-01-01T00:00:00+00:00", inputs_gz=blob)
+    store.set_review_verdict_label(kept, {"expected": "pass"})
+    recent = _append(store, at="2026-10-01T00:00:00+00:00", inputs_gz=blob)
+    assert store.clear_review_verdict_inputs("2026-06-01T00:00:00+00:00") == 1
+    assert store.review_verdict_inputs(old) is None
+    assert store.review_verdict_inputs(kept) == blob and store.review_verdict_inputs(recent) == blob

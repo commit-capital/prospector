@@ -63,3 +63,13 @@ def test_cli_default_model_is_named(tmp_path):
     store = Store(tmp_path)
     _record(store, model=None)
     assert store.review_verdicts()[0].model == "cli-default"
+
+
+def test_record_clears_expired_inputs(tmp_path):
+    store = Store(tmp_path)
+    old = store.append_review_verdict(
+        at="2000-01-01T00:00:00+00:00", reviewer="design", subject_kind="pr", subject=1,
+        head_sha=None, base_sha=None, prompt_sha="p", model="m", verdict="pass", data={},
+        inputs_gz=gzip.compress(b"{}"))
+    assert _record(store) is not None
+    assert store.review_verdict_inputs(old) is None

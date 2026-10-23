@@ -5,7 +5,8 @@ Each reviewer's entry point calls `record` with the subject its caller names;
 an eval run names none and records nothing. A reviewer's `verdict` is one of
 `VERDICTS[reviewer]`, least severe first, its failure value last. `prompt_sha`
 identifies the prompt templates a run used and `logic` the version of the
-reviewer's deterministic adjustments. A failed write is reported and never
+reviewer's deterministic adjustments. Each write also clears the inputs of
+unlabeled runs older than RETENTION_DAYS. A failed write is reported and never
 fails the review.
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ import gzip
 import hashlib
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from typing import Literal, NamedTuple
 
 from pipeline import storekit
@@ -28,6 +30,7 @@ VERDICTS: dict[str, tuple[str, ...]] = {
     "fixability": ("go", "ask", "skip", "failed"),
 }
 REVIEWERS: tuple[str, ...] = tuple(VERDICTS)
+RETENTION_DAYS = 90
 
 
 class Subject(NamedTuple):
@@ -50,13 +53,17 @@ def record(reviewer: str, subject: Subject | None, *, verdict: str, prompt_sha: 
     if subject is None:
         return None
     blob = gzip.compress(json.dumps(inputs, sort_keys=True).encode())
+    vid = None
     try:
-        return (store or Store()).append_review_verdict(
+        st = store or Store()
+        vid = st.append_review_verdict(
             at=storekit.now(), reviewer=reviewer, subject_kind=subject.kind,
             subject=subject.number, head_sha=head_sha, base_sha=base_sha,
             prompt_sha=prompt_sha, model=model or "cli-default", verdict=verdict, data=data,
             inputs_gz=blob)
+        expired = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
+        st.clear_review_verdict_inputs(expired.isoformat(timespec="seconds"))
     except Exception as e:  # noqa: BLE001 — a lost record must never fail the review
         print(f"verdict_log: could not record {reviewer} on {subject.kind} "
               f"#{subject.number}: {e}", file=sys.stderr)
-        return None
+    return vid

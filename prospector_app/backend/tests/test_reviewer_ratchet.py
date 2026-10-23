@@ -1,0 +1,276 @@
+"""reviewer_ratchet: label suggestions from stored outcomes, and each reviewer
+configuration's scorecard, both derived on read."""
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+
+from pipeline.storekit import VerdictRecord
+from prospector_app.backend import reviewer_ratchet as rr
+
+AT = "2026-10-20T00:00:00+00:00"
+LATER = "2026-10-21T00:00:00+00:00"
+
+
+def _row(reviewer: str, verdict: str, *, vid: int = 1, kind: str = "pr", n: int = 7,
+         head: str | None = "h1", label: dict | None = None, at: str = AT) -> VerdictRecord:
+    return VerdictRecord(id=vid, at=at, reviewer=reviewer, subject_kind=kind, subject=n,
+                         head_sha=head, base_sha=None, prompt_sha="p", model="opus",
+                         verdict=verdict, data={}, label=label)
+
+
+def _facts(*rows: VerdictRecord, prs: dict | None = None, pr_events: dict | None = None,
+           issues: dict | None = None, fix_runs: list | None = None) -> rr.Facts:
+    return rr.Facts(rows=list(rows), prs=prs or {}, pr_events=pr_events or {},
+                    issues=issues or {}, fix_runs=fix_runs or [])
+
+
+def _merge(**over) -> dict:
+    return {"kind": "merge", "pr": 7, "status": "merged", "dry_run": False, "at": LATER, **over}
+
+
+def _issue(**over) -> dict:
+    return {"state": "open", "state_reason": None, "fix_followup": None,
+            "fix_run_proposal": None, "second_opinion": None, "fix_choice": None,
+            "fix_scan": None, "links_github": None, "fix_thread": None, **over}
+
+
+def _one(facts: rr.Facts) -> rr.Signal:
+    [sig] = rr.signals(facts)
+    return sig
+
+
+def _override(head: str) -> list[dict]:
+    return [_merge(security_override="known risk"),
+            _merge(status="started", head_sha=head, security_override="known risk")]
+
+
+def test_merged_over_yellow():
+    sig = _one(_facts(_row("security", "YELLOW"), pr_events={7: _override("h1")}))
+    assert (sig.key, sig.suggests) == ("merged-over-yellow", "GREEN")
+
+
+def test_a_merge_over_another_heads_yellow_is_no_signal():
+    assert rr.signals(_facts(_row("security", "YELLOW"), pr_events={7: _override("h9")})) == []
+
+
+@pytest.mark.parametrize("reviewer,verdict,suggests", [
+    ("security", "RED", "GREEN"), ("design", "fail", "pass")])
+def test_merged_upstream(reviewer, verdict, suggests):
+    sig = _one(_facts(_row(reviewer, verdict), prs={7: {"state": "merged", "head_sha": "h2"}}))
+    assert (sig.key, sig.suggests) == ("merged-upstream", suggests)
+    assert "reverted" in sig.why
+
+
+def test_our_own_merge_is_not_merged_upstream():
+    facts = _facts(_row("design", "fail"), prs={7: {"state": "merged", "head_sha": "h1"}},
+                   pr_events={7: [_merge()]})
+    assert rr.signals(facts) == []
+
+
+def test_guidance_after_pass():
+    run = {"pr": 7, "trigger": None,
+           "stats": {"head_sha": "h1", "guidance": "reuse the pad helper"}}
+    sig = _one(_facts(_row("design", "pass"), fix_runs=[run]))
+    assert (sig.key, sig.suggests) == ("guidance-after-pass", "fail")
+    assert "reuse the pad helper" in sig.why
+
+
+def test_guidance_on_another_head_or_from_the_hunter_is_no_signal():
+    other = {"pr": 7, "trigger": None, "stats": {"head_sha": "h9", "guidance": "g"}}
+    hunter = {"pr": 7, "trigger": "autohunt", "stats": {"head_sha": "h1", "guidance": "g"}}
+    assert rr.signals(_facts(_row("design", "pass"), fix_runs=[other, hunter])) == []
+
+
+@pytest.mark.parametrize("followup", [
+    {"closed_as": "closed"}, {"closed_as": "merged", "ci_attribution": {"files": {"a": "caused"}}}])
+def test_closed_unmerged(followup):
+    sig = _one(_facts(_row("fix-review", "safe", kind="issue", n=9),
+                      issues={9: _issue(fix_followup=followup)}))
+    assert (sig.key, sig.suggests) == ("closed-unmerged", "unsafe")
+
+
+@pytest.mark.parametrize("over", [
+    {"second_opinion": [{"pr": 15440, "verdict": "gap", "why": "misses the skip branch"}]},
+    {"fix_choice": {"pr": 15440, "by": "op", "at": LATER, "reason": "theirs is complete"}}])
+def test_rival_better(over):
+    sig = _one(_facts(_row("fix-review", "safe", kind="issue", n=9), issues={9: _issue(**over)}))
+    assert (sig.key, sig.suggests) == ("rival-better", "unsafe")
+
+
+def test_sent_back_by_an_operator():
+    entry = {"at": LATER, "by": "Alex", "source": "operator", "action": "send-back",
+             "text": "test the call site"}
+    sig = _one(_facts(_row("fix-review", "safe", kind="issue", n=9),
+                      issues={9: _issue(fix_thread=[entry])}))
+    assert (sig.key, sig.suggests) == ("sent-back", "unsafe")
+    assert "test the call site" in sig.why
+
+
+@pytest.mark.parametrize("source", ["followup", "hunter", "public", None])
+def test_only_an_operators_send_back_is_a_signal(source):
+    entry = {"at": LATER, "by": "alice", "source": source, "action": "send-back", "text": "x"}
+    assert rr.signals(_facts(_row("fix-review", "safe", kind="issue", n=9),
+                             issues={9: _issue(fix_thread=[entry])})) == []
+
+
+def test_a_send_back_before_the_run_is_no_signal():
+    entry = {"at": "2026-10-01T00:00:00+00:00", "by": "Alex", "source": "operator",
+             "action": "send-back", "text": "x"}
+    assert rr.signals(_facts(_row("fix-review", "safe", kind="issue", n=9),
+                             issues={9: _issue(fix_thread=[entry])})) == []
+
+
+def test_proposed_over_hold():
+    sig = _one(_facts(_row("trust-boundary", "hold", kind="issue", n=9),
+                      issues={9: _issue(fix_run_proposal={"pr": 20})}))
+    assert (sig.key, sig.suggests) == ("proposed-over-hold", "pass")
+
+
+def test_fixed_elsewhere():
+    scan = {"status": "fixed", "fixed_by": 31, "checked_at": LATER}
+    sig = _one(_facts(_row("fixability", "skip", kind="issue", n=9),
+                      issues={9: _issue(fix_scan=scan)}))
+    assert (sig.key, sig.suggests) == ("fixed-elsewhere", "go")
+
+
+def test_a_skip_as_already_fixed_or_a_fix_found_before_it_is_no_signal():
+    scan = {"status": "fixed", "fixed_by": 31, "checked_at": LATER}
+    already = replace(_row("fixability", "skip", kind="issue", n=9),
+                      data={"kind": "already-fixed"})
+    assert rr.signals(_facts(already, issues={9: _issue(fix_scan=scan)})) == []
+    early = {**scan, "checked_at": "2026-10-01T00:00:00+00:00"}
+    assert rr.signals(_facts(_row("fixability", "skip", kind="issue", n=9),
+                             issues={9: _issue(fix_scan=early)})) == []
+
+
+def test_attempt_outcomes_judge_only_the_latest_run():
+    old = _row("fix-review", "safe", kind="issue", n=9, vid=1)
+    new = _row("fix-review", "safe", kind="issue", n=9, vid=2, at=LATER)
+    facts = _facts(old, new, issues={9: _issue(fix_followup={"closed_as": "closed"})})
+    assert [s.verdict_id for s in rr.signals(facts)] == [2]
+
+
+def test_a_gap_the_revision_closed_or_an_earlier_choice_is_no_signal():
+    closed = [{"pr": 15440, "verdict": "gap-closed", "why": "answered"}]
+    early = {"pr": 15440, "by": "op", "at": "2026-10-01T00:00:00+00:00"}
+    for over in ({"second_opinion": closed}, {"fix_choice": early}):
+        assert rr.signals(_facts(_row("fix-review", "safe", kind="issue", n=9),
+                                 issues={9: _issue(**over)})) == []
+
+
+def test_a_send_back_belongs_to_the_run_before_it():
+    first = _row("fix-review", "safe", kind="issue", n=9, vid=1)
+    second = _row("fix-review", "safe", kind="issue", n=9, vid=2,
+                  at="2026-10-20T12:00:00+00:00")
+    entry = {"at": LATER, "by": "Alex", "source": "operator", "action": "send-back", "text": "x"}
+    facts = _facts(first, second, issues={9: _issue(fix_thread=[entry])})
+    assert [s.verdict_id for s in rr.signals(facts)] == [2]
+
+
+def test_replay_rows_get_no_signals():
+    row = _row("fix-review", "safe", kind="replay", n=9)
+    assert rr.signals(_facts(row, issues={9: _issue(fix_followup={"closed_as": "closed"})})) == []
+
+
+def test_labeled_rows_are_never_suggested():
+    row = _row("security", "RED", label={"expected": "RED"})
+    assert rr.signals(_facts(row, prs={7: {"state": "merged", "head_sha": "h1"}})) == []
+
+
+def test_empty_facts_give_no_signals():
+    assert rr.signals(_facts()) == []
+
+
+def test_newest_first_and_one_per_row():
+    old = _row("design", "fail", vid=1)
+    new = replace(_row("security", "RED", vid=2), at=LATER)
+    facts = _facts(old, new, prs={7: {"state": "merged", "head_sha": "h2"}})
+    assert [s.verdict_id for s in rr.signals(facts)] == [2, 1]
+
+
+def test_gather_makes_five_queries(monkeypatch):
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    from issue_triage.issue_store import IssueStore
+    from pipeline import verdict_log
+    from pipeline.store import Store
+    from prospector_app.backend import data, issue_data
+
+    st = Store()
+    monkeypatch.setattr(data, "_store", st)
+    issue_data.set_store_root(None)
+    for n in (9801, 9802, 9803):
+        st.save_pr({"pr": n, "meta": {"title": "t", "author": "a", "state": "open",
+                                      "draft": False, "head_sha": "h", "checked_at": AT}})
+        IssueStore().save_issue({"issue": n, "meta": {"title": "t", "state": "open",
+                                                      "updated_at": AT, "created_at": AT}})
+        for kind, reviewer, verdict in (("pr", "design", "pass"), ("issue", "fixability", "go")):
+            verdict_log.record(reviewer, verdict_log.Subject(kind, n), verdict=verdict,  # type: ignore[arg-type]
+                               prompt_sha="p", model="m", data={}, inputs={}, store=st)
+    since = rr.window_start()
+    rr.gather(since)  # warm: engines, schema checks
+    statements: list[str] = []
+
+    def count(conn, cursor, statement, *args) -> None:
+        statements.append(statement)
+    event.listen(Engine, "before_cursor_execute", count)
+    try:
+        facts = rr.gather(since)
+    finally:
+        event.remove(Engine, "before_cursor_execute", count)
+    assert {9801, 9802, 9803} <= set(facts.prs) and {9801, 9802, 9803} <= set(facts.issues)
+    assert len(statements) == 5, statements
+
+
+def _labeled(verdict: str, expected: str, *, prompt: str = "p", vid: int = 1) -> VerdictRecord:
+    return replace(_row("design", verdict, vid=vid, label={"expected": expected}), prompt_sha=prompt)
+
+
+def test_scorecard_counts_by_configuration():
+    labeled = [_labeled("fail", "fail", vid=1), _labeled("pass", "fail", vid=2),
+               _labeled("fail", "pass", vid=3), _labeled("pass", "pass", prompt="q", vid=4)]
+    cards = {c.prompt_sha: c for c in rr.scorecard([], labeled)}
+    p = cards["p"]
+    assert (p.labeled, p.must_catch, p.caught, p.should_pass, p.blocked) == (3, 2, 1, 1, 1)
+    assert (p.under, p.over) == (1, 1)
+    assert (cards["q"].labeled, cards["q"].should_pass, cards["q"].blocked) == (1, 1, 0)
+
+
+def test_scorecard_counts_failures_from_the_window():
+    window = [_row("design", "pass", vid=1), _row("design", "failed", vid=2)]
+    [card] = rr.scorecard(window, [])
+    assert (card.runs, card.failed, card.labeled) == (2, 1, 0)
+
+
+def test_policy_reviewers_route(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from prospector_app.backend import app as appmod
+    monkeypatch.setattr(rr, "gather", lambda since: _facts(
+        _row("design", "fail"), prs={7: {"state": "merged", "head_sha": "h2"}}))
+    monkeypatch.setattr(rr, "_labeled_rows", lambda: [_labeled("fail", "fail")])
+    body = TestClient(appmod.app).get("/api/policy/reviewers").json()
+    assert body["min_cases"] == rr.MIN_CASES and body["window_days"] == rr.SIGNAL_WINDOW_DAYS
+    assert [s["key"] for s in body["queue"]] == ["merged-upstream"]
+    assert body["scorecard"][0]["reviewer"] == "design"
+
+
+def test_gather_skips_the_ledger_without_a_design_pass(monkeypatch):
+    from pipeline.store import Store
+    from prospector_app.backend import data
+
+    st = Store()
+    monkeypatch.setattr(data, "_store", st)
+    calls: list[dict] = []
+    monkeypatch.setattr(st, "runs", lambda **kw: calls.append(kw) or [])
+    monkeypatch.setattr(st, "review_verdicts", lambda **kw: [_row("design", "fail")])
+    monkeypatch.setattr(st, "pr_rows", lambda paths, numbers: [])
+    rr.gather(rr.window_start())
+    assert calls == []
+    monkeypatch.setattr(st, "review_verdicts", lambda **kw: [
+        _row("design", "pass", at=LATER), _row("design", "pass", vid=2)])
+    rr.gather(rr.window_start())
+    assert calls == [{"since": AT, "phase": "fix:single", "prs": [7]}]

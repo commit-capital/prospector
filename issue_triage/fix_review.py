@@ -299,7 +299,7 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
     if given.get("label"):
         words = f"Answered {given['label']}" + (f": {words}" if words else "")
     if words:
-        issue.append_fix_thread({"at": section["queued_at"], "by": by,
+        issue.append_fix_thread({"at": section["queued_at"], "by": by, "source": source,
                                  "kind": "answer" if action == "answer" else "comment",
                                  "action": action, "text": words})
     return True, f"{action} queued"

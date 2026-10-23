@@ -64,6 +64,7 @@ from prospector_app.backend import pr_history
 from prospector_app.backend import pr_search
 from prospector_app.backend import repo_meta
 from prospector_app.backend import review_refresh
+from prospector_app.backend import reviewer_ratchet
 from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
 from prospector_app.backend import suggested_actions
@@ -1173,6 +1174,13 @@ def get_capabilities():
     return {"login": c.get("login"), "merge_upstream": c.get("merge_upstream", False),
             "reviewers": c.get("reviewers") or [], "store_schema": c.get("store_schema"),
             "write_block": c.get("write_block")}
+
+
+@app.get("/api/policy/reviewers")
+def policy_reviewers():
+    """Each Prospector-run reviewer's scorecard and the runs to label
+    (reviewer_ratchet.policy)."""
+    return reviewer_ratchet.policy()
 
 
 @app.get("/api/policy/trust-ladder")
