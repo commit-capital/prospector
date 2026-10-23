@@ -63,3 +63,26 @@ def test_validation(tmp_path, over):
 
 def test_schema_version_is_38():
     assert schema.STORE_SCHEMA_VERSION == 38
+
+
+def test_set_label_round_trip(tmp_path):
+    store = Store(tmp_path)
+    vid = _append(store)
+    assert store.set_review_verdict_label(vid, {"expected": "fail", "by": "op"}) is True
+    rec = store.review_verdict(vid)
+    assert rec is not None and rec.label == {"expected": "fail", "by": "op"}
+    assert store.review_verdicts()[0].label == {"expected": "fail", "by": "op"}
+
+
+def test_set_label_on_missing_id_is_false(tmp_path):
+    assert Store(tmp_path).set_review_verdict_label(999, {"expected": "pass"}) is False
+
+
+def test_set_label_validates(tmp_path):
+    store = Store(tmp_path)
+    with pytest.raises(ValidationError):
+        store.set_review_verdict_label(_append(store), [])  # type: ignore[arg-type]
+
+
+def test_single_row_read_missing_is_none(tmp_path):
+    assert Store(tmp_path).review_verdict(999) is None
