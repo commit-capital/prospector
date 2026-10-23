@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   api, type IssueDetail, type IssueFixBody, type IssueFixBoundary, type IssueFixCandidate, type IssueFixCoverage,
-  type IssueFixFollowup, type IssueFixIntake, type IssueFixRivalEntry, type IssueFixRound,
+  type IssueFixFollowup, type IssueFixIntake, type IssueFixRound,
   type IssueFixQuestion, type IssueFixReview,
   type IssueFixRun, type IssueFixStatus, type IssueFixThreadEntry,
 } from "../api";
@@ -354,7 +354,6 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
       {(run.revisions?.length ?? 0) > 0 && <ReviewRounds rounds={run.revisions ?? []} />}
       {run.intake && <Intake intake={run.intake} />}
       {run.boundary && <Boundary boundary={run.boundary} />}
-      {(run.second_opinion?.length ?? 0) > 0 && <SecondOpinion entries={run.second_opinion ?? []} />}
       {run.candidates.length > 0 && <Candidates run={run} />}
     </>
   );
@@ -436,32 +435,6 @@ function Intake({ intake }: { intake: IssueFixIntake }) {
           {(intake.hidden ?? []).map((h, i) => <li key={`h${i}`}><b>hidden</b>: {h}</li>)}
         </ul>
       )}
-    </>
-  );
-}
-
-const RIVAL_TONE: Record<IssueFixRivalEntry["verdict"], string> = {
-  covered: "green", "gap-closed": "green", gap: "red", "gap-open": "red", skipped: "muted",
-};
-
-function SecondOpinion({ entries }: { entries: IssueFixRivalEntry[] }) {
-  const { prUrl } = useRepoMeta();
-  return (
-    <>
-      <h4>Second opinion</h4>
-      <ul style={{ margin: "4px 0 0 18px" }}>
-        {entries.map((e) => (
-          <li key={e.pr}>
-            <a href={prUrl(e.pr)} target="_blank" rel="noreferrer">#{e.pr}</a>
-            {e.author ? ` by ${e.author}` : ""}{" "}
-            <span className={`chip sm chip-${RIVAL_TONE[e.verdict]}`}>{e.verdict}</span>{" "}
-            <span className="muted">{e.why}</span>
-            {(e.missed?.length ?? 0) > 0 && (
-              <ul style={{ margin: "2px 0 0 18px" }}>{e.missed?.map((m, i) => <li key={i}>{m}</li>)}</ul>
-            )}
-          </li>
-        ))}
-      </ul>
     </>
   );
 }
