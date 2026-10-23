@@ -100,10 +100,15 @@ def review(clone: Path, *, title: str, body: str,
     """The agent's verdict on the report over `clone`, held to what the clone
     shows: cited paths that do not exist are dropped, and a `go` citing none
     reads `ask`. A reply that fails to parse twice raises ValueError."""
+    return review_rendered(clone, title=title, body=body, replies_block=_replies_block(replies))
+
+
+def review_rendered(clone: Path, *, title: str, body: str, replies_block: str) -> dict:
+    """`review` with the replies already rendered, as `judge` records them."""
     clone = Path(clone).resolve()
     prompt = headless_agent.fill(PROMPT, {
         "__CLONE__": str(clone), "__REPORT__": reproduce_issue.report_block(title, body),
-        "__REPLIES__": _replies_block(replies)})
+        "__REPLIES__": replies_block})
     verdict, _ = headless_agent.json_reply(lambda: headless_agent.run_agent(
         prompt, allow_gh=False, cwd=str(clone), read_root=[str(clone)], env_allow=(),
         model=MODEL, timeout=AGENT_TIMEOUT_SECONDS))

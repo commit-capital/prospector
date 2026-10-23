@@ -12,6 +12,7 @@ import pytest
 from issue_triage import intake_audit, second_opinion
 from pipeline import capacity, diffpaths, headless_agent
 from pipeline.evals import issue_redteam as rt
+from pipeline.evals import providers
 from pipeline.store import Store
 
 
@@ -179,7 +180,7 @@ def test_codex_runner_argv_and_last_message(tmp_path: Path, monkeypatch: pytest.
         last.write_text('{"verdict":"clear"}')
         return subprocess.CompletedProcess(argv, 0, stdout="not the answer", stderr="")
     monkeypatch.setattr(subprocess, "run", run)
-    assert rt.codex_runner("/test/codex", model)(
+    assert providers.codex_runner("/test/codex", model)(
         "review this", cwd=str(tmp_path), timeout=15) == '{"verdict":"clear"}'
 
 
@@ -189,13 +190,13 @@ def test_codex_runner_rejects_failure_or_missing_output(
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw:
                         subprocess.CompletedProcess(argv, returncode, stdout="", stderr="failed"))
     with pytest.raises(RuntimeError, match="codex exited"):
-        rt.codex_runner("/test/codex", None)("review", cwd=str(tmp_path))
+        providers.codex_runner("/test/codex", None)("review", cwd=str(tmp_path))
 
 
 def test_provider_restores_runner_after_exception() -> None:
     original = headless_agent.run_agent
     with pytest.raises(RuntimeError):
-        with rt.provider("codex", codex_bin="/test/codex", model=None):
+        with providers.provider("codex", codex_bin="/test/codex", model=None):
             assert headless_agent.run_agent is not original
             raise RuntimeError("stop")
     assert headless_agent.run_agent is original
@@ -230,7 +231,7 @@ def test_claude_model_override_reaches_runner(monkeypatch: pytest.MonkeyPatch) -
         seen.append(model)
         return "answer"
     monkeypatch.setattr(headless_agent, "run_agent", run)
-    with rt.provider("claude", codex_bin="unused", model="chosen-model") as model:
+    with providers.provider("claude", codex_bin="unused", model="chosen-model") as model:
         assert model == "chosen-model"
         headless_agent.run_agent("review", allow_gh=False, cwd=".")
     assert seen == ["chosen-model"]
@@ -261,7 +262,7 @@ def test_claude_bookkeeping_uses_disposable_store(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(headless_agent, "_store", forbidden)
     monkeypatch.setattr(capacity, "account", lambda: capacity.Account(
         key="eval-account", billing="subscription", plan="max", label="test"))
-    with rt.provider("claude", codex_bin="unused", model=None):
+    with providers.provider("claude", codex_bin="unused", model=None):
         local = headless_agent._store()
         root = local.root
         assert local.engine.url.get_backend_name() == "sqlite"

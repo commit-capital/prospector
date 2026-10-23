@@ -182,7 +182,7 @@ def review(clone: Path, diff: Path, *, pr: int, title: str, head_sha: str,
                            head_sha=head_sha, base_sha=base_sha)
 
     try:
-        entry = _entry(clone, diff, pr=pr, head_sha=head_sha, base_sha=base_sha,
+        entry = rendered_entry(clone, diff, pr=pr, head_sha=head_sha, base_sha=base_sha,
                        coverage_record=coverage_record, inputs=inputs)
     except DesignReviewFailed as e:
         note("failed", {"error": str(e)})
@@ -192,8 +192,10 @@ def review(clone: Path, diff: Path, *, pr: int, title: str, head_sha: str,
     return entry
 
 
-def _entry(clone: Path, diff: Path, *, pr: int, head_sha: str, base_sha: str,
-           coverage_record: CoverageRecord | None, inputs: dict[str, str]) -> dict:
+def rendered_entry(clone: Path, diff: Path, *, pr: int, head_sha: str, base_sha: str,
+                   coverage_record: CoverageRecord | None, inputs: dict[str, str]) -> dict:
+    """The review entry from already-rendered prompt `inputs` (title, coverage,
+    docs), as `review` records them; unrecorded."""
     title = inputs["title"]
     prompt = headless_agent.fill(PROMPT, {
         "__PR__": pr, "__TITLE__": title, "__CLONE__": clone, "__DIFF__": diff,
