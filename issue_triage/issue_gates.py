@@ -145,7 +145,7 @@ def reproduction_outcome(red: dict, judge: dict | None, *, gave_up: bool,
     return "reproduced"
 
 
-REVIEW_LENSES = ("root-cause", "scope-safety")
+REVIEW_LENSES = ("root-cause", "scope-safety", "design")
 FIX_PATCH_MAX_CHARS = 200_000
 
 # Diff lines a fix may not carry, with what each one is.
@@ -239,6 +239,18 @@ def give_up_ending(checks: list[dict], ending: str, detail: str) -> tuple[str, s
     return ("sandbox", fault) if fault else (ending, detail)
 
 
+def related_tests_outcome(related: dict) -> str:
+    """How a fix's related existing tests came out, in words. A failure the
+    base shares is waived by fix_proof_bar, and says it proves nothing."""
+    run = related.get("run") or {}
+    if run.get("exit") == gates.SENTINEL_PASS:
+        return "passed"
+    if related.get("base_fails"):
+        return ("failed, and fail on the base too, so they cannot show whether the "
+                "change breaks them")
+    return f"failed (exit {run.get('exit')})"
+
+
 def fix_proof_bar(result: dict) -> tuple[str | None, str]:
     """(None, …) when a fix is proven and reviewed, else the ending it falls
     short at — "fix-unproven" for the host's proof, "fix-rejected" for a
@@ -292,7 +304,7 @@ def fix_proof_bar(result: dict) -> tuple[str | None, str]:
         for review in answers:
             if review.get("verdict") != "safe" or review.get("failed"):
                 return "fix-rejected", f"{reviewer(review)}: {review.get('reason') or 'not safe'}"
-    return None, "proven on the base and safe under both lenses"
+    return None, "proven on the base and safe under every review lens"
 
 
 def latest_reviews(reviews: list[dict] | None) -> list[dict]:

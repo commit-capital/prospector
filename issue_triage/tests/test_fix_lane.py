@@ -16,6 +16,7 @@ import pytest
 from issue_triage import (
     fix_issue,
     fix_lane,
+    issue_gates,
     judge_repro,
     reproduce_issue,
     review_issue_fix,
@@ -323,11 +324,11 @@ def test_the_happy_path_ends_fixed(lane):
     assert res.result["root_cause"] == "off by one in parse"
     assert res.result["changes"] == [{"path": "src/x.ts", "rationale": "return early"}]
     assert res.result["tier"]["tier"] == 2
-    assert [r["lens"] for r in res.result["reviews"]] == ["root-cause", "scope-safety"]
+    assert [r["lens"] for r in res.result["reviews"]] == list(issue_gates.REVIEW_LENSES)
     assert res.result["proof"]["red"]["exit"] == gates.SENTINEL_TEST_FAIL
     assert res.result["proof"]["green"]["exit"] == gates.SENTINEL_PASS
     assert res.result["boundary"]["crossings"] == []
-    assert res.agent_runs == 6
+    assert res.agent_runs == 7
 
 
 def test_the_fix_clone_carries_the_frozen_test_committed(lane):
@@ -519,9 +520,9 @@ def test_the_clones_are_removed_after_a_fault(lane):
 
 
 def test_agent_runs_counts_every_agent_invocation(lane):
-    # reproduce + judge + fix + root-cause + scope-safety + trust-boundary.
+    # reproduce + judge + fix + root-cause + scope-safety + design + trust-boundary.
     res = lane.run()
-    assert res.agent_runs == 6
+    assert res.agent_runs == 7
 
 
 def test_the_happy_path_emits_its_steps_in_order(lane):
@@ -537,7 +538,7 @@ def test_the_happy_path_emits_its_steps_in_order(lane):
     assert "re-gating the fix" in steps
     assert "proving green" in steps
     assert (steps.index("reviewing: root-cause") < steps.index("reviewing: scope-safety")
-            < steps.index("reviewing: trust boundaries"))
+            < steps.index("reviewing: design") < steps.index("reviewing: trust boundaries"))
 
 
 def test_a_passing_compile_continues_to_review_and_fixes(lane, monkeypatch):
@@ -548,7 +549,7 @@ def test_a_passing_compile_continues_to_review_and_fixes(lane, monkeypatch):
     res = lane.run()
     assert res.ending == "fixed" and res.fault is False
     assert res.result["proof"]["compile"]["exit"] == gates.SENTINEL_PASS
-    assert [r["lens"] for r in res.result["reviews"]] == ["root-cause", "scope-safety"]
+    assert [r["lens"] for r in res.result["reviews"]] == list(issue_gates.REVIEW_LENSES)
 
 
 def test_related_tests_the_base_also_fails_do_not_sink_the_fix(lane, monkeypatch):
@@ -741,7 +742,7 @@ def test_the_fix_agent_and_its_clone_carry_the_preservation_tests(lane):
 
 def test_the_reviewers_are_told_what_the_host_observed(lane):
     lane.run()
-    assert len(lane.calls["evidence"]) == 2
+    assert len(lane.calls["evidence"]) == len(issue_gates.REVIEW_LENSES)
     evidence = lane.calls["evidence"][1]
     assert "Preservation tests (src/keep.test.ts)" in evidence
     assert "passed twice" in evidence

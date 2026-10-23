@@ -54,6 +54,21 @@ def test_a_malformed_question_is_refused(monkeypatch, reply):
         dispute_question.draft("t", "b", RESULT)
 
 
+def test_each_reading_shows_its_fixes_and_their_stated_changes():
+    """#669: an option drafted from the tests alone mislabelled a fix whose diff
+    delivered another option's behavior; the drafter sees every fix."""
+    result = {**RESULT, "candidate_patches": [
+        {**p, "fix_patch": f"diff --git a/src/x.ts b/src/x.ts\n+const marker{p['index']} = 1;\n",
+         "verdict": {**p["verdict"], "changes": [
+             {"path": "src/x.ts", "rationale": f"so holds already recorded stop blocking {p['index']}"}]}}
+        for p in RESULT["candidate_patches"]]}
+    block = dispute_question.readings_block(result)
+    reading_b = block[block.index("### Reading B"):]
+    assert "+const marker1 = 1;" in reading_b and "+const marker0" not in reading_b
+    assert "- src/x.ts: so holds already recorded stop blocking 1" in reading_b
+    assert block.index("+const marker0") < block.index("toBe(2)")
+
+
 def test_readings_that_do_not_differ_ask_nothing(monkeypatch):
     _agent(monkeypatch, {"no_question": "same behavior"})
     assert dispute_question.draft("t", "b", RESULT) == {"no_question": "same behavior"}

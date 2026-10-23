@@ -153,3 +153,64 @@ def test_failed_review_records_failed_and_raises(tmp_path, clone, monkeypatch):
                          subject=verdict_log.Subject("issue", 9402))
     [rec] = Store().review_verdicts(subject_kind="issue", subject=9402)
     assert rec.verdict == "failed"
+
+
+EASY = {**GO, "size": "small", "tested": True, "crossings": []}
+
+
+def test_the_agent_s_size_tests_and_crossings_are_kept_to_known_values(clone, monkeypatch):
+    _agent(monkeypatch, {**EASY, "size": "tiny", "tested": "yes",
+                         "crossings": ["secrets", "made-up", "secrets"]})
+    out = fixability.review(clone, title="t", body="b")
+    assert (out["size"], out["tested"], out["crossings"]) == (None, None,
+                                                              ["secrets", "made-up"])
+
+
+@pytest.mark.parametrize("raw", ["network", None, {"kind": "network"}])
+def test_crossings_given_as_anything_but_a_list_read_as_unknown(clone, monkeypatch, raw):
+    _agent(monkeypatch, {**EASY, "crossings": raw})
+    assert fixability.review(clone, title="t", body="b")["crossings"] is None
+
+
+def test_the_prompt_names_every_trust_boundary_kind(clone, monkeypatch):
+    from issue_triage import trust_boundary
+    prompts = _agent(monkeypatch, EASY)
+    fixability.review(clone, title="t", body="b")
+    assert all(f"- {k}:" in prompts[0] for k in trust_boundary.KINDS)
+
+
+def _tiers(monkeypatch):
+    from pipeline import profile
+    configured = profile.parse_profile(
+        {"version": 1, "risk_tiers": {"tier1_globs": ["src/auth/**"]}}, "t")
+    monkeypatch.setattr(profile, "active", lambda: configured)
+
+
+@pytest.mark.parametrize("tri, easy", [
+    (EASY, True),
+    ({**EASY, "verdict": "ask"}, False),
+    ({**EASY, "size": "medium"}, False),
+    ({**EASY, "tested": False}, False),
+    ({**EASY, "crossings": ["validation"]}, False),
+    ({**EASY, "crossings": ["filesystem"]}, False),
+    ({**EASY, "crossings": None}, False),
+    ({**EASY, "code": ["src/auth/login.ts"]}, False),
+    (GO, False),  # judged before the triage asked
+])
+def test_an_easy_fix_is_a_small_tested_go_in_low_risk_code_crossing_nothing(
+        monkeypatch, tri, easy):
+    _tiers(monkeypatch)
+    assert fixability.easy(tri) is easy
+
+
+def test_the_hunter_takes_an_easy_fix_ahead_of_a_more_fixable_one(
+        tmp_path, clone, search, monkeypatch):
+    _tiers(monkeypatch)
+    store = IssueStore(tmp_path)
+    for n, verdict in ((1, {**GO, "fixability": 95}), (2, {**EASY, "fixability": 60}),
+                       (3, {**GO, "fixability": 10})):
+        issue = _issue(store, n)
+        _agent(monkeypatch, verdict)
+        store.edit_issue(n).record_fix_triage(fixability.judge(issue, clone, base_sha="b" * 40))
+    keys = {n: fixability.hunt_key(store.load_issue(n), maintainer=n == 3) for n in (1, 2, 3)}
+    assert sorted(keys, key=keys.get, reverse=True) == [3, 2, 1]

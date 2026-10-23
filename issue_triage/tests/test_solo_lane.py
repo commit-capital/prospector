@@ -261,7 +261,7 @@ def test_a_revision_opens_on_the_earlier_attempt_with_the_guidance(solo, revise)
     assert revise["opened_with"] == "export const x = 3;\n"
     assert (solo["guidance"], solo["notes"]) == ("x must be 2, not 3", "CI fails in x.test.ts")
     assert solo["attempt"]["summary"] == "set x to 3"
-    assert res.ending == "fixed" and res.agent_runs == 4  # agent, two lenses, boundaries
+    assert res.ending == "fixed" and res.agent_runs == 5  # agent, three lenses, boundaries
     assert res.result["boundary"]["crossings"] == []
     assert "+export const x = 2;" in res.result["patch"]
     assert "the reviews pass" in res.detail

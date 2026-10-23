@@ -70,6 +70,17 @@ def test_the_body_names_who_wrote_the_change_and_who_reviewed_it():
     assert reviewers == ["codex:gpt-x", "opus"]
 
 
+def test_related_tests_the_base_also_fails_are_never_reported_as_passing():
+    """#669: ten waived files failed with the fix applied; the body said they pass."""
+    proof = {"compile": {"exit": 0}, "related_tests": {
+        "files": [f"t{i}.test.ts" for i in range(10)], "run": {"exit": 20}, "base_fails": True}}
+    body = _rendered(_result(proof=proof))[1]
+    assert "10 existing test file(s) near the change failed, and fail on the base too" in body
+    assert "change pass" not in body
+    passing = {**proof, "related_tests": {"files": ["t.test.ts"], "run": {"exit": 0}}}
+    assert "1 existing test file(s) near the change passed." in _rendered(_result(proof=passing))[1]
+
+
 def test_a_review_with_no_recorded_model_names_no_reviewer():
     _, body, _ = _rendered()
     assert "reviewing it" not in body

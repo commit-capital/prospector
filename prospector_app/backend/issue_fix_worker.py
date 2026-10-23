@@ -360,6 +360,7 @@ def triage_next(store: IssueStore) -> int | None:
                       "finished": storekit.now(), "trigger": "worker",
                       "stats": {"verdict": record["verdict"], "kind": record.get("kind"),
                                 "fixability": record.get("fixability"),
+                                "easy": fixability.easy(record),
                                 "asked": record.get("asked")}})
     return n
 
@@ -367,10 +368,11 @@ def triage_next(store: IssueStore) -> int | None:
 def hunt(store: IssueStore) -> int | None:
     """Queue a `solve` for the most promising huntable issue the fixability
     triage judged `go` at its current content, a maintainer's ahead of any
-    other, then by fixability, then the newest (`fixability.hunt_key`),
-    within the day's budget and while the lane's AI capacity is open. The
-    triage's replies ride as notes. The issue queued, or None. Reads the app's
-    issue snapshot; the queue write re-checks the issue on the store."""
+    other, then an easy fix, then by fixability, then the newest
+    (`fixability.hunt_key`), within the day's budget and while the lane's AI
+    capacity is open. The triage's replies ride as notes. The issue queued, or
+    None. Reads the app's issue snapshot; the queue write re-checks the issue
+    on the store."""
     from prospector_app.backend import issue_data
 
     issues = issue_data.issues()
