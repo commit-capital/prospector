@@ -486,7 +486,7 @@ def run(spec: LaneSpec, *, workdir: Path,
                                   root_cause=str(fix_verdict["root_cause"]),
                                   test_paths=test_paths + preserve_paths,
                                   evidence=_proof_evidence(result["proof"], authored),
-                                  on_step=on_step)
+                                  worktree_patch=result["patch"], on_step=on_step)
         agent_runs += len(reviews)
         result["reviews"] = reviews
 
@@ -524,7 +524,8 @@ def _proof_bar(spec: LaneSpec, tree: Path, fix_patch: str, result: dict,
     on_step("reviewing: trust boundaries")
     result["boundary"] = trust_boundary.judge(str(tree), spec.base.clone, fix_patch,
                                               title=spec.title, body=spec.body,
-                                              subject=spec.verdict_subject, base_sha=spec.base.sha)
+                                              subject=spec.verdict_subject, base_sha=spec.base.sha,
+                                              worktree_patch=result["patch"], lane="staged")
     return None, reason, 1
 
 
@@ -573,7 +574,7 @@ def still_valid_for(n: int, reported_sha: str) -> str | None:
 
 
 def _staged_reviews(spec: LaneSpec, worktree: str, fix_patch: str, *, root_cause: str,
-                    test_paths: list[str], evidence: str,
+                    test_paths: list[str], evidence: str, worktree_patch: str,
                     on_step: Callable[[str], None]) -> list[dict]:
     """The staged lane's reviews, lens by lens on every review model, stopping
     after the first lens a review rejects; recorded as one verdict."""
@@ -589,7 +590,8 @@ def _staged_reviews(spec: LaneSpec, worktree: str, fix_patch: str, *, root_cause
                 root_cause=root_cause, test_paths=test_paths, evidence=evidence, model=model))
     review_issue_fix.record(reviews, spec.verdict_subject, patch=fix_patch, title=spec.title,
                             body=spec.body, root_cause=root_cause, test_paths=test_paths,
-                            evidence=evidence, base_sha=spec.base.sha)
+                            evidence=evidence, base_sha=spec.base.sha,
+                            worktree_patch=worktree_patch, lane="staged")
     return reviews
 
 

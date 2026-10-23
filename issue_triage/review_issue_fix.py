@@ -287,10 +287,12 @@ def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause:
                 history: str | None = None,
                 on_step: Callable[[str], None] = lambda step: None,
                 subject: verdict_log.Subject | None = None,
-                base_sha: str | None = None) -> list[dict]:
+                base_sha: str | None = None, worktree_patch: str | None = None,
+                lane: str | None = None) -> list[dict]:
     """`review` under every lens in issue_gates.REVIEW_LENSES on every review
     model, each reading the whole change; `issue_gates.review_comments` reads
-    the answers."""
+    the answers. `worktree_patch` (all `worktree` holds over the base) and
+    `lane` ride the recorded run, so it replays."""
     models = settings.issue_fix_review_models()
     reviews = []
     for lens in issue_gates.REVIEW_LENSES:
@@ -301,20 +303,25 @@ def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause:
                                   evidence=evidence, inventory_veto=inventory_veto,
                                   history=history, model=model))
     record(reviews, subject, patch=patch, title=title, body=body, root_cause=root_cause,
-           test_paths=test_paths, evidence=evidence, history=history, base_sha=base_sha)
+           test_paths=test_paths, evidence=evidence, history=history, base_sha=base_sha,
+           worktree_patch=worktree_patch, lane=lane, inventory_veto=inventory_veto)
     return reviews
 
 
 def record(reviews: list[dict], subject: verdict_log.Subject | None, *, patch: str, title: str,
            body: str, root_cause: str, test_paths: list[str], evidence: str,
-           history: str | None = None, base_sha: str | None = None) -> None:
+           history: str | None = None, base_sha: str | None = None,
+           worktree_patch: str | None = None, lane: str | None = None,
+           inventory_veto: bool = True) -> None:
     """Record one run's `reviews` as a single fix-review verdict (`verdict_of`)."""
     verdict_log.record(
         "fix-review", subject, verdict=verdict_of(reviews), prompt_sha=PROMPT_SHA,
         model=",".join(sorted({str(r.get("model")) for r in reviews})), data={"reviews": reviews},
         inputs={"report": reproduce_issue.report_block(title, body), "root_cause": root_cause,
                 "test_paths": "\n".join(test_paths), "evidence": evidence,
-                "history": history or "", "patch": patch},
+                "history": history or "", "patch": patch, "title": title, "body": body,
+                "worktree_patch": worktree_patch or "", "lane": lane or "",
+                "inventory_veto": "1" if inventory_veto else "0"},
         base_sha=base_sha)
 
 

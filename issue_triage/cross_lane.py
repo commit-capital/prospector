@@ -323,7 +323,8 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
             root_cause=str(pick.verdict["root_cause"]), test_paths=test_paths,
             evidence=_evidence(result["proof"], shipped),
             inventory_veto=result["tier"].get("tier") == 0, on_step=on_step,
-            subject=spec.verdict_subject, base_sha=spec.base.sha)
+            subject=spec.verdict_subject, base_sha=spec.base.sha,
+            worktree_patch=result["patch"], lane="cross")
         result["reviews"] = reviews
         rejected, comments = issue_gates.review_comments(reviews)
         stalled = [r for r in reviews if r.get("failed")]
@@ -336,7 +337,8 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         on_step("reviewing: trust boundaries")
         result["boundary"] = trust_boundary.judge(str(tree), spec.base.clone, pick.fix_patch,
                                                   title=spec.title, body=spec.body,
-                                                  subject=spec.verdict_subject, base_sha=spec.base.sha)
+                                                  subject=spec.verdict_subject, base_sha=spec.base.sha,
+                                                  worktree_patch=result["patch"], lane="cross")
         return None, "", reproduction, len(reviews) + 1
     finally:
         shutil.rmtree(workdir / "pick", ignore_errors=True)

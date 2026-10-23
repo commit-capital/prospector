@@ -158,3 +158,12 @@ def test_a_failed_review_records_failed(monkeypatch):
         "verdict": "suspicious", "findings": [], "failed": True, "reason": "no verdict"})
     intake_audit.judge("t", "b", None, blocked=False, subject=verdict_log.Subject("issue", 9503))
     assert [r.verdict for r in _verdicts(9503)] == ["failed"]
+
+
+def test_judge_records_whether_the_author_was_blocked():
+    import gzip
+    import json
+    intake_audit.judge("t", "b", None, blocked=True, subject=verdict_log.Subject("issue", 9504))
+    [rec] = _verdicts(9504)
+    blob = Store().review_verdict_inputs(rec.id)
+    assert blob is not None and json.loads(gzip.decompress(blob))["blocked"] == "1"

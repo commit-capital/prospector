@@ -159,7 +159,8 @@ PROMPT_SHA = verdict_log.prompt_sha(PROMPT)
 
 def judge(worktree: str, base_dir: Path, fix_patch: str, *, title: str, body: str,
           on_event: Callable[[tuple], None] | None = None,
-          subject: verdict_log.Subject | None = None, base_sha: str | None = None) -> dict:
+          subject: verdict_log.Subject | None = None, base_sha: str | None = None,
+          worktree_patch: str | None = None, lane: str | None = None) -> dict:
     """The run's `boundary` record for `fix_patch`: the reviewer's crossings,
     then a `network` crossing for each host `new_hosts` finds, `requested` when
     the report names the host."""
@@ -172,7 +173,8 @@ def judge(worktree: str, base_dir: Path, fix_patch: str, *, title: str, body: st
     out = {**reviewed, "crossings": [*reviewed["crossings"], *scanned]}
     verdict_log.record("trust-boundary", subject, verdict=verdict_of(out),
                        prompt_sha=PROMPT_SHA, model=settings.agent_model(), data=out,
-                       inputs={"title": title, "body": body, "patch": fix_patch},
+                       inputs={"title": title, "body": body, "patch": fix_patch,
+                               "worktree_patch": worktree_patch or "", "lane": lane or ""},
                        base_sha=base_sha)
     return out
 
