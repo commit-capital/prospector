@@ -292,16 +292,20 @@ def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause:
 def record(reviews: list[dict], subject: verdict_log.Subject | None, *, patch: str, title: str,
            body: str, root_cause: str, test_paths: list[str], evidence: str,
            history: str | None = None, base_sha: str | None = None) -> None:
-    """Record one run's `reviews` as a single fix-review verdict: `unsafe` when a
-    review judged the change unsafe, else `failed` when any review did not
-    finish, as the lanes read them."""
-    judged = [r for r in reviews if not r.get("failed")]
-    verdict = ("unsafe" if any(r["verdict"] == "unsafe" for r in judged)
-               else "failed" if len(judged) < len(reviews) else "safe")
+    """Record one run's `reviews` as a single fix-review verdict (`verdict_of`)."""
     verdict_log.record(
-        "fix-review", subject, verdict=verdict, prompt_sha=PROMPT_SHA,
+        "fix-review", subject, verdict=verdict_of(reviews), prompt_sha=PROMPT_SHA,
         model=",".join(sorted({str(r.get("model")) for r in reviews})), data={"reviews": reviews},
         inputs={"report": reproduce_issue.report_block(title, body), "root_cause": root_cause,
                 "test_paths": "\n".join(test_paths), "evidence": evidence,
                 "history": history or "", "patch": patch},
         base_sha=base_sha)
+
+
+def verdict_of(reviews: list[dict]) -> str:
+    """A run's fix-review verdict as the lanes read its reviews: `unsafe` when a
+    review judged the change unsafe, else `failed` when any review did not
+    finish."""
+    judged = [r for r in reviews if not r.get("failed")]
+    return ("unsafe" if any(r["verdict"] == "unsafe" for r in judged)
+            else "failed" if len(judged) < len(reviews) else "safe")

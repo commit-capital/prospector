@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from issue_triage.issue_model import Issue
 from pipeline import verdict_labels, verdict_log
 from pipeline.store import Store
 from pipeline.verdict_labels import LabelRefused
@@ -97,3 +98,44 @@ def test_missing_row_is_key_error(tmp_path):
 ])
 def test_call_orders_by_severity(reviewer, expected, verdict, call):
     assert verdict_labels.call({"expected": expected}, verdict, reviewer) == call
+
+
+def _issue(fix_run: dict | None) -> Issue:
+    rec: dict = {"issue": 14867, "meta": {"title": "MCP not delivered", "body": "no tools"}}
+    if fix_run is not None:
+        rec["fix_run"] = fix_run
+    return Issue(None, rec)
+
+
+FIX_RUN = {
+    "started": "2026-10-22T10:00:00+00:00", "base_sha": "b" * 40, "root_cause": "rc",
+    "patch": "diff --git a/x b/x\n",
+    "reviews": [{"lens": "root-cause", "model": "opus", "verdict": "safe"},
+                {"lens": "scope-safety", "model": "opus", "verdict": "safe"}],
+    "boundary": {"crossings": [{"kind": "network", "requested": True}], "reason": "r"},
+    "intake": {"verdict": "clear", "findings": [], "hidden": []},
+}
+
+
+def test_backfill_builds_three_rows_from_fix_run(tmp_path):
+    store = Store(tmp_path)
+    ids = verdict_labels.backfill_issue(store, _issue(FIX_RUN))
+    rows = {r.reviewer: r for r in store.review_verdicts(subject_kind="issue", subject=14867)}
+    assert len(ids) == 3 and set(rows) == {"fix-review", "trust-boundary", "intake"}
+    assert (rows["fix-review"].verdict, rows["trust-boundary"].verdict,
+            rows["intake"].verdict) == ("safe", "hold", "clear")
+    fix = rows["fix-review"]
+    assert fix.prompt_sha == "backfill" and fix.base_sha == "b" * 40
+    assert fix.data["partial_inputs"] is True
+    assert fix.data["backfill"] == {"fix_run_started": FIX_RUN["started"]}
+
+
+def test_backfill_twice_adds_nothing(tmp_path):
+    store = Store(tmp_path)
+    verdict_labels.backfill_issue(store, _issue(FIX_RUN))
+    assert verdict_labels.backfill_issue(store, _issue(FIX_RUN)) == []
+    assert len(store.review_verdicts()) == 3
+
+
+def test_backfill_without_fix_run_is_empty(tmp_path):
+    assert verdict_labels.backfill_issue(Store(tmp_path), _issue(None)) == []

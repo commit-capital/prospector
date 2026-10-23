@@ -159,13 +159,17 @@ def judge(worktree: str, base_dir: Path, fix_patch: str, *, title: str, body: st
                for path, host in new_hosts(base_dir, fix_patch)]
     reviewed = review(worktree, fix_patch, title=title, body=body, on_event=on_event)
     out = {**reviewed, "crossings": [*reviewed["crossings"], *scanned]}
-    verdict = ("failed" if out.get("failed")
-               else "hold" if hold(out, maintainer_filed=False) else "pass")
-    verdict_log.record("trust-boundary", subject, verdict=verdict, prompt_sha=PROMPT_SHA,
-                       model=settings.agent_model(), data=out,
+    verdict_log.record("trust-boundary", subject, verdict=verdict_of(out),
+                       prompt_sha=PROMPT_SHA, model=settings.agent_model(), data=out,
                        inputs={"title": title, "body": body, "patch": fix_patch},
                        base_sha=base_sha)
     return out
+
+
+def verdict_of(boundary: dict) -> str:
+    """The reviewer's verdict on a `boundary` record, whoever filed the issue."""
+    return ("failed" if boundary.get("failed")
+            else "hold" if hold(boundary, maintainer_filed=False) else "pass")
 
 
 def comments(boundary: dict | None) -> list[str]:

@@ -149,11 +149,14 @@ def judge(title: str, body: str, notes: str | None, *, blocked: bool,
         if found and reviewed["verdict"] == "clear":
             reviewed["verdict"] = "suspicious"
         out = {**reviewed, "hidden": found}
-    verdict_log.record("intake", subject,
-                       verdict="failed" if out.get("failed") else out["verdict"],
+    verdict_log.record("intake", subject, verdict=verdict_of(out),
                        prompt_sha=PROMPT_SHA, model=settings.agent_model(), data=out,
                        inputs={"title": title, "body": body, "notes": notes or ""})
     return out
+
+
+def verdict_of(intake: dict) -> str:
+    return "failed" if intake.get("failed") else str(intake["verdict"])
 
 
 def _why(intake: dict) -> str:
