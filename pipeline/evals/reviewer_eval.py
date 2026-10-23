@@ -24,8 +24,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-from pipeline import (diff_cache, reviewers, settings, settings_registry, storekit,
-                      verdict_labels, verdict_log)
+from pipeline import (diff_cache, headless_agent, reviewers, settings, settings_registry,
+                      storekit, verdict_labels, verdict_log)
 from pipeline.store import Store
 from pipeline.storekit import VerdictRecord
 
@@ -119,7 +119,10 @@ def _worktree(repo: EvalRepo, case: Case) -> Iterator[tuple[Path, Path]]:
         raise Unreplayable("the run recorded no base")
     with repo.tree(case.row.base_sha) as base, tempfile.TemporaryDirectory() as tmp:
         tree = lane_tree.materialize(base, Path(tmp) / "src")
-        lane_tree.apply_patch(tree, case.inputs.get("worktree_patch") or case.inputs["patch"])
+        try:
+            lane_tree.apply_patch(tree, case.inputs.get("worktree_patch") or case.inputs["patch"])
+        except ValueError as e:
+            raise Unreplayable(str(e)) from e
         yield base, tree
 
 
@@ -147,7 +150,10 @@ def replay(case: Case, repo: EvalRepo, store: Store) -> str:
                 return str(fixability.review_rendered(tree, title=inputs["title"],
                                                       body=inputs["body"],
                                                       replies_block=inputs.get("replies", ""))["verdict"])
-            except ValueError:
+            except (ValueError, RuntimeError) as e:
+                if isinstance(e, (headless_agent.AgentUnavailable, headless_agent.AgentDeclined,
+                                  headless_agent.AgentTransient)):
+                    raise
                 return "failed"
     if reviewer == "fix-review":
         from issue_triage import review_issue_fix
@@ -345,41 +351,75 @@ def replay_current(case: Case, store: Store, model: str) -> str:
         return replay(case, eval_repo(), store)
 
 
-def pinned_commit(pin: dict) -> str | None:
-    """The latest main commit whose pins file holds `pin`'s prompt: its code ran
-    that prompt, since CI keeps every main commit's code equal to its pins."""
+UNREPLAYABLE_EXIT = 3
+
+
+def _main_pins(rev: str) -> dict:
+    shown = subprocess.run(["git", "-C", str(REPO_ROOT), "show",
+                            f"{rev}:{PINS.relative_to(REPO_ROOT)}"],
+                           capture_output=True, text=True, check=False)
+    return json.loads(shown.stdout) if shown.returncode == 0 and shown.stdout else {}
+
+
+def pinned_commit(reviewer: str, pin: dict) -> str | None:
+    """The newest main commit whose pins file pins `reviewer` to `pin`'s prompt
+    and model: its code ran them, since CI keeps every main commit's code equal
+    to its pins."""
     subprocess.run(["git", "-C", str(REPO_ROOT), "fetch", "-q", "origin", "main"],
                    capture_output=True, check=False)
-    found = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "log", "-n1", "--format=%H",
-         f"-S\"prompt_sha\": \"{pin['prompt_sha']}\"", "origin/main", "--",
-         str(PINS.relative_to(REPO_ROOT))],
-        capture_output=True, text=True, check=False).stdout.strip()
-    return found or None
+    want = (pin["prompt_sha"], pin["model"])
+    commits = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-list", "origin/main", "--",
+                              str(PINS.relative_to(REPO_ROOT))],
+                             capture_output=True, text=True, check=False).stdout.split()
+    # Newest first: the pin held from the commit that set it until the next one
+    # that changed the file, so the newest code it ran is just before that.
+    for i, commit in enumerate(commits):
+        entry = _main_pins(commit).get(reviewer) or {}
+        if (entry.get("prompt_sha"), entry.get("model")) == want:
+            if i == 0:
+                return _rev("origin/main")
+            return _rev(f"{commits[i - 1]}^")
+    return None
 
 
-def pinned_replay(pin: dict, case: Case) -> str:
-    """`case` replayed by the code main ran under `pin`, in a checkout of it."""
-    commit = pinned_commit(pin)
+def _rev(name: str) -> str:
+    return subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", name],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+@contextlib.contextmanager
+def pinned_runner(reviewer: str, pin: dict, store: Store,
+                  commit: str | None = None) -> Iterator[Callable[[Case], str]]:
+    """Replays under the code main ran for `pin`, from one checkout of it, each
+    case in a child process reading this process's store."""
+    commit = commit or pinned_commit(reviewer, pin)
     if commit is None:
-        raise PinUnreplayable(f"no main commit pins prompt {pin['prompt_sha']}; re-pin "
-                              "provisionally with --init after removing that pin")
+        raise PinUnreplayable(f"no main commit pins {reviewer} to {pin['prompt_sha']}/"
+                              f"{pin['model']}; remove that pin and run --init")
+    env = {**os.environ, "TRIAGE_STORE_URL": store.engine.url.render_as_string(hide_password=False)}
+    git = ["git", "-C", str(REPO_ROOT), "worktree"]
+    subprocess.run([*git, "prune"], capture_output=True, check=False)
     with tempfile.TemporaryDirectory(prefix="reviewer-eval-pin-") as tmp:
         wt = Path(tmp) / "code"
-        subprocess.run(["git", "-C", str(REPO_ROOT), "worktree", "add", "-q", "--detach",
-                        str(wt), commit], check=True, capture_output=True)
-        try:
+        subprocess.run([*git, "add", "-q", "--detach", str(wt), commit], check=True,
+                       capture_output=True)
+
+        def run(case: Case) -> str:
             done = subprocess.run(
                 ["uv", "run", "--project", str(wt), "python", "-m", "pipeline.evals.reviewer_eval",
                  "replay", "--verdict-id", str(case.row.id), "--model", pin["model"]],
-                cwd=wt, capture_output=True, text=True, check=False)
+                cwd=wt, env=env, capture_output=True, text=True, check=False)
+            if done.returncode == UNREPLAYABLE_EXIT:
+                raise Unreplayable(done.stderr.strip()[-400:])
+            lines = done.stdout.strip().splitlines()
+            if done.returncode != 0 or not lines:
+                raise RuntimeError(f"pinned replay of run {case.row.id} failed: "
+                                   f"{done.stderr[-400:]}")
+            return lines[-1].strip()
+        try:
+            yield run
         finally:
-            subprocess.run(["git", "-C", str(REPO_ROOT), "worktree", "remove", "--force",
-                            str(wt)], capture_output=True, check=False)
-    lines = done.stdout.strip().splitlines()
-    if done.returncode != 0 or not lines:
-        raise RuntimeError(f"pinned replay of run {case.row.id} failed: {done.stderr[-400:]}")
-    return lines[-1].strip()
+            subprocess.run([*git, "remove", "--force", str(wt)], capture_output=True, check=False)
 
 
 def gate(store: Store, reviewer: str, *, k: int = 3, pins_path: Path = PINS,
@@ -387,53 +427,63 @@ def gate(store: Store, reviewer: str, *, k: int = 3, pins_path: Path = PINS,
          replay_pinned: Callable[[Case], str] | None = None) -> GateResult:
     """Score `reviewer`'s labeled cases under its pin and under the code's
     configuration, sampling each side until it has a verdict and, where the two
-    disagree, `k`. The candidate passes when it under-calls no case the pin
-    called right and over-calls no more often; with fewer than MIN_CASES
-    must-catch or should-pass cases the gate is provisional and passes,
-    reporting what it would have refused."""
+    disagree, `k`. The candidate passes when, on no case the pin called right,
+    it under-calls or fails to judge, and it over-calls no more often. With
+    fewer than MIN_CASES replayed must-catch or should-pass cases the gate is
+    provisional and passes, reporting what it would have refused."""
     pin = json.loads(pins_path.read_text())[reviewer]
     cand = configs()[reviewer]
+    failure = verdict_log.VERDICTS[reviewer][-1]
     run_cand = replay_candidate or (lambda c: replay_current(c, store, cand["model"]))
-    run_pin = replay_pinned or (lambda c: pinned_replay(pin, c))
     cases = load_cases(store, reviewer)
     ledger = ledger_samples(store)
     results: dict[str, dict[int, str]] = {"pinned": {}, "candidate": {}}
+    with contextlib.ExitStack() as stack:
+        pinned_run: list[Callable[[Case], str]] = [replay_pinned] if replay_pinned else []
 
-    def top_up(case: Case, side: str, want: int) -> str | None:
-        config, run = (pin, run_pin) if side == "pinned" else (cand, run_cand)
-        got = samples(case, config["prompt_sha"], config["model"], ledger)
-        while len(got) < want:
-            verdict = run(case)
-            add_sample(store, case, config["prompt_sha"], config["model"], verdict)
-            ledger.setdefault((case.row.id, config["prompt_sha"], config["model"]),
-                              []).append(verdict)
-            got.append(verdict)
-        return majority(reviewer, got)
+        def run_pin(case: Case) -> str:
+            if not pinned_run:  # the pinned checkout is made once, when first needed
+                pinned_run.append(stack.enter_context(pinned_runner(reviewer, pin, store)))
+            return pinned_run[0](case)
 
-    for case in cases:
-        try:
-            p, c = top_up(case, "pinned", 1), top_up(case, "candidate", 1)
-            if p != c:
-                p, c = top_up(case, "pinned", k), top_up(case, "candidate", k)
-        except Unreplayable:
-            continue
-        if p is not None and c is not None:
-            results["pinned"][case.row.id], results["candidate"][case.row.id] = p, c
+        def top_up(case: Case, side: str, want: int) -> str | None:
+            config, run = (pin, run_pin) if side == "pinned" else (cand, run_cand)
+            got = samples(case, config["prompt_sha"], config["model"], ledger)
+            while len(got) < want:
+                verdict = run(case)
+                add_sample(store, case, config["prompt_sha"], config["model"], verdict)
+                ledger.setdefault((case.row.id, config["prompt_sha"], config["model"]),
+                                  []).append(verdict)
+                got.append(verdict)
+            return majority(reviewer, got)
+
+        for case in cases:
+            try:
+                p, c = top_up(case, "pinned", 1), top_up(case, "candidate", 1)
+                if p != c:
+                    p, c = top_up(case, "pinned", k), top_up(case, "candidate", k)
+            except Unreplayable:
+                continue
+            if p is not None and c is not None:
+                results["pinned"][case.row.id], results["candidate"][case.row.id] = p, c
     pinned_score, cand_score = score(results["pinned"], cases), score(results["candidate"], cases)
     reasons = []
     for case in cases:
         label = case.row.label or {}
         p, c = results["pinned"].get(case.row.id), results["candidate"].get(case.row.id)
-        if (p and c and p != verdict_log.VERDICTS[reviewer][-1]
-                and verdict_labels.call(label, p, reviewer) == "right"
-                and c != verdict_log.VERDICTS[reviewer][-1]
-                and verdict_labels.call(label, c, reviewer) == "under"):
+        if not (p and c) or p == failure or verdict_labels.call(label, p, reviewer) != "right":
+            continue
+        if c == failure or verdict_labels.call(label, c, reviewer) == "under":
             reasons.append(f"run {case.row.id} ({case.row.subject_kind} #{case.row.subject}): "
-                           f"the pin said {p}, right; the candidate says {c}")
+                           f"the pin said {p}, right; the candidate "
+                           + ("failed to judge" if c == failure else f"says {c}"))
     if cand_score.over > pinned_score.over:
         reasons.append(f"{cand_score.over} over-calls against the pin's {pinned_score.over}")
-    provisional = (pinned_score.must_catch < verdict_labels.MIN_CASES
-                   or pinned_score.should_pass < verdict_labels.MIN_CASES)
+    replayed = [c for c in cases if c.row.id in results["candidate"]]
+    catch = sum(1 for c in replayed
+                if verdict_labels.blocks(reviewer, (c.row.label or {})["expected"]))
+    provisional = (catch < verdict_labels.MIN_CASES
+                   or len(replayed) - catch < verdict_labels.MIN_CASES)
     return GateResult(reviewer=reviewer, pinned=pinned_score, candidate=cand_score,
                       passed=provisional or not reasons, provisional=provisional, reasons=reasons)
 
@@ -474,7 +524,11 @@ def main(argv: list[str]) -> int:
         if case is None:
             print(f"no labeled run {args.verdict_id} with inputs", file=sys.stderr)
             return 2
-        print(replay_current(case, store, args.model))
+        try:
+            print(replay_current(case, store, args.model))
+        except Unreplayable as e:
+            print(str(e), file=sys.stderr)
+            return UNREPLAYABLE_EXIT
         return 0
     if not (args.reviewer and args.live):
         ap.error("give --init, replay, or --reviewer X --live")

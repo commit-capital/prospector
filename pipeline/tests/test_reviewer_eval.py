@@ -283,6 +283,109 @@ def test_samples_are_kept_for_the_next_run(tmp_path, pinned):
 def test_a_pin_main_never_held_refuses(tmp_path, monkeypatch):
     store = Store(tmp_path / "s")
     [case] = _cases(store, 1, 0)
-    monkeypatch.setattr(re_, "pinned_commit", lambda pin: None)
-    with pytest.raises(re_.PinUnreplayable):
-        re_.pinned_replay({"prompt_sha": "zzz", "model": "opus"}, case)
+    monkeypatch.setattr(re_, "pinned_commit", lambda reviewer, pin: None)
+    with pytest.raises(re_.PinUnreplayable, match="--init"):
+        with re_.pinned_runner("intake", {"prompt_sha": "zzz", "model": "opus"}, store):
+            pass
+
+
+def _pins_repo(tmp_path: Path, monkeypatch) -> tuple[Path, list[str]]:
+    """A repository whose pins file pins intake to AAA, then (after an unrelated
+    commit) to BBB, with origin/main at the last commit."""
+    repo = tmp_path / "code"
+    pins = repo / "pipeline" / "evals" / "data" / "reviewer_pins.json"
+    pins.parent.mkdir(parents=True)
+    _git_init = ["-c", "user.email=t@t", "-c", "user.name=t"]
+    _git(repo, "init", "-q")
+    shas = []
+    for sha, extra in (("AAA", None), ("AAA", "x"), ("BBB", None)):
+        pins.write_text(json.dumps({"intake": {"prompt_sha": sha, "model": "opus"}}))
+        if extra:
+            (repo / "other.txt").write_text(extra)
+        _git(repo, *_git_init, "add", ".")
+        _git(repo, *_git_init, "commit", "-qm", f"pin {sha}")
+        shas.append(_git(repo, "rev-parse", "HEAD"))
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    monkeypatch.setattr(re_, "REPO_ROOT", repo)
+    monkeypatch.setattr(re_, "PINS", pins)
+    return repo, shas
+
+
+def test_pinned_commit_is_the_newest_main_commit_holding_the_pin(tmp_path, monkeypatch):
+    _, shas = _pins_repo(tmp_path, monkeypatch)
+    assert re_.pinned_commit("intake", {"prompt_sha": "BBB", "model": "opus"}) == shas[2]
+    assert re_.pinned_commit("intake", {"prompt_sha": "AAA", "model": "opus"}) == shas[1]
+    assert re_.pinned_commit("intake", {"prompt_sha": "AAA", "model": "sonnet"}) is None
+
+
+def test_pinned_replay_reads_the_parents_store(tmp_path, monkeypatch):
+    store = Store(tmp_path / "s")
+    [case] = _cases(store, 1, 0)
+    seen: dict = {}
+
+    def run(argv, **kw):
+        if argv[:2] == ["uv", "run"]:
+            seen["env"] = kw.get("env") or {}
+            return subprocess.CompletedProcess(argv, 0, stdout="suspicious\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    monkeypatch.setattr(re_.subprocess, "run", run)
+    with re_.pinned_runner("intake", {"prompt_sha": "p", "model": "opus"}, store,
+                           commit="c0ffee") as replay_pinned:
+        assert replay_pinned(case) == "suspicious"
+    assert seen["env"]["TRIAGE_STORE_URL"] == store.engine.url.render_as_string(hide_password=False)
+
+
+def test_an_unreplayable_pinned_case_is_skipped(tmp_path, monkeypatch):
+    store = Store(tmp_path / "s")
+    [case] = _cases(store, 1, 0)
+
+    def run(argv, **kw):
+        if argv[:2] == ["uv", "run"]:
+            return subprocess.CompletedProcess(argv, re_.UNREPLAYABLE_EXIT, stdout="",
+                                               stderr="no base")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    monkeypatch.setattr(re_.subprocess, "run", run)
+    with re_.pinned_runner("intake", {"prompt_sha": "p", "model": "opus"}, store,
+                           commit="c0ffee") as replay_pinned:
+        with pytest.raises(re_.Unreplayable):
+            replay_pinned(case)
+
+
+def test_the_gate_skips_unreplayable_cases(tmp_path, pinned):
+    store = Store(tmp_path / "s")
+    _cases(store, 1, 1)
+
+    def candidate(c: re_.Case) -> str:
+        raise re_.Unreplayable("no base")
+    result = _gate(store, pinned, candidate)
+    assert result.candidate.unreplayable == 2 and result.passed
+
+
+def test_a_candidate_that_fails_where_the_pin_was_right_is_refused(tmp_path, pinned):
+    store = Store(tmp_path / "s")
+    _cases(store, 10, 10)
+    result = _gate(store, pinned, lambda c: "failed")
+    assert not result.passed and any("failed" in r for r in result.reasons)
+
+
+def test_a_patch_that_no_longer_applies_is_unreplayable(tmp_path, origin, evalrepo):
+    _, sha = origin
+    store = Store(tmp_path / "s")
+    bad = DIFF.replace("-export const x = 1;", "-export const y = 9;")
+    case = _case(store, "trust-boundary", "pass",
+                 {"title": "t", "body": "b", "patch": bad, "worktree_patch": bad,
+                  "lane": "solo"}, base=sha)
+    with pytest.raises(re_.Unreplayable):
+        re_.replay(case, evalrepo, store)
+
+
+def test_provisional_counts_only_replayed_cases(tmp_path, pinned):
+    store = Store(tmp_path / "s")
+    cases = _cases(store, 12, 10)
+    lost = {c.row.id for c in cases[:3]}
+
+    def candidate(c: re_.Case) -> str:
+        if c.row.id in lost:
+            raise re_.Unreplayable("gone")
+        return c.row.verdict
+    assert _gate(store, pinned, candidate).provisional
