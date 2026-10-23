@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pipeline import diff_cache, reviewers, settings
+from pipeline import diff_cache, reviewers, settings, storekit, verdict_labels, verdict_log
 from pipeline.store import Store
 from pipeline.storekit import VerdictRecord
 
@@ -191,3 +191,77 @@ def replay(case: Case, repo: EvalRepo, store: Store) -> str:
             raise Unreplayable("the security review could not read the diff")
         return reviewed[0].verdict
     raise ValueError(f"no replay for {reviewer!r}")
+
+
+EVAL_CASE = "reviewer-eval:case"
+
+
+@dataclass(frozen=True)
+class Score:
+    cases: int = 0
+    must_catch: int = 0
+    should_pass: int = 0
+    right: int = 0
+    under: int = 0
+    over: int = 0
+    failed: int = 0
+    partial: int = 0
+    unreplayable: int = 0
+
+
+def ledger_samples(store: Store) -> dict[tuple[int, str, str], list[str]]:
+    """Every eval sample in the ledger, by (run id, prompt_sha, model)."""
+    out: dict[tuple[int, str, str], list[str]] = {}
+    for run in store.runs(phase=EVAL_CASE):
+        stats = (run.raw.get("stats") or {}) if isinstance(run, storekit.PhaseRun) else {}
+        if stats:
+            key = (int(stats["verdict_id"]), str(stats["prompt_sha"]), str(stats["model"]))
+            out.setdefault(key, []).append(str(stats["verdict"]))
+    return out
+
+
+def samples(case: Case, prompt_sha: str, model: str,
+            ledger: dict[tuple[int, str, str], list[str]]) -> list[str]:
+    """`case`'s verdicts under one configuration: the production run's own when
+    it ran that configuration, then every eval sample of it."""
+    own = [case.row.verdict] if (case.row.prompt_sha, case.row.model) == (prompt_sha, model) else []
+    return own + ledger.get((case.row.id, prompt_sha, model), [])
+
+
+def add_sample(store: Store, case: Case, prompt_sha: str, model: str, verdict: str) -> None:
+    now = storekit.now()
+    store.append_run({"phase": EVAL_CASE, "started": now, "finished": now,
+                      "stats": {"verdict_id": case.row.id, "reviewer": case.row.reviewer,
+                                "prompt_sha": prompt_sha, "model": model, "verdict": verdict,
+                                "fidelity": case.fidelity}})
+
+
+def majority(reviewer: str, verdicts: list[str]) -> str | None:
+    """The most common judging verdict, a tie going to the most severe; the
+    failure value only when nothing judged."""
+    order = verdict_log.VERDICTS[reviewer]
+    judged = [v for v in verdicts if v != order[-1]]
+    if not judged:
+        return verdicts[0] if verdicts else None
+    return max(set(judged), key=lambda v: (judged.count(v), order.index(v)))
+
+
+def score(results: dict[int, str], cases: list[Case]) -> Score:
+    counts: dict[str, int] = {"cases": len(cases)}
+
+    def add(key: str) -> None:
+        counts[key] = counts.get(key, 0) + 1
+
+    for case in cases:
+        label, reviewer = case.row.label or {}, case.row.reviewer
+        add("must_catch" if verdict_labels.blocks(reviewer, label["expected"]) else "should_pass")
+        if case.fidelity == "partial":
+            add("partial")
+        verdict = results.get(case.row.id)
+        if verdict is None:
+            add("unreplayable")
+        elif verdict == verdict_log.VERDICTS[reviewer][-1]:
+            add("failed")
+        else:
+            add(verdict_labels.call(label, verdict, reviewer))
+    return Score(**counts)

@@ -21,14 +21,10 @@ from datetime import datetime, timedelta, timezone
 from pipeline import storekit, verdict_labels, verdict_log
 from pipeline.store import Store
 from pipeline.storekit import VerdictRecord
+from pipeline.verdict_labels import MIN_CASES
 from prospector_app.backend import activity, data, issue_data
 
 SIGNAL_WINDOW_DAYS = 60
-MIN_CASES = 10
-# The least severe verdict that blocks, per reviewer.
-BLOCKING: dict[str, str] = {"design": "fail", "security": "RED", "fix-review": "unsafe",
-                            "trust-boundary": "hold", "intake": "suspicious",
-                            "fixability": "skip"}
 QUOTE_MAX = 300
 # Second-opinion verdicts saying a rival's tests catch what our fix misses.
 GAPS = ("gap", "gap-open")
@@ -211,11 +207,6 @@ def signals(facts: Facts) -> list[Signal]:
     return out
 
 
-def _blocks(reviewer: str, verdict: str) -> bool:
-    order = verdict_log.VERDICTS[reviewer]
-    return order.index(verdict) >= order.index(BLOCKING[reviewer])
-
-
 def scorecard(window_rows: list[VerdictRecord],
               labeled_rows: list[VerdictRecord]) -> list[Card]:
     counts: dict[tuple[str, str, str], dict[str, int]] = {}
@@ -236,8 +227,8 @@ def scorecard(window_rows: list[VerdictRecord],
             continue
         c = tally(r)
         add(c, "labeled")
-        blocked = _blocks(r.reviewer, r.verdict)
-        if _blocks(r.reviewer, r.label["expected"]):
+        blocked = verdict_labels.blocks(r.reviewer, r.verdict)
+        if verdict_labels.blocks(r.reviewer, r.label["expected"]):
             add(c, "must_catch")
             if blocked:
                 add(c, "caught")

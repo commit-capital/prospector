@@ -162,3 +162,44 @@ def test_replay_never_records(tmp_path, evalrepo):
     before = len(store.review_verdicts())
     re_.replay(case, evalrepo, store)
     assert len(store.review_verdicts()) == before
+
+
+def _labeled(store: Store, reviewer: str, verdict: str, expected: str) -> re_.Case:
+    return _case(store, reviewer, verdict, {"title": "t", "body": "b", "notes": "",
+                                            "blocked": "0"}, expected=expected)
+
+
+def test_production_row_is_a_sample_of_its_own_config(tmp_path):
+    store = Store(tmp_path / "s")
+    case = _labeled(store, "intake", "clear", "clear")
+    re_.add_sample(store, case, "q", "opus", "suspicious")
+    ledger = re_.ledger_samples(store)
+    assert re_.samples(case, "p", "opus", ledger) == ["clear"]
+    assert re_.samples(case, "q", "opus", ledger) == ["suspicious"]
+
+
+def test_majority_breaks_ties_to_the_severe_side():
+    assert re_.majority("intake", ["clear", "suspicious"]) == "suspicious"
+    assert re_.majority("intake", ["clear", "clear", "malicious"]) == "clear"
+    assert re_.majority("intake", ["failed", "clear"]) == "clear"
+    assert re_.majority("intake", ["failed"]) == "failed"
+    assert re_.majority("intake", []) is None
+
+
+def test_score_counts(tmp_path):
+    store = Store(tmp_path / "s")
+    right = _labeled(store, "intake", "suspicious", "suspicious")
+    under = _labeled(store, "intake", "clear", "malicious")
+    over = _labeled(store, "intake", "malicious", "clear")
+    lost = _labeled(store, "intake", "clear", "clear")
+    results = {right.row.id: "suspicious", under.row.id: "clear", over.row.id: "suspicious",
+               lost.row.id: "failed"}
+    s = re_.score(results, [right, under, over, lost])
+    assert (s.cases, s.right, s.under, s.over, s.failed) == (4, 1, 1, 1, 1)
+    assert (s.must_catch, s.should_pass) == (2, 2)
+
+
+def test_blocking_has_one_owner():
+    from prospector_app.backend import reviewer_ratchet
+    assert "BLOCKING" not in vars(reviewer_ratchet)
+    assert reviewer_ratchet.MIN_CASES is verdict_labels.MIN_CASES
