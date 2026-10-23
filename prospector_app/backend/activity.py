@@ -398,7 +398,7 @@ def _all_sorted() -> list[dict]:
     return _held_log().read()
 
 
-def _events_for_prs(prs: list[int]) -> list[dict]:
+def events_for_prs(prs: list[int]) -> list[dict]:
     """Events touching one of `prs`, normalized and newest-first by true instant.
     A targeted read on the indexed `pr` column, so the per-PR views never scan the
     whole activity log."""
@@ -440,7 +440,7 @@ def run_state(prs) -> dict[int, dict]:
     if not want:
         return {}
     latest: dict[int, dict] = {}
-    for ev in _events_for_prs(list(want)):  # newest-first; first landed hit per PR wins
+    for ev in events_for_prs(list(want)):  # newest-first; first landed hit per PR wins
         pr = ev.get("pr")
         if pr is None or not is_landed(ev):
             continue
@@ -474,7 +474,7 @@ def for_pr(n: int) -> list[dict]:
     that posted it and the human ``operator`` who initiated it."""
     n = int(n)
     out: list[dict] = []
-    for ev in _events_for_prs([n]):  # newest-first, only this PR
+    for ev in events_for_prs([n]):  # newest-first, only this PR
         if ev.get("dry_run") or ev.get("status") in FAILED_STATUSES:
             continue
         out.append({
