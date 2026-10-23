@@ -172,6 +172,7 @@ show failure rates, and are never cases.
 | intake | not `clear`, operator proceeded | false flag |
 | fixability | `skip`, then `fix_scan.fixed_by` | false skip |
 | any | reviewers passed a change, then an operator sent it back with guidance (PR `fix` request, issue `send-back` / `solve`) | under-call; the guidance is the label's note |
+| fix-review | reviews `safe` (or scope-safety coverage all `addressed`), and another author's PR on the issue is merged, or `second_opinion` names cases our fix misses | under-call: our fix was worse than the rival |
 
 The PR-side guidance is overwritten with the next request today, so the
 `fix:single` ledger row carries `guidance` from step 1 on. Issue guidance is
@@ -185,6 +186,29 @@ operator can read it.
 review) and in a queue of signalled, unlabeled verdicts. One click confirms the
 suggestion; otherwise the operator picks the expected verdict and marks
 findings. Placement and layout are the builder's.
+
+## Case studies
+
+An operator's written case study of one attempt (issue #14867's is the
+first) is the richest label we get. It attaches to the subject's verdict rows,
+and each lesson in it is classified by what it is about:
+
+- **reviewer**: becomes the label and note on that reviewer's row. On #14867
+  both fix reviews said `safe` while flagging "this part of the fix is
+  incomplete", so the row is labeled an under-call.
+- **fixer**: the agent that wrote the fix (a reproduction asserting a log note,
+  a capability cut to remove a crossing, plumbing tested only by reading it).
+  The issue becomes a fixer replay case: `issue_fix_replay` run against the
+  better PR's tests as the oracle. Scoring the fixer is the next ratchet, after
+  this one; until then these cases accumulate.
+- **gate**: a policy defect, tracked as an issue against its owner
+  (`gates.py`, `issue_gates.py`), as commit-capital/prospector#657 is. It
+  is not a label.
+
+Attempts that ran before capture (#14867 ran 2026-10-22) get a one-time
+backfill row from the issue's `fix_run` and its `result.json` where that still
+exists. The evidence string is lost for those, so the row is marked
+`partial_inputs` and replays without it.
 
 ## Scorecard
 
