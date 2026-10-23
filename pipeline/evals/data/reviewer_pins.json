@@ -8,7 +8,7 @@
   },
   "fix-review": {
     "model": "opus",
-    "prompt_sha": "d323c3fe68d6b3e8",
+    "prompt_sha": "b686c8c84ac985e9",
     "provisional": true,
     "run": null,
     "score": null
