@@ -51,8 +51,8 @@ leaves scope has the labels recorded for it taken off, and only a clean fix's
 pull request opens.
 
 A label another worker set from the facts this one reads (`label_facts`) is
-never reverted: the two disagree only when they run different code or settings,
-and fighting would flip the label every pass. The issue's thread notes the
+never reverted while the issue is in scope: the two disagree only when they run
+different code or settings, and fighting would flip the label every pass. The issue's thread notes the
 disagreement once per set of facts.
 
 Under `TRIAGE_ISSUE_FIX_PUBLIC=dry-run` each write is logged as a dry-run and
@@ -218,7 +218,8 @@ def label_targets(issue: Issue) -> dict[int, str | None]:
 
 def label_facts(issue: Issue) -> str:
     """A fingerprint of the sections `label_targets` derives the labels from."""
-    facts = [issue.state, issue.fix_request, issue.fix_run, issue.fix_followup]
+    facts = [issue.state, issue.author, issue.author_association, issue.fix_request,
+             issue.fix_run, issue.fix_followup]
     return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
@@ -352,7 +353,7 @@ def work_for(issue: Issue, mode: str, now: datetime, host: str) -> _Work:
         if have.get(number) == label:
             continue
         by = (view.get("label_by") or {}).get(str(number))
-        if by and by.get("facts") == facts:
+        if scoped and by and by.get("facts") == facts:
             # A standing label other than the one `by` set came from a worker
             # that records no `label_by`.
             writer = by.get("host") if by.get("label") == have.get(number) else "another worker"

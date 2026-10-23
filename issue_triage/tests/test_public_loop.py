@@ -408,6 +408,14 @@ def test_a_label_a_worker_on_older_code_took_off_is_not_put_back(store, writes):
     assert "another worker" in store.load_issue(1).fix_thread[-1]["text"]
 
 
+def test_an_issue_that_leaves_scope_loses_another_host_s_label(store, writes):
+    _save(store, 1, association="NONE")
+    store.edit_issue(1).record_fix_run(_run(**ASKED))
+    _labelled_by(store, "laptop", NEEDS_ANSWER)
+    public_loop.sync(store, mode="live", now=NOW)
+    assert writes == [("label", 1, None, NEEDS_ANSWER, False)]
+
+
 def test_this_host_s_own_label_follows_its_reading(store, writes):
     store.edit_issue(1).record_fix_run(_run(**ASKED))
     _labelled_by(store, "studio", None)
