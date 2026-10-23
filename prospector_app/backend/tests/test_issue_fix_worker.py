@@ -210,6 +210,11 @@ def test_the_hunter_queues_the_newest_fresh_issue(hunting):
     assert req["action"] == "solve" and req["source"] == "hunter"
 
 
+def test_the_hunter_leaves_an_issue_going_with_another_pr(hunting):
+    hunting.set_issue_section(2, "fix_choice", {"pr": 12, "by": "op", "at": "t", "reason": None})
+    assert issue_fix_worker.hunt(hunting) == 1
+
+
 def test_the_hunter_takes_only_what_the_triage_judged_go(hunting):
     now = datetime.now(timezone.utc).isoformat()
     for n, verdict in ((3, "skip"), (4, "ask")):

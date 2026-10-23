@@ -444,7 +444,7 @@ def _oldest(status: str, mine_only: tuple[str, ...] = (),
     names is passed over."""
     me = settings.worker_id()
     best_n: int | None = None
-    best_key: tuple[float, bool, bool, str] | None = None
+    best_key: tuple[float, bool, int, str] | None = None
     for n, rec in data.prs().items():
         req = rec.fix_request or {}
         if req.get("status") != status:
@@ -2294,12 +2294,12 @@ def _yellow_objection(pr: Pr) -> dict | None:
     return objections.build("security", text, origin={"findings": len(findings)})
 
 
-def _hunt_key(rec: Pr, action: str, n: int) -> tuple[bool, int, int, float, int]:
-    """Hunt priority within an action kind (ascending), a maintainer's PR
-    (gates.priority_author) first. Mechanical actions then order by PR number. Fixes order by how little they ask of the agent — a
+def _hunt_key(rec: Pr, action: str, n: int) -> tuple[int, int, int, float, int]:
+    """Hunt priority within an action kind (ascending), a maintainer's PR then
+    one Prospector backs (gates.queue_rank) first. Mechanical actions then order by PR number. Fixes order by how little they ask of the agent — a
     nits-only review, then a Greptile score one point below the bar, then the
     rest — and by community pain (descending) within a tier."""
-    later = not gates.priority_author(rec.author, rec.author_association)
+    later = gates.queue_rank(rec)
     if action != "fix":
         return (later, 0, 0, 0.0, n)
     read = rec.greptile_review if freshness.is_current(rec, "greptile_review") else None
@@ -2339,7 +2339,7 @@ def next_auto() -> tuple[str, int, dict | None] | None:
 _HUNT_LANES = ("fix", "describe", "resolve", "mechanical")
 
 
-def _ranked_picks() -> list[tuple[tuple[bool, int, int, float, int], str, str, int, dict | None]]:
+def _ranked_picks() -> list[tuple[tuple[int, int, int, float, int], str, str, int, dict | None]]:
     """Every PR the hunter could take now as (key, lane, action, PR, objection),
     in the order it takes them: a maintainer's PR first, then by lane in
     _HUNT_LANES order, then by hunt priority; an agent lane whose slots are all
@@ -2349,7 +2349,7 @@ def _ranked_picks() -> list[tuple[tuple[bool, int, int, float, int], str, str, i
              "describe": limit - _auto_in_flight("describe")}
     budget_ok = (not settings.fix_hunt_security()
                  or _budget_used(data.store()) < settings.fix_objection_budget())
-    ranked: list[tuple[tuple[bool, int, int, float, int], str, str, int, dict | None]] = []
+    ranked: list[tuple[tuple[int, int, int, float, int], str, str, int, dict | None]] = []
     for n, rec in data.prs().items():
         pick = auto_fixable(rec, budget_ok=budget_ok)
         if pick is None:

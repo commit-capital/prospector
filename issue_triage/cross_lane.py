@@ -379,7 +379,9 @@ def _history(rounds: list[dict]) -> str:
                   for c in r["claims"]]
         lines += [f'- The bot {x["answer"]} "{x["comment"]}": {x["why"]}'
                   for x in r["responses"]]
-        lines.append(f"- That revision ended {r['ending']}: {r['detail']}")
+        lines.append(f"- That revision ended {r['ending']}: {r['detail']}"
+                     + ("; it was discarded: it did not pass its pinned tests"
+                        if issue_gates.revision_passed(r) is False else ""))
     return "\n".join(lines)
 
 
@@ -494,9 +496,11 @@ def _answer_review(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
 
 
 def _reviewed(result: dict) -> str:
-    rounds = len(result.get("revisions") or [])
-    return (f"a code review after {rounds} round(s) of revision" if rounds
-            else "a full code review")
+    rounds = result.get("revisions") or []
+    kept = len(issue_gates.counted_revisions(rounds))
+    out = f"a code review after {kept} round(s) of revision" if kept else "a full code review"
+    return out + "".join(f"; round {r['round']} discarded: it did not pass its pinned tests"
+                         for r in rounds if issue_gates.revision_passed(r) is False)
 
 
 def _proof_patcher(spec: fix_lane.LaneSpec, label: str) -> Callable[..., Path]:

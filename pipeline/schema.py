@@ -117,7 +117,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #      pull request back, and re-renders a partial approval as "Fixes #N".
 # 38 — the review_verdicts table (one append-only row per run of Prospector's
 #      own reviewers); an older checkout's reviewers would run without recording.
-STORE_SCHEMA_VERSION = 38
+# 39 — an issue's `fix_choice` names another author's pull request an operator
+#      chose as its fix, and that PR carries `backing`; an older worker reads
+#      past both and fixes and proposes the issue again.
+STORE_SCHEMA_VERSION = 39
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

@@ -98,19 +98,20 @@ def priority_of(req: Mapping[str, object]) -> float:
     return float(p) if isinstance(p, (int, float)) else 0.0
 
 
-def run_order(rec: Pr, req: Mapping[str, object]) -> tuple[float, bool, bool, str]:
+def run_order(rec: Pr, req: Mapping[str, object]) -> tuple[float, bool, int, str]:
     """The order the worker takes waiting requests in: an operator's priority
     (queue_order, higher first), operator picks before auto-picks, a
-    maintainer's PR (gates.priority_author) first, then oldest queued_at."""
+    maintainer's PR then one Prospector backs (gates.queue_rank), then oldest
+    queued_at."""
     return (-priority_of(req), req.get("source") in store.AUTO_REQUEST_SOURCES,
-            not gates.priority_author(rec.author, rec.author_association),
+            gates.queue_rank(rec),
             str(req.get("queued_at") or ""))
 
 
 def queue_entries() -> list[QueueEntry]:
     """Every PR with a verification request in flight, running first, then
     the waiting ones in the order the worker takes them (`run_order`)."""
-    rows: list[tuple[tuple[bool, tuple[float, bool, bool, str]], QueueEntry]] = []
+    rows: list[tuple[tuple[bool, tuple[float, bool, int, str]], QueueEntry]] = []
     for n, rec in data.prs().items():
         req = rec.verify_request or {}
         status = req.get("status")

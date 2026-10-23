@@ -225,6 +225,12 @@ class Issue:
         return self._fix_section("fix_public") or {}
 
     @property
+    def fix_choice(self) -> dict | None:
+        """Another author's pull request an operator chose as the fix
+        (`issue_triage.fix_choice`)."""
+        return self._fix_section("fix_choice")
+
+    @property
     def fix_triage(self) -> dict | None:
         """Whether the issue is worth a fix attempt (`issue_triage.fixability`)."""
         return self._fix_section("fix_triage")

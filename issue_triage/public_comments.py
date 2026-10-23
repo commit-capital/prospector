@@ -60,6 +60,14 @@ def opened(issue: int, key: str, pr: int, summary: object) -> str:
     return _finish(issue, key, lines)
 
 
+def recommended(issue: int, key: str, pr: int) -> str:
+    """The comment on pull request `pr` once an operator chooses it as issue
+    `issue`'s fix (`issue_triage.fix_choice`)."""
+    return _finish(issue, key, [
+        f"Prospector recommends this pull request as the fix for #{int(issue)}. It goes "
+        "ahead in Prospector's verification, security and design review queues."])
+
+
 def ready(issue: int, key: str) -> str:
     """The comment on the pull request once CI and its reviewers pass."""
     return _finish(issue, key, [

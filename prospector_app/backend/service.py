@@ -341,6 +341,8 @@ def pr_row(n: int, rec: Pr | None = None) -> dict | None:
         "responses": responses.signal(rec),
         # the close this open PR's author came back to (author_returns)
         "author_return": author_returns.latest(rec),
+        # the issue an operator chose this PR as the fix for (issue_triage.fix_choice)
+        "backing": rec.section("backing"),
         # Where the PR stands with the automation (automation.classify): the
         # Home columns and the automation_* filters read this one derivation.
         "automation": automation.classify(rec),

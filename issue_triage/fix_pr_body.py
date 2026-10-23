@@ -210,7 +210,7 @@ def _family(models: list[str]) -> str:
 
 
 def _rounds(result: dict) -> list[str]:
-    rounds = result.get("revisions") or []
+    rounds = issue_gates.counted_revisions(result.get("revisions") or [])
     if not rounds:
         return []
     shown = sum(1 for c in result.get("claims") or [] if c.get("status") == "shown")

@@ -81,3 +81,25 @@ def test_approving_without_an_open_pull_request_is_a_409(client):
     c, _ = client
     r = c.post("/api/issues/7/fix/approve", json={"partial": False})
     assert r.status_code == 409 and "no open pull request" in r.json()["detail"]
+
+
+def test_going_with_a_pr_backs_it_and_has_the_bot_recommend_it(client, tmp_path, monkeypatch):
+    from pipeline.store import Store
+    from prospector_app.backend import data, executor
+    c, store = client
+    prs = Store(tmp_path / "prs")
+    prs.save_pr({"pr": 12, "meta": {"title": "t", "state": "open", "author": "contrib",
+                                    "head_sha": "a" * 40}})
+    monkeypatch.setattr(data, "store", lambda: prs)
+    monkeypatch.setattr(data, "refresh", lambda: None)
+    posted = []
+    monkeypatch.setattr(executor, "post_fix_comment", lambda number, body, **kw: posted.append(
+        (number, kw["issue"], kw["dry_run"])) or {"status": "dry-run"})
+    r = c.post("/api/issues/7/fix/choose", json={"pr": 12, "reason": "it is better"})
+    assert r.status_code == 200 and r.json()["detail"] == "going with #12"
+    assert posted == [(12, 7, True)] and prs.load_pr(12).section("backing")["by"] == "Op"
+    d = c.get("/api/issues/7").json()
+    assert d["fix_status"] == "chosen" and d["fix_choice"]["reason"] == "it is better"
+    assert c.post("/api/issues/7/fix/choose", json={"pr": 99}).status_code == 409
+    assert c.post("/api/issues/7/fix/unchoose").status_code == 200
+    assert c.get("/api/issues/7").json()["fix_choice"] is None
