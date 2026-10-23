@@ -19,6 +19,7 @@ const STATUS_LABEL: Record<IssueFixStatus, string> = {
   running: "Working",
   reporter: "Waiting on the reporter",
   "pr-open": "PR open",
+  chosen: "Going with another PR",
   "pr-closed": "PR closed",
   failed: "Didn't finish",
   declined: "No fix",
@@ -32,7 +33,7 @@ const COVERAGE_TONE: Record<IssueFixCoverage["status"], string> = {
 };
 const STATUS_TONE: Record<IssueFixStatus, string> = {
   review: "green", question: "yellow", running: "blue", reporter: "muted",
-  "pr-open": "purple", "pr-closed": "amber", failed: "red",
+  "pr-open": "purple", chosen: "purple", "pr-closed": "amber", failed: "red",
   declined: "muted", "pr-merged": "green",
 };
 
@@ -114,7 +115,7 @@ function FixBanner({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) 
   return (
     <div className={`verdict-banner ${tone}`}>
       <span className="vb-icon">
-        {status === "review" ? "✅" : status === "question" ? "❓" : status === "pr-open" ? "🔗"
+        {status === "review" ? "✅" : status === "question" ? "❓" : status === "pr-open" || status === "chosen" ? "🔗"
           : status === "pr-merged" ? "🔀" : status === "failed" ? "✗" : status === "reporter" ? "⏳"
           : "⛔"}
       </span>
@@ -151,7 +152,7 @@ function FixActions({ d, onChanged }: { d: IssueDetail; onChanged: () => void })
     return <QuestionActions q={run?.question ?? null} asked={status === "reporter"} busy={busy}
                             text={text} setText={setText} send={send} dryRun={dryRun} />;
   }
-  if (status === "pr-open" || status === "pr-merged") return null;
+  if (status === "pr-open" || status === "pr-merged" || status === "chosen") return null;
   const pr = d.fix_pr ?? null;
   if (fixDecision(d)) {
     return <div className="muted small">Approve #{pr} or send it back from the Summary's suggested action above.</div>;

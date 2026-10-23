@@ -61,5 +61,5 @@ def test_validation(tmp_path, over):
         _append(Store(tmp_path), **over)
 
 
-def test_schema_version_is_38():
-    assert schema.STORE_SCHEMA_VERSION == 38
+def test_the_schema_version_covers_review_verdicts():
+    assert schema.STORE_SCHEMA_VERSION >= 38

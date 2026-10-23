@@ -1325,6 +1325,39 @@ def issue_fix_approve(n: int, payload: models.IssueFixApproveBody):
     return {"ok": True, "detail": why}
 
 
+@app.post("/api/issues/{n}/fix/choose")
+def issue_fix_choose(n: int, payload: models.IssueFixChooseBody, dry_run: bool = True):
+    """Go with another author's open pull request as issue #n's fix in place of
+    ours (`fix_choice.choose`), then have the bot recommend it on the pull
+    request (a dry-run unless `dry_run` is false; Activity-logged). 409 when
+    the choice does not fit."""
+    from issue_triage import fix_choice
+    ok, why = fix_choice.choose(issue_data.store(), data.store(), n, payload.pr,
+                                by=activity.operator()["name"], reason=payload.reason)
+    if not ok:
+        raise HTTPException(409, why)
+    issue_data.refresh()
+    data.refresh()
+    body, marker = fix_choice.comment(n, payload.pr)
+    token = None if dry_run else executor.mint_bot_token()
+    posted = executor.post_fix_comment(payload.pr, body, marker=marker, issue=n,
+                                       comment_kind="recommend", token=token, dry_run=dry_run)
+    return {"ok": True, "detail": why, "comment": posted}
+
+
+@app.post("/api/issues/{n}/fix/unchoose")
+def issue_fix_unchoose(n: int):
+    """Withdraw issue #n's chosen pull request (`fix_choice.undo`)."""
+    from issue_triage import fix_choice
+    ok, why = fix_choice.undo(issue_data.store(), data.store(), n,
+                              by=activity.operator()["name"])
+    if not ok:
+        raise HTTPException(409, why)
+    issue_data.refresh()
+    data.refresh()
+    return {"ok": True, "detail": why}
+
+
 @app.post("/api/issues/{n}/fix/cancel")
 def issue_fix_cancel(n: int):
     """Cancel issue #n's queued fix request; a running one finishes."""

@@ -201,12 +201,13 @@ def _paths_phrase(paths: list[str]) -> str:
 AUTO_SOURCES = ("auto", "objection")
 
 
-def run_order(rec: Pr, req: Mapping[str, object]) -> tuple[float, bool, bool, str]:
+def run_order(rec: Pr, req: Mapping[str, object]) -> tuple[float, bool, int, str]:
     """The order the worker takes requests of one status in: an operator's
     priority (queue_order, higher first), operator picks before auto-picks, a
-    maintainer's PR (gates.priority_author) first, then oldest queued_at."""
+    maintainer's PR then one Prospector backs (gates.queue_rank), then oldest
+    queued_at."""
     return (-verify_queue.priority_of(req), req.get("source") in AUTO_SOURCES,
-            not gates.priority_author(rec.author, rec.author_association),
+            gates.queue_rank(rec),
             str(req.get("queued_at") or ""))
 
 
@@ -346,7 +347,7 @@ def queue_entries() -> list[FixQueueEntry]:
     change and the compile preflight did not reject it. A deployment configuring
     no verify.compile_cmd records None, which is not a failure — the merge or
     rebase resolving is the claim, and the build check corroborates it."""
-    live: list[tuple[tuple[int, tuple[float, bool, bool, str]], FixQueueEntry]] = []
+    live: list[tuple[tuple[int, tuple[float, bool, int, str]], FixQueueEntry]] = []
     finished: list[FixQueueEntry] = []
     for n, rec in data.prs().items():
         req = rec.fix_request or {}

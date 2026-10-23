@@ -100,19 +100,18 @@ def _tier_order(item: DiffManifestItem) -> tuple[bool, int, int]:
 
 def eligible(store: Store, today: str | None = None, max_n: int | None = None,
              prs: dict[int, Pr] | None = None) -> list[DiffManifestItem]:
-    """Security-eligible PRs lacking a current verdict, maintainers' first
-    (gates.priority_author), then riskiest-first by path-based tier (0 before
+    """Security-eligible PRs lacking a current verdict, maintainers' then
+    Prospector's first (gates.queue_rank), then riskiest-first by path-based tier (0 before
     3, unknown last). `max_n` truncates after ordering, so a capped wave still
     reviews the maintainers' and the widest-blast-radius candidates first. `prs` is a caller's corpus snapshot to reuse."""
-    out: list[tuple[bool, DiffManifestItem]] = []
+    out: list[tuple[int, DiffManifestItem]] = []
     corpus = prs if prs is not None else store.all_prs()
     for n, rec in sorted(corpus.items()):
         if not gates.security_eligible(rec, today):
             continue
         if is_current(rec, "security"):
             continue  # already has a current verdict
-        out.append((not gates.priority_author(rec.author, rec.author_association),
-                    DiffManifestItem.for_pr(n, rec, DIFFS)))
+        out.append((gates.queue_rank(rec), DiffManifestItem.for_pr(n, rec, DIFFS)))
     out.sort(key=lambda row: (row[0], *_tier_order(row[1])))
     ordered = [item for _, item in out]
     return ordered[:max_n] if max_n else ordered

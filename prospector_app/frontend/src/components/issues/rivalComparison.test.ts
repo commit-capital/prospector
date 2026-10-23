@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { IssueDetail } from "../../api";
-import { rivalRows } from "./rivalComparison.ts";
+import { otherOpenPRs, rivalRows } from "./rivalComparison.ts";
 
 const issue = (run: object | null): IssueDetail => ({
   number: 14867,
@@ -26,4 +26,11 @@ test("our fix lines up against every other open PR that references the issue", (
 test("no comparison until we have a fix", () => {
   assert.deepEqual(rivalRows(issue(null)), []);
   assert.deepEqual(rivalRows(issue({ ending: "fix-disputed" })), []);
+});
+
+test("the PRs to go with leave out ours and any Prospector opened", () => {
+  const d = { ...issue({ ending: "fixed", proposal: { pr: 15700, url: null } }),
+    linked_prs: [{ pr: 15440, how: "explicit", state: "open" },
+                 { pr: 15800, how: "explicit", state: "open", facts: { author_kind: "prospector" } }] };
+  assert.deepEqual(otherOpenPRs(d as unknown as IssueDetail), [15440]);
 });

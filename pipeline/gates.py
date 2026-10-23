@@ -284,6 +284,21 @@ def priority_author(author: str | None, association: str | None) -> bool:
     return association in MAINTAINER_ASSOCIATIONS or author in active.priority_authors
 
 
+def backed(pr: Pr) -> bool:
+    """Whether Prospector stands behind `pr`: its own App opened it, or an
+    operator chose it as an issue's fix (`issue_triage.fix_choice`)."""
+    login = (pr.author or "").removeprefix("app/").removesuffix("[bot]")
+    return bool(login) and login == settings.bot_login() or pr.section("backing") is not None
+
+
+def queue_rank(pr: Pr) -> int:
+    """Where `pr` goes in every worker queue: a `priority_author`'s first, then
+    one Prospector `backed`, then the rest."""
+    if priority_author(pr.author, pr.author_association):
+        return 0
+    return 1 if backed(pr) else 2
+
+
 def maintainer_leak(item: dict, pr: Pr | None) -> bool:
     """Whether an action item is a live-looking credential a maintainer
     committed: an open rotate-secret item that does not read as a test fixture,
