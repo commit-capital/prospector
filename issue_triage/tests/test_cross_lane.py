@@ -185,6 +185,14 @@ def cross(tmp_path, monkeypatch):
         return state["review"] if kw["lens"] == "scope-safety" else {**ROOT_SAFE, "lens": kw["lens"]}
 
     monkeypatch.setattr(review_issue_fix, "review", fake_review)
+    state["prefer"] = None
+    state["compared"] = []
+
+    def fake_preferred_fix(worktree, fixes, *, title, body):
+        state["compared"].append([f.index for f in fixes])
+        return {"pick": state["prefer"], "reason": "reuses the helper", "model": "opus"}
+
+    monkeypatch.setattr(review_issue_fix, "preferred_fix", fake_preferred_fix)
 
     def run(**spec_kw) -> fix_lane.LaneResult:
         spec = fix_lane.LaneSpec(issue=7, title="x is wrong", body="x should be 2", base=base,
@@ -197,10 +205,12 @@ def cross(tmp_path, monkeypatch):
     return state
 
 
-def test_candidates_that_agree_end_fixed_with_the_smallest_fix(cross):
+def test_candidates_that_agree_end_fixed_with_the_smallest_fix_when_the_comparison_fails(
+        cross):
     res = cross["run"]()
     assert res.ending == "fixed" and res.fault is False
-    assert res.agent_runs == 7
+    assert cross["compared"] == [[0, 1, 2]] and "the smallest fix clears" in res.detail
+    assert res.agent_runs == 8
     assert res.result["boundary"]["crossings"] == []
     assert res.result["pick"] in (0, 1)  # candidate 2's fix is the largest
     pick = res.result["pick"]
@@ -210,6 +220,21 @@ def test_candidates_that_agree_end_fixed_with_the_smallest_fix(cross):
     for test in ("a", "b", "c"):
         assert f"src/{test}.test.ts" in res.result["patch"]
     assert [f["path"] for f in res.reproduction["files"]][0] == f"src/{'ab'[pick]}.test.ts"
+
+
+def test_the_fix_a_design_comparison_prefers_is_judged_over_a_smaller_one(cross):
+    cross["prefer"] = 2
+    res = cross["run"]()
+    assert res.ending == "fixed" and res.result["pick"] == 2
+    assert res.result["preference"]["reason"] == "reuses the helper"
+    assert "a design comparison prefers" in res.detail
+
+
+def test_the_design_lens_reads_every_other_candidate_s_fix(cross):
+    res = cross["run"]()
+    pick = res.result["pick"]
+    others = {r["lens"]: [f.index for f in r["alternatives"]] for r in cross["reviewed"]}
+    assert others["design"] == [i for i in (0, 1, 2) if i != pick]
 
 
 def test_a_reproduction_writing_a_file_another_ships_is_left_out(cross):
@@ -495,7 +520,8 @@ def test_an_answer_resumes_a_dispute_on_the_reading_it_chose(cross, reading, shi
     assert res.ending == "fixed", res.detail
     assert res.result["pick"] == reading[0] and res.result["reading"] == reading
     assert res.result["agreement"]["shipped"] == shipped
-    assert res.agent_runs == 4 and res.result["boundary"]["crossings"] == []
+    assert res.agent_runs == 3 + len(shipped) and res.result["boundary"]["crossings"] == []
+    assert cross["compared"][-1:] == ([reading] if len(reading) > 1 else [])
     assert cross["green_runs"] == before  # the cross-test results are read, not re-run
 
 

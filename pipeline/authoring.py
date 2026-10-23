@@ -21,6 +21,7 @@ from pipeline import gh, profile
 HOUSE_STYLE = """\
 Write the change the way this repository's own code is written:
 - Before you add a function, type, constant, or test helper, search the tree for one that already does the job, and use it. Extend an existing one only when every other caller keeps working.
+- Decide a case from the fact the code already records for it (a status, a source, a receipt), not by re-deriving it from many other fields or a fresh query.
 - Put the change in the module and layer that owns the behavior, where the code around it would put it, not wherever is closest to the symptom.
 - Read a neighbouring file or two of the same kind first, and match their naming, structure, error handling, comment density and idioms. Prefer a pattern the code already uses over a new one.
 - A test you add is written the way the neighbouring tests are: the same directory, runner, fixtures and helpers.

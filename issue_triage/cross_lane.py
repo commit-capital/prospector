@@ -22,12 +22,16 @@ call. A run with no agreed fix whose one reproduction is passed by its own fix
 takes that fix forward (`lone_reproduction`) unless a candidate judged the
 report no defect, recording `agreement.single`, which holds a fixed attempt for
 an operator's Propose (`trust_boundary.held`). Any other run without an agreed
-fix ends `fix-unproven`. The picked fix then goes through the host's checks
-(`solo_lane.host_checks`: compile, related tests, the full suite) together with
-the tests of every reproduction it passed (`shipped_reproductions`). Agreement
+fix ends `fix-unproven`. Among fixes that pass the same reproductions, the one
+picked is the one a comparison of their design prefers
+(`review_issue_fix.preferred_fix`), else the smallest. The picked fix then goes
+through the host's checks (`solo_lane.host_checks`: compile, related tests, the
+full suite) together with the tests of every reproduction it passed
+(`shipped_reproductions`). Agreement
 proves the fix does what its tests ask, never that it does nothing more or
 everything the report asks, so a fix that clears the checks then faces a full
-code review (`review_issue_fix.full_review`). What the reviewers ask
+code review (`review_issue_fix.full_review`), whose design lens reads the
+other candidates' fixes beside it. What the reviewers ask
 (`issue_gates.review_comments`), with each trust-boundary crossing the report
 did not ask for (`trust_boundary.comments`), goes back to the pick's own model
 the way a code review goes back to its author (`_revise`, at most REVISIONS
@@ -268,12 +272,8 @@ def _evidence(proof: dict, shipped: list[Candidate]) -> str:
                      else "- The compile command fails on the unfixed tree too.")
     related = proof.get("related_tests")
     if related:
-        run = related.get("run") or {}
-        verdict = ("passed" if run.get("exit") == gates.SENTINEL_PASS
-                   else "failed, and fails on the unfixed tree too" if related.get("base_fails")
-                   else f"failed (exit {run.get('exit')})")
         lines.append(f"- Related existing tests ({', '.join(related.get('files') or [])}): "
-                     f"{verdict}.")
+                     f"{issue_gates.related_tests_outcome(related)}.")
     else:
         lines.append("- Related existing tests: none were found for the changed paths.")
     suite = proof.get("suite")
@@ -285,12 +285,44 @@ def _evidence(proof: dict, shipped: list[Candidate]) -> str:
     return "\n".join(lines)
 
 
+def _as_fix(c: Candidate) -> review_issue_fix.Fix:
+    return review_issue_fix.Fix(c.index, str(c.verdict.get("summary") or ""), c.fix_patch)
+
+
+def alternatives(pick: Candidate, cands: list[Candidate]) -> list[review_issue_fix.Fix]:
+    """The other trusted fixes written for the report, whatever reading they
+    pinned, as the design lens reads them beside `pick`."""
+    return [_as_fix(c) for c in cands
+            if c.index != pick.index and c.ending is None and c.verdict and c.fix_patch]
+
+
+def _choose(spec: fix_lane.LaneSpec, fits: list[Candidate], result: dict,
+            on_step: Callable[[str], None]) -> tuple[Candidate, str, int]:
+    """The fix to judge among `fits`, which pass the same reproductions: the one
+    `review_issue_fix.preferred_fix` picks, its answer recorded on
+    `result["preference"]`, else the smallest. Returns it, how it was chosen,
+    and the agent runs spent."""
+    smallest = min(fits, key=lambda c: (issue_gates.changed_line_count(c.fix_patch), c.index))
+    if len(fits) < 2:
+        return smallest, "its fix", 0
+    on_step("comparing the fixes' design")
+    pref = review_issue_fix.preferred_fix(str(spec.base.clone), [_as_fix(c) for c in fits],
+                                          title=spec.title, body=spec.body)
+    result["preference"] = pref
+    chosen = next((c for c in fits if c.index == pref["pick"]), None)
+    if chosen is None:
+        return smallest, "the smallest fix", 1
+    return chosen, "the fix a design comparison prefers", 1
+
+
 def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
                 repros: list[Candidate], result: dict, *,
+                others: list[review_issue_fix.Fix],
                 proof_patch: Callable[..., Path], label: str,
                 on_step: Callable[[str], None]) -> tuple[str | None, str, dict, int]:
     """Ship `pick` with the tests of `repros` and put it through the host's
-    checks and a full code review, recording both on `result`, then record the
+    checks and a full code review that reads `others` beside it, recording both
+    on `result`, then record the
     trust boundaries a pick the reviews do not reject crosses. Returns the
     ending it stops at (None when it clears every check) with the reason, the
     reproduction record, and the agent runs spent. The review tree is removed on
@@ -322,8 +354,8 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
             str(tree), pick.fix_patch, title=spec.title, body=spec.body,
             root_cause=str(pick.verdict["root_cause"]), test_paths=test_paths,
             evidence=_evidence(result["proof"], shipped),
-            inventory_veto=result["tier"].get("tier") == 0, on_step=on_step,
-            subject=spec.verdict_subject, base_sha=spec.base.sha)
+            inventory_veto=result["tier"].get("tier") == 0, alternatives=others,
+            on_step=on_step, subject=spec.verdict_subject, base_sha=spec.base.sha)
         result["reviews"] = reviews
         rejected, comments = issue_gates.review_comments(reviews)
         stalled = [r for r in reviews if r.get("failed")]
@@ -386,7 +418,7 @@ def _history(rounds: list[dict]) -> str:
 
 
 def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
-            repros: list[Candidate], result: dict, *,
+            repros: list[Candidate], result: dict, *, others: list[review_issue_fix.Fix],
             proof_patch: Callable[..., Path], label: str,
             on_step: Callable[[str], None]) -> tuple[str | None, str, dict | None, int]:
     """Answer the reviews of the change on `result`, and the crossings its
@@ -434,7 +466,8 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
             start_patch=diffpaths.filter_diff(patch, lambda p: p not in pinned) + required,
             review=True, model=pick.model,
             attempt={"summary": summary, "root_cause": root_cause,
-                     "review": _brief(comments, shown_now), "history": _history(rounds)})
+                     "review": _brief(comments, shown_now), "history": _history(rounds),
+                     "alternatives": others})
         spent += res.agent_runs
         revised = res.result or {}
         record = {"round": n, "answering": comments,
@@ -481,7 +514,8 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
 
 def _answer_review(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
                    repros: list[Candidate], result: dict, ending: str | None, detail: str,
-                   reproduction: dict, *, proof_patch: Callable[..., Path], label: str,
+                   reproduction: dict, *, others: list[review_issue_fix.Fix],
+                   proof_patch: Callable[..., Path], label: str,
                    on_step: Callable[[str], None]) -> tuple[str | None, str, dict, int]:
     """`_judge_pick`'s ending, revised (`_revise`) when its reviews or its
     unrequested trust-boundary crossings left any comment; the reproduction
@@ -490,8 +524,8 @@ def _answer_review(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
             result.get("reviews"), result.get("boundary"))[1]:
         return ending, detail, reproduction, 0
     ending, detail, revised, spent = _revise(spec, workdir, pick, repros, result,
-                                             proof_patch=proof_patch, label=label,
-                                             on_step=on_step)
+                                             others=others, proof_patch=proof_patch,
+                                             label=label, on_step=on_step)
     return ending, detail, revised or reproduction, spent
 
 
@@ -639,15 +673,17 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         if not agreed and lone is None:
             return finish(*_unagreed(live, repros, result))
 
-        pick = lone or min(agreed, key=lambda c: (issue_gates.changed_line_count(c.fix_patch),
-                                                  c.index))
+        pick, how, spent = (lone, "its fix", 0) if lone else _choose(spec, agreed, result,
+                                                                      on_step)
+        agent_runs += spent
+        others = alternatives(pick, cands)
         ending, detail, reproduction, spent = _judge_pick(
-            spec, workdir, pick, repros, result, proof_patch=proof_patch, label=label,
-            on_step=on_step)
+            spec, workdir, pick, repros, result, others=others, proof_patch=proof_patch,
+            label=label, on_step=on_step)
         agent_runs += spent
         ending, detail, reproduction, spent = _answer_review(
             spec, workdir, pick, repros, result, ending, detail, reproduction,
-            proof_patch=proof_patch, label=label, on_step=on_step)
+            others=others, proof_patch=proof_patch, label=label, on_step=on_step)
         agent_runs += spent
         if ending:
             return finish(ending, detail)
@@ -656,7 +692,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                                    "reproduce the defect; its fix passes them and clears the "
                                    f"host's checks and {_reviewed(result)}")
         return finish("fixed", f"{len(agreed)} of {len(live)} fixes pass all {len(repros)} "
-                               "reproductions; the smallest clears the host's checks and "
+                               f"reproductions; {how} clears the host's checks and "
                                + _reviewed(result))
     except _LANE_ERRORS as e:
         return finish(*_faulted(e))
@@ -682,8 +718,8 @@ def _restore(result: dict) -> list[Candidate]:
 def judge_reading(spec: fix_lane.LaneSpec, *, workdir: Path, result: dict, reading: list[int],
                   on_step: Callable[[str], None] = lambda step: None) -> fix_lane.LaneResult:
     """Resume a `fix-disputed` run on one reading, chosen by an answer to the
-    question it raised: the smallest fix among `reading`'s candidates that
-    passes every reproduction in it goes through the host's checks and a
+    question it raised: the fix `_choose` takes among `reading`'s candidates
+    that pass every reproduction in it goes through the host's checks and a
     full code review, revised on what the review asks. `result` is the disputed run's own; the candidates'
     cross-test results are read from it, never re-run."""
     label = f"cross-{spec.issue}"
@@ -703,20 +739,22 @@ def judge_reading(spec: fix_lane.LaneSpec, *, workdir: Path, result: dict, readi
         return finish("fix-unproven", "the chosen reading has no fix that passes its "
                                       "reproductions")
     workdir.mkdir(parents=True, exist_ok=True)
-    pick = min(fits, key=lambda c: (issue_gates.changed_line_count(c.fix_patch), c.index))
     proof_patch = _proof_patcher(spec, label)
     try:
-        ending, detail, reproduction, agent_runs = _judge_pick(
-            spec, workdir, pick, repros, result, proof_patch=proof_patch, label=label,
-            on_step=on_step)
+        pick, how, agent_runs = _choose(spec, fits, result, on_step)
+        others = alternatives(pick, _restore(result))
+        ending, detail, reproduction, spent = _judge_pick(
+            spec, workdir, pick, repros, result, others=others, proof_patch=proof_patch,
+            label=label, on_step=on_step)
+        agent_runs += spent
         ending, detail, reproduction, spent = _answer_review(
             spec, workdir, pick, repros, result, ending, detail, reproduction,
-            proof_patch=proof_patch, label=label, on_step=on_step)
+            others=others, proof_patch=proof_patch, label=label, on_step=on_step)
         agent_runs += spent
     except _LANE_ERRORS as e:
         return finish(*_faulted(e))
     if ending:
         return finish(ending, detail)
-    return finish("fixed", f"the answer chose reading {reading}; its smallest fix passes its "
+    return finish("fixed", f"the answer chose reading {reading}; {how} passes its "
                            f"{len(repros)} reproduction(s) and clears the host's checks and "
                            + _reviewed(result))

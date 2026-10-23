@@ -290,12 +290,13 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
     """One agent reproduces and fixes `spec`'s issue; the host's re-gate and
     test runs name the ending. With `start_patch` the clone opens holding an
     earlier attempt (tests and change, uncommitted) that the agent revises, told
-    about it by `attempt` ({summary, root_cause, review}); the whole change from
-    the base is judged. `review` puts a fix that clears the host's checks
-    through every reviewer too (`review_issue_fix.full_review`), which reads
-    the review the revision answers (`_review_history`); a review that rejects
-    it ends `fix-rejected` with the reviewers' comments. `model` pins the agent's model. The
-    clone is removed on the way out."""
+    about it by `attempt` ({summary, root_cause, review, alternatives}); the
+    whole change from the base is judged. `review` puts a fix that clears the
+    host's checks through every reviewer too (`review_issue_fix.full_review`),
+    which reads the review the revision answers (`_review_history`) and, under
+    the design lens, the other fixes written for the report; a review that
+    rejects it ends `fix-rejected` with the reviewers' comments. `model` pins
+    the agent's model. The clone is removed on the way out."""
     label = f"solo-{spec.issue}"
     clone_dir = workdir / "solo"
     agent_runs = 0
@@ -390,6 +391,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                          f"compile, related tests and full suite pass.\n- {detail}.",
                 inventory_veto=result["tier"].get("tier") == 0,
                 history=_review_history(attempt, verdict.get("responses") or []),
+                alternatives=(attempt or {}).get("alternatives", ()),
                 subject=spec.verdict_subject, base_sha=spec.base.sha,
                 on_step=on_step)
             agent_runs += len(reviews)
