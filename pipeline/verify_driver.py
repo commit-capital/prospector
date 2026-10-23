@@ -912,10 +912,10 @@ OUTPUT_TAIL_BYTES = 8192
 SUITE_TAIL_BYTES = 64 * 1024
 PHASE_TIMEOUT_SECONDS = 1800
 
-# The full-suite phases run upstream's entire stabilized plan; the measured
-# floor is 358s for a truncated run and 770s raw-parallel, and the serialized
-# suites each pay a vitest boot, so the ceiling is generous.
-SUITE_TIMEOUT_SECONDS = 5400
+# The full-suite phases run upstream's entire stabilized plan, each serialized
+# file paying its own vitest boot and the general-server files one at a time:
+# a whole baseline measured 102 minutes on the Studio (October 2026).
+SUITE_TIMEOUT_SECONDS = 3 * 3600
 
 _TRAILER_RE = re.compile(
     r"===VERIFY-SUITE:BEGIN===\s*(\{.*?\})\s*===VERIFY-SUITE:END===", re.DOTALL)
