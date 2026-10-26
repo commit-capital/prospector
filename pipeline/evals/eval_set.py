@@ -32,17 +32,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import threading
 import traceback
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Literal
 
 from issue_triage import link_prs
-from pipeline import gh, profile, prove, settings, storekit, verify_driver, verify_gc
+from issue_triage.issue_store import IssueStore
+from pipeline import (diffpaths, gh, profile, prove, settings, storekit, verify_driver,
+                      verify_gc)
 from pipeline.evals import issue_fix_replay as replay
 from pipeline.profile import RepoProfile
 from pipeline.store import Store
@@ -275,6 +279,106 @@ def load_cases(pr_store: Store | None = None) -> list[Case]:
             cases.pop(stats["case"], None)
             cases[stats["case"]] = Case(**{k: v for k, v in stats.items() if k in names})
     return sorted(cases.values(), key=lambda c: c.case)
+
+
+# Second-opinion verdicts saying a rival's tests catch what our fix misses.
+_GAPS = ("gap", "gap-open")
+
+
+def rival_candidates(issues: IssueStore) -> list[tuple[int, int]]:
+    """`(issue, pr)` for each issue whose operator went with another author's PR
+    (`fix_choice`) or whose fix a rival's tests found gaps in, sorted."""
+    pairs: set[tuple[int, int]] = set()
+    for row, (choice, opinions) in issues.issue_rows([("fix_choice",),
+                                                      ("fix_run", "second_opinion")]):
+        if isinstance(choice, dict) and isinstance(choice.get("pr"), int):
+            pairs.add((row["issue"], choice["pr"]))
+        for o in opinions or []:
+            if isinstance(o, dict) and o.get("verdict") in _GAPS and isinstance(o.get("pr"), int):
+                pairs.add((row["issue"], o["pr"]))
+    return sorted(pairs)
+
+
+def qualify_case(source: Literal["rival", "case-study"], issue: int, pr: int, *,
+                 pin: prove.PinnedBase, report: tuple[str, str], prof: RepoProfile,
+                 run_r6: bool) -> Case:
+    """`issue` with `pr`'s merged fix as its reference, on the tree just before
+    that fix landed (`pre_patch` over the pin): `tests` when the fix's own tests
+    pass R6 there, `craft-only` when the tree builds but they do not, else
+    `unusable`. Without `run_r6` a case with tests is taken as `tests` unproven."""
+    case = Case(case=f"{'rival' if source == 'rival' else 'case'}-{issue}-{pr}", source=source,
+                issue=issue, pr=pr, merge_sha="", base_sha=pin.sha, oracle="unusable",
+                detail="", report_title=report[0], report_body=report[1], landed_diff="",
+                test_files=[], nontest_files=[])
+    merged = replay._gh_pr(pr)
+    if merged is None:
+        return replace(case, detail=f"#{pr} is not merged")
+    merge_sha = merged["merge_sha"]
+    try:
+        landed = replay._git(pin.clone, "diff", "--binary", f"{merge_sha}^1", merge_sha)
+        pre_patch = replay.transform_to_p(pin.clone, merge_sha, pin.sha, prof)
+    except subprocess.CalledProcessError as e:
+        return replace(case, merge_sha=merge_sha,
+                       detail=f"not-in-pin: {(e.stderr or str(e)).strip()[:200]}")
+    paths = diffpaths.changed_paths(landed)
+    case = replace(case, merge_sha=merge_sha, landed_diff=landed,
+                   test_files=[p for p in paths if diffpaths.is_test_path(p)],
+                   nontest_files=[p for p in paths if not diffpaths.is_test_path(p)])
+    if case.test_files:
+        if not run_r6:
+            return replace(case, oracle="tests", detail="R6 not run (dry run)")
+        ok, reason = replay.validate_known_fix(pin, pre_patch, case.instance(),
+                                               label=f"case-{issue}")
+        if ok:
+            return replace(case, oracle="tests")
+        case = replace(case, detail=f"its tests do not qualify: r6-{reason}")
+    try:
+        prove.flatten(pin.clone, pre_patch, label=f"case-{issue}")
+    except ValueError as e:
+        return replace(case, oracle="unusable",
+                       detail=f"the pre-fix tree does not build: {e}"[:300])
+    return replace(case, oracle="craft-only")
+
+
+def _case_inputs() -> tuple[prove.PinnedBase, IssueStore,
+                            Callable[[int], tuple[str, str] | None]]:
+    """This machine's pin, the issue store, and the report reader."""
+    from issue_triage import fix_lane
+    issues = IssueStore()
+    return prove.pinned(Store()), issues, lambda n: fix_lane.reported_text(issues, n)
+
+
+def _qualify_all(source: Literal["rival", "case-study"], pairs: list[tuple[int, int]], *,
+                 dry_run: bool) -> int:
+    pin, _, reported = _case_inputs()
+    prof = profile.active()
+    recorded = 0
+    for issue, pr in pairs:
+        report = reported(issue) or ("", "")
+        case = qualify_case(source, issue, pr, pin=pin, report=report, prof=prof,
+                            run_r6=not dry_run)
+        print(f"{case.case}: {case.oracle}" + (f" ({case.detail})" if case.detail else ""),
+              flush=True)
+        if not dry_run:
+            record_case(case)
+            recorded += 1
+    if recorded:
+        verify_gc.hold(pin.sha)
+    print(f"{len(pairs)} case(s)" + (" (dry run, nothing recorded)" if dry_run else ""))
+    return 0
+
+
+def harvest_cases(*, dry_run: bool) -> int:
+    """Qualify every rival case the issue store names and, unless `dry_run`,
+    record each (unusable ones too, with why) and hold the pin they run on."""
+    _, issues, _ = _case_inputs()
+    return _qualify_all("rival", rival_candidates(issues), dry_run=dry_run)
+
+
+def add_case(issue: int, pr: int, *, dry_run: bool) -> int:
+    """Qualify and record one case an operator names: `issue` with `pr`'s merged
+    fix as the reference."""
+    return _qualify_all("case-study", [(issue, pr)], dry_run=dry_run)
 
 
 def _fixes(members: list[replay.Instance]) -> int:
@@ -604,6 +708,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                    help="the staged, one-agent, or cross-tested lane")
     i = sub.add_parser("import", help="record the bases a manifest file names")
     i.add_argument("path", type=Path)
+    c = sub.add_parser("cases", help="rival and case-study cases: harvest or add")
+    cs = c.add_subparsers(dest="cases_command", required=True)
+    h = cs.add_parser("harvest", help="qualify every rival case the issue store names")
+    h.add_argument("--dry-run", action="store_true", help="print, skip R6, record nothing")
+    a = cs.add_parser("add", help="add a case study: an issue and the merged PR to judge by")
+    a.add_argument("--issue", type=int, required=True)
+    a.add_argument("--pr", type=int, required=True)
+    a.add_argument("--dry-run", action="store_true", help="print, skip R6, record nothing")
     return ap.parse_args(argv)
 
 
@@ -612,6 +724,10 @@ def main(argv: list[str]) -> int:
     try:
         if args.command == "import":
             return import_file(args.path)
+        if args.command == "cases":
+            if args.cases_command == "harvest":
+                return harvest_cases(dry_run=args.dry_run)
+            return add_case(args.issue, args.pr, dry_run=args.dry_run)
         if args.command == "run":
             issues = ({int(n) for n in args.issues.split(",") if n.strip()}
                       if args.issues else None)

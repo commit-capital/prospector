@@ -427,3 +427,105 @@ def test_case_instance_carries_its_inputs():
     assert (inst.issue, inst.pr, inst.merge_sha) == (9, 90, "m" * 40)
     assert inst.landed_diff.startswith("diff --git") and inst.nontest_files == ["x"]
     assert (inst.report_title, inst.report_body) == ("t", "b")
+
+
+class _Issues:
+    def __init__(self, rows: list[tuple[dict, list]]) -> None:
+        self.rows = rows
+
+    def issue_rows(self, paths, **kw):
+        return self.rows
+
+
+def test_rival_candidates_from_choices_and_gaps():
+    rows = [({"issue": 1}, [{"pr": 11}, None]),
+            ({"issue": 2}, [None, [{"pr": 21, "verdict": "gap-open"},
+                                   {"pr": 22, "verdict": "gap-closed"},
+                                   {"pr": 23, "verdict": "covered"}, {"pr": 24, "verdict": "gap"}]]),
+            ({"issue": 3}, [None, None])]
+    assert eval_set.rival_candidates(_Issues(rows)) == [(1, 11), (2, 21), (2, 24)]  # type: ignore[arg-type]
+
+
+LANDED = ("diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-a\n+b\n")
+LANDED_TESTS = LANDED + ("diff --git a/src/a.test.ts b/src/a.test.ts\n--- a/src/a.test.ts\n"
+                         "+++ b/src/a.test.ts\n@@ -1 +1 @@\n-x\n+y\n")
+
+
+@pytest.fixture
+def qualifying(monkeypatch, tmp_path):
+    """The pin, gh and git faked; returns knobs the test sets."""
+    knobs = {"merged": True, "landed": LANDED, "r6": (True, ""), "flatten": True}
+    monkeypatch.setattr(replay, "_gh_pr", lambda pr: {"merge_sha": "m" * 40, "author": "a",
+                                                      "opened_at": None}
+                        if knobs["merged"] else None)
+
+    def git(repo, *args):
+        if knobs["landed"] is None:
+            raise subprocess.CalledProcessError(128, ["git"], stderr="bad object")
+        return knobs["landed"]
+    monkeypatch.setattr(replay, "_git", git)
+    monkeypatch.setattr(replay, "transform_to_p", lambda *a, **k: "PRE")
+    monkeypatch.setattr(replay, "validate_known_fix", lambda *a, **k: knobs["r6"])
+
+    def flatten(*a, **k):
+        if not knobs["flatten"]:
+            raise ValueError("does not apply")
+        return tmp_path / "p.diff"
+    monkeypatch.setattr(prove, "flatten", flatten)
+    knobs["pin"] = prove.PinnedBase(sha="p" * 40, tier=1, image="i", clone=tmp_path)
+    return knobs
+
+
+def _qualify(knobs, source="rival"):
+    return eval_set.qualify_case(source, 9, 90, pin=knobs["pin"], report=("t", "b"),
+                                 prof=profile.active(), run_r6=True)
+
+
+def test_an_unmerged_rival_is_unusable(qualifying):
+    qualifying["merged"] = False
+    case = _qualify(qualifying)
+    assert case.oracle == "unusable" and "not merged" in case.detail
+
+
+def test_a_merge_the_pin_lacks_is_not_in_pin(qualifying):
+    qualifying["landed"] = None
+    case = _qualify(qualifying)
+    assert case.oracle == "unusable" and "not-in-pin" in case.detail
+
+
+def test_a_rival_with_qualifying_tests_is_an_oracle_case(qualifying):
+    qualifying["landed"] = LANDED_TESTS
+    case = _qualify(qualifying)
+    assert (case.oracle, case.case, case.base_sha) == ("tests", "rival-9-90", "p" * 40)
+    assert case.test_files == ["src/a.test.ts"] and case.nontest_files == ["src/a.ts"]
+
+
+def test_a_rival_without_tests_is_craft_only(qualifying):
+    case = _qualify(qualifying)
+    assert case.oracle == "craft-only" and case.landed_diff == LANDED
+
+
+def test_a_pre_fix_tree_that_does_not_apply_is_unusable(qualifying):
+    qualifying["flatten"] = False
+    assert _qualify(qualifying).oracle == "unusable"
+
+
+def test_dry_run_records_nothing(qualifying, ledger, monkeypatch):
+    monkeypatch.setattr(eval_set, "rival_candidates", lambda issues: [(9, 90)])
+    monkeypatch.setattr(eval_set, "_case_inputs", lambda: (qualifying["pin"], _Issues([]),
+                                                           lambda n: ("t", "b")))
+    held: list = []
+    monkeypatch.setattr(verify_gc, "hold", lambda sha: held.append(sha))
+    assert eval_set.harvest_cases(dry_run=True) == 0
+    assert ledger.rows == [] and held == []
+    assert eval_set.harvest_cases(dry_run=False) == 0
+    assert [c.case for c in eval_set.load_cases()] == ["rival-9-90"] and held == ["p" * 40]
+
+
+def test_add_case_is_a_case_study(qualifying, ledger, monkeypatch):
+    monkeypatch.setattr(eval_set, "_case_inputs", lambda: (qualifying["pin"], _Issues([]),
+                                                           lambda n: ("t", "b")))
+    monkeypatch.setattr(verify_gc, "hold", lambda sha: None)
+    assert eval_set.add_case(9, 90, dry_run=False) == 0
+    [case] = eval_set.load_cases()
+    assert (case.source, case.case) == ("case-study", "case-9-90")
