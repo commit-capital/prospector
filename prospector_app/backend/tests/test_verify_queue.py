@@ -285,6 +285,14 @@ def test_recover_orphans_errors_a_run_that_reached_the_sandbox(store):
     assert store.load_pr(1).verify_request["error_kind"] == "interrupted"
 
 
+def test_an_interrupted_run_keeps_the_head_s_run_count(store):
+    store.edit_pr(1).record_verify_request("running", queued_at=_now(), started_at=_now(),
+                                           step="sandbox", attempts=2)
+    verify_worker.recover_orphans()
+    req = store.load_pr(1).verify_request
+    assert (req["status"], req["attempts"]) == ("error", 2)
+
+
 def test_recover_orphans_stops_requeueing_a_run_that_keeps_dying(store):
     """A worker crashing in the same pre-sandbox step would re-queue forever.
     Past the attempt cap the interruption is the operator's to look at."""
