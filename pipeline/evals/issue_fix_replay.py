@@ -1122,16 +1122,17 @@ def _progress(line: str) -> None:
     print(f"replay: {line}", file=sys.stderr, flush=True)
 
 
-def _recorded(pr_store: store.Store, run_id: str) -> dict[int, dict]:
-    """The instance stats already in the ledger for `run_id`, keyed by issue —
-    the read that makes a run resumable."""
-    out: dict[int, dict] = {}
+def _recorded(pr_store: store.Store, run_id: str) -> dict[str, dict]:
+    """The instance stats already in the ledger for `run_id`, keyed by case (an
+    eval set's rival or case-study id, else the issue number) — the read that
+    makes a run resumable."""
+    out: dict[str, dict] = {}
     for rec in pr_store.runs(limit=_RESUME_SCAN, phase="replay:instance"):
         if not isinstance(rec, storekit.PhaseRun):
             continue
         stats = rec.raw.get("stats") or {}
         if stats.get("run_id") == run_id and isinstance(stats.get("issue"), int):
-            out[stats["issue"]] = stats
+            out[str(stats.get("case") or stats["issue"])] = stats
     return out
 
 
@@ -1336,7 +1337,7 @@ def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
     results: dict[int, dict] = {}
     todo: list[Instance] = []
     for inst in instances:
-        prior = recorded.get(inst.issue)
+        prior = recorded.get(str(inst.issue))
         if prior is not None and not (resume and _is_fault(prior.get("ending"))):
             results[inst.issue] = prior
         else:

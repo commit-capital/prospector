@@ -529,3 +529,62 @@ def test_add_case_is_a_case_study(qualifying, ledger, monkeypatch):
     assert eval_set.add_case(9, 90, dry_run=False) == 0
     [case] = eval_set.load_cases()
     assert (case.source, case.case) == ("case-study", "case-9-90")
+
+
+def _fake_runner(ran: list):
+    def run_instance(inst, *, base, base_sha, profile, workdir, run_lane, judge_contract,
+                     oracle=True, **kw):
+        ran.append((inst.issue, base_sha, oracle))
+        return {"issue": inst.issue, "pr": inst.pr, "ending": "fixed",
+                "oracle_pass": True if oracle else None, "craft_only": not oracle,
+                "fixed": True, "seconds": 1.0, "agent_runs": 1}
+    return run_instance
+
+
+def test_run_replays_cases_beside_the_fair_bugs(builder, ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    eval_set.record_case(_case(7, oracle="tests"))
+    eval_set.record_case(_case(8, oracle="unusable", detail="not merged"))
+    ran: list = []
+    monkeypatch.setattr(replay, "run_instance", _fake_runner(ran))
+    assert eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues=None,
+                        resume=False) == 0
+    assert sorted(ran) == [(1, "a" * 40, True), (3, "a" * 40, True), (5, "c" * 40, True),
+                           (7, "b" * 40, True)]
+    stats = {s["case"]: s for s in (r["stats"] for r in ledger.rows
+                                    if r["phase"] == "replay:instance")}
+    assert stats["rival-7"]["source"] == "rival" and stats["1"]["source"] == "history"
+
+
+def test_an_issue_both_fair_and_rival_is_run_as_both(builder, ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    eval_set.record_case(_case(1, oracle="craft-only"))
+    ran: list = []
+    monkeypatch.setattr(replay, "run_instance", _fake_runner(ran))
+    eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues={1}, resume=False)
+    assert sorted(ran) == [(1, "a" * 40, True), (1, "b" * 40, False)]
+    ran.clear()
+    eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues={1}, resume=False)
+    assert ran == []  # both resumed by case id
+
+
+def test_craft_only_records_leave_precision_alone():
+    records = [{"issue": 1, "case": "1", "ending": "fixed", "oracle_pass": True},
+               {"issue": 2, "case": "rival-2-9", "source": "rival", "ending": "fixed",
+                "oracle_pass": None, "craft_only": True}]
+    card = eval_set.scorecard(records, bugs=1)
+    assert (card["proposed"], card["correct"], card["precision"], card["coverage"]) == (
+        1, 1, 1.0, 1.0)
+    assert card["cases"] == {"history": 1, "rival": 1}
+
+
+def test_unusable_cases_are_not_run(builder, ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    eval_set.record_case(_case(8, oracle="unusable", detail="not merged"))
+    ran: list = []
+    monkeypatch.setattr(replay, "run_instance", _fake_runner(ran))
+    eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues={8}, resume=False)
+    assert ran == []
