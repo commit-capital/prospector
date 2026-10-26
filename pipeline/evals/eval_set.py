@@ -238,7 +238,9 @@ class Case:
     """A bug the set takes from production or from an operator, not from history:
     `rival` when another author's PR beat our fix, `case-study` when an operator
     names it. The reference is the PR's merged fix, made on `merge_sha^1`, or an
-    open PR's diff at its head, made on `pre_sha` (`merge_sha` empty). It carries
+    open PR's diff at its head, judged on the pin (`pre_sha`, `merge_sha` empty):
+    an open PR's fork point is older than the pin, and its dependencies rarely
+    still match the image's. It carries
     everything a replay needs, so it is never re-screened. `oracle` is `tests`
     when a merged PR's tests qualify as the oracle on `base_sha`, `craft-only`
     when the pre-fix tree's patch applies but there is no such oracle, and
@@ -304,39 +306,34 @@ def rival_candidates(issues: IssueStore) -> list[tuple[int, int]]:
 
 
 class OpenPr(NamedTuple):
-    fork: str
     head: str
     diff: str
 
 
 def _open_rival(pr: int) -> OpenPr | None:
-    """An open PR read live as the operator at its current head: the base-branch
-    commit it forks from and its diff against that commit. None when it is not
-    open or GitHub refuses a read."""
+    """An open PR's diff at its current head, read live as the operator, or None
+    when it is not open or GitHub refuses the read."""
     raw = gh.fetch_pr(pr)
     if not raw or raw.get("state") != "open":
         return None
     head = raw["head"]["sha"]
-    span = f"repos/{settings.repo()}/compare/{raw['base']['sha']}...{head}"
-    fork = ((gh.gh_json(span) or {}).get("merge_base_commit") or {}).get("sha")
-    diff = gh.gh_bytes(span, accept="application/vnd.github.diff")
-    if not fork or not diff:
-        return None
-    return OpenPr(fork=fork, head=head, diff=diff.decode("utf-8", "replace"))
+    diff = gh.gh_bytes(f"repos/{settings.repo()}/compare/{raw['base']['sha']}...{head}",
+                       accept="application/vnd.github.diff")
+    return OpenPr(head=head, diff=diff.decode("utf-8", "replace")) if diff else None
 
 
 def qualify_case(source: Literal["rival", "case-study"], issue: int, pr: int, *,
                  pin: prove.PinnedBase, report: tuple[str, str], prof: RepoProfile,
                  run_r6: bool) -> Case:
-    """`issue` with `pr`'s fix as its reference, on the tree the fix was made on
-    (`pre_patch` over the pin): a merged PR's tree just before it landed, or an
-    open PR's fork point. `tests` when a merged fix's own tests pass R6 there,
-    `craft-only` when that tree's `pre_patch` applies and there is no such oracle
-    (an open PR's tests are unaccepted, so never one), else `unusable` with why:
-    no report text, neither merged nor open, not in the pin, dependencies
-    drifted from the pin's (the image would not install the old tree
-    faithfully), or an R6 sandbox fault (re-harvest to retry). Without `run_r6` a
-    case with tests is taken as `tests` unproven."""
+    """`issue` with `pr`'s fix as its reference, on the tree before it
+    (`pre_patch` over the pin): a merged PR's tree just before it landed, or the
+    pin itself for an open PR. `tests` when a merged fix's own tests pass R6
+    there, `craft-only` when that tree's `pre_patch` (and an open PR's diff)
+    applies and there is no such oracle (an open PR's tests are unaccepted, so
+    never one), else `unusable` with why: no report text, neither merged nor
+    open, not in the pin, dependencies drifted from the pin's (the image would
+    not install the old tree faithfully), or an R6 sandbox fault (re-harvest to
+    retry). Without `run_r6` a case with tests is taken as `tests` unproven."""
     case = Case(case=f"{'rival' if source == 'rival' else 'case'}-{issue}-{pr}", source=source,
                 issue=issue, pr=pr, merge_sha="", base_sha=pin.sha, oracle="unusable",
                 detail="", report_title=report[0], report_body=report[1], landed_diff="",
@@ -348,7 +345,7 @@ def qualify_case(source: Literal["rival", "case-study"], issue: int, pr: int, *,
     if merged:
         case = replace(case, merge_sha=merged["merge_sha"])
     elif opened:
-        case = replace(case, pre_sha=opened.fork, detail=f"#{pr} is open; judged at {opened.head[:7]}")
+        case = replace(case, pre_sha=pin.sha, detail=f"#{pr} is open; judged at {opened.head[:7]}")
     else:
         return replace(case, detail=f"#{pr} is neither merged nor open")
     pre_fix = case.instance().pre_fix
@@ -378,10 +375,9 @@ def qualify_case(source: Literal["rival", "case-study"], issue: int, pr: int, *,
             return replace(case, detail="R6 hit a sandbox fault; re-harvest to retry")
         case = replace(case, detail=f"its tests do not qualify: r6-{reason}")
     try:
-        prove.flatten(pin.clone, pre_patch, label=f"case-{issue}")
+        prove.flatten(pin.clone, pre_patch, *([landed] if opened else []), label=f"case-{issue}")
     except ValueError as e:
-        return replace(case, oracle="unusable",
-                       detail=f"the pre-fix tree's patch does not apply: {e}"[:300])
+        return replace(case, oracle="unusable", detail=f"does not apply to the pin: {e}"[:300])
     return replace(case, oracle="craft-only")
 
 

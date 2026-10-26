@@ -248,8 +248,8 @@ operators (`eval_set cases harvest`, `eval_set cases add --issue N --pr M`): a
 rival case is an issue where an operator went with another author's PR, or a
 rival's tests found gaps in our fix, and that PR is merged or still open; a case
 study is any issue and PR an operator names. Each is qualified on the current
-pin, on the tree the PR was made on (just before a merged PR landed, or an open
-PR's fork point, judged against its diff at the current head), a case whose
+pin, on the tree before the PR (just before a merged PR landed, or the pin itself
+for an open PR, whose diff at its current head must apply there), a case whose
 dependencies drifted from the pin's left out: `tests` when a merged PR's own
 tests pass R6 there, `craft-only` when that tree's patch applies and there is no
 such oracle (it is judged for craft and counts toward no correctness measure),

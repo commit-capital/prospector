@@ -476,7 +476,10 @@ def qualifying(monkeypatch, tmp_path):
     monkeypatch.setattr(replay, "transform_to_p", transform_to_p)
     monkeypatch.setattr(replay, "validate_known_fix", lambda *a, **k: knobs["r6"])
 
-    def flatten(*a, **k):
+    knobs["flattened"] = []
+
+    def flatten(clone, *patches, **k):
+        knobs["flattened"].append(patches)
         if not knobs["flatten"]:
             raise ValueError("does not apply")
         return tmp_path / "p.diff"
@@ -505,14 +508,22 @@ def test_a_rival_closed_unmerged_is_unusable(qualifying):
     assert case.oracle == "unusable" and "neither merged nor open" in case.detail
 
 
-def test_an_open_rival_is_craft_only_on_the_commit_it_branched_from(qualifying):
+def test_an_open_rival_is_craft_only_on_the_pin(qualifying):
     qualifying["merged"] = False
     qualifying["r6"] = None  # an open PR's tests are no oracle, so R6 never runs
-    qualifying["open"] = eval_set.OpenPr(fork="f" * 40, head="h" * 40, diff=LANDED_TESTS)
+    qualifying["open"] = eval_set.OpenPr(head="h" * 40, diff=LANDED_TESTS)
     case = _qualify(qualifying)
-    assert (case.oracle, case.merge_sha, case.pre_sha) == ("craft-only", "", "f" * 40)
+    assert (case.oracle, case.merge_sha, case.pre_sha) == ("craft-only", "", "p" * 40)
     assert case.landed_diff == LANDED_TESTS and case.test_files == ["src/a.test.ts"]
-    assert qualifying["pre_fix"] == ["f" * 40] and "hhhhhhh" in case.detail
+    assert qualifying["pre_fix"] == ["p" * 40] and "hhhhhhh" in case.detail
+    assert qualifying["flattened"][-1] == ("PRE", LANDED_TESTS)
+
+
+def test_an_open_rival_whose_diff_misses_the_pin_is_unusable(qualifying):
+    qualifying["merged"] = False
+    qualifying["open"] = eval_set.OpenPr(head="h" * 40, diff=LANDED)
+    qualifying["flatten"] = False
+    assert _qualify(qualifying).oracle == "unusable"
 
 
 def test_a_merged_rival_is_rebuilt_from_the_merge_first_parent(qualifying):
@@ -520,20 +531,18 @@ def test_a_merged_rival_is_rebuilt_from_the_merge_first_parent(qualifying):
     assert qualifying["pre_fix"] == ["m" * 40 + "^1"]
 
 
-def test_open_rival_reads_the_fork_point_and_diff_at_the_head(monkeypatch):
+def test_open_rival_reads_the_diff_at_the_head(monkeypatch):
     from pipeline import gh
     prs = {5: {"state": "open", "base": {"sha": "B"}, "head": {"sha": "H"}},
            6: {"state": "closed", "base": {"sha": "B"}, "head": {"sha": "H"}}}
     monkeypatch.setattr(gh, "fetch_pr", lambda n, **k: prs.get(n))
     seen = []
 
-    def gh_json(path, **k):
+    def gh_bytes(path, **k):
         seen.append(path)
-        return {"merge_base_commit": {"sha": "F"}}
-    monkeypatch.setattr(gh, "gh_json", gh_json)
-    monkeypatch.setattr(gh, "gh_bytes", lambda path, **k: b"diff --git a/x b/x\n")
-    assert eval_set._open_rival(5) == eval_set.OpenPr(fork="F", head="H",
-                                                      diff="diff --git a/x b/x\n")
+        return b"diff --git a/x b/x\n"
+    monkeypatch.setattr(gh, "gh_bytes", gh_bytes)
+    assert eval_set._open_rival(5) == eval_set.OpenPr(head="H", diff="diff --git a/x b/x\n")
     assert seen[0].endswith("/compare/B...H")
     assert eval_set._open_rival(6) is None and eval_set._open_rival(7) is None
 
