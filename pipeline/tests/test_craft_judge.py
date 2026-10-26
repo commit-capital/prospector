@@ -210,3 +210,11 @@ def test_shared_imports_are_not_a_duplicated_block(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "sibling.ts").write_text("\n".join(imports) + "\n")
     assert cj.flags(_added("src/new.ts", *imports), tmp_path) == []
+
+
+def test_a_string_of_escapes_is_scanned_in_linear_time(tmp_path):
+    import time
+    nasty = _added("src/q.ts", '"' + "\\a" * 5000)
+    t = time.monotonic()
+    assert cj.flags(nasty, tmp_path) == []
+    assert time.monotonic() - t < 1.0
