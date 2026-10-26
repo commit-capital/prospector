@@ -86,3 +86,29 @@ no longer matches. To change a reviewer's prompt or default model:
 `--init` pins any unpinned reviewer provisionally. A run whose inputs cannot be
 rebuilt as the reviewer saw them (recorded before its worktree patch was,
 backfilled, or security, whose lenses read live upstream) counts as `partial`.
+
+## Fixer eval gate
+
+The same pins file pins the `fixer`: the production cross lane's prompts and
+craft standard (`craft_judge.fixer_config("cross")`) and its default candidate
+models, plus the fixed gate set it is judged on. `pipeline/tests/test_fixer_pin.py`
+fails when the code no longer matches. To change them:
+
+1. Make the change; the pin test fails.
+2. On the operator machine that holds the eval set, run
+   `uv run python -m pipeline.evals.fixer_eval --live`. Each side gets two lane
+   runs per gate-set case: the samples are the `replay:instance` records
+   `eval_set run` writes on the case's current base, so earlier runs count. The candidate runs here on the
+   code's default models; the pinned side runs `eval_set run --only` from a
+   checkout of the latest main commit that pinned it. A stored fix judged by an
+   older craft judge is re-judged once by today's, and kept.
+3. It re-pins when every gate-set case has its runs on both sides, no oracle
+   case the pin passed in every run fails in every candidate run, and neither
+   the oracle rate nor the craft rate (wins plus half ties against the human
+   fix, a run with no fix a loss) is more than one case's worth below the
+   pin's. Until twelve cases are judged on both sides it is provisional. Commit
+   the re-pinned file. While the pin equals the code, both sides share samples.
+
+The gate set is every usable rival and case-study case, topped up to twelve
+with fair history bugs spread across the bases. It changes only with
+`--reset-gate-set`; a case no longer runnable is dropped and reported.

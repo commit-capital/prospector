@@ -398,13 +398,7 @@ def pinned_runner(reviewer: str, pin: dict, store: Store,
         raise PinUnreplayable(f"no main commit pins {reviewer} to {pin['prompt_sha']}/"
                               f"{pin['model']}; remove that pin and run --init")
     env = {**os.environ, "TRIAGE_STORE_URL": store.engine.url.render_as_string(hide_password=False)}
-    git = ["git", "-C", str(REPO_ROOT), "worktree"]
-    subprocess.run([*git, "prune"], capture_output=True, check=False)
-    with tempfile.TemporaryDirectory(prefix="reviewer-eval-pin-") as tmp:
-        wt = Path(tmp) / "code"
-        subprocess.run([*git, "add", "-q", "--detach", str(wt), commit], check=True,
-                       capture_output=True)
-
+    with pinned_checkout(commit) as wt:
         def run(case: Case) -> str:
             done = subprocess.run(
                 ["uv", "run", "--project", str(wt), "python", "-m", "pipeline.evals.reviewer_eval",
@@ -417,8 +411,20 @@ def pinned_runner(reviewer: str, pin: dict, store: Store,
                 raise RuntimeError(f"pinned replay of run {case.row.id} failed: "
                                    f"{done.stderr[-400:]}")
             return lines[-1].strip()
+        yield run
+
+
+@contextlib.contextmanager
+def pinned_checkout(commit: str) -> Iterator[Path]:
+    """A detached worktree of this repository at `commit`, removed on exit."""
+    git = ["git", "-C", str(REPO_ROOT), "worktree"]
+    subprocess.run([*git, "prune"], capture_output=True, check=False)
+    with tempfile.TemporaryDirectory(prefix="eval-pin-") as tmp:
+        wt = Path(tmp) / "code"
+        subprocess.run([*git, "add", "-q", "--detach", str(wt), commit], check=True,
+                       capture_output=True)
         try:
-            yield run
+            yield wt
         finally:
             subprocess.run([*git, "remove", "--force", str(wt)], capture_output=True, check=False)
 
