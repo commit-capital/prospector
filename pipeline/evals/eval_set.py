@@ -48,7 +48,7 @@ from typing import Literal, NamedTuple
 
 from issue_triage import link_prs
 from issue_triage.issue_store import IssueStore
-from pipeline import (diffpaths, gh, profile, prove, settings, storekit, verify_driver,
+from pipeline import (diffpaths, gates, gh, profile, prove, settings, storekit, verify_driver,
                       verify_gc)
 from pipeline.evals import issue_fix_replay as replay
 from pipeline.profile import RepoProfile
@@ -479,6 +479,25 @@ def _held_base(sha: str) -> prove.PinnedBase:
         return prove.held(sha, TIER)
 
 
+def _compile_failure(base: prove.PinnedBase, prof: RepoProfile) -> str | None:
+    """Why the profile's compile command fails over `base`'s pristine tree, or
+    None when it passes or there is none: a base that fails it fails every
+    lane run on it before a fix is judged. Raises `prove.SandboxFault` when the
+    sandbox did not get as far as a verdict."""
+    cmd = prof.verify.compile_cmd
+    if not cmd:
+        return None
+    exit_code, tail = verify_driver.run_phase(
+        "compile", base.image, tier=base.tier, test_cmd=cmd, base_sha=base.sha,
+        head_sha="pristine", pristine=True)
+    if exit_code == gates.SENTINEL_PASS:
+        return None
+    excerpt = verify_driver.error_excerpt(tail)
+    if exit_code == gates.SENTINEL_TEST_FAIL:
+        return f"exit {exit_code}" + (f": {excerpt}" if excerpt else "")
+    raise prove.SandboxFault(f"the compile phase exited {exit_code}: {excerpt}")
+
+
 def build(*, target: int, min_fixes: int, refresh: bool, concurrency: int,
           dry_run: bool) -> int:
     """Add bases to the set, most distinct fixes first, until it holds
@@ -507,8 +526,18 @@ def build(*, target: int, min_fixes: int, refresh: bool, concurrency: int,
         except (verify_driver.BuildFailure, prove.NoBase) as e:
             print(f"  base {sha[:12]} did not build: {str(e)[-300:]}", flush=True)
             continue
-        rows = replay.qualify_instances(base, sha, members, profile=prof,
-                                        concurrency=concurrency)
+        try:
+            broken = _compile_failure(base, prof)
+        except prove.SandboxFault as e:
+            print(f"  base {sha[:12]} could not be checked: {e}", flush=True)
+            continue
+        if broken:
+            print(f"  base {sha[:12]} fails the compile command: {broken[:300]}", flush=True)
+            rows = [replay.Qualification(m.issue, m.pr, "base-compile", 0.0, broken[:300])
+                    for m in members]
+        else:
+            rows = replay.qualify_instances(base, sha, members, profile=prof,
+                                            concurrency=concurrency)
         record_base({
             "base_sha": sha, "span": span, "fixes": _fixes(members),
             "qualified_at": storekit.now(), "sandbox": sandbox_stamp(prof),

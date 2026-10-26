@@ -288,6 +288,49 @@ def test_a_dry_run_builds_nothing(builder):
     assert eval_set.load_manifest()["bases"] == []
 
 
+def test_build_requalifies_a_stale_base(builder):
+    eval_set.record_base({**_base_row("a" * 40, "fair"), "sandbox": "old"})
+    _build()
+    assert builder["qualified"] == ["a" * 40, "c" * 40]
+    assert eval_set.load_manifest()["stale"] == []
+
+
+@pytest.fixture
+def compiling(builder, monkeypatch):
+    """`builder` under a profile with a compile command; the pristine compile's
+    `(exit, tail)` per base image is set in the returned dict (default: pass)."""
+    from pipeline import gates
+    prof = profile.RepoProfile()
+    prof = replace(prof, verify=replace(prof.verify, compile_cmd="pnpm tsc"))
+    monkeypatch.setattr(profile, "active", lambda: prof)
+    answers: dict = {}
+
+    def run_phase(phase, image, *, pristine=False, **kw):
+        assert phase == "compile" and pristine
+        return answers.get(image, (gates.SENTINEL_PASS, ""))
+    monkeypatch.setattr(verify_driver, "run_phase", run_phase)
+    monkeypatch.setattr(prove, "held", lambda sha, tier: prove.PinnedBase(
+        sha=sha, tier=tier, image=sha[:4], clone=Path("/nonexistent")))
+    return answers
+
+
+def test_a_base_that_cannot_compile_holds_no_fair_bug(builder, compiling):
+    from pipeline import gates
+    compiling["aaaa"] = (gates.SENTINEL_TEST_FAIL, "error TS2307: Cannot find module")
+    _build()
+    assert builder["qualified"] == ["c" * 40]
+    rows = {b["base_sha"]: b for b in eval_set.load_manifest()["bases"]}
+    assert {i["verdict"] for i in rows["a" * 40]["instances"]} == {"base-compile"}
+    assert rows["a" * 40]["instances"][0]["detail"].startswith(f"exit {gates.SENTINEL_TEST_FAIL}")
+
+
+def test_a_sandbox_fault_in_the_base_check_records_nothing(builder, compiling):
+    compiling["aaaa"] = (125, "docker: daemon not running")
+    _build()
+    assert builder["qualified"] == ["c" * 40]
+    assert [b["base_sha"] for b in eval_set.load_manifest()["bases"]] == ["c" * 40]
+
+
 def test_groups_below_the_minimum_fixes_are_left_out(builder):
     _build(min_fixes=3)
     assert builder["qualified"] == ["a" * 40]
