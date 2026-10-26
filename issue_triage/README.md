@@ -242,3 +242,17 @@ lockfiles or binaries. The record keeps our fix, the merge commit the other is
 re-derived from, and the fixer configuration (its prompts' and standard's hash,
 and its models), and `scorecard.md` reports craft per
 configuration: wins, ties, losses, a craft rate, and the points lost on most.
+
+Beside the history bugs, the set holds cases from production and from
+operators (`eval_set cases harvest`, `eval_set cases add --issue N --pr M`): a
+rival case is an issue where an operator went with another author's PR, or a
+rival's tests found gaps in our fix, and that PR merged; a case study is any
+issue and merged PR an operator names. Each is qualified on the current pin, on
+the tree just before that PR landed, a case whose dependencies drifted from the
+pin's left out: `tests` when its own tests pass R6 there, `craft-only` when that
+tree's patch applies but they do not (it is judged for craft and counts toward
+no correctness measure), else `unusable` with why. Re-harvesting records only
+cases that changed. Every `run`
+replays the usable cases with the fair bugs (`--no-cases` leaves them out);
+records and the scorecard key them by case id (`rival-<issue>-<pr>`,
+`case-<issue>-<pr>`).

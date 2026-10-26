@@ -896,3 +896,46 @@ def test_a_judge_outage_keeps_the_scored_row(tmp_path, generic_profile, monkeypa
 def test_the_row_keeps_our_fix_but_not_the_merged_one(tmp_path, generic_profile, monkeypatch) -> None:
     rec, _ = _craft_run(tmp_path, generic_profile, monkeypatch, "fixed")
     assert rec["our_fix"] and "landed_fix" not in rec and rec["merge_sha"] == "m" * 40
+
+
+def _craft_only(tmp_path, generic_profile, monkeypatch, ending: str):
+    monkeypatch.setattr(replay, "transform_to_p",
+                        lambda base_clone, merge_sha, base_sha, profile: "PRE")
+    monkeypatch.setattr(replay, "validate_known_fix",
+                        lambda *a, **k: pytest.fail("R6 ran on a craft-only case"))
+    monkeypatch.setattr(replay, "score", lambda *a, **k: pytest.fail("the oracle ran"))
+    monkeypatch.setattr(replay, "candidate_scores", lambda *a, **k: pytest.fail("oracle ran"))
+    calls: list = []
+
+    def judge_craft(base_clone, pre_patch, ours, reference, *, title, body):
+        calls.append(pre_patch)
+        return {"craft": {"result": "tie", "points": [], "reasons": [], "judge_sha": "j",
+                          "error": None}, "flags": []}
+
+    rec = replay.run_instance(_instance(), base=_base(tmp_path), base_sha="e" * 40,
+                              profile=generic_profile, workdir=tmp_path / "work",
+                              run_lane=lambda **kw: _lane(ending), judge_craft=judge_craft,
+                              fixer={"prompt_sha": "f", "models": "opus"}, oracle=False)
+    return rec, calls
+
+
+def test_a_craft_only_case_skips_r6_and_the_oracle(tmp_path, generic_profile, monkeypatch):
+    rec, calls = _craft_only(tmp_path, generic_profile, monkeypatch, "no-fix")
+    assert rec["ending"] == "no-fix" and rec["craft_only"] is True
+    assert rec["oracle_pass"] is None and rec["fixed"] is False and calls == []
+
+
+def test_a_craft_only_fix_is_still_craft_judged(tmp_path, generic_profile, monkeypatch):
+    rec, calls = _craft_only(tmp_path, generic_profile, monkeypatch, "fixed")
+    assert calls == ["PRE"] and rec["craft"]["result"] == "tie" and rec["fixed"] is True
+    assert rec["our_fix"] and rec["fixer"] == {"prompt_sha": "f", "models": "opus"}
+
+
+def test_a_pre_patch_that_does_not_apply_is_unusable(tmp_path, generic_profile, monkeypatch):
+    def broken(*a, **k):
+        raise subprocess.CalledProcessError(128, ["git", "diff"], stderr="bad object")
+    monkeypatch.setattr(replay, "transform_to_p", broken)
+    rec = replay.run_instance(_instance(), base=_base(tmp_path), base_sha="e" * 40,
+                              profile=generic_profile, workdir=tmp_path / "work",
+                              run_lane=lambda **kw: pytest.fail("the lane ran"), oracle=False)
+    assert rec["ending"] == "unusable" and "bad object" in rec["detail"]

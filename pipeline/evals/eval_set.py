@@ -32,16 +32,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import threading
 import traceback
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import replace
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
+from typing import Literal
 
 from issue_triage import link_prs
-from pipeline import gh, profile, prove, settings, storekit, verify_driver, verify_gc
+from issue_triage.issue_store import IssueStore
+from pipeline import (diffpaths, gh, profile, prove, settings, storekit, verify_driver,
+                      verify_gc)
 from pipeline.evals import issue_fix_replay as replay
 from pipeline.profile import RepoProfile
 from pipeline.store import Store
@@ -49,6 +54,7 @@ from pipeline.store import Store
 # The ledger phases the set and its runs are recorded under.
 BASE_PHASE = "eval-set:base"
 RUN_PHASE = "eval-set:run"
+CASE_PHASE = "eval-set:case"
 
 # Ledger rows scanned for the set's bases, newest first.
 _LEDGER_SCAN = 50_000
@@ -227,6 +233,176 @@ def record_base(base: dict, pr_store: Store | None = None) -> None:
         "finished": storekit.now(), "trigger": "cli", "stats": stats})
 
 
+@dataclass(frozen=True)
+class Case:
+    """A bug the set takes from production or from an operator, not from history:
+    `rival` when another author's merged PR beat our fix, `case-study` when an
+    operator names it. It carries everything a replay needs, so it is never
+    re-screened. `oracle` is `tests` when the merged PR's tests qualify as the
+    oracle on `base_sha`, `craft-only` when the pre-fix tree builds but they do
+    not, and `unusable` (with `detail`) otherwise."""
+    case: str
+    source: Literal["rival", "case-study"]
+    issue: int
+    pr: int
+    merge_sha: str
+    base_sha: str
+    oracle: Literal["tests", "craft-only", "unusable"]
+    detail: str
+    report_title: str
+    report_body: str
+    landed_diff: str
+    test_files: list[str]
+    nontest_files: list[str]
+
+    def instance(self) -> replay.Instance:
+        return replay.Instance(issue=self.issue, pr=self.pr, merge_sha=self.merge_sha,
+                               landed_diff=self.landed_diff, test_files=list(self.test_files),
+                               nontest_files=list(self.nontest_files),
+                               report_title=self.report_title, report_body=self.report_body)
+
+
+def record_case(case: Case, pr_store: Store | None = None) -> None:
+    now = storekit.now()
+    (pr_store or Store()).append_run({"phase": CASE_PHASE, "started": now, "finished": now,
+                                      "trigger": "cli",
+                                      "stats": {**asdict(case), "repo": settings.repo()}})
+
+
+def load_cases(pr_store: Store | None = None) -> list[Case]:
+    """This repository's cases, the latest row per case, by case id."""
+    names = {f.name for f in fields(Case)}
+    cases: dict[str, Case] = {}
+    for rec in (pr_store or Store()).runs(limit=_LEDGER_SCAN, phase=CASE_PHASE):
+        stats = (rec.raw.get("stats") or {}) if isinstance(rec, storekit.PhaseRun) else {}
+        if stats.get("repo") == settings.repo() and stats.get("case"):
+            cases.pop(stats["case"], None)
+            cases[stats["case"]] = Case(**{k: v for k, v in stats.items() if k in names})
+    return sorted(cases.values(), key=lambda c: c.case)
+
+
+# Second-opinion verdicts saying a rival's tests catch what our fix misses.
+_GAPS = ("gap", "gap-open")
+
+
+def rival_candidates(issues: IssueStore) -> list[tuple[int, int]]:
+    """`(issue, pr)` for each issue whose operator went with another author's PR
+    (`fix_choice`) or whose fix a rival's tests found gaps in, sorted."""
+    pairs: set[tuple[int, int]] = set()
+    for row, (choice, opinions) in issues.issue_rows([("fix_choice",),
+                                                      ("fix_run", "second_opinion")]):
+        if isinstance(choice, dict) and isinstance(choice.get("pr"), int):
+            pairs.add((row["issue"], choice["pr"]))
+        for o in opinions or []:
+            if isinstance(o, dict) and o.get("verdict") in _GAPS and isinstance(o.get("pr"), int):
+                pairs.add((row["issue"], o["pr"]))
+    return sorted(pairs)
+
+
+def qualify_case(source: Literal["rival", "case-study"], issue: int, pr: int, *,
+                 pin: prove.PinnedBase, report: tuple[str, str], prof: RepoProfile,
+                 run_r6: bool) -> Case:
+    """`issue` with `pr`'s merged fix as its reference, on the tree just before
+    that fix landed (`pre_patch` over the pin): `tests` when the fix's own tests
+    pass R6 there, `craft-only` when that tree's `pre_patch` applies but they do
+    not, else `unusable` with why: no report text, not merged, not in the pin,
+    dependencies drifted from the pin's (the image would not install the old
+    tree faithfully), or an R6 sandbox fault (re-harvest to retry). Without
+    `run_r6` a case with tests is taken as `tests` unproven."""
+    case = Case(case=f"{'rival' if source == 'rival' else 'case'}-{issue}-{pr}", source=source,
+                issue=issue, pr=pr, merge_sha="", base_sha=pin.sha, oracle="unusable",
+                detail="", report_title=report[0], report_body=report[1], landed_diff="",
+                test_files=[], nontest_files=[])
+    if not (report[0].strip() or report[1].strip()):
+        return replace(case, detail="no report text for the issue")
+    merged = replay._gh_pr(pr)
+    if merged is None:
+        return replace(case, detail=f"#{pr} is not merged")
+    merge_sha = merged["merge_sha"]
+    try:
+        landed = replay._git(pin.clone, "diff", "--binary", f"{merge_sha}^1", merge_sha)
+        pre_patch = replay.transform_to_p(pin.clone, merge_sha, pin.sha, prof)
+        before = replay.dep_declarations(pin.clone, f"{merge_sha}^1", prof)
+        now = replay.dep_declarations(pin.clone, pin.sha, prof)
+    except subprocess.CalledProcessError as e:
+        return replace(case, merge_sha=merge_sha,
+                       detail=f"not-in-pin: {(e.stderr or str(e)).strip()[:200]}")
+    if before != now:
+        drifted = sorted(k for k in set(before) | set(now) if before.get(k) != now.get(k))
+        return replace(case, merge_sha=merge_sha,
+                       detail=f"deps drifted from the pin's: {', '.join(drifted[:5])}")
+    paths = diffpaths.changed_paths(landed)
+    case = replace(case, merge_sha=merge_sha, landed_diff=landed,
+                   test_files=[p for p in paths if diffpaths.is_test_path(p)],
+                   nontest_files=[p for p in paths if not diffpaths.is_test_path(p)])
+    if case.test_files:
+        if not run_r6:
+            return replace(case, oracle="tests", detail="R6 not run (dry run)")
+        ok, reason = replay.validate_known_fix(pin, pre_patch, case.instance(),
+                                               label=f"case-{issue}")
+        if ok:
+            return replace(case, oracle="tests")
+        if reason == "sandbox":
+            return replace(case, detail="R6 hit a sandbox fault; re-harvest to retry")
+        case = replace(case, detail=f"its tests do not qualify: r6-{reason}")
+    try:
+        prove.flatten(pin.clone, pre_patch, label=f"case-{issue}")
+    except ValueError as e:
+        return replace(case, oracle="unusable",
+                       detail=f"the pre-fix tree's patch does not apply: {e}"[:300])
+    return replace(case, oracle="craft-only")
+
+
+def _case_inputs() -> tuple[prove.PinnedBase, IssueStore,
+                            Callable[[int], tuple[str, str] | None]]:
+    """This machine's pin, the issue store, and the report reader."""
+    from issue_triage import fix_lane
+    issues = IssueStore()
+    return prove.pinned(Store()), issues, lambda n: fix_lane.reported_text(issues, n)
+
+
+def _qualify_all(source: Literal["rival", "case-study"], pairs: list[tuple[int, int]], *,
+                 dry_run: bool, pin: prove.PinnedBase,
+                 reported: Callable[[int], tuple[str, str] | None]) -> int:
+    """Qualify `pairs` on the tier-1 base at the pin (the tier `run` replays at;
+    a dry run reads the pin as it is and builds nothing) and, unless `dry_run`,
+    record each case that changed since its last row, holding the base when a
+    usable one was recorded."""
+    prof = profile.active()
+    base = pin if dry_run else _held_base(pin.sha)
+    last = {c.case: c for c in load_cases()}
+    usable = 0
+    for issue, pr in pairs:
+        case = qualify_case(source, issue, pr, pin=base, report=reported(issue) or ("", ""),
+                            prof=prof, run_r6=not dry_run)
+        print(f"{case.case}: {case.oracle}" + (f" ({case.detail})" if case.detail else ""),
+              flush=True)
+        if dry_run or case == last.get(case.case):
+            continue
+        record_case(case)
+        usable += case.oracle != "unusable"
+    if usable:
+        verify_gc.hold(base.sha)
+    print(f"{len(pairs)} case(s)" + (" (dry run, nothing recorded)" if dry_run else ""))
+    return 0
+
+
+def harvest_cases(*, dry_run: bool) -> int:
+    """Qualify every rival case the issue store names and, unless `dry_run`,
+    record each (unusable ones too, with why) and hold the base they run on."""
+    pin, issues, reported = _case_inputs()
+    return _qualify_all("rival", rival_candidates(issues), dry_run=dry_run, pin=pin,
+                        reported=reported)
+
+
+def add_case(issue: int, pr: int, *, dry_run: bool) -> int:
+    """Qualify and record one case an operator names: `issue` with `pr`'s merged
+    fix as the reference."""
+    pin, _, reported = _case_inputs()
+    return _qualify_all("case-study", [(issue, pr)], dry_run=dry_run, pin=pin,
+                        reported=reported)
+
+
 def _fixes(members: list[replay.Instance]) -> int:
     return len({m.pr for m in members})
 
@@ -310,6 +486,10 @@ def import_file(path: Path) -> int:
     return 0
 
 
+def _case_of(rec: dict) -> str:
+    return str(rec.get("case") or rec["issue"])
+
+
 def _correct(rec: dict) -> bool:
     """A proposal the hidden oracle accepts, or refuses only on a contract the
     maintainers chose and the report never stated."""
@@ -353,11 +533,14 @@ def scorecard(records: list[dict], *, bugs: int) -> dict:
     """The run's numbers over every scored pass of `bugs` bugs: proposals
     (runs ending `fixed`), the correct ones among them, precision and coverage,
     the endings, cost, and craft per fixer configuration (`_craft`). A fault
-    ending is the machine's, so it is counted apart and scores nothing."""
+    ending is the machine's, so it is counted apart and scores nothing. A
+    craft-only case has no oracle, so it counts toward craft alone; `bugs` and
+    the bug counts are over cases with an oracle, by case."""
     scored = [r for r in records if not replay._is_fault(r.get("ending"))]
-    proposed = [r for r in scored if r.get("ending") == "fixed"]
+    judged = [r for r in scored if not r.get("craft_only")]
+    proposed = [r for r in judged if r.get("ending") == "fixed"]
     correct = [r for r in proposed if _correct(r)]
-    proposed_bugs = {r["issue"] for r in proposed}
+    proposed_bugs = {_case_of(r) for r in proposed}
     return {
         "bugs": bugs, "runs": len(records), "scored": len(scored),
         "faults": len(records) - len(scored),
@@ -365,7 +548,8 @@ def scorecard(records: list[dict], *, bugs: int) -> dict:
         "precision": round(len(correct) / len(proposed), 3) if proposed else None,
         "coverage": round(len(proposed_bugs) / bugs, 3) if bugs else None,
         "bugs_proposed": len(proposed_bugs),
-        "bugs_correct": len({r["issue"] for r in correct}),
+        "bugs_correct": len({_case_of(r) for r in correct}),
+        "cases": dict(Counter(str(r.get("source") or "history") for r in records)),
         "endings": dict(Counter(str(r.get("ending")) for r in records).most_common()),
         "agent_runs": sum(r.get("agent_runs") or 0 for r in records),
         "avg_seconds": round(replay._avg_seconds(records), 1),
@@ -402,14 +586,15 @@ def _scorecard_md(name: str, card: dict, records: list[dict]) -> str:
         if c["flags"]:
             lines.append("Flags: " + ", ".join(f"{f} {n}" for f, n in sorted(c["flags"].items()))
                          + ".")
-    by_bug: dict[int, list[dict]] = {}
+    by_case: dict[str, list[dict]] = {}
     for rec in records:
-        by_bug.setdefault(rec["issue"], []).append(rec)
-    lines += ["", "| issue | endings by pass | correct |", "| --- | --- | --- |"]
-    for issue in sorted(by_bug):
-        recs = sorted(by_bug[issue], key=lambda r: r.get("pass") or 0)
-        lines.append(f"| {issue} | {', '.join(str(r.get('ending')) for r in recs)} | "
-                     f"{sum(1 for r in recs if _correct(r))} |")
+        by_case.setdefault(_case_of(rec), []).append(rec)
+    lines += ["", "| case | endings by pass | correct |", "| --- | --- | --- |"]
+    for case in sorted(by_case, key=lambda c: (not c.isdigit(), int(c) if c.isdigit() else 0, c)):
+        recs = sorted(by_case[case], key=lambda r: r.get("pass") or 0)
+        correct = ("craft only" if recs[0].get("craft_only")
+                   else str(sum(1 for r in recs if _correct(r))))
+        lines.append(f"| {case} | {', '.join(str(r.get('ending')) for r in recs)} | {correct} |")
     return "\n".join(lines) + "\n"
 
 
@@ -419,13 +604,25 @@ LANES: dict[str, replay.LaneEntry] = {"staged": replay._run_lane, "solo": replay
                                       "cross": replay._run_cross}
 
 
+@dataclass(frozen=True)
+class _Job:
+    """One replay of a run: a history bug (`case` its issue number) or a case."""
+    case: str
+    source: str
+    instance: replay.Instance
+    base_sha: str
+    oracle: bool
+
+
 def run(*, name: str, passes: int, concurrency: int, refresh: bool,
-        issues: set[int] | None, resume: bool, lane: str = "staged") -> int:
-    """Replay every fair bug of the set through the lane `passes` times, pass by
-    pass, each pass recorded as replay run `<name>-p<k>`. Re-invoking continues
-    a run: recorded instances are kept, and `resume` re-runs the faulted ones.
-    Writes `<verify scratch>/replay/<name>/scorecard.md` and one `eval-set:run`
-    ledger row."""
+        issues: set[int] | None, resume: bool, lane: str = "staged",
+        cases: bool = True) -> int:
+    """Replay every fair bug of the set, and unless not `cases` every usable rival
+    and case-study case, through the lane `passes` times, pass by pass, each pass
+    recorded as replay run `<name>-p<k>`. Re-invoking continues a run: recorded
+    replays are kept, by case, and `resume` re-runs the faulted ones. Writes
+    `<verify scratch>/replay/<name>/scorecard.md` and one `eval-set:run` ledger
+    row."""
     from pipeline.evals import craft_judge
     prof = profile.active()
     fixer = craft_judge.fixer_config(lane)  # type: ignore[arg-type]
@@ -433,64 +630,80 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
     manifest = load_manifest(pr_store)
     fair = {i["issue"]: b["base_sha"] for b in manifest["bases"] for i in b["instances"]
             if i["verdict"] == "fair" and (issues is None or i["issue"] in issues)}
-    if not fair:
-        print("the evaluation set holds no fair bug to run", file=sys.stderr)
+    usable = [c for c in (load_cases(pr_store) if cases else [])
+              if c.oracle != "unusable" and (issues is None or c.issue in issues)]
+    if not fair and not usable:
+        print("the evaluation set holds no fair bug or usable case to run", file=sys.stderr)
         return 2
-    pin = prove.pinned(pr_store)
-    by_issue = {inst.issue: inst for inst in _screened(prof, pin, refresh=refresh)
-                if inst.issue in fair}
-    missing = sorted(set(fair) - set(by_issue))
-    if missing:
-        print(f"no longer screened in, left out: {missing}", flush=True)
-    bases = {sha: _held_base(sha) for sha in sorted({fair[i] for i in by_issue})}
+    by_issue: dict[int, replay.Instance] = {}
+    if fair:
+        pin = prove.pinned(pr_store)
+        by_issue = {inst.issue: inst for inst in _screened(prof, pin, refresh=refresh)
+                    if inst.issue in fair}
+        missing = sorted(set(fair) - set(by_issue))
+        if missing:
+            print(f"no longer screened in, left out: {missing}", flush=True)
+    planned = [_Job(str(n), "history", inst, fair[n], True) for n, inst in sorted(by_issue.items())]
+    bases = {sha: _held_base(sha) for sha in sorted({fair[n] for n in by_issue})}
+    for sha in sorted({c.base_sha for c in usable} - set(bases)):
+        # A case's base is its own; one that cannot be built drops its cases, not the run.
+        try:
+            bases[sha] = _held_base(sha)
+        except (prove.NoBase, verify_driver.BuildFailure) as e:
+            dropped = [c.case for c in usable if c.base_sha == sha]
+            print(f"base {sha[:12]} cannot be held ({e}); left out: {dropped}", flush=True)
+    planned += [_Job(c.case, c.source, c.instance(), c.base_sha, c.oracle == "tests")
+                for c in usable if c.base_sha in bases]
 
     out_dir = settings.verify_scratch() / "replay" / name
     started = storekit.now()
     results: list[dict] = []
-    jobs: list[tuple[int, replay.Instance]] = []
+    jobs: list[tuple[int, _Job]] = []
     for k in range(1, passes + 1):
         recorded = replay._recorded(pr_store, f"{name}-p{k}")
-        for issue in sorted(by_issue):
-            prior = recorded.get(issue)
+        for job in planned:
+            prior = recorded.get(job.case)
             if prior is not None and not (resume and replay._is_fault(prior.get("ending"))):
                 results.append({**prior, "pass": k})
             else:
-                jobs.append((k, by_issue[issue]))
-    print(f"run {name}: {len(by_issue)} bugs x {passes} passes; {len(jobs)} to run, "
-          f"{len(results)} already recorded", flush=True)
+                jobs.append((k, job))
+    print(f"run {name}: {len(by_issue)} bugs and {len(usable)} cases x {passes} passes; "
+          f"{len(jobs)} to run, {len(results)} already recorded", flush=True)
 
     # Set by the first run whose agent can serve nothing (a spent usage limit,
     # a lost login): every run after it would fail the same way, so a job that
     # starts once it is set does nothing, and is left for a --resume.
     unavailable = threading.Event()
 
-    def one(k: int, inst: replay.Instance) -> dict | None:
+    def one(k: int, job: _Job) -> dict | None:
         if unavailable.is_set():
             return None
-        base = bases[fair[inst.issue]]
+        base = bases[job.base_sha]
         rec = replay.run_instance(
-            inst, base=base, base_sha=base.sha, profile=prof,
-            workdir=out_dir / f"p{k}" / f"issue-{inst.issue}", run_lane=LANES[lane],
+            job.instance, base=base, base_sha=base.sha, profile=prof,
+            workdir=out_dir / f"p{k}" / job.case, run_lane=LANES[lane],
             judge_contract=replay._judge_contract, judge_craft=craft_judge.score_craft,
-            fixer=fixer)
+            fixer=fixer, oracle=job.oracle)
         if rec.get("ending") == "agent-unavailable" or rec.get("craft_unavailable"):
             unavailable.set()
-        return rec
+        return {**rec, "case": job.case, "source": job.source}
 
     done = 0
     halted = ""
     left = 0
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-        futures = {pool.submit(one, k, inst): (k, inst) for k, inst in jobs}
+        futures = {pool.submit(one, k, job): (k, job) for k, job in jobs}
         for fut in as_completed(futures):
-            k, inst = futures[fut]
+            k, job = futures[fut]
+            inst = job.instance
             try:
                 got = fut.result()
             except Exception:
-                print(f"issue {inst.issue} pass {k} crashed:", file=sys.stderr)
+                print(f"{job.case} pass {k} crashed:", file=sys.stderr)
                 traceback.print_exc(file=sys.stderr)
                 got = {"issue": inst.issue, "pr": inst.pr, "ending": replay._CRASH_ENDING,
-                       "seconds": 0.0, "agent_runs": 0}
+                       "seconds": 0.0, "agent_runs": 0, "case": job.case,
+                       "source": job.source}
             if got is None:
                 left += 1
                 continue
@@ -502,9 +715,9 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
                 "phase": "replay:instance", "started": started, "finished": storekit.now(),
                 "trigger": "cli",
                 "stats": {**replay._instance_stats(rec, run_id=f"{name}-p{k}",
-                                                   base_sha=bases[fair[inst.issue]].sha),
+                                                   base_sha=bases[job.base_sha].sha),
                           "eval": name, "eval_lane": lane, "pass": k}})
-            print(f"[{done}/{len(jobs)}] issue {inst.issue} pass {k}: {rec.get('ending')} "
+            print(f"[{done}/{len(jobs)}] {job.case} pass {k}: {rec.get('ending')} "
                   f"({replay._cell(rec.get('seconds'))}s) {rec.get('detail') or ''}"[:300],
                   flush=True)
             if (rec.get("ending") == "agent-unavailable" or rec.get("craft_unavailable")) \
@@ -516,7 +729,8 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
     if halted:
         print(f"{left} run(s) left for --resume", flush=True)
 
-    card = {**scorecard(results, bugs=len(by_issue)), "halted": halted or None}
+    bugs = sum(1 for job in planned if job.oracle)
+    card = {**scorecard(results, bugs=bugs), "halted": halted or None}
     out_dir.mkdir(parents=True, exist_ok=True)
     md = _scorecard_md(name, card, results)
     (out_dir / "scorecard.md").write_text(md)
@@ -552,8 +766,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     r.add_argument("--refresh", action="store_true", help="re-harvest from GitHub")
     r.add_argument("--lane", choices=sorted(LANES), default="staged",
                    help="the staged, one-agent, or cross-tested lane")
+    r.add_argument("--no-cases", action="store_true",
+                   help="replay the fair bugs only, not the rival and case-study cases")
     i = sub.add_parser("import", help="record the bases a manifest file names")
     i.add_argument("path", type=Path)
+    c = sub.add_parser("cases", help="rival and case-study cases: harvest or add")
+    cs = c.add_subparsers(dest="cases_command", required=True)
+    h = cs.add_parser("harvest", help="qualify every rival case the issue store names")
+    h.add_argument("--dry-run", action="store_true", help="print, skip R6, record nothing")
+    a = cs.add_parser("add", help="add a case study: an issue and the merged PR to judge by")
+    a.add_argument("--issue", type=int, required=True)
+    a.add_argument("--pr", type=int, required=True)
+    a.add_argument("--dry-run", action="store_true", help="print, skip R6, record nothing")
     return ap.parse_args(argv)
 
 
@@ -562,12 +786,16 @@ def main(argv: list[str]) -> int:
     try:
         if args.command == "import":
             return import_file(args.path)
+        if args.command == "cases":
+            if args.cases_command == "harvest":
+                return harvest_cases(dry_run=args.dry_run)
+            return add_case(args.issue, args.pr, dry_run=args.dry_run)
         if args.command == "run":
             issues = ({int(n) for n in args.issues.split(",") if n.strip()}
                       if args.issues else None)
             return run(name=args.name, passes=args.passes, concurrency=args.concurrency,
                        refresh=args.refresh, issues=issues, resume=args.resume,
-                       lane=args.lane)
+                       lane=args.lane, cases=not args.no_cases)
         return build(target=args.target, min_fixes=args.min_fixes, refresh=args.refresh,
                      concurrency=args.concurrency, dry_run=args.dry_run)
     except prove.NoBase as e:

@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 from datetime import UTC, datetime
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -393,3 +394,274 @@ def test_scorecard_md_names_the_points_lost_on():
 def test_rows_without_a_fixer_add_no_craft_section():
     recs = [{"issue": 1, "ending": "r6-red"}, _craft_rec("win")]
     assert list(eval_set.scorecard(recs, bugs=1)["craft"]) == ["s1/opus"]
+
+
+# --- rival and case-study cases ----------------------------------------------
+
+
+def _case(issue: int = 9, *, source: str = "rival", oracle: str = "craft-only",
+          detail: str = "", pr: int = 90) -> eval_set.Case:
+    return eval_set.Case(
+        case=f"{'rival' if source == 'rival' else 'case'}-{issue}", source=source,  # type: ignore[arg-type]
+        issue=issue, pr=pr, merge_sha="m" * 40, base_sha="b" * 40, oracle=oracle,  # type: ignore[arg-type]
+        detail=detail, report_title="t", report_body="b", landed_diff="diff --git a/x b/x\n",
+        test_files=[], nontest_files=["x"])
+
+
+def test_cases_round_trip_latest_per_case_wins(ledger):
+    eval_set.record_case(_case(9, detail="first"))
+    eval_set.record_case(_case(8))
+    eval_set.record_case(_case(9, detail="second"))
+    got = eval_set.load_cases()
+    assert [c.case for c in got] == ["rival-8", "rival-9"]
+    assert got[1].detail == "second"
+
+
+def test_cases_from_another_repo_are_ignored(ledger, monkeypatch):
+    eval_set.record_case(_case(9))
+    monkeypatch.setenv("TRIAGE_REPO", "other/repo")
+    assert eval_set.load_cases() == []
+
+
+def test_case_instance_carries_its_inputs():
+    inst = _case(9).instance()
+    assert (inst.issue, inst.pr, inst.merge_sha) == (9, 90, "m" * 40)
+    assert inst.landed_diff.startswith("diff --git") and inst.nontest_files == ["x"]
+    assert (inst.report_title, inst.report_body) == ("t", "b")
+
+
+class _Issues:
+    def __init__(self, rows: list[tuple[dict, list]]) -> None:
+        self.rows = rows
+
+    def issue_rows(self, paths, **kw):
+        return self.rows
+
+
+def test_rival_candidates_from_choices_and_gaps():
+    rows = [({"issue": 1}, [{"pr": 11}, None]),
+            ({"issue": 2}, [None, [{"pr": 21, "verdict": "gap-open"},
+                                   {"pr": 22, "verdict": "gap-closed"},
+                                   {"pr": 23, "verdict": "covered"}, {"pr": 24, "verdict": "gap"}]]),
+            ({"issue": 3}, [None, None])]
+    assert eval_set.rival_candidates(_Issues(rows)) == [(1, 11), (2, 21), (2, 24)]  # type: ignore[arg-type]
+
+
+LANDED = ("diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-a\n+b\n")
+LANDED_TESTS = LANDED + ("diff --git a/src/a.test.ts b/src/a.test.ts\n--- a/src/a.test.ts\n"
+                         "+++ b/src/a.test.ts\n@@ -1 +1 @@\n-x\n+y\n")
+
+
+@pytest.fixture
+def qualifying(monkeypatch, tmp_path):
+    """The pin, gh and git faked; returns knobs the test sets."""
+    knobs = {"merged": True, "landed": LANDED, "r6": (True, ""), "flatten": True}
+    monkeypatch.setattr(replay, "_gh_pr", lambda pr: {"merge_sha": "m" * 40, "author": "a",
+                                                      "opened_at": None}
+                        if knobs["merged"] else None)
+
+    def git(repo, *args):
+        if knobs["landed"] is None:
+            raise subprocess.CalledProcessError(128, ["git"], stderr="bad object")
+        return knobs["landed"]
+    monkeypatch.setattr(replay, "_git", git)
+    monkeypatch.setattr(replay, "transform_to_p", lambda *a, **k: "PRE")
+    monkeypatch.setattr(replay, "validate_known_fix", lambda *a, **k: knobs["r6"])
+
+    def flatten(*a, **k):
+        if not knobs["flatten"]:
+            raise ValueError("does not apply")
+        return tmp_path / "p.diff"
+    monkeypatch.setattr(prove, "flatten", flatten)
+    knobs["pin"] = prove.PinnedBase(sha="p" * 40, tier=1, image="i", clone=tmp_path)
+    knobs["deps"] = {}
+    monkeypatch.setattr(replay, "dep_declarations",
+                        lambda clone, rev, prof: knobs["deps"].get(rev, {"x": "1"}))
+    knobs["held"] = []
+
+    def held_base(sha):
+        knobs["held"].append(sha)
+        return knobs["pin"]
+    monkeypatch.setattr(eval_set, "_held_base", held_base)
+    return knobs
+
+
+def _qualify(knobs, source="rival"):
+    return eval_set.qualify_case(source, 9, 90, pin=knobs["pin"], report=("t", "b"),
+                                 prof=profile.active(), run_r6=True)
+
+
+def test_an_unmerged_rival_is_unusable(qualifying):
+    qualifying["merged"] = False
+    case = _qualify(qualifying)
+    assert case.oracle == "unusable" and "not merged" in case.detail
+
+
+def test_a_merge_the_pin_lacks_is_not_in_pin(qualifying):
+    qualifying["landed"] = None
+    case = _qualify(qualifying)
+    assert case.oracle == "unusable" and "not-in-pin" in case.detail
+
+
+def test_a_rival_with_qualifying_tests_is_an_oracle_case(qualifying):
+    qualifying["landed"] = LANDED_TESTS
+    case = _qualify(qualifying)
+    assert (case.oracle, case.case, case.base_sha) == ("tests", "rival-9-90", "p" * 40)
+    assert case.test_files == ["src/a.test.ts"] and case.nontest_files == ["src/a.ts"]
+
+
+def test_a_rival_without_tests_is_craft_only(qualifying):
+    case = _qualify(qualifying)
+    assert case.oracle == "craft-only" and case.landed_diff == LANDED
+
+
+def test_a_pre_fix_tree_that_does_not_apply_is_unusable(qualifying):
+    qualifying["flatten"] = False
+    assert _qualify(qualifying).oracle == "unusable"
+
+
+def test_dry_run_records_nothing(qualifying, ledger, monkeypatch):
+    monkeypatch.setattr(eval_set, "rival_candidates", lambda issues: [(9, 90)])
+    monkeypatch.setattr(eval_set, "_case_inputs", lambda: (qualifying["pin"], _Issues([]),
+                                                           lambda n: ("t", "b")))
+    held: list = []
+    monkeypatch.setattr(verify_gc, "hold", lambda sha: held.append(sha))
+    assert eval_set.harvest_cases(dry_run=True) == 0
+    assert ledger.rows == [] and held == []
+    assert eval_set.harvest_cases(dry_run=False) == 0
+    assert [c.case for c in eval_set.load_cases()] == ["rival-9-90"] and held == ["p" * 40]
+
+
+def test_add_case_is_a_case_study(qualifying, ledger, monkeypatch):
+    monkeypatch.setattr(eval_set, "_case_inputs", lambda: (qualifying["pin"], _Issues([]),
+                                                           lambda n: ("t", "b")))
+    monkeypatch.setattr(verify_gc, "hold", lambda sha: None)
+    assert eval_set.add_case(9, 90, dry_run=False) == 0
+    [case] = eval_set.load_cases()
+    assert (case.source, case.case) == ("case-study", "case-9-90")
+
+
+def _fake_runner(ran: list):
+    def run_instance(inst, *, base, base_sha, profile, workdir, run_lane, judge_contract,
+                     oracle=True, **kw):
+        ran.append((inst.issue, base_sha, oracle))
+        return {"issue": inst.issue, "pr": inst.pr, "ending": "fixed",
+                "oracle_pass": True if oracle else None, "craft_only": not oracle,
+                "fixed": True, "seconds": 1.0, "agent_runs": 1}
+    return run_instance
+
+
+def test_run_replays_cases_beside_the_fair_bugs(builder, ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    eval_set.record_case(_case(7, oracle="tests"))
+    eval_set.record_case(_case(8, oracle="unusable", detail="not merged"))
+    ran: list = []
+    monkeypatch.setattr(replay, "run_instance", _fake_runner(ran))
+    assert eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues=None,
+                        resume=False) == 0
+    assert sorted(ran) == [(1, "a" * 40, True), (3, "a" * 40, True), (5, "c" * 40, True),
+                           (7, "b" * 40, True)]
+    stats = {s["case"]: s for s in (r["stats"] for r in ledger.rows
+                                    if r["phase"] == "replay:instance")}
+    assert stats["rival-7"]["source"] == "rival" and stats["1"]["source"] == "history"
+
+
+def test_an_issue_both_fair_and_rival_is_run_as_both(builder, ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    eval_set.record_case(_case(1, oracle="craft-only"))
+    ran: list = []
+    monkeypatch.setattr(replay, "run_instance", _fake_runner(ran))
+    eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues={1}, resume=False)
+    assert sorted(ran) == [(1, "a" * 40, True), (1, "b" * 40, False)]
+    ran.clear()
+    eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues={1}, resume=False)
+    assert ran == []  # both resumed by case id
+
+
+def test_craft_only_records_leave_precision_alone():
+    records = [{"issue": 1, "case": "1", "ending": "fixed", "oracle_pass": True},
+               {"issue": 2, "case": "rival-2-9", "source": "rival", "ending": "fixed",
+                "oracle_pass": None, "craft_only": True}]
+    card = eval_set.scorecard(records, bugs=1)
+    assert (card["proposed"], card["correct"], card["precision"], card["coverage"]) == (
+        1, 1, 1.0, 1.0)
+    assert card["cases"] == {"history": 1, "rival": 1}
+
+
+def test_unusable_cases_are_not_run(builder, ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    eval_set.record_case(_case(8, oracle="unusable", detail="not merged"))
+    ran: list = []
+    monkeypatch.setattr(replay, "run_instance", _fake_runner(ran))
+    eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues={8}, resume=False)
+    assert ran == []
+
+
+
+def test_a_case_whose_deps_drifted_from_the_pin_is_unusable(qualifying):
+    qualifying["deps"] = {"m" * 40 + "^1": {"x": "0"}}
+    case = _qualify(qualifying)
+    assert case.oracle == "unusable" and "deps drifted" in case.detail
+
+
+def test_a_sandbox_fault_in_r6_does_not_downgrade_the_case(qualifying):
+    qualifying["landed"] = LANDED_TESTS
+    qualifying["r6"] = (False, "sandbox")
+    case = _qualify(qualifying)
+    assert case.oracle == "unusable" and "sandbox" in case.detail
+
+
+def test_a_case_without_report_text_is_unusable(qualifying):
+    case = eval_set.qualify_case("case-study", 9, 90, pin=qualifying["pin"], report=("", ""),
+                                 prof=profile.active(), run_r6=True)
+    assert case.oracle == "unusable" and "report" in case.detail
+
+
+def test_a_real_harvest_qualifies_on_the_tier_1_base_and_records_once(qualifying, ledger,
+                                                                     monkeypatch):
+    monkeypatch.setattr(eval_set, "rival_candidates", lambda issues: [(9, 90)])
+    monkeypatch.setattr(eval_set, "_case_inputs", lambda: (qualifying["pin"], _Issues([]),
+                                                           lambda n: ("t", "b")))
+    holds: list = []
+    monkeypatch.setattr(verify_gc, "hold", lambda sha: holds.append(sha))
+    eval_set.harvest_cases(dry_run=False)
+    eval_set.harvest_cases(dry_run=False)
+    assert qualifying["held"] == ["p" * 40, "p" * 40]
+    assert len([r for r in ledger.rows if r["phase"] == eval_set.CASE_PHASE]) == 1
+    assert holds == ["p" * 40]
+
+
+def test_only_a_usable_case_holds_the_base(qualifying, ledger, monkeypatch):
+    qualifying["merged"] = False
+    monkeypatch.setattr(eval_set, "_case_inputs", lambda: (qualifying["pin"], _Issues([]),
+                                                           lambda n: ("t", "b")))
+    holds: list = []
+    monkeypatch.setattr(verify_gc, "hold", lambda sha: holds.append(sha))
+    eval_set.add_case(9, 90, dry_run=False)
+    assert holds == [] and eval_set.load_cases()[0].oracle == "unusable"
+
+
+def test_a_case_whose_base_cannot_be_built_leaves_the_run_going(builder, ledger, tmp_path,
+                                                                monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    eval_set.record_case(replace(_case(7, oracle="tests"), base_sha="z" * 40))
+    real = eval_set._held_base
+
+    def held(sha):
+        if sha == "z" * 40:
+            raise verify_driver.BuildFailure("lockfile no longer resolves")
+        return real(sha)
+    monkeypatch.setattr(eval_set, "_held_base", held)
+    ran: list = []
+    monkeypatch.setattr(replay, "run_instance", _fake_runner(ran))
+    assert eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues=None,
+                        resume=False) == 0
+    assert sorted(i for i, _, _ in ran) == [1, 3, 5]
+
+
+def test_unusable_is_a_fault():
+    assert replay._is_fault("unusable")

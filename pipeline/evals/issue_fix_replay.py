@@ -733,17 +733,17 @@ _CRASH_ENDING = "error"
 # Instance endings that are a machine fault rather than a scored verdict: the R6
 # sandbox fault, the lane's own faults, and a crash. A --resume re-runs any of them.
 _FAULT_ENDINGS = frozenset({"r6-sandbox", "sandbox", "agent-unavailable", "run-failed",
-                            "base-compile", _CRASH_ENDING})
+                            "base-compile", "unusable", _CRASH_ENDING})
 # The lane's own fault endings (`_FAULT_ENDINGS` minus the R6 sandbox one and the
 # crash): a run that ends in one of these is a machine condition, so it is not scored.
-_LANE_FAULT_ENDINGS = _FAULT_ENDINGS - frozenset({"r6-sandbox", _CRASH_ENDING})
+_LANE_FAULT_ENDINGS = _FAULT_ENDINGS - frozenset({"r6-sandbox", "unusable", _CRASH_ENDING})
 
 
 def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
                  profile: RepoProfile, workdir: Path, run_lane: LaneEntry,
                  judge_contract: ContractJudge | None = None,
                  judge_craft: CraftJudge | None = None,
-                 fixer: dict[str, str] | None = None) -> dict:
+                 fixer: dict[str, str] | None = None, oracle: bool = True) -> dict:
     """Build `tree(P)`, gate it on R6, run the lane on it, and score the run.
     `run_lane` is the lane entry point the caller injects, and `judge_contract`
     the oracle-failure judge `score` reads. On an R6 miss the record carries
@@ -751,18 +751,28 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
     scoring. A scored record also carries the lane's fix without its tests,
     `fixer` (the configuration the lane ran) and the merge commit, from which the
     merged fix is re-derived; a `fixed` run is judged for craft against the
-    merged fix by `judge_craft`."""
+    merged fix by `judge_craft`. Without an `oracle` (a case whose merged PR
+    carries no tests that qualify) the run skips R6 and the oracle legs and is
+    scored for its craft alone, `oracle_pass` None and `craft_only` set. A
+    pre-fix tree that cannot be built records `unusable`."""
     label = f"replay-{instance.issue}"
-    pre_patch = transform_to_p(base.clone, instance.merge_sha, base_sha, profile)
+    try:
+        pre_patch = transform_to_p(base.clone, instance.merge_sha, base_sha, profile)
+    except (ValueError, subprocess.CalledProcessError) as e:
+        why = getattr(e, "stderr", None) or str(e)
+        return {"issue": instance.issue, "pr": instance.pr, "ending": "unusable",
+                "detail": f"the pre-fix tree cannot be built: {why}"[:_DETAIL_MAX]}
     r6_legs: dict[str, prove.Legs] = {}
-    t_r6 = time.monotonic()
-    ok, reason = validate_known_fix(base, pre_patch, instance, label=label, legs=r6_legs)
-    r6_seconds = round(time.monotonic() - t_r6, 1)
-    if not ok:
-        return {"issue": instance.issue, "pr": instance.pr,
-                "ending": f"r6-{reason}", "reason": reason, "r6_seconds": r6_seconds,
-                "legs": _leg_evidence(r6_legs),
-                "detail": _legs_detail(r6_legs) or reason}
+    r6_seconds = 0.0
+    if oracle:
+        t_r6 = time.monotonic()
+        ok, reason = validate_known_fix(base, pre_patch, instance, label=label, legs=r6_legs)
+        r6_seconds = round(time.monotonic() - t_r6, 1)
+        if not ok:
+            return {"issue": instance.issue, "pr": instance.pr,
+                    "ending": f"r6-{reason}", "reason": reason, "r6_seconds": r6_seconds,
+                    "legs": _leg_evidence(r6_legs),
+                    "detail": _legs_detail(r6_legs) or reason}
     contaminants = _contaminants(r6_legs)
     t0 = time.monotonic()
     lane_result = run_lane(issue=instance.issue, title=instance.report_title,
@@ -779,18 +789,23 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
                 "lane": lane, "steps": steps,
                 "agent_runs": lane_result.agent_runs, "detail": lane_result.detail}
     oracle_runs: dict[str, prove.Legs] = {}
-    try:
-        scores = score(instance, lane_result, oracle_runs, base=base, pre_patch=pre_patch,
-                       label=label, r6_red=r6_legs.get("red"), judge_contract=judge_contract)
-        candidates = candidate_scores(instance, lane_result, base=base, pre_patch=pre_patch,
-                                      label=label, r6_red=r6_legs.get("red"))
-    except (verify_driver.ProbeFailure, prove.SandboxFault) as e:
-        # The lane's result stands, but the oracle that scores it never ran.
-        return {"issue": instance.issue, "pr": instance.pr, "ending": "sandbox",
-                "seconds": seconds, "r6_seconds": r6_seconds,
-                "r6_contaminants": contaminants, "legs": _leg_evidence(r6_legs),
-                "lane": lane, "steps": steps,
-                "agent_runs": lane_result.agent_runs, "detail": str(e)[:_DETAIL_MAX]}
+    candidates: list[dict] = []
+    if oracle:
+        try:
+            scores = score(instance, lane_result, oracle_runs, base=base, pre_patch=pre_patch,
+                           label=label, r6_red=r6_legs.get("red"), judge_contract=judge_contract)
+            candidates = candidate_scores(instance, lane_result, base=base, pre_patch=pre_patch,
+                                          label=label, r6_red=r6_legs.get("red"))
+        except (verify_driver.ProbeFailure, prove.SandboxFault) as e:
+            # The lane's result stands, but the oracle that scores it never ran.
+            return {"issue": instance.issue, "pr": instance.pr, "ending": "sandbox",
+                    "seconds": seconds, "r6_seconds": r6_seconds,
+                    "r6_contaminants": contaminants, "legs": _leg_evidence(r6_legs),
+                    "lane": lane, "steps": steps,
+                    "agent_runs": lane_result.agent_runs, "detail": str(e)[:_DETAIL_MAX]}
+    else:
+        scores = {"fixed": lane_result.ending == "fixed", "oracle_pass": None,
+                  "craft_only": True, "agent_runs": lane_result.agent_runs}
     if candidates:
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "candidates.json").write_text(json.dumps({
@@ -1107,16 +1122,17 @@ def _progress(line: str) -> None:
     print(f"replay: {line}", file=sys.stderr, flush=True)
 
 
-def _recorded(pr_store: store.Store, run_id: str) -> dict[int, dict]:
-    """The instance stats already in the ledger for `run_id`, keyed by issue —
-    the read that makes a run resumable."""
-    out: dict[int, dict] = {}
+def _recorded(pr_store: store.Store, run_id: str) -> dict[str, dict]:
+    """The instance stats already in the ledger for `run_id`, keyed by case (an
+    eval set's rival or case-study id, else the issue number) — the read that
+    makes a run resumable."""
+    out: dict[str, dict] = {}
     for rec in pr_store.runs(limit=_RESUME_SCAN, phase="replay:instance"):
         if not isinstance(rec, storekit.PhaseRun):
             continue
         stats = rec.raw.get("stats") or {}
         if stats.get("run_id") == run_id and isinstance(stats.get("issue"), int):
-            out[stats["issue"]] = stats
+            out[str(stats.get("case") or stats["issue"])] = stats
     return out
 
 
@@ -1321,7 +1337,7 @@ def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
     results: dict[int, dict] = {}
     todo: list[Instance] = []
     for inst in instances:
-        prior = recorded.get(inst.issue)
+        prior = recorded.get(str(inst.issue))
         if prior is not None and not (resume and _is_fault(prior.get("ending"))):
             results[inst.issue] = prior
         else:
