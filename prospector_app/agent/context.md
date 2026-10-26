@@ -21,8 +21,9 @@ timestamp, or resulting state.
 
 ## Answering about the app
 Answer questions about the app's buttons and pages from the map below and an
-item's STATUS block, without reading source: a test keeps the map in step with
-the code, and STATUS is what the page shows as of the question. A reviewer
+item's STATUS block, without reading source: a test checks that every route
+and function the map names exists, and STATUS is what the page shows as of the
+question. A reviewer
 score without `⚠stale` was given at the current head.
 Read `prospector_app/frontend/src/` only for a control the map doesn't name,
 or a detail it doesn't settle. Once a conversation has settled how a control

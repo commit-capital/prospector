@@ -76,7 +76,8 @@ from pipeline import storekit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = Path(__file__).resolve().parents[1]
-# Gitignored cache for per-thread machine-local state (partials, provider session ids).
+# Gitignored cache for per-thread machine-local state (partials, provider session ids,
+# the items a provider session has been shown).
 SESSION_DIR = APP_ROOT / "cache" / "chat"
 AGENT_CONTEXT = APP_ROOT / "agent" / "context.md"
 # The app's controls map, set into the manual (kept honest by test_agent_controls).
@@ -130,7 +131,10 @@ def system_prompt() -> str:
         raise RuntimeError(f"app agent context missing: {AGENT_CONTEXT} ({e})") from e
     if not text:
         raise RuntimeError(f"app agent context is empty: {AGENT_CONTEXT}")
-    text = text.replace("{app_controls}", AGENT_CONTROLS.read_text().strip())
+    controls = AGENT_CONTROLS.read_text().strip()
+    if not controls:
+        raise RuntimeError(f"app controls map is empty: {AGENT_CONTROLS}")
+    text = text.replace("{app_controls}", controls)
     review_bar = review_policy.merge_bar_sentence()
     mentions = [f"{r.label} `{r.retrigger_mention}`"
                 for r in review_policy.active_reviewers(reviewers.REVIEW)
@@ -362,6 +366,15 @@ def _pr_status(detail: dict) -> list[str]:
         lines.append("  Re-trigger buttons on the Code review row (post the mention as the bot; "
                      f"no commit needed): {', '.join(mentions)}")
     return lines
+
+
+def _return_context(subject: str, pr: int | None) -> str:
+    """A short re-grounding for an item this session was shown earlier: a PR's
+    current STATUS, else just the item's name."""
+    if pr:
+        return "\n".join([f"CONTEXT: PR #{pr} again (its details were given earlier)",
+                          *_pr_status(service.pr_detail(pr) or {})])
+    return f"CONTEXT: {subject} again (its details were given earlier)"
 
 
 def _pr_context(pr: int, file: str | None, line: int | None) -> str:
@@ -757,15 +770,19 @@ async def _run_turn(backend: agent_backend.AgentBackend, ctx_id: str, question: 
         # a re-ground (the fresh session has lost them), and the first time the
         # thread is asked about it, so one session can walk a list of items.
         subject = _ctx_id(pr, cluster, issue, advisory, alert_source, alert)
-        seen: list[str] = [] if ground else _meta(ctx_id).get("subjects", [])
-        moved = not ground and subject != "general" and subject not in seen
+        meta = {} if ground or sid is None else _meta(ctx_id)
+        seen: list[str] = meta.get("subjects", [])
+        switched = not ground and subject != "general" and subject != meta.get("current")
         base = ""
-        if ground or moved:
-            _write_meta(ctx_id, subjects=[*seen, subject])
+        if ground or (switched and subject not in seen):
             base = f"{_build_context(pr, cluster, issue, file, line, advisory, alert_source, alert)}\n\n"
-        if moved:
+        elif switched:
+            base = f"{_return_context(subject, pr)}\n\n"
+        if switched:
             base = ("The operator has opened another item; questions are about it "
                     f"unless they say otherwise.\n{base}")
+        if ground or switched:
+            _write_meta(ctx_id, subjects=sorted({*seen, subject}), current=subject)
         # On a re-ground the session starts cold, so replay the prior turns to continue.
         replay = f"{_thread_digest(thread)}\n\n" if needs_reground else ""
         if is_first:

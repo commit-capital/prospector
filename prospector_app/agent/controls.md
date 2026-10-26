@@ -17,8 +17,8 @@ fix, too big). It opens on the suggested action.
 - **Merge** (`⛔ Merge blocked` when the gate fails): POST /api/merge/pr/{n}
   → `executor.merge_pr`. Enabled when the merge gate passes, or when the block
   is overridable and a reason is typed. It checks `gates.merge_eligibility`,
-  then the live head, then `executor._threat_rescan`; a live merge also runs
-  the compile preflight. A compile block can be waived with a reason ("Merge
+  then `executor._threat_rescan` at the pinned head, then the live head; a
+  live merge also runs the compile preflight. A compile block can be waived with a reason ("Merge
   without compile check"). Squash by default. Permanent.
 - **Approve / Request changes / Comment**: POST /api/review/pr/{n} →
   `executor.submit_review`. Request changes needs a body. It refuses a moved
@@ -123,7 +123,8 @@ doesn't fit. The issue-fix worker then does the work.
 - **Home feed undo**: the reopen endpoints, always asking for a live write.
 - **Alerts → Dismiss**, live mode only: POST
   /api/execute/alert/{source}/{n}/dismiss → `executor.dismiss_alert`.
-- **Action items** ✓ done / dismiss / reopen: store-only.
+- **Action items** ✓ done / dismiss / reopen: POST
+  /api/action-items/{item_id:path}/status. Store-only.
 
 ### Control tab
 
@@ -133,8 +134,10 @@ doesn't fit. The issue-fix worker then does the work.
   - move to top: POST /api/verify/queue/{n}/top, /api/fix/queue/{n}/top,
     /api/issues/{n}/fix/top
   - remove: the dequeue or cancel endpoints above
-  - Pause / Resume a lane
-  - Stand down / Bring back a machine
+  - Pause / Resume a lane: POST /api/worker/lanes/{lane}/pause,
+    /api/worker/lanes/{lane}/resume
+  - Stand down / Bring back a machine: POST /api/machines/{host}/stand-down,
+    /api/machines/{host}/stand-up
   - All of these are local operator actions.
 - **♻️ Refresh** (also the header's "live" chip): POST /api/live/refresh. Reads
   only.

@@ -25,7 +25,7 @@ def test_every_route_in_the_map_exists():
 
 
 def test_every_per_item_write_is_in_the_map():
-    per_item = {r for r in WRITES if "{n}" in r or r.startswith("/api/execute/")}
+    per_item = {r for r in WRITES if "{" in r or r.startswith("/api/execute/")}
     assert per_item - _named_routes() == set()
 
 

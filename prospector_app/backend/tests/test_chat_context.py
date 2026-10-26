@@ -480,6 +480,7 @@ def test_issue_context_shows_the_fix_lane(temp_store):
 
 def test_a_session_gets_each_new_items_context_once(temp_store, tmp_path, monkeypatch):
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
+    monkeypatch.setattr(chat.service, "pr_detail", lambda n: {"github_state": "open"})
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
     monkeypatch.setattr(chat, "_bot_token", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
@@ -512,5 +513,43 @@ def test_a_session_gets_each_new_items_context_once(temp_store, tmp_path, monkey
     prompts = [c[c.index("-p") + 1] for c in captured]
     assert "CTX-PR-101" in prompts[0]
     assert "CTX-PR-102" in prompts[1] and "opened another item" in prompts[1]
-    assert "CTX-PR" not in prompts[2] and "CTX-PR" not in prompts[3]
+    # Back on an item it was shown: the switch and a fresh STATUS, not the whole context.
+    assert "CTX-PR" not in prompts[2] and "PR #101 again" in prompts[2]
+    assert "STATUS" in prompts[2]
+    assert "CTX-PR" not in prompts[3] and "PR #102 again" in prompts[3]
     assert all("-r" in c for c in captured[1:])
+
+
+def test_staying_on_one_item_sends_no_context_again(temp_store, tmp_path, monkeypatch):
+    monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
+    monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
+    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
+    monkeypatch.setattr(chat, "_pr_context", lambda pr, *a, **k: f"CTX-PR-{pr}")
+
+    captured: list[list[str]] = []
+
+    class FakeProc:
+        pid = 1
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = self._gen()
+        async def _gen(self):
+            yield b'{"type":"result","session_id":"sess-A"}\n'
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*cmd, **kw):
+        captured.append(list(cmd))
+        return FakeProc()
+
+    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
+
+    async def drive():
+        for q in ("first", "second"):
+            async for _ in chat.stream_chat(q, pr=101, chat_id="stay"):
+                pass
+    asyncio.run(drive())
+
+    second = captured[1][captured[1].index("-p") + 1]
+    assert "CTX-PR" not in second and "another item" not in second

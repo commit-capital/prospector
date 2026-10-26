@@ -55,7 +55,8 @@ export function restoreSession(sessions: ChatSession[], id: string, now: number)
 
 export function touchSession(sessions: ChatSession[], id: string, now: number,
   subject: AgentSubject): ChatSession[] {
-  return capSessions(sessions.map((s) => s.id === id ? { ...s, subject, lastActiveAt: now } : s));
+  return capSessions(sessions.map((s) => s.id === id
+    ? { ...s, label: subject.label, subject, lastActiveAt: now } : s));
 }
 
 // The most recently active live session about this subject.
