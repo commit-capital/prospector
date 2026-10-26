@@ -317,11 +317,41 @@ def _correct(rec: dict) -> bool:
         rec.get("oracle_pass") or rec.get("contract_mismatch"))
 
 
+def _craft(records: list[dict]) -> dict[str, dict]:
+    """Craft per fixer configuration (`<prompt_sha>/<models>`): how the judged
+    fixed runs fared against the merged fix, the standard's points a loss or tie
+    fell short on, and the flags fixed runs raised."""
+    out: dict[str, dict] = {}
+    for rec in records:
+        fixer = rec.get("fixer") or {}
+        key = f"{fixer.get('prompt_sha', '?')}/{fixer.get('models', '?')}"
+        c = out.setdefault(key, {"judged": 0, "wins": 0, "ties": 0, "losses": 0, "errors": 0,
+                                 "rate": None, "losses_by_point": {}, "flags": {}})
+        if rec.get("ending") == "fixed":
+            for flag in rec.get("flags") or []:
+                c["flags"][flag] = c["flags"].get(flag, 0) + 1
+        craft = rec.get("craft") or {}
+        if craft.get("error"):
+            c["errors"] += 1
+        result = craft.get("result")
+        if result not in ("win", "tie", "loss"):
+            continue
+        c["judged"] += 1
+        c[{"win": "wins", "tie": "ties", "loss": "losses"}[result]] += 1
+        if result != "win":
+            for point in craft.get("points") or []:
+                c["losses_by_point"][point] = c["losses_by_point"].get(point, 0) + 1
+    for c in out.values():
+        if c["judged"]:
+            c["rate"] = round((c["wins"] + c["ties"] / 2) / c["judged"], 3)
+    return out
+
+
 def scorecard(records: list[dict], *, bugs: int) -> dict:
     """The run's numbers over every scored pass of `bugs` bugs: proposals
     (runs ending `fixed`), the correct ones among them, precision and coverage,
-    the endings, and cost. A fault ending is the machine's, so it is counted
-    apart and scores nothing."""
+    the endings, cost, and craft per fixer configuration (`_craft`). A fault
+    ending is the machine's, so it is counted apart and scores nothing."""
     scored = [r for r in records if not replay._is_fault(r.get("ending"))]
     proposed = [r for r in scored if r.get("ending") == "fixed"]
     correct = [r for r in proposed if _correct(r)]
@@ -337,6 +367,7 @@ def scorecard(records: list[dict], *, bugs: int) -> dict:
         "endings": dict(Counter(str(r.get("ending")) for r in records).most_common()),
         "agent_runs": sum(r.get("agent_runs") or 0 for r in records),
         "avg_seconds": round(replay._avg_seconds(records), 1),
+        "craft": _craft(scored),
     }
 
 
@@ -355,6 +386,20 @@ def _scorecard_md(name: str, card: dict, records: list[dict]) -> str:
              f"| avg lane seconds | {card['avg_seconds']} |", "",
              "| ending | runs |", "| --- | --- |"]
     lines += [f"| {e} | {n} |" for e, n in card["endings"].items()]
+    from pipeline.evals import craft_judge
+    for key, c in card.get("craft", {}).items():
+        lines += ["", f"## Craft: `{key}`", "",
+                  f"{c['judged']} fixes judged against the merged fix: {c['wins']} better, "
+                  f"{c['ties']} tied, {c['losses']} worse ({c['errors']} judge errors); "
+                  f"craft rate {pct(c['rate'])}."]
+        top = sorted(c["losses_by_point"].items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        if top:
+            lines.append("Losing on: " + "; ".join(
+                f"{n}x point {p} ({craft_judge.POINTS[p - 1][:60]})" for p, n in top
+                if 1 <= p <= len(craft_judge.POINTS)) + ".")
+        if c["flags"]:
+            lines.append("Flags: " + ", ".join(f"{f} {n}" for f, n in sorted(c["flags"].items()))
+                         + ".")
     by_bug: dict[int, list[dict]] = {}
     for rec in records:
         by_bug.setdefault(rec["issue"], []).append(rec)

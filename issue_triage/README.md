@@ -228,3 +228,15 @@ pain-ranking weights, loaded by `issue_cluster_driver`.
   section (confirm the canonical, split false merges). Read-only on GitHub.
 - `/resolve-issue-cluster <N>` — gated upstream execution of close-as-dup via the
   app executor.
+
+Correctness is not craft: a fix the oracle accepts can still be one a
+maintainer would not merge. Each fixed run is also judged blind against the fix
+that merged (`pipeline/evals/craft_judge.py`): the two are "Fix A" and "Fix B",
+in both orders, over the pre-fix tree, by the standard every fix author is given
+(`authoring.HOUSE_STYLE`); both orders agreeing is a win or a loss, anything else
+a tie, and each loss names the standard's points it falls short on. Two cheap
+flags ride beside it: another language's code assembled as a string, and a
+block copied from code the tree already has. That costs two judge runs per
+fixed run. The record keeps both fixes and the fixer configuration (its prompts'
+and standard's hash, and its models), and `scorecard.md` reports craft per
+configuration: wins, ties, losses, a craft rate, and the points lost on most.

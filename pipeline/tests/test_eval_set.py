@@ -354,3 +354,36 @@ def test_a_run_halts_when_the_agent_can_serve_nothing(builder, ledger, tmp_path,
     assert len(ran) == 1  # three bugs x two passes were queued
     card = [r["stats"] for r in ledger.rows if r["phase"] == eval_set.RUN_PHASE][-1]
     assert "weekly limit" in card["halted"]
+
+
+def _craft_rec(result, *, sha="s1", points=(), flags=(), error=None, ending="fixed") -> dict:
+    craft = None if result is ... else {"result": result, "points": list(points),
+                                        "reasons": [], "judge_sha": "j", "error": error}
+    return {"issue": 1, "ending": ending, "fixer": {"prompt_sha": sha, "models": "opus"},
+            "craft": craft, "flags": list(flags)}
+
+
+def test_scorecard_counts_craft_by_configuration():
+    recs = [_craft_rec("win", flags=["foreign-text"]), _craft_rec("tie", points=[2]),
+            _craft_rec("loss", points=[2, 4]), _craft_rec(None, error="boom"),
+            _craft_rec(..., ending="no-fix"), _craft_rec("loss", sha="s2", points=[1])]
+    craft = eval_set.scorecard(recs, bugs=1)["craft"]
+    one = craft["s1/opus"]
+    assert (one["judged"], one["wins"], one["ties"], one["losses"], one["errors"]) == (3, 1, 1, 1, 1)
+    assert one["rate"] == 0.5
+    assert one["losses_by_point"] == {2: 2, 4: 1}
+    assert one["flags"] == {"foreign-text": 1}
+    assert craft["s2/opus"]["losses"] == 1
+
+
+def test_rate_is_none_when_nothing_was_judged():
+    craft = eval_set.scorecard([_craft_rec(..., ending="no-fix")], bugs=1)["craft"]
+    assert craft["s1/opus"]["rate"] is None and craft["s1/opus"]["judged"] == 0
+
+
+def test_scorecard_md_names_the_points_lost_on():
+    from pipeline.evals import craft_judge
+    recs = [_craft_rec("loss", points=[2]), _craft_rec("loss", points=[2, 3])]
+    md = eval_set._scorecard_md("n", eval_set.scorecard(recs, bugs=1), recs)
+    assert "## Craft" in md and "Losing on" in md
+    assert craft_judge.POINTS[1][:30] in md
