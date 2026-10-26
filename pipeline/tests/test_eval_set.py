@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 from datetime import UTC, datetime
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -473,6 +474,15 @@ def qualifying(monkeypatch, tmp_path):
         return tmp_path / "p.diff"
     monkeypatch.setattr(prove, "flatten", flatten)
     knobs["pin"] = prove.PinnedBase(sha="p" * 40, tier=1, image="i", clone=tmp_path)
+    knobs["deps"] = {}
+    monkeypatch.setattr(replay, "dep_declarations",
+                        lambda clone, rev, prof: knobs["deps"].get(rev, {"x": "1"}))
+    knobs["held"] = []
+
+    def held_base(sha):
+        knobs["held"].append(sha)
+        return knobs["pin"]
+    monkeypatch.setattr(eval_set, "_held_base", held_base)
     return knobs
 
 
@@ -588,3 +598,70 @@ def test_unusable_cases_are_not_run(builder, ledger, tmp_path, monkeypatch):
     monkeypatch.setattr(replay, "run_instance", _fake_runner(ran))
     eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues={8}, resume=False)
     assert ran == []
+
+
+
+def test_a_case_whose_deps_drifted_from_the_pin_is_unusable(qualifying):
+    qualifying["deps"] = {"m" * 40 + "^1": {"x": "0"}}
+    case = _qualify(qualifying)
+    assert case.oracle == "unusable" and "deps drifted" in case.detail
+
+
+def test_a_sandbox_fault_in_r6_does_not_downgrade_the_case(qualifying):
+    qualifying["landed"] = LANDED_TESTS
+    qualifying["r6"] = (False, "sandbox")
+    case = _qualify(qualifying)
+    assert case.oracle == "unusable" and "sandbox" in case.detail
+
+
+def test_a_case_without_report_text_is_unusable(qualifying):
+    case = eval_set.qualify_case("case-study", 9, 90, pin=qualifying["pin"], report=("", ""),
+                                 prof=profile.active(), run_r6=True)
+    assert case.oracle == "unusable" and "report" in case.detail
+
+
+def test_a_real_harvest_qualifies_on_the_tier_1_base_and_records_once(qualifying, ledger,
+                                                                     monkeypatch):
+    monkeypatch.setattr(eval_set, "rival_candidates", lambda issues: [(9, 90)])
+    monkeypatch.setattr(eval_set, "_case_inputs", lambda: (qualifying["pin"], _Issues([]),
+                                                           lambda n: ("t", "b")))
+    holds: list = []
+    monkeypatch.setattr(verify_gc, "hold", lambda sha: holds.append(sha))
+    eval_set.harvest_cases(dry_run=False)
+    eval_set.harvest_cases(dry_run=False)
+    assert qualifying["held"] == ["p" * 40, "p" * 40]
+    assert len([r for r in ledger.rows if r["phase"] == eval_set.CASE_PHASE]) == 1
+    assert holds == ["p" * 40]
+
+
+def test_only_a_usable_case_holds_the_base(qualifying, ledger, monkeypatch):
+    qualifying["merged"] = False
+    monkeypatch.setattr(eval_set, "_case_inputs", lambda: (qualifying["pin"], _Issues([]),
+                                                           lambda n: ("t", "b")))
+    holds: list = []
+    monkeypatch.setattr(verify_gc, "hold", lambda sha: holds.append(sha))
+    eval_set.add_case(9, 90, dry_run=False)
+    assert holds == [] and eval_set.load_cases()[0].oracle == "unusable"
+
+
+def test_a_case_whose_base_cannot_be_built_leaves_the_run_going(builder, ledger, tmp_path,
+                                                                monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    eval_set.record_case(replace(_case(7, oracle="tests"), base_sha="z" * 40))
+    real = eval_set._held_base
+
+    def held(sha):
+        if sha == "z" * 40:
+            raise verify_driver.BuildFailure("lockfile no longer resolves")
+        return real(sha)
+    monkeypatch.setattr(eval_set, "_held_base", held)
+    ran: list = []
+    monkeypatch.setattr(replay, "run_instance", _fake_runner(ran))
+    assert eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues=None,
+                        resume=False) == 0
+    assert sorted(i for i, _, _ in ran) == [1, 3, 5]
+
+
+def test_unusable_is_a_fault():
+    assert replay._is_fault("unusable")

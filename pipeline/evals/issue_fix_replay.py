@@ -733,10 +733,10 @@ _CRASH_ENDING = "error"
 # Instance endings that are a machine fault rather than a scored verdict: the R6
 # sandbox fault, the lane's own faults, and a crash. A --resume re-runs any of them.
 _FAULT_ENDINGS = frozenset({"r6-sandbox", "sandbox", "agent-unavailable", "run-failed",
-                            "base-compile", _CRASH_ENDING})
+                            "base-compile", "unusable", _CRASH_ENDING})
 # The lane's own fault endings (`_FAULT_ENDINGS` minus the R6 sandbox one and the
 # crash): a run that ends in one of these is a machine condition, so it is not scored.
-_LANE_FAULT_ENDINGS = _FAULT_ENDINGS - frozenset({"r6-sandbox", _CRASH_ENDING})
+_LANE_FAULT_ENDINGS = _FAULT_ENDINGS - frozenset({"r6-sandbox", "unusable", _CRASH_ENDING})
 
 
 def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,

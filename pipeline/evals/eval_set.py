@@ -304,12 +304,17 @@ def qualify_case(source: Literal["rival", "case-study"], issue: int, pr: int, *,
                  run_r6: bool) -> Case:
     """`issue` with `pr`'s merged fix as its reference, on the tree just before
     that fix landed (`pre_patch` over the pin): `tests` when the fix's own tests
-    pass R6 there, `craft-only` when the tree builds but they do not, else
-    `unusable`. Without `run_r6` a case with tests is taken as `tests` unproven."""
+    pass R6 there, `craft-only` when that tree's `pre_patch` applies but they do
+    not, else `unusable` with why: no report text, not merged, not in the pin,
+    dependencies drifted from the pin's (the image would not install the old
+    tree faithfully), or an R6 sandbox fault (re-harvest to retry). Without
+    `run_r6` a case with tests is taken as `tests` unproven."""
     case = Case(case=f"{'rival' if source == 'rival' else 'case'}-{issue}-{pr}", source=source,
                 issue=issue, pr=pr, merge_sha="", base_sha=pin.sha, oracle="unusable",
                 detail="", report_title=report[0], report_body=report[1], landed_diff="",
                 test_files=[], nontest_files=[])
+    if not (report[0].strip() or report[1].strip()):
+        return replace(case, detail="no report text for the issue")
     merged = replay._gh_pr(pr)
     if merged is None:
         return replace(case, detail=f"#{pr} is not merged")
@@ -317,9 +322,15 @@ def qualify_case(source: Literal["rival", "case-study"], issue: int, pr: int, *,
     try:
         landed = replay._git(pin.clone, "diff", "--binary", f"{merge_sha}^1", merge_sha)
         pre_patch = replay.transform_to_p(pin.clone, merge_sha, pin.sha, prof)
+        before = replay.dep_declarations(pin.clone, f"{merge_sha}^1", prof)
+        now = replay.dep_declarations(pin.clone, pin.sha, prof)
     except subprocess.CalledProcessError as e:
         return replace(case, merge_sha=merge_sha,
                        detail=f"not-in-pin: {(e.stderr or str(e)).strip()[:200]}")
+    if before != now:
+        drifted = sorted(k for k in set(before) | set(now) if before.get(k) != now.get(k))
+        return replace(case, merge_sha=merge_sha,
+                       detail=f"deps drifted from the pin's: {', '.join(drifted[:5])}")
     paths = diffpaths.changed_paths(landed)
     case = replace(case, merge_sha=merge_sha, landed_diff=landed,
                    test_files=[p for p in paths if diffpaths.is_test_path(p)],
@@ -331,12 +342,14 @@ def qualify_case(source: Literal["rival", "case-study"], issue: int, pr: int, *,
                                                label=f"case-{issue}")
         if ok:
             return replace(case, oracle="tests")
+        if reason == "sandbox":
+            return replace(case, detail="R6 hit a sandbox fault; re-harvest to retry")
         case = replace(case, detail=f"its tests do not qualify: r6-{reason}")
     try:
         prove.flatten(pin.clone, pre_patch, label=f"case-{issue}")
     except ValueError as e:
         return replace(case, oracle="unusable",
-                       detail=f"the pre-fix tree does not build: {e}"[:300])
+                       detail=f"the pre-fix tree's patch does not apply: {e}"[:300])
     return replace(case, oracle="craft-only")
 
 
@@ -349,36 +362,45 @@ def _case_inputs() -> tuple[prove.PinnedBase, IssueStore,
 
 
 def _qualify_all(source: Literal["rival", "case-study"], pairs: list[tuple[int, int]], *,
-                 dry_run: bool) -> int:
-    pin, _, reported = _case_inputs()
+                 dry_run: bool, pin: prove.PinnedBase,
+                 reported: Callable[[int], tuple[str, str] | None]) -> int:
+    """Qualify `pairs` on the tier-1 base at the pin (the tier `run` replays at;
+    a dry run reads the pin as it is and builds nothing) and, unless `dry_run`,
+    record each case that changed since its last row, holding the base when a
+    usable one was recorded."""
     prof = profile.active()
-    recorded = 0
+    base = pin if dry_run else _held_base(pin.sha)
+    last = {c.case: c for c in load_cases()}
+    usable = 0
     for issue, pr in pairs:
-        report = reported(issue) or ("", "")
-        case = qualify_case(source, issue, pr, pin=pin, report=report, prof=prof,
-                            run_r6=not dry_run)
+        case = qualify_case(source, issue, pr, pin=base, report=reported(issue) or ("", ""),
+                            prof=prof, run_r6=not dry_run)
         print(f"{case.case}: {case.oracle}" + (f" ({case.detail})" if case.detail else ""),
               flush=True)
-        if not dry_run:
-            record_case(case)
-            recorded += 1
-    if recorded:
-        verify_gc.hold(pin.sha)
+        if dry_run or case == last.get(case.case):
+            continue
+        record_case(case)
+        usable += case.oracle != "unusable"
+    if usable:
+        verify_gc.hold(base.sha)
     print(f"{len(pairs)} case(s)" + (" (dry run, nothing recorded)" if dry_run else ""))
     return 0
 
 
 def harvest_cases(*, dry_run: bool) -> int:
     """Qualify every rival case the issue store names and, unless `dry_run`,
-    record each (unusable ones too, with why) and hold the pin they run on."""
-    _, issues, _ = _case_inputs()
-    return _qualify_all("rival", rival_candidates(issues), dry_run=dry_run)
+    record each (unusable ones too, with why) and hold the base they run on."""
+    pin, issues, reported = _case_inputs()
+    return _qualify_all("rival", rival_candidates(issues), dry_run=dry_run, pin=pin,
+                        reported=reported)
 
 
 def add_case(issue: int, pr: int, *, dry_run: bool) -> int:
     """Qualify and record one case an operator names: `issue` with `pr`'s merged
     fix as the reference."""
-    return _qualify_all("case-study", [(issue, pr)], dry_run=dry_run)
+    pin, _, reported = _case_inputs()
+    return _qualify_all("case-study", [(issue, pr)], dry_run=dry_run, pin=pin,
+                        reported=reported)
 
 
 def _fixes(members: list[replay.Instance]) -> int:
@@ -622,9 +644,16 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
         if missing:
             print(f"no longer screened in, left out: {missing}", flush=True)
     planned = [_Job(str(n), "history", inst, fair[n], True) for n, inst in sorted(by_issue.items())]
+    bases = {sha: _held_base(sha) for sha in sorted({fair[n] for n in by_issue})}
+    for sha in sorted({c.base_sha for c in usable} - set(bases)):
+        # A case's base is its own; one that cannot be built drops its cases, not the run.
+        try:
+            bases[sha] = _held_base(sha)
+        except (prove.NoBase, verify_driver.BuildFailure) as e:
+            dropped = [c.case for c in usable if c.base_sha == sha]
+            print(f"base {sha[:12]} cannot be held ({e}); left out: {dropped}", flush=True)
     planned += [_Job(c.case, c.source, c.instance(), c.base_sha, c.oracle == "tests")
-                for c in usable]
-    bases = {sha: _held_base(sha) for sha in sorted({job.base_sha for job in planned})}
+                for c in usable if c.base_sha in bases]
 
     out_dir = settings.verify_scratch() / "replay" / name
     started = storekit.now()
