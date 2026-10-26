@@ -1,4 +1,6 @@
 """CLUSTER driver: wave selection, summary commits, stable-ID cluster commits."""
+import pytest
+
 from pipeline import cluster_driver as cd
 from pipeline.testsupport import bump_section, set_section, threat_section
 from pipeline.freshness import SECTION_SCHEMA_VERSION, is_current
@@ -505,6 +507,72 @@ class TestIdenticalHeadMemberships:
         assert s.load_pr(3).cluster_ids == [5]
         assert sorted(s.load_cluster(5).prs) == [1, 2, 3]
         assert s.load_cluster(5).outcome is None
+
+
+class TestIdenticalChangeMemberships:
+    """A respin re-committed on a new branch has a new head SHA but the same
+    diff; it is bound to its original by content (#679)."""
+    DIFF = ("diff --git a/heartbeat-inbox.sh b/heartbeat-inbox.sh\nindex {idx}\n"
+            "--- a/heartbeat-inbox.sh\n+++ b/heartbeat-inbox.sh\n@@ -{at},1 +{at},2 @@\n"
+            " ctx\n+{line}\n")
+
+    @pytest.fixture(autouse=True)
+    def _diffs(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cd.diff_cache, "DIFFS", tmp_path / "diffs")
+        (tmp_path / "diffs").mkdir()
+
+    def _respin(self, s, tmp_path, n, head, line="echo inbox", at=1):
+        _spr(s, n, head=head)
+        rec = s.load_pr(n)
+        rec.raw["signals"] = {"diffstat": {"additions": 1, "deletions": 0, "changed_files": 1},
+                              "checked_at": NOW, "against_head_sha": head}
+        s.save_pr(rec)
+        (tmp_path / "diffs" / f"{head}.diff").write_text(
+            self.DIFF.format(idx=head, at=at, line=line))
+
+    def test_assign_pass_pulls_standalone_respin_into_its_original_cluster(self, tmp_path):
+        s = Store(tmp_path)
+        self._respin(s, tmp_path, 10677, "20bc1b35", at=3)
+        self._respin(s, tmp_path, 11171, "5e6d80ab", at=9)
+        _spr(s, 14176)
+        s.edit_pr(11171).mark_standalone()
+        s.save_cluster({"id": 620, "root_problem": "inbox", "prs": [14176],
+                        "outcome": "merge-ready", "checked_at": NOW})
+        set_section(s, 14176, "cluster", {"ids": [620]})
+
+        cd.commit_assignments(s, {"joins": [{"pr": 10677, "cluster_id": 620}],
+                                  "new_clusters": [], "standalone": []})
+
+        assert s.load_pr(11171).cluster_ids == [620]
+        assert sorted(s.load_cluster(620).prs) == [10677, 11171, 14176]
+        assert s.load_cluster(620).outcome is None
+
+    def test_full_pass_clusters_two_standalone_respins(self, tmp_path):
+        s = Store(tmp_path)
+        self._respin(s, tmp_path, 1, "h1")
+        self._respin(s, tmp_path, 2, "h2", at=7)
+
+        result = cd.commit_clusters(s, [])
+
+        assert result["created"] == [1]
+        assert s.load_cluster(1).prs == [1, 2]
+        assert result["standalone"] == 0
+
+    def test_same_diffstat_different_lines_stay_apart(self, tmp_path):
+        s = Store(tmp_path)
+        self._respin(s, tmp_path, 1, "h1")
+        self._respin(s, tmp_path, 2, "h2", line="echo other")
+
+        cd.commit_clusters(s, [])
+
+        assert s.all_clusters() == {}
+
+    def test_split_keeps_respins_together(self, tmp_path):
+        s = Store(tmp_path)
+        self._respin(s, tmp_path, 1, "h1")
+        self._respin(s, tmp_path, 2, "h2", at=5)
+        _spr(s, 3)
+        assert cd.bound_together(s, [s.load_pr(n) for n in (1, 2, 3)]) == [{1, 2}]
 
 
 class TestLinkedIssueMemberships:

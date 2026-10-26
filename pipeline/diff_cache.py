@@ -259,6 +259,28 @@ def fetch_diff_paths(pr: int, head_sha: str, diffs_dir: Path | None = None,
     return paths
 
 
+def cached(head_shas: list[str], store: Store | None = None,
+           diffs_dir: Path | None = None) -> dict[str, str]:
+    """The diffs already cached for `head_shas`, by head: the local file, else
+    the shared store's row. Never fetches from GitHub; an uncached head is
+    missing from the result."""
+    d = diffs_dir or DIFFS
+    out: dict[str, str] = {}
+    missing: list[str] = []
+    for sha in dict.fromkeys(head_shas):
+        path = d / f"{sha}.diff"
+        if path.exists():
+            out[sha] = path.read_text(errors="replace")
+        else:
+            missing.append(sha)
+    if store is not None and missing:
+        try:
+            out.update(store.load_diffs(missing))
+        except Exception as e:
+            _log.warning("diff store bulk read failed: %s", e)
+    return out
+
+
 def fetch_diff(pr: int, head_sha: str, diffs_dir: Path | None = None,
                store: Store | None = None) -> bool:
     return fetch_diff_paths(pr, head_sha, diffs_dir, store=store) is not None

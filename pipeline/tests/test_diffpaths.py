@@ -88,3 +88,28 @@ def test_a_header_after_a_line_break_character_starts_no_block(sep):
 @pytest.mark.parametrize("sep", LINE_BREAKS)
 def test_a_header_after_a_line_break_character_names_no_path(sep):
     assert diffpaths.changed_paths(_forged_headers(sep)) == ["src/a.js"]
+
+
+class TestChangeKey:
+    RESPIN = ("diff --git a/src/a.ts b/src/a.ts\nindex 111..222 100644\n--- a/src/a.ts\n"
+              "+++ b/src/a.ts\n@@ -10,2 +10,3 @@ fn\n ctx\n+added\n-removed\n")
+
+    def test_ignores_index_hunk_positions_and_context(self):
+        rebased = (self.RESPIN.replace("111..222", "333..444")
+                   .replace("@@ -10,2 +10,3 @@ fn", "@@ -40,2 +40,3 @@ other")
+                   .replace(" ctx", " moved"))
+        assert diffpaths.change_key(rebased) == diffpaths.change_key(self.RESPIN)
+
+    def test_differs_on_a_changed_line_or_path(self):
+        key = diffpaths.change_key(self.RESPIN)
+        assert diffpaths.change_key(self.RESPIN.replace("+added", "+other")) != key
+        assert diffpaths.change_key(self.RESPIN.replace("src/a.ts", "src/b.ts")) != key
+
+    def test_stub_counts_by_line_counts_not_size(self):
+        stub = "diff --git a/big.ts b/big.ts\n# omitted: source, {} bytes, +5 -2\n"
+        assert diffpaths.change_key(stub.format(900)) == diffpaths.change_key(stub.format(950))
+        assert diffpaths.change_key(stub.format(900)) != diffpaths.change_key(
+            stub.format(900).replace("+5", "+6"))
+
+    def test_none_without_a_file(self):
+        assert diffpaths.change_key("") is None

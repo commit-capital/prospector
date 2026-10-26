@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pipeline import diff_cache
+from pipeline import diffpaths
 from pipeline import gates
 from pipeline import headless_agent
 from pipeline import profile
@@ -283,7 +284,7 @@ def commit_clusters(store: Store, proposed: list[dict],
         cl.set_members(members)        # adds new + wires backrefs, removes departed + clears
         existing[cid] = cl
     created.extend(_sync_linked_issue_memberships(store))
-    _sync_identical_head_memberships(store)
+    created.extend(_sync_identical_change_memberships(store))
     standalone = mark_standalone(store)
     return {"created": created, "updated": updated,
             "dropped_singletons": dropped, "standalone": standalone}
@@ -348,18 +349,41 @@ def _sync_linked_issue_memberships(store: Store) -> list[int]:
 SPLIT_COLLAPSED = "split: the members share one defect — analyze them as one cluster"
 
 
-def bound_together(prs: list[Pr]) -> list[set[int]]:
-    """The groups of `prs` the sync steps keep in one cluster: PRs directly
-    referencing one issue, and PRs sharing a head commit."""
-    keys: dict[tuple[str, object], set[int]] = {}
+def identical_changes(store: Store, prs: list[Pr]) -> list[set[int]]:
+    """The groups of `prs` making one change: PRs sharing a head commit, and PRs
+    whose cached diffs change the same lines (diffpaths.change_key), such as a
+    respin re-committed on a new branch. Only PRs whose diffstat matches another
+    head's have their diffs read."""
+    keys: dict[tuple[str, str], set[int]] = {}
+    by_shape: dict[tuple[int, int, int], list[Pr]] = {}
     for rec in prs:
-        if rec.head_sha:
-            keys.setdefault(("head", rec.head_sha), set()).add(rec.n)
+        if not rec.head_sha:
+            continue
+        keys.setdefault(("head", rec.head_sha), set()).add(rec.n)
+        ds = (rec.signals or {}).get("diffstat") or {}
+        a, d, f = ds.get("additions"), ds.get("deletions"), ds.get("changed_files")
+        if type(a) is int and type(d) is int and type(f) is int:
+            by_shape.setdefault((a, d, f), []).append(rec)
+    candidates = [rec for group in by_shape.values()
+                  if len({r.head_sha for r in group}) > 1 for rec in group]
+    diffs = diff_cache.cached([rec.head_sha for rec in candidates if rec.head_sha], store)
+    for rec in candidates:
+        key = diffpaths.change_key(diffs.get(rec.head_sha or "", ""))
+        if key is not None:
+            keys.setdefault(("change", key), set()).add(rec.n)
+    return [g for g in keys.values() if len(g) > 1]
+
+
+def bound_together(store: Store, prs: list[Pr]) -> list[set[int]]:
+    """The groups of `prs` the sync steps keep in one cluster: PRs directly
+    referencing one issue, and PRs making one change (`identical_changes`)."""
+    keys: dict[int, set[int]] = {}
+    for rec in prs:
         for link in rec.linked_issues:
             if isinstance(link, dict) and link.get("how") in _DIRECT_ISSUE_LINKS \
                     and type(link.get("issue")) is int:
-                keys.setdefault(("issue", link["issue"]), set()).add(rec.n)
-    return [g for g in keys.values() if len(g) > 1]
+                keys.setdefault(link["issue"], set()).add(rec.n)
+    return [g for g in keys.values() if len(g) > 1] + identical_changes(store, prs)
 
 
 def merge_bound(parts: list[tuple[str, set[int]]],
@@ -403,7 +427,7 @@ def split_cluster(store: Store, cid: int, groups: list[dict]) -> tuple[list[int]
         seen |= prs
         parts.append((root, prs))
     errs.extend(f"split: open member {n} is in no group" for n in sorted(set(recs) - seen))
-    parts = merge_bound(parts, bound_together(list(recs.values())))
+    parts = merge_bound(parts, bound_together(store, list(recs.values())))
     if len(parts) < 2:
         errs.append(SPLIT_COLLAPSED)
     if errs:
@@ -438,32 +462,34 @@ def split_cluster(store: Store, cid: int, groups: list[dict]) -> tuple[list[int]
     return resulting, []
 
 
-def _sync_identical_head_memberships(store: Store) -> int:
-    """Give open, currently summarized PRs with one head SHA the same cluster ids.
+def _sync_identical_change_memberships(store: Store) -> list[int]:
+    """Ensure open, currently summarized PRs making one change share a cluster.
 
-    An agent may frame the same diff differently across summary runs. Cluster
-    membership is therefore synchronized from the union of the memberships in
-    each identical-head group. Added members reopen the affected cluster for
-    analysis. Returns the number of memberships added.
+    An agent may frame the same diff differently across summary runs, and a
+    standalone stamp keeps a PR out of every later assign pass, so a respin is
+    bound to its original deterministically (`identical_changes`). Each group's
+    members join every cluster any of them is in, reopening the cluster. A group
+    none of whose members is clustered becomes a new cluster. Returns created
+    cluster ids.
     """
-    by_head: dict[str, list[Pr]] = {}
-    for _, rec in _active(store):
-        if rec.head_sha and is_current(rec, "summary"):
-            by_head.setdefault(rec.head_sha, []).append(rec)
-
+    summarized = [rec for _, rec in _active(store) if is_current(rec, "summary")]
     clusters = store.all_clusters()
-    added = 0
-    for duplicates in by_head.values():
-        if len(duplicates) < 2:
-            continue
-        member_ids = {rec.n for rec in duplicates}
-        cluster_ids = {cid for rec in duplicates for cid in rec.cluster_ids
-                       if cid in clusters}
-        for cid in cluster_ids:
+    next_id = max(clusters, default=0) + 1
+    created: list[int] = []
+    for members in identical_changes(store, summarized):
+        cluster_ids = {cid for cid, c in clusters.items() if members & set(c.prs)}
+        for cid in sorted(cluster_ids):
             cluster = store.edit_cluster(cid)
-            added += _extend_cluster(cluster, member_ids)
+            _extend_cluster(cluster, members)
             clusters[cid] = cluster
-    return added
+        if not cluster_ids:
+            cluster = store.create_cluster(
+                next_id, f"Pull requests making the same change as #{min(members)}")
+            cluster.set_members(sorted(members))
+            clusters[next_id] = cluster
+            created.append(next_id)
+            next_id += 1
+    return created
 
 
 def mark_standalone(store: Store) -> int:
@@ -683,7 +709,7 @@ def commit_assignments(store: Store, payload: dict) -> dict:
         store.edit_pr(p).mark_standalone()
         standalone += 1
     created += len(_sync_linked_issue_memberships(store))
-    _sync_identical_head_memberships(store)
+    created += len(_sync_identical_change_memberships(store))
     return {"joined": joined, "created": created, "standalone": standalone, "errors": errors}
 
 

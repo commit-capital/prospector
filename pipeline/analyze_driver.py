@@ -255,7 +255,7 @@ def bundle(store: Store, cid: int, prs: dict[int, Pr] | None = None,
         })
     return {"cluster": {"id": cid, "root_problem": c.root_problem},
             "members": members,
-            "bound": [sorted(g) for g in cluster_driver.bound_together(active)]}
+            "bound": [sorted(g) for g in cluster_driver.bound_together(store, active)]}
 
 
 ANALYZE_PROMPT = """# Background

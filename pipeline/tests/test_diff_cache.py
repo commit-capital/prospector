@@ -285,6 +285,17 @@ class TestStoreDiffRows:
             store.save_diffs_many([("aaa1", 7, "")])
 
 
+class TestCached:
+    def test_local_file_then_store_and_never_github(self, tmp_path, monkeypatch, store):
+        monkeypatch.setattr(diff_cache, "DIFFS", tmp_path / "diffs")
+        _no_github(monkeypatch)
+        (tmp_path / "diffs").mkdir()
+        (tmp_path / "diffs" / "aaa1.diff").write_text(DIFF_A)
+        store.save_diffs_many([("aaa1", 7, "stale store copy"), ("bbb2", 8, DIFF_B)])
+        assert diff_cache.cached(["aaa1", "bbb2", "zzz9"], store) == {
+            "aaa1": DIFF_A, "bbb2": DIFF_B}
+
+
 class TestReadThroughFetch:
     """fetch_diff consults the local file, then the shared store, then GitHub —
     writing back at each level so the next reader up the chain hits."""
