@@ -160,7 +160,7 @@ class _Request:
             self._started_at = _now()
         self._store.edit_pr(self._n).record_verify_request(
             "running", queued_at=self._queued_at, started_at=self._started_at,
-            step=step, source=self._source, host=self._host)
+            step=step, attempts=self._attempts, source=self._source, host=self._host)
 
     def done(self) -> None:
         self._store.edit_pr(self._n).record_verify_request(

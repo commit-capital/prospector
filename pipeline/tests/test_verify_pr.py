@@ -933,3 +933,16 @@ def test_a_head_s_runs_stay_counted_through_its_error(store, pinned, monkeypatch
     assert (req["status"], req["attempts"]) == ("error", vp.TRANSIENT_MAX_ATTEMPTS - 1)
     ok, why = gates.verify_retry_allowed(store.load_pr(1), worker="elsewhere")
     assert not ok and "runs" in why
+
+
+def test_a_running_request_keeps_its_attempt_count(store, pinned, monkeypatch):
+    seen: list[int | None] = []
+
+    def watch(rec, image, base, tier, baseline, *, suite_config=None):
+        seen.append(_request(store).get("attempts"))
+        raise verify_driver.FetchFailure("HTTP 500")
+
+    monkeypatch.setattr(verify_driver, "verify_pr", watch)
+    store.edit_pr(1).record_verify_request("queued", queued_at=_now(), attempts=1)
+    vp.run(store, 1, from_queue=True)
+    assert seen == [1]
