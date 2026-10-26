@@ -117,9 +117,9 @@ def huntable(pr: Pr) -> bool:
     `coverage.FAULT_RETRY_HOURS` ago."""
     if not reviewable(pr):
         return False
-    entry = pr.review_entry(reviewers.DESIGN.id) or {}
-    if entry.get("reviewed_sha") != pr.head_sha or reviewers.design_outdated(entry):
+    if not retrying(pr):
         return True
+    entry = pr.review_entry(reviewers.DESIGN.id) or {}
     age = storekit.hours_since(entry.get("observed_at"))
     return (coverage.is_fault((entry.get("extra") or {}).get("coverage"))
             and (age is None or age >= coverage.FAULT_RETRY_HOURS))
@@ -127,7 +127,8 @@ def huntable(pr: Pr) -> bool:
 
 def retrying(pr: Pr) -> bool:
     """Whether `pr`'s head already has a design review the current rubric
-    keeps, so the hunter would take it only to retry a faulted coverage run."""
+    keeps, so a huntable head is in the pool only to retry a faulted coverage
+    run."""
     entry = pr.review_entry(reviewers.DESIGN.id) or {}
     return entry.get("reviewed_sha") == pr.head_sha and not reviewers.design_outdated(entry)
 

@@ -563,8 +563,6 @@ def design_hunt_key(item: tuple[int, Pr]) -> tuple[bool, tuple[int, bool, float,
     return (design_review.retrying(item[1]), hunt_key(item))
 
 
-LANE_KEYS = {"security": hunt_key, "verify": hunt_key, "design": design_hunt_key}
-
 
 def _pools(prs: dict[int, Pr], open_lanes: frozenset[str]) -> dict[str, list[tuple[int, Pr]]]:
     """Each hunt lane's candidates, unordered: the PRs `next_auto` picks from."""
@@ -593,7 +591,7 @@ def hunt_candidates(limit: int = 5) -> dict[str, list[int]]:
     lanes = frozenset(lane for lane in HUNT_ROTATION
                       if lane != "design" or settings.design_review_mode() != "off")
     pools = _pools(data.prs(), lanes)
-    return {lane: [n for n, _ in sorted(pool, key=LANE_KEYS[lane])[:limit]]
+    return {lane: [n for n, _ in sorted(pool, key=design_hunt_key if lane == "design" else hunt_key)[:limit]]
             for lane, pool in pools.items()}
 
 
@@ -609,8 +607,9 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
     puts a coverage retry behind them all (design_hunt_key).
 
     A maintainer's PR in any pool is picked before anything else, in
-    HUNT_ROTATION order, unless it is only a design coverage retry. Otherwise the lanes with work take turns in that
-    order — a first pick goes to security — so no backlog starves the others;
+    HUNT_ROTATION order, unless it is only a design coverage retry. Otherwise
+    the lanes with work take turns in that order — a first pick goes to
+    security — so no backlog starves the others;
     a resweep runs only when every pool is empty, since a PR with no
     verification at all buys more than a second opinion on one that already
     concluded. A PR another machine holds the security or design claim on is
@@ -630,7 +629,7 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
             or _rotate([name for name in HUNT_ROTATION if pools[name]]))
     if lane is not None:
         _last_auto_lane = lane
-        return (lane, min(pools[lane], key=LANE_KEYS[lane])[0])
+        return (lane, min(pools[lane], key=design_hunt_key if lane == "design" else hunt_key)[0])
     if "verify" not in open_lanes:
         return None
     resweep_pool = [(n, pr) for n, pr in prs.items() if auto_resweepable(pr)]

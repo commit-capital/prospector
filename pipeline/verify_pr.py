@@ -630,6 +630,8 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
         else:
             ev = verify_driver.verify_pr(rec2, image, base, tier, baseline,
                                          suite_config=suite_config)
+    except verify_driver.DiffTooLarge as e:
+        return _fail(req, "fetch-error", str(e))
     except verify_driver.FetchFailure as e:
         return _fail_transient(req, "fetch-error", str(e))
     except verify_driver.ProbeFailure as e:

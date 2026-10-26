@@ -1417,7 +1417,7 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
 class FetchFailure(RuntimeError):
     """The PR's diff could not be fetched from GitHub. Usually transient
     (upstream load, a network blip) — verify_pr re-queues the request rather
-    than recording a terminal error."""
+    than recording a terminal error — except DiffTooLarge."""
 
 
 class DiffTooLarge(FetchFailure):
