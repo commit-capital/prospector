@@ -28,8 +28,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pipeline import (diffpaths, gates, gh, profile, prove, risktier, settings, store,
-                      storekit, verify_driver, wire)
+from pipeline import (diffpaths, gates, gh, headless_agent, profile, prove, risktier, settings,
+                      store, storekit, verify_driver, wire)
 from pipeline.evals import oracle_contract
 from pipeline.profile import RepoProfile
 
@@ -249,6 +249,14 @@ class ContractJudge(Protocol):
     its report of how they failed."""
     def __call__(self, instance: Instance, failing: list[str] | None,
                  failures: str) -> dict: ...
+
+
+class CraftJudge(Protocol):
+    """The injected `craft_judge.score_craft`: a fixed run's fix judged against
+    the merged one over `base_clone` with `pre_patch` applied, as
+    {"craft": ..., "flags": [...]}."""
+    def __call__(self, base_clone: Path, pre_patch: str, ours: str, reference: str, *,
+                 title: str, body: str) -> dict: ...
 
 
 class LaneEntry(Protocol):
@@ -733,12 +741,17 @@ _LANE_FAULT_ENDINGS = _FAULT_ENDINGS - frozenset({"r6-sandbox", _CRASH_ENDING})
 
 def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
                  profile: RepoProfile, workdir: Path, run_lane: LaneEntry,
-                 judge_contract: ContractJudge | None = None) -> dict:
+                 judge_contract: ContractJudge | None = None,
+                 judge_craft: CraftJudge | None = None,
+                 fixer: dict[str, str] | None = None) -> dict:
     """Build `tree(P)`, gate it on R6, run the lane on it, and score the run.
     `run_lane` is the lane entry point the caller injects, and `judge_contract`
     the oracle-failure judge `score` reads. On an R6 miss the record carries
     `r6-<reason>` and no lane runs; a lane fault records the ending without
-    scoring."""
+    scoring. A scored record also carries the lane's fix without its tests,
+    `fixer` (the configuration the lane ran) and the merge commit, from which the
+    merged fix is re-derived; a `fixed` run is judged for craft against the
+    merged fix by `judge_craft`."""
     label = f"replay-{instance.issue}"
     pre_patch = transform_to_p(base.clone, instance.merge_sha, base_sha, profile)
     r6_legs: dict[str, prove.Legs] = {}
@@ -784,6 +797,22 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
             "candidates": candidates,
             "patches": (lane_result.result or {}).get("candidate_patches")}, indent=1) + "\n")
         scores["candidates"] = candidates
+    our_fix = diffpaths.filter_diff((lane_result.result or {}).get("patch", ""),
+                                    lambda p: not diffpaths.is_test_path(p))
+    landed_fix = diffpaths.filter_diff(instance.landed_diff,
+                                       lambda p: not diffpaths.is_test_path(p))
+    judged: dict = {"craft": None, "flags": []}
+    if judge_craft and lane_result.ending == "fixed":
+        try:
+            judged = judge_craft(base.clone, pre_patch, our_fix, landed_fix,
+                                 title=instance.report_title, body=instance.report_body)
+        except (headless_agent.AgentUnavailable, headless_agent.AgentDeclined) as e:
+            # The lane's result and the oracle's verdict stand; only the judgment is lost.
+            judged = {"craft": {"result": None, "error": f"the judge could not run: {e}"},
+                      "flags": [], "craft_unavailable": True}
+    scores.update(fixer=fixer, merge_sha=instance.merge_sha,
+                  our_fix=our_fix[:FIX_MAX], our_fix_truncated=len(our_fix) > FIX_MAX,
+                  **judged)
     return {"issue": instance.issue, "pr": instance.pr, "ending": lane_result.ending,
             "seconds": seconds, "r6_seconds": r6_seconds, "detail": lane_result.detail,
             "r6_contaminants": contaminants, "oracle_runs": oracle_runs,
@@ -793,6 +822,8 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
 
 # The longest detail an instance record carries.
 _DETAIL_MAX = 300
+# The longest fix an instance record carries.
+FIX_MAX = 60_000
 
 
 def _legs_detail(legs: dict[str, prove.Legs]) -> str:
@@ -1080,8 +1111,8 @@ def _recorded(pr_store: store.Store, run_id: str) -> dict[int, dict]:
     """The instance stats already in the ledger for `run_id`, keyed by issue —
     the read that makes a run resumable."""
     out: dict[int, dict] = {}
-    for rec in pr_store.runs(limit=_RESUME_SCAN):
-        if not isinstance(rec, storekit.PhaseRun) or rec.phase != "replay:instance":
+    for rec in pr_store.runs(limit=_RESUME_SCAN, phase="replay:instance"):
+        if not isinstance(rec, storekit.PhaseRun):
             continue
         stats = rec.raw.get("stats") or {}
         if stats.get("run_id") == run_id and isinstance(stats.get("issue"), int):
@@ -1303,9 +1334,11 @@ def run(base: prove.PinnedBase, base_sha: str, *, profile: RepoProfile,
 
     def one(inst: Instance) -> dict:
         _progress(f"issue {inst.issue} (PR #{inst.pr}): started")
+        from pipeline.evals import craft_judge
         return run_instance(inst, base=base, base_sha=base_sha, profile=profile,
                             workdir=out_dir / f"issue-{inst.issue}", run_lane=_run_lane,
-                            judge_contract=_judge_contract)
+                            judge_contract=_judge_contract, judge_craft=craft_judge.score_craft,
+                            fixer=craft_judge.fixer_config("staged"))
 
     if todo:
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:

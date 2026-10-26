@@ -296,7 +296,19 @@ def alternatives(pick: Candidate, cands: list[Candidate]) -> list[review_issue_f
             if c.index != pick.index and c.ending is None and c.verdict and c.fix_patch]
 
 
-def _choose(spec: fix_lane.LaneSpec, fits: list[Candidate], result: dict,
+def _pre_fix_tree(spec: fix_lane.LaneSpec, workdir: Path) -> Path:
+    """The tree the fixes apply to: the base, or under a `pre_patch` (a replay,
+    whose base already holds the bug's real fix) the base with it applied, built
+    once under `workdir`."""
+    if spec.pre_patch is None:
+        return spec.base.clone
+    tree = workdir / "pre-fix"
+    if not tree.exists():
+        lane_tree.materialize(spec.base.clone, tree, pre_patch=spec.pre_patch)
+    return tree
+
+
+def _choose(spec: fix_lane.LaneSpec, workdir: Path, fits: list[Candidate], result: dict,
             on_step: Callable[[str], None]) -> tuple[Candidate, str, int]:
     """The fix to judge among `fits`, which pass the same reproductions: the one
     `review_issue_fix.preferred_fix` picks, its answer recorded on
@@ -306,7 +318,8 @@ def _choose(spec: fix_lane.LaneSpec, fits: list[Candidate], result: dict,
     if len(fits) < 2:
         return smallest, "its fix", 0
     on_step("comparing the fixes' design")
-    pref = review_issue_fix.preferred_fix(str(spec.base.clone), [_as_fix(c) for c in fits],
+    pref = review_issue_fix.preferred_fix(str(_pre_fix_tree(spec, workdir)),
+                                          [_as_fix(c) for c in fits],
                                           title=spec.title, body=spec.body)
     result["preference"] = pref
     chosen = next((c for c in fits if c.index == pref["pick"]), None)
@@ -366,7 +379,8 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         if rejected:
             return "fix-rejected", "; ".join(comments), reproduction, len(reviews)
         on_step("reviewing: trust boundaries")
-        result["boundary"] = trust_boundary.judge(str(tree), spec.base.clone, pick.fix_patch,
+        result["boundary"] = trust_boundary.judge(str(tree), _pre_fix_tree(spec, workdir),
+                                                  pick.fix_patch,
                                                   title=spec.title, body=spec.body,
                                                   subject=spec.verdict_subject, base_sha=spec.base.sha,
                                                   worktree_patch=result["patch"], lane="cross")
@@ -674,7 +688,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         if not agreed and lone is None:
             return finish(*_unagreed(live, repros, result))
 
-        pick, how, spent = (lone, "its fix", 0) if lone else _choose(spec, agreed, result,
+        pick, how, spent = (lone, "its fix", 0) if lone else _choose(spec, workdir, agreed, result,
                                                                       on_step)
         agent_runs += spent
         others = alternatives(pick, cands)
@@ -697,6 +711,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                                + _reviewed(result))
     except _LANE_ERRORS as e:
         return finish(*_faulted(e))
+    finally:
+        shutil.rmtree(workdir / "pre-fix", ignore_errors=True)
 
 
 def _restore(result: dict) -> list[Candidate]:
@@ -743,7 +759,7 @@ def judge_reading(spec: fix_lane.LaneSpec, *, workdir: Path, result: dict, readi
     workdir.mkdir(parents=True, exist_ok=True)
     proof_patch = _proof_patcher(spec, label)
     try:
-        pick, how, agent_runs = _choose(spec, fits, result, on_step)
+        pick, how, agent_runs = _choose(spec, workdir, fits, result, on_step)
         others = alternatives(pick, cands)
         ending, detail, reproduction, spent = _judge_pick(
             spec, workdir, pick, repros, result, others=others, proof_patch=proof_patch,
@@ -755,6 +771,8 @@ def judge_reading(spec: fix_lane.LaneSpec, *, workdir: Path, result: dict, readi
         agent_runs += spent
     except _LANE_ERRORS as e:
         return finish(*_faulted(e))
+    finally:
+        shutil.rmtree(workdir / "pre-fix", ignore_errors=True)
     if ending:
         return finish(ending, detail)
     return finish("fixed", f"the answer chose reading {reading}; {how} passes its "
