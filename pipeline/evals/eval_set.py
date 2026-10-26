@@ -211,7 +211,8 @@ def epoch(clone: Path, members: list[replay.Instance], key: frozenset[tuple[str,
 
 
 def sandbox_stamp(prof: RepoProfile) -> str:
-    """A hash of the sandbox commands `prof` runs a base under."""
+    """A hash of the sandbox commands `prof` runs a base under: the whole
+    `verify` section, so any edit there sends every base back to `build`."""
     raw = json.dumps(asdict(prof.verify), sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
@@ -479,11 +480,17 @@ def _held_base(sha: str) -> prove.PinnedBase:
         return prove.held(sha, TIER)
 
 
+# `docker run`'s own exits: the daemon failed, or the container's command could
+# not be invoked or found. The sandbox reports a failing compile as its sentinel.
+_LAUNCH_FAULTS = frozenset({125, 126, 127})
+
+
 def _compile_failure(base: prove.PinnedBase, prof: RepoProfile) -> str | None:
     """Why the profile's compile command fails over `base`'s pristine tree, or
     None when it passes or there is none: a base that fails it fails every
-    lane run on it before a fix is judged. Raises `prove.SandboxFault` when the
-    sandbox did not get as far as a verdict."""
+    lane run on it before a fix is judged, a timeout or an out-of-memory kill
+    included. Raises `prove.SandboxFault` when docker could not start the
+    container."""
     cmd = prof.verify.compile_cmd
     if not cmd:
         return None
@@ -493,9 +500,9 @@ def _compile_failure(base: prove.PinnedBase, prof: RepoProfile) -> str | None:
     if exit_code == gates.SENTINEL_PASS:
         return None
     excerpt = verify_driver.error_excerpt(tail)
-    if exit_code == gates.SENTINEL_TEST_FAIL:
-        return f"exit {exit_code}" + (f": {excerpt}" if excerpt else "")
-    raise prove.SandboxFault(f"the compile phase exited {exit_code}: {excerpt}")
+    if exit_code in _LAUNCH_FAULTS:
+        raise prove.SandboxFault(f"the compile phase exited {exit_code}: {excerpt}")
+    return f"exit {exit_code}" + (f": {excerpt}" if excerpt else "")
 
 
 def build(*, target: int, min_fixes: int, refresh: bool, concurrency: int,
@@ -553,15 +560,18 @@ def build(*, target: int, min_fixes: int, refresh: bool, concurrency: int,
 
 
 def import_file(path: Path) -> int:
-    """Record every base a manifest file names that the ledger lacks."""
+    """Record every base a manifest file names that the ledger lacks, or holds
+    only stale where the file's row is current."""
     manifest = load_manifest()
-    have = {b["base_sha"] for b in manifest["bases"]} | set(manifest["stale"])
-    bases = json.loads(path.read_text())["bases"]
-    for base in bases:
-        if base["base_sha"] not in have:
-            record_base(base)
-    print(f"recorded {sum(1 for b in bases if b['base_sha'] not in have)} of "
-          f"{len(bases)} base(s)", flush=True)
+    stamp = sandbox_stamp(profile.active())
+    current = {b["base_sha"] for b in manifest["bases"]}
+    stale = set(manifest["stale"])
+    new = [b for b in json.loads(path.read_text())["bases"]
+           if b["base_sha"] not in current
+           and (b["base_sha"] not in stale or b.get("sandbox") == stamp)]
+    for base in new:
+        record_base(base)
+    print(f"recorded {len(new)} base(s)", flush=True)
     return 0
 
 

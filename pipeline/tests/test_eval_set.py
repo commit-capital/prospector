@@ -193,6 +193,18 @@ def test_the_stamp_follows_the_verify_section():
     assert eval_set.sandbox_stamp(other_tiers) == eval_set.sandbox_stamp(base)
 
 
+def test_an_import_replaces_a_stale_row_with_a_current_one(ledger, tmp_path):
+    eval_set.record_base({**_base_row("a" * 40, "fair"), "sandbox": "old"})
+    path = tmp_path / "set.json"
+    path.write_text(json.dumps({"bases": [_base_row("a" * 40, "fair", "fair"),
+                                          {**_base_row("b" * 40, "fair"), "sandbox": "old"}]}))
+    eval_set.import_file(path)
+    eval_set.import_file(path)
+    manifest = eval_set.load_manifest()
+    assert [b["base_sha"] for b in manifest["bases"]] == ["a" * 40] and manifest["fair"] == 2
+    assert len(ledger.rows) == 3
+
+
 def test_a_base_from_another_sandbox_profile_is_stale(ledger):
     eval_set.record_base(_base_row("a" * 40, "fair"))
     eval_set.record_base({**_base_row("b" * 40, "fair", "fair"), "sandbox": "old"})
@@ -322,6 +334,13 @@ def test_a_base_that_cannot_compile_holds_no_fair_bug(builder, compiling):
     rows = {b["base_sha"]: b for b in eval_set.load_manifest()["bases"]}
     assert {i["verdict"] for i in rows["a" * 40]["instances"]} == {"base-compile"}
     assert rows["a" * 40]["instances"][0]["detail"].startswith(f"exit {gates.SENTINEL_TEST_FAIL}")
+
+
+def test_a_base_whose_compile_times_out_holds_no_fair_bug(builder, compiling):
+    compiling["aaaa"] = (124, "phase compile timed out after 1800s")
+    _build()
+    rows = {b["base_sha"]: b for b in eval_set.load_manifest()["bases"]}
+    assert {i["verdict"] for i in rows["a" * 40]["instances"]} == {"base-compile"}
 
 
 def test_a_sandbox_fault_in_the_base_check_records_nothing(builder, compiling):
