@@ -755,10 +755,9 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
     the oracle-failure judge `score` reads. On an R6 miss the record carries
     `r6-<reason>` and no lane runs; a lane fault records the ending without
     scoring. A scored record also carries the lane's fix without its tests,
-    `fixer` (the configuration the lane ran) and the merge commit, from which the
-    merged fix is re-derived; a `fixed` run is judged for craft against the
-    merged fix by `judge_craft`. Without an `oracle` (a case whose merged PR
-    carries no tests that qualify) the run skips R6 and the oracle legs and is
+    `fixer` (the configuration the lane ran) and the merge commit; a `fixed` run
+    is judged for craft against the instance's landed fix by `judge_craft`.
+    Without an `oracle` (a case with no tests that qualify) the run skips R6 and the oracle legs and is
     scored for its craft alone, `oracle_pass` None and `craft_only` set. A
     pre-fix tree that cannot be built records `unusable`."""
     label = f"replay-{instance.issue}"

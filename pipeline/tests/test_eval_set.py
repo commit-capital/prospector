@@ -513,10 +513,18 @@ def test_an_open_rival_is_craft_only_on_the_pin(qualifying):
     qualifying["r6"] = None  # an open PR's tests are no oracle, so R6 never runs
     qualifying["open"] = eval_set.OpenPr(head="h" * 40, diff=LANDED_TESTS)
     case = _qualify(qualifying)
-    assert (case.oracle, case.merge_sha, case.pre_sha) == ("craft-only", "", "p" * 40)
+    assert (case.oracle, case.merge_sha, case.pre_sha, case.head_sha) == (
+        "craft-only", "", "p" * 40, "h" * 40)
     assert case.landed_diff == LANDED_TESTS and case.test_files == ["src/a.test.ts"]
-    assert qualifying["pre_fix"] == ["p" * 40] and "hhhhhhh" in case.detail
+    assert qualifying["pre_fix"] == ["p" * 40]
     assert qualifying["flattened"][-1] == ("PRE", LANDED_TESTS)
+
+
+def test_a_rival_github_refuses_is_retried_not_written_off(qualifying):
+    qualifying["merged"] = False
+    qualifying["open"] = "GitHub refused the read"
+    case = _qualify(qualifying)
+    assert case.oracle == "unusable" and "re-harvest to retry" in case.detail
 
 
 def test_an_open_rival_whose_diff_misses_the_pin_is_unusable(qualifying):
@@ -534,17 +542,19 @@ def test_a_merged_rival_is_rebuilt_from_the_merge_first_parent(qualifying):
 def test_open_rival_reads_the_diff_at_the_head(monkeypatch):
     from pipeline import gh
     prs = {5: {"state": "open", "base": {"sha": "B"}, "head": {"sha": "H"}},
-           6: {"state": "closed", "base": {"sha": "B"}, "head": {"sha": "H"}}}
+           6: {"state": "closed", "base": {"sha": "B"}, "head": {"sha": "H"}},
+           8: {"state": "open", "base": {"sha": "B"}, "head": {"sha": "TOO-BIG"}}}
     monkeypatch.setattr(gh, "fetch_pr", lambda n, **k: prs.get(n))
     seen = []
 
     def gh_bytes(path, **k):
         seen.append(path)
-        return b"diff --git a/x b/x\n"
+        return None if "TOO-BIG" in path else b"diff --git a/x b/x\n"
     monkeypatch.setattr(gh, "gh_bytes", gh_bytes)
     assert eval_set._open_rival(5) == eval_set.OpenPr(head="H", diff="diff --git a/x b/x\n")
     assert seen[0].endswith("/compare/B...H")
-    assert eval_set._open_rival(6) is None and eval_set._open_rival(7) is None
+    assert eval_set._open_rival(6) is None
+    assert isinstance(eval_set._open_rival(7), str) and isinstance(eval_set._open_rival(8), str)
 
 
 def test_a_case_row_from_before_open_rivals_still_loads(ledger):
@@ -621,6 +631,17 @@ def test_run_replays_cases_beside_the_fair_bugs(builder, ledger, tmp_path, monke
     stats = {s["case"]: s for s in (r["stats"] for r in ledger.rows
                                     if r["phase"] == "replay:instance")}
     assert stats["rival-7"]["source"] == "rival" and stats["1"]["source"] == "history"
+    assert stats["rival-7"]["reference"] == "m" * 40
+
+
+def test_an_open_case_records_the_head_it_was_judged_at(builder, ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    eval_set.record_case(replace(_case(7), merge_sha="", pre_sha="b" * 40, head_sha="h" * 40))
+    monkeypatch.setattr(replay, "run_instance", _fake_runner([]))
+    eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues={7}, resume=False)
+    stats = [r["stats"] for r in ledger.rows if r["phase"] == "replay:instance"]
+    assert [s["reference"] for s in stats] == ["h" * 40]
 
 
 def test_an_issue_both_fair_and_rival_is_run_as_both(builder, ledger, tmp_path, monkeypatch):

@@ -238,7 +238,7 @@ class Case:
     """A bug the set takes from production or from an operator, not from history:
     `rival` when another author's PR beat our fix, `case-study` when an operator
     names it. The reference is the PR's merged fix, made on `merge_sha^1`, or an
-    open PR's diff at its head, judged on the pin (`pre_sha`, `merge_sha` empty):
+    open PR's diff at `head_sha`, judged on the pin (`pre_sha`, `merge_sha` empty):
     an open PR's fork point is older than the pin, and its dependencies rarely
     still match the image's. It carries
     everything a replay needs, so it is never re-screened. `oracle` is `tests`
@@ -259,6 +259,7 @@ class Case:
     test_files: list[str]
     nontest_files: list[str]
     pre_sha: str = ""
+    head_sha: str = ""
 
     def instance(self) -> replay.Instance:
         return replay.Instance(issue=self.issue, pr=self.pr, merge_sha=self.merge_sha,
@@ -310,16 +311,21 @@ class OpenPr(NamedTuple):
     diff: str
 
 
-def _open_rival(pr: int) -> OpenPr | None:
-    """An open PR's diff at its current head, read live as the operator, or None
-    when it is not open or GitHub refuses the read."""
+def _open_rival(pr: int) -> OpenPr | str | None:
+    """An open PR's diff at its current head, read live as the operator; None
+    when it is not open, and why when GitHub refuses a read (a diff too large
+    for it included)."""
     raw = gh.fetch_pr(pr)
-    if not raw or raw.get("state") != "open":
+    if raw is None:
+        return f"GitHub refused #{pr}"
+    if raw.get("state") != "open":
         return None
     head = raw["head"]["sha"]
     diff = gh.gh_bytes(f"repos/{settings.repo()}/compare/{raw['base']['sha']}...{head}",
                        accept="application/vnd.github.diff")
-    return OpenPr(head=head, diff=diff.decode("utf-8", "replace")) if diff else None
+    if diff is None:
+        return f"GitHub refused #{pr}'s diff"
+    return OpenPr(head=head, diff=diff.decode("utf-8", "replace"))
 
 
 def qualify_case(source: Literal["rival", "case-study"], issue: int, pr: int, *,
@@ -342,10 +348,12 @@ def qualify_case(source: Literal["rival", "case-study"], issue: int, pr: int, *,
         return replace(case, detail="no report text for the issue")
     merged = replay._gh_pr(pr)
     opened = None if merged else _open_rival(pr)
+    if isinstance(opened, str):
+        return replace(case, detail=f"{opened}; re-harvest to retry")
     if merged:
         case = replace(case, merge_sha=merged["merge_sha"])
     elif opened:
-        case = replace(case, pre_sha=pin.sha, detail=f"#{pr} is open; judged at {opened.head[:7]}")
+        case = replace(case, pre_sha=pin.sha, head_sha=opened.head, detail=f"#{pr} is open")
     else:
         return replace(case, detail=f"#{pr} is neither merged nor open")
     pre_fix = case.instance().pre_fix
@@ -634,12 +642,14 @@ LANES: dict[str, replay.LaneEntry] = {"staged": replay._run_lane, "solo": replay
 
 @dataclass(frozen=True)
 class _Job:
-    """One replay of a run: a history bug (`case` its issue number) or a case."""
+    """One replay of a run: a history bug (`case` its issue number) or a case.
+    `reference` is the commit whose fix the run is judged against."""
     case: str
     source: str
     instance: replay.Instance
     base_sha: str
     oracle: bool
+    reference: str
 
 
 def run(*, name: str, passes: int, concurrency: int, refresh: bool,
@@ -671,7 +681,7 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
         missing = sorted(set(fair) - set(by_issue))
         if missing:
             print(f"no longer screened in, left out: {missing}", flush=True)
-    planned = [_Job(str(n), "history", inst, fair[n], True) for n, inst in sorted(by_issue.items())]
+    planned = [_Job(str(n), "history", inst, fair[n], True, inst.merge_sha) for n, inst in sorted(by_issue.items())]
     bases = {sha: _held_base(sha) for sha in sorted({fair[n] for n in by_issue})}
     for sha in sorted({c.base_sha for c in usable} - set(bases)):
         # A case's base is its own; one that cannot be built drops its cases, not the run.
@@ -680,7 +690,8 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
         except (prove.NoBase, verify_driver.BuildFailure) as e:
             dropped = [c.case for c in usable if c.base_sha == sha]
             print(f"base {sha[:12]} cannot be held ({e}); left out: {dropped}", flush=True)
-    planned += [_Job(c.case, c.source, c.instance(), c.base_sha, c.oracle == "tests")
+    planned += [_Job(c.case, c.source, c.instance(), c.base_sha, c.oracle == "tests",
+                     c.merge_sha or c.head_sha)
                 for c in usable if c.base_sha in bases]
 
     out_dir = settings.verify_scratch() / "replay" / name
@@ -714,7 +725,7 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
             fixer=fixer, oracle=job.oracle)
         if rec.get("ending") == "agent-unavailable" or rec.get("craft_unavailable"):
             unavailable.set()
-        return {**rec, "case": job.case, "source": job.source}
+        return {**rec, "case": job.case, "source": job.source, "reference": job.reference}
 
     done = 0
     halted = ""
@@ -731,7 +742,7 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
                 traceback.print_exc(file=sys.stderr)
                 got = {"issue": inst.issue, "pr": inst.pr, "ending": replay._CRASH_ENDING,
                        "seconds": 0.0, "agent_runs": 0, "case": job.case,
-                       "source": job.source}
+                       "source": job.source, "reference": job.reference}
             if got is None:
                 left += 1
                 continue
