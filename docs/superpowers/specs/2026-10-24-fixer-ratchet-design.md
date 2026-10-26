@@ -209,8 +209,10 @@ gate decides whether it stays.
 
 ## Order of work
 
-1. `craft.py` and the standard, injected into the fixer prompts and the two
-   design judges. This lands value at once and changes every prompt hash, so it
+1. The standard, in the fixer prompts and the two design judges. It lives
+   where both already were, `pipeline/authoring.py`: `HOUSE_STYLE` for every fix
+   author and `DESIGN_QUESTION` for every design judge. That keeps one owner, so
+   no `craft.py`. Step 4's fixer pin hashes those two texts. This lands value at once and changes every prompt hash, so it
    ships with a provisional re-pin.
 2. Craft scoring in `issue_fix_replay` (pairwise and mechanical flags), plus a
    fixer scorecard.
