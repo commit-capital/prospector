@@ -68,3 +68,37 @@ def test_a_gate_set_case_no_longer_usable_is_dropped():
         ["1", "3", "rival-10-11", "rival-20-21"], manifest,
         [_case(10), _case(20, oracle="unusable")])
     assert keep == ["1", "rival-10-11"] and dropped == ["3", "rival-20-21"]
+
+
+def _never(case, rec):
+    raise AssertionError("re-judged")
+
+
+def test_a_sample_under_today_s_judge_is_read_as_is():
+    store = FakeStore()
+    rec = _sample(store, "1", craft="tie")
+    got = fixer_eval.craft_of(store, "1", rec, cache={}, rejudge=_never)  # type: ignore[arg-type]
+    assert got is not None and got["result"] == "tie"
+
+
+def test_an_older_judgment_is_rejudged_once_and_cached():
+    store = FakeStore()
+    rec = _sample(store, "1", craft="win", judge="old")
+    calls = []
+
+    def rejudge(case, r):
+        calls.append(case)
+        return {"result": "loss", "points": [3], "judge_sha": fixer_eval.craft_judge.JUDGE_SHA}
+    got = fixer_eval.craft_of(store, "1", rec, cache=fixer_eval.load_craft_cache(store),  # type: ignore[arg-type]
+                              rejudge=rejudge)
+    assert got == {"result": "loss", "points": [3],
+                   "judge_sha": fixer_eval.craft_judge.JUDGE_SHA}
+    again = fixer_eval.craft_of(store, "1", rec, cache=fixer_eval.load_craft_cache(store),  # type: ignore[arg-type]
+                                rejudge=_never)
+    assert again == got and calls == ["1"]
+
+
+def test_a_run_with_no_fix_has_no_craft():
+    store = FakeStore()
+    rec = _sample(store, "1", ending="no-fix", oracle=False, craft=None, judge="old")
+    assert fixer_eval.craft_of(store, "1", rec, cache={}, rejudge=_never) is None  # type: ignore[arg-type]

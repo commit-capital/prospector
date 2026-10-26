@@ -9,16 +9,23 @@ configuration.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Callable
 from itertools import zip_longest
 from pathlib import Path
 
-from pipeline import settings
+from pipeline import diffpaths, profile, settings, storekit
 from pipeline.evals import craft_judge, eval_set, reviewer_eval
 from pipeline.evals import issue_fix_replay as replay
 from pipeline.store import Store
 
 PIN = "fixer"
+CRAFT_PHASE = "fixer-eval:craft"
+
+# A stored fix's craft under a judge: (case, fix hash, judge_sha) -> Craft dict or None.
+CraftCache = dict[tuple[str, str, str], dict | None]
+Rejudge = Callable[[str, dict], dict | None]
 
 
 def config() -> dict[str, str]:
@@ -70,6 +77,56 @@ def usable_gate_set(gate_set: list[str], manifest: dict,
     runnable = {n for row in _history(manifest) for n in row} | {
         c.case for c in cases if c.oracle != "unusable"}
     return ([c for c in gate_set if c in runnable], [c for c in gate_set if c not in runnable])
+
+
+def _fix_key(rec: dict) -> str:
+    return hashlib.sha256(str(rec.get("our_fix") or "").encode()).hexdigest()[:16]
+
+
+def load_craft_cache(store: Store) -> CraftCache:
+    cache: CraftCache = {}
+    for rec in store.runs(limit=eval_set._LEDGER_SCAN, phase=CRAFT_PHASE):
+        stats = rec.raw.get("stats") or {}
+        cache[(stats["case"], stats["fix"], stats["judge_sha"])] = stats.get("craft")
+    return cache
+
+
+def craft_of(store: Store, case: str, rec: dict, *, cache: CraftCache,
+             rejudge: Rejudge) -> dict | None:
+    """A sample's craft under today's judge (`craft_judge.JUDGE_SHA`), as a
+    `Craft` dict with a result, or None when the run has no fix or no verdict.
+    A judgment by another judge is re-judged from the stored fix once, and the
+    result kept as a `fixer-eval:craft` row."""
+    if rec.get("ending") != "fixed":
+        return None
+    craft = rec.get("craft") or {}
+    if craft.get("judge_sha") != craft_judge.JUDGE_SHA:
+        key = (case, _fix_key(rec), craft_judge.JUDGE_SHA)
+        if key not in cache:
+            cache[key] = rejudge(case, rec)
+            now = storekit.now()
+            store.append_run({"phase": CRAFT_PHASE, "started": now, "finished": now,
+                              "trigger": "cli",
+                              "stats": {"case": case, "fix": key[1], "judge_sha": key[2],
+                                        "craft": cache[key]}})
+        craft = cache[key] or {}
+    return craft if craft.get("result") in ("win", "tie", "loss") else None
+
+
+def rejudger(jobs: dict[str, eval_set._Job]) -> Rejudge:
+    """Judge a stored fix of a case in `jobs` against its reference, over the
+    tree the fix was made on."""
+    def rejudge(case: str, rec: dict) -> dict | None:
+        job = jobs[case]
+        base = eval_set._held_base(job.base_sha)
+        pre_patch = replay.transform_to_p(base.clone, job.instance.pre_fix, base.sha,
+                                          profile.active())
+        reference = diffpaths.filter_diff(job.instance.landed_diff,
+                                          lambda p: not diffpaths.is_test_path(p))
+        return craft_judge.score_craft(base.clone, pre_patch, str(rec.get("our_fix") or ""),
+                                       reference, title=job.instance.report_title,
+                                       body=job.instance.report_body)["craft"]
+    return rejudge
 
 
 if __name__ == "__main__":
