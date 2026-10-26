@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from pipeline import storekit
 from pipeline.evals import eval_set, fixer_eval
 
@@ -102,3 +106,134 @@ def test_a_run_with_no_fix_has_no_craft():
     store = FakeStore()
     rec = _sample(store, "1", ending="no-fix", oracle=False, craft=None, judge="old")
     assert fixer_eval.craft_of(store, "1", rec, cache={}, rejudge=_never) is None  # type: ignore[arg-type]
+
+
+# --- the gate -----------------------------------------------------------------
+
+PIN_SHA = "p" * 16
+
+
+@pytest.fixture
+def gating(tmp_path, monkeypatch):
+    """A pin over a gate set of history bugs "1".."n" (all fair on one base);
+    the test fills each side's samples through `side["pinned"|"candidate"]`, a
+    case -> [(oracle passed, craft result)] map the injected top-ups record."""
+    store = FakeStore()
+    cand = fixer_eval.config()
+    knobs: dict = {"n": 4, "pinned": {}, "candidate": {}, "topped": {"pinned": [], "candidate": []}}
+
+    def setup():
+        ids = [str(i) for i in range(1, knobs["n"] + 1)]
+        path = tmp_path / "pins.json"
+        path.write_text(json.dumps({"fixer": {"prompt_sha": PIN_SHA, "model": MODELS,
+                                              "gate_set": ids, "provisional": True,
+                                              "score": None, "run": None}}))
+        monkeypatch.setattr(eval_set, "load_manifest", lambda s=None: {
+            "bases": [{"base_sha": "a", "instances": [
+                {"issue": int(i), "pr": int(i), "verdict": "fair"} for i in ids]}],
+            "fair": len(ids), "stale": []})
+        monkeypatch.setattr(eval_set, "load_cases", lambda s=None: [])
+        return path
+
+    def top_up(side, sha):
+        def run(missing):
+            knobs["topped"][side].append(sorted(missing))
+            for case in missing:
+                for ok, craft in knobs[side].get(case, []):
+                    _sample(store, case, sha=sha, oracle=ok, craft=craft,
+                            ending="fixed" if craft else "no-fix")
+        return run
+
+    def gate():
+        return fixer_eval.gate(store, pins_path=setup(),  # type: ignore[arg-type]
+                               top_up_pinned=top_up("pinned", PIN_SHA),
+                               top_up_candidate=top_up("candidate", cand["prompt_sha"]),
+                               rejudge=_never)
+    knobs["gate"] = gate
+    knobs["store"] = store
+    return knobs
+
+
+def _all(n: int, ok: bool, craft: str | None) -> dict:
+    return {str(i): [(ok, craft), (ok, craft)] for i in range(1, n + 1)}
+
+
+def test_a_candidate_that_loses_an_oracle_case_the_pin_held_is_refused(gating):
+    gating["n"] = 13
+    gating["pinned"] = _all(13, True, "win")
+    gating["candidate"] = {**_all(13, True, "win"), "3": [(False, None), (False, None)]}
+    result = gating["gate"]()
+    assert not result.passed and not result.provisional
+    assert any("3" in r and "oracle" in r for r in result.reasons)
+
+
+def test_a_candidate_a_case_s_worth_lower_on_craft_still_passes(gating):
+    gating["n"] = 12
+    gating["pinned"] = _all(12, True, "win")
+    gating["candidate"] = {**_all(12, True, "win"), "5": [(True, "loss"), (True, "loss")]}
+    result = gating["gate"]()
+    assert result.passed and result.candidate.craft_rate == round(11 / 12, 3)
+
+
+def test_a_candidate_two_cases_lower_on_craft_is_refused(gating):
+    gating["n"] = 12
+    gating["pinned"] = _all(12, True, "win")
+    gating["candidate"] = {**_all(12, True, "win"), "5": [(True, "loss"), (True, "loss")],
+                           "6": [(True, "loss"), (True, "loss")]}
+    result = gating["gate"]()
+    assert not result.passed and any("craft" in r for r in result.reasons)
+    assert result.candidate.losses_by_point == {}
+
+
+def test_below_twelve_judged_cases_the_gate_is_provisional_and_passes(gating):
+    gating["pinned"] = _all(4, True, "win")
+    gating["candidate"] = _all(4, False, None)
+    result = gating["gate"]()
+    assert result.passed and result.provisional and result.reasons
+
+
+def test_the_gate_tops_up_only_cases_short_of_two_samples(gating):
+    gating["pinned"] = _all(4, True, "win")
+    gating["candidate"] = _all(4, True, "win")
+    cand = fixer_eval.config()["prompt_sha"]
+    for case in ("1", "2"):
+        _sample(gating["store"], case, sha=cand)
+        _sample(gating["store"], case, sha=cand)
+    gating["gate"]()
+    assert gating["topped"]["candidate"] == [["3", "4"]]
+    assert gating["topped"]["pinned"] == [["1", "2", "3", "4"]]
+
+
+def test_the_candidate_runs_on_the_code_s_default_models(monkeypatch):
+    seen = {}
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_MODELS", "haiku")
+
+    def run(**kw):
+        import os
+        seen["models"] = os.environ["TRIAGE_ISSUE_FIX_MODELS"]
+        seen["only"] = kw["only"]
+        return 0
+    monkeypatch.setattr(eval_set, "run", run)
+    fixer_eval.run_candidate(["1"])
+    assert seen == {"models": "opus,sonnet,opus", "only": {"1"}}
+    import os
+    assert os.environ["TRIAGE_ISSUE_FIX_MODELS"] == "haiku"
+
+
+def test_a_failed_pinned_run_stops_the_gate(monkeypatch, tmp_path):
+    import subprocess
+    from contextlib import contextmanager
+    from pipeline.evals import reviewer_eval
+
+    @contextmanager
+    def checkout(commit):
+        yield tmp_path
+    monkeypatch.setattr(reviewer_eval, "pinned_checkout", checkout)
+    monkeypatch.setattr(reviewer_eval, "pinned_commit", lambda key, pin: "c" * 40)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a[0], 1, stdout="", stderr="boom: no base"))
+    store = FakeStore()
+    store.engine = type("E", (), {"url": type("U", (), {  # type: ignore[attr-defined]
+        "render_as_string": lambda self, hide_password: "sqlite://"})()})()
+    with pytest.raises(RuntimeError, match="boom: no base"):
+        fixer_eval.run_pinned({"prompt_sha": PIN_SHA, "model": MODELS}, store, ["1"])  # type: ignore[arg-type]
