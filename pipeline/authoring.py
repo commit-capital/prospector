@@ -21,28 +21,36 @@ from pipeline import gh, profile
 
 HOUSE_STYLE = """\
 Write the change the way this repository's own code is written:
-- Before you add a function, type, constant, or test helper, search the tree for one that already does the job, and use it. Extend an existing one only when every other caller keeps working.
-- Decide a case from the fact the code already records for it (a status, a source, a receipt), not by re-deriving it from many other fields or a fresh query.
-- Put the change in the module and layer that owns the behavior, where the code around it would put it, not wherever is closest to the symptom.
-- Read a neighbouring file or two of the same kind first, and match their naming, structure, error handling, comment density and idioms. Prefer a pattern the code already uses over a new one.
-- A test you add is written the way the neighbouring tests are: the same directory, runner, fixtures and helpers.
+- Read a neighbouring file or two of the same kind first, and match their naming, structure, error handling and idioms. Prefer a pattern the code already uses over a new one.
+- Before you add a function, type, constant, or test helper, search the tree for one that already does the job, and use it. Extend one only when every other caller keeps working.
+- Put the change in the module and layer that owns the behavior, not wherever is closest to the symptom.
+- Keep logic in the language's own types and the repository's own abstractions: don't hand-assemble another language's text (SQL, shell commands, markup) or branch on message strings where the codebase has a typed alternative (a query builder, an enum, an error class).
+- Decide a case from the value the code keeps for it (a status, an enum, an error type), not by re-inferring it from other fields or an extra query.
+- Fix the problem at its source and everywhere the same bug reaches: complete, but no larger. Add no speculative options, abstractions or defensive checks for cases that cannot occur.
+- Don't fix a bug by removing behavior callers rely on; narrow the faulty path instead.
+- Name values for what they hold, keep logic plain rather than clever, and define each rule once. Comment only a non-obvious why; never narrate the change or the issue.
+- Add a test in the neighbouring tests' style (directory, runner, fixtures, helpers) that drives the public interface they drive, not a private helper. Assert outcomes; assert message text only when that text is the fix. Weaken no existing test.
 None of this licenses a refactor: leave alone any code the change does not need."""
 
 # What a reviewer asks of an agent-authored change on HOUSE_STYLE's grounds, in
 # every lane that reviews one.
 DESIGN_QUESTION = (
     "Would a careful maintainer of this repository merge the change as written? "
-    "Look for a rule or predicate written more than once, in the change or across "
-    "languages and files, where one definition could be shared; code that "
-    "re-implements what the worktree already has (search for it); work redone on "
-    "data the code already holds, such as a re-query or re-read; a case inferred "
-    "from many fields, queries or absences where the code already records a direct "
-    "fact for it, such as a status, a source or a receipt; a constant or list "
-    "restated where the code already defines one; code in the wrong "
-    "module or layer for this repository; names, structure or idioms that do not "
-    "match the surrounding code; and size a smaller change would not need. Judge "
-    "what a maintainer would hold the merge for, not taste. Name each problem with "
-    "its file:line, and for duplication the code it repeats.")
+    "Look for names, structure or idioms that do not match the surrounding code; "
+    "code that re-implements what the worktree already has (search for it); code "
+    "in the wrong module or layer; another language's text (SQL, shell commands, "
+    "markup) assembled by hand, or branching on message strings, where the "
+    "repository has a typed alternative the neighbouring code uses; a case "
+    "re-inferred from other fields or an extra query where the code already keeps "
+    "a value for it; a fix that misses where the same bug reaches, or adds "
+    "speculative options, abstractions or defensive checks; behavior callers rely "
+    "on removed where narrowing the faulty path would do; a rule written more than "
+    "once, logic more clever than it needs to be, or comments that narrate the "
+    "change; a test that asserts incidental log text, reaches past the interface "
+    "the neighbouring tests use, or weakens an existing test, or no test of the "
+    "fixed behavior; and size a smaller complete change would not need. Judge what "
+    "a maintainer would hold the merge for, not taste. Name each problem with its "
+    "file:line, and for duplication the code it repeats.")
 
 # The docs' combined size in a prompt. Past it the rest is cut, so a long
 # handbook cannot crowd the task out of the model's attention.
