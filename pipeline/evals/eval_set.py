@@ -4,7 +4,9 @@ run the lane over it.
 
 The set is deployment data, so it lives in the store, not the tree: one
 `eval-set:base` runs-ledger row per base (`record_base`), read back as the
-manifest (`load_manifest`), the latest row per base winning.
+manifest (`load_manifest`), the latest row per base winning. A base counts
+only under the sandbox commands it was qualified with (`sandbox_stamp`): its
+tree is history's, but the commands are today's profile's.
 
 A bug is a closed issue with a merged fixing PR — the PR GitHub records as
 closing it, or a merged PR whose title or body says "fixes #N". The corpus is
@@ -31,6 +33,7 @@ many bugs got a proposal at all — coverage.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -207,9 +210,17 @@ def epoch(clone: Path, members: list[replay.Instance], key: frozenset[tuple[str,
     return last
 
 
+def sandbox_stamp(prof: RepoProfile) -> str:
+    """A hash of the sandbox commands `prof` runs a base under."""
+    raw = json.dumps(asdict(prof.verify), sort_keys=True)
+    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
 def load_manifest(pr_store: Store | None = None) -> dict:
-    """`{"bases": [...], "fair": n}`: the set's bases for this repository, from
-    the ledger, oldest first, each base's latest row winning."""
+    """`{"bases": [...], "fair": n, "stale": [sha, ...]}`: the set's bases for
+    this repository, from the ledger, oldest first, each base's latest row
+    winning. `bases` and `fair` hold those qualified under today's sandbox
+    commands; `stale` names the rest, which `build` requalifies."""
     pr_store = pr_store or Store()
     bases: dict[str, dict] = {}
     for rec in pr_store.runs(limit=_LEDGER_SCAN, phase=BASE_PHASE):
@@ -219,14 +230,16 @@ def load_manifest(pr_store: Store | None = None) -> dict:
         if stats.get("repo") == settings.repo() and stats.get("base_sha"):
             bases.pop(stats["base_sha"], None)
             bases[stats["base_sha"]] = stats
-    ordered = list(bases.values())
+    stamp = sandbox_stamp(profile.active())
+    ordered = [b for b in bases.values() if b.get("sandbox") == stamp]
     return {"bases": ordered, "fair": sum(1 for b in ordered for i in b["instances"]
-                                          if i["verdict"] == "fair")}
+                                          if i["verdict"] == "fair"),
+            "stale": [sha for sha, b in bases.items() if b.get("sandbox") != stamp]}
 
 
 def record_base(base: dict, pr_store: Store | None = None) -> None:
     """Append one base of the set — `{base_sha, span, fixes, qualified_at,
-    instances}` — to the ledger."""
+    sandbox, instances}` — to the ledger."""
     stats = {**base, "repo": settings.repo(), "tier": TIER}
     (pr_store or Store()).append_run({
         "phase": BASE_PHASE, "started": base.get("qualified_at") or storekit.now(),
@@ -498,7 +511,7 @@ def build(*, target: int, min_fixes: int, refresh: bool, concurrency: int,
                                         concurrency=concurrency)
         record_base({
             "base_sha": sha, "span": span, "fixes": _fixes(members),
-            "qualified_at": storekit.now(),
+            "qualified_at": storekit.now(), "sandbox": sandbox_stamp(prof),
             "instances": [{"issue": q.issue, "pr": q.pr, "verdict": q.verdict,
                            "detail": q.detail} for q in rows]})
         built.add(sha)
@@ -512,7 +525,8 @@ def build(*, target: int, min_fixes: int, refresh: bool, concurrency: int,
 
 def import_file(path: Path) -> int:
     """Record every base a manifest file names that the ledger lacks."""
-    have = {b["base_sha"] for b in load_manifest()["bases"]}
+    manifest = load_manifest()
+    have = {b["base_sha"] for b in manifest["bases"]} | set(manifest["stale"])
     bases = json.loads(path.read_text())["bases"]
     for base in bases:
         if base["base_sha"] not in have:
@@ -666,6 +680,10 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
     fixer = craft_judge.fixer_config(lane)  # type: ignore[arg-type]
     pr_store = Store()
     manifest = load_manifest(pr_store)
+    if manifest["stale"]:
+        print(f"left out {len(manifest['stale'])} base(s) qualified under another sandbox "
+              f"profile; run eval_set build to requalify: "
+              f"{' '.join(sha[:12] for sha in manifest['stale'])}", flush=True)
     fair = {i["issue"]: b["base_sha"] for b in manifest["bases"] for i in b["instances"]
             if i["verdict"] == "fair" and (issues is None or i["issue"] in issues)}
     usable = [c for c in (load_cases(pr_store) if cases else [])

@@ -163,11 +163,13 @@ def ledger(monkeypatch) -> FakeStore:
     fake = FakeStore()
     monkeypatch.setattr(eval_set, "Store", lambda: fake)
     monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+    monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile())
     return fake
 
 
 def _base_row(sha: str, *verdicts: str) -> dict:
     return {"base_sha": sha, "span": "span", "fixes": len(verdicts), "qualified_at": "t",
+            "sandbox": eval_set.sandbox_stamp(profile.RepoProfile()),
             "instances": [{"issue": n + 1, "pr": n + 1, "verdict": v, "detail": ""}
                           for n, v in enumerate(verdicts)]}
 
@@ -181,6 +183,25 @@ def test_the_manifest_is_the_ledger_s_latest_row_per_base_for_this_repository(le
     manifest = eval_set.load_manifest()
     assert [b["base_sha"] for b in manifest["bases"]] == ["b" * 40, "a" * 40]
     assert manifest["fair"] == 3
+
+
+def test_the_stamp_follows_the_verify_section():
+    base = profile.RepoProfile()
+    other_cmd = replace(base, verify=replace(base.verify, compile_cmd="pnpm tsc"))
+    other_tiers = replace(base, trusted_authors=("someone",))
+    assert eval_set.sandbox_stamp(other_cmd) != eval_set.sandbox_stamp(base)
+    assert eval_set.sandbox_stamp(other_tiers) == eval_set.sandbox_stamp(base)
+
+
+def test_a_base_from_another_sandbox_profile_is_stale(ledger):
+    eval_set.record_base(_base_row("a" * 40, "fair"))
+    eval_set.record_base({**_base_row("b" * 40, "fair", "fair"), "sandbox": "old"})
+    unstamped = _base_row("c" * 40, "fair")
+    del unstamped["sandbox"]
+    eval_set.record_base(unstamped)
+    manifest = eval_set.load_manifest()
+    assert [b["base_sha"] for b in manifest["bases"]] == ["a" * 40]
+    assert manifest["fair"] == 1 and manifest["stale"] == ["b" * 40, "c" * 40]
 
 
 def test_an_import_records_only_the_bases_the_ledger_lacks(ledger, tmp_path):
@@ -742,3 +763,11 @@ def test_a_case_whose_base_cannot_be_built_leaves_the_run_going(builder, ledger,
 
 def test_unusable_is_a_fault():
     assert replay._is_fault("unusable")
+
+
+def test_a_run_names_the_stale_bases_it_leaves_out(ledger, capsys):
+    eval_set.record_base({**_base_row("b" * 40, "fair"), "sandbox": "old"})
+    assert eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues=None,
+                        resume=False, cases=False) == 2
+    err = capsys.readouterr()
+    assert "another sandbox profile" in err.out + err.err and "bbbbbbbbbbbb" in err.out + err.err
