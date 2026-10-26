@@ -78,6 +78,12 @@ class Instance:
     nontest_files: list[str]
     report_title: str
     report_body: str
+    pre_sha: str = ""
+
+    @property
+    def pre_fix(self) -> str:
+        """The commit the fix was made on: `pre_sha`, else the merge's first parent."""
+        return self.pre_sha or f"{self.merge_sha}^1"
 
 
 def _git_env() -> dict[str, str]:
@@ -474,14 +480,14 @@ def _added_symbols(diff_text: str) -> set[str]:
     return symbols
 
 
-def transform_to_p(base_clone: Path, merge_sha: str, base_sha: str,
+def transform_to_p(base_clone: Path, pre_fix: str, base_sha: str,
                    profile: RepoProfile) -> str:
-    """The diff carrying the epoch tree at `base_sha` to `tree(P)`, the merge
-    commit's first parent, with dependency-manifest sections dropped so the
+    """The diff carrying the epoch tree at `base_sha` to `tree(P)`, the commit
+    `pre_fix` the fix was made on, with dependency-manifest sections dropped so the
     source is history's while the installed dependencies stay the image's, and
     the sections for files the base's scrub removes or rewrites dropped so the
     diff applies to the scrubbed clone. Binary files carry their full content."""
-    raw = _git(base_clone, "diff", "--binary", base_sha, f"{merge_sha}^1")
+    raw = _git(base_clone, "diff", "--binary", base_sha, pre_fix)
     return diffpaths.filter_diff(
         raw, lambda p: not _is_dep_manifest(p, profile) and not verify_driver.scrubbed_path(p))
 
@@ -757,7 +763,7 @@ def run_instance(instance: Instance, *, base: prove.PinnedBase, base_sha: str,
     pre-fix tree that cannot be built records `unusable`."""
     label = f"replay-{instance.issue}"
     try:
-        pre_patch = transform_to_p(base.clone, instance.merge_sha, base_sha, profile)
+        pre_patch = transform_to_p(base.clone, instance.pre_fix, base_sha, profile)
     except (ValueError, subprocess.CalledProcessError) as e:
         why = getattr(e, "stderr", None) or str(e)
         return {"issue": instance.issue, "pr": instance.pr, "ending": "unusable",
@@ -1260,7 +1266,7 @@ def qualify_instances(base: prove.PinnedBase, base_sha: str, instances: list[Ins
         legs: dict[str, prove.Legs] = {}
         t0 = time.monotonic()
         try:
-            pre = transform_to_p(base.clone, inst.merge_sha, base_sha, profile)
+            pre = transform_to_p(base.clone, inst.pre_fix, base_sha, profile)
             ok, reason = validate_known_fix(base, pre, inst, label=f"qualify-{inst.issue}",
                                             legs=legs)
         except Exception as e:

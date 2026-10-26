@@ -426,6 +426,8 @@ def test_cases_from_another_repo_are_ignored(ledger, monkeypatch):
 def test_case_instance_carries_its_inputs():
     inst = _case(9).instance()
     assert (inst.issue, inst.pr, inst.merge_sha) == (9, 90, "m" * 40)
+    assert inst.pre_fix == "m" * 40 + "^1"
+    assert replace(_case(9), pre_sha="f" * 40).instance().pre_fix == "f" * 40
     assert inst.landed_diff.startswith("diff --git") and inst.nontest_files == ["x"]
     assert (inst.report_title, inst.report_body) == ("t", "b")
 
@@ -455,7 +457,8 @@ LANDED_TESTS = LANDED + ("diff --git a/src/a.test.ts b/src/a.test.ts\n--- a/src/
 @pytest.fixture
 def qualifying(monkeypatch, tmp_path):
     """The pin, gh and git faked; returns knobs the test sets."""
-    knobs = {"merged": True, "landed": LANDED, "r6": (True, ""), "flatten": True}
+    knobs = {"merged": True, "landed": LANDED, "r6": (True, ""), "flatten": True, "open": None,
+             "pre_fix": []}
     monkeypatch.setattr(replay, "_gh_pr", lambda pr: {"merge_sha": "m" * 40, "author": "a",
                                                       "opened_at": None}
                         if knobs["merged"] else None)
@@ -465,7 +468,12 @@ def qualifying(monkeypatch, tmp_path):
             raise subprocess.CalledProcessError(128, ["git"], stderr="bad object")
         return knobs["landed"]
     monkeypatch.setattr(replay, "_git", git)
-    monkeypatch.setattr(replay, "transform_to_p", lambda *a, **k: "PRE")
+    monkeypatch.setattr(eval_set, "_open_rival", lambda pr: knobs["open"])
+
+    def transform_to_p(clone, pre_fix, base_sha, prof):
+        knobs["pre_fix"].append(pre_fix)
+        return "PRE"
+    monkeypatch.setattr(replay, "transform_to_p", transform_to_p)
     monkeypatch.setattr(replay, "validate_known_fix", lambda *a, **k: knobs["r6"])
 
     def flatten(*a, **k):
@@ -491,10 +499,49 @@ def _qualify(knobs, source="rival"):
                                  prof=profile.active(), run_r6=True)
 
 
-def test_an_unmerged_rival_is_unusable(qualifying):
+def test_a_rival_closed_unmerged_is_unusable(qualifying):
     qualifying["merged"] = False
     case = _qualify(qualifying)
-    assert case.oracle == "unusable" and "not merged" in case.detail
+    assert case.oracle == "unusable" and "neither merged nor open" in case.detail
+
+
+def test_an_open_rival_is_craft_only_on_the_commit_it_branched_from(qualifying):
+    qualifying["merged"] = False
+    qualifying["r6"] = None  # an open PR's tests are no oracle, so R6 never runs
+    qualifying["open"] = eval_set.OpenPr(fork="f" * 40, head="h" * 40, diff=LANDED_TESTS)
+    case = _qualify(qualifying)
+    assert (case.oracle, case.merge_sha, case.pre_sha) == ("craft-only", "", "f" * 40)
+    assert case.landed_diff == LANDED_TESTS and case.test_files == ["src/a.test.ts"]
+    assert qualifying["pre_fix"] == ["f" * 40] and "hhhhhhh" in case.detail
+
+
+def test_a_merged_rival_is_rebuilt_from_the_merge_first_parent(qualifying):
+    _qualify(qualifying)
+    assert qualifying["pre_fix"] == ["m" * 40 + "^1"]
+
+
+def test_open_rival_reads_the_fork_point_and_diff_at_the_head(monkeypatch):
+    from pipeline import gh
+    prs = {5: {"state": "open", "base": {"sha": "B"}, "head": {"sha": "H"}},
+           6: {"state": "closed", "base": {"sha": "B"}, "head": {"sha": "H"}}}
+    monkeypatch.setattr(gh, "fetch_pr", lambda n, **k: prs.get(n))
+    seen = []
+
+    def gh_json(path, **k):
+        seen.append(path)
+        return {"merge_base_commit": {"sha": "F"}}
+    monkeypatch.setattr(gh, "gh_json", gh_json)
+    monkeypatch.setattr(gh, "gh_bytes", lambda path, **k: b"diff --git a/x b/x\n")
+    assert eval_set._open_rival(5) == eval_set.OpenPr(fork="F", head="H",
+                                                      diff="diff --git a/x b/x\n")
+    assert seen[0].endswith("/compare/B...H")
+    assert eval_set._open_rival(6) is None and eval_set._open_rival(7) is None
+
+
+def test_a_case_row_from_before_open_rivals_still_loads(ledger):
+    eval_set.record_case(_case(9))
+    ledger.rows[0]["stats"].pop("pre_sha")
+    assert eval_set.load_cases()[0].pre_sha == ""
 
 
 def test_a_merge_the_pin_lacks_is_not_in_pin(qualifying):

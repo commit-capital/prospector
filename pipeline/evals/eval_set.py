@@ -41,7 +41,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from issue_triage import link_prs
 from issue_triage.issue_store import IssueStore
@@ -236,11 +236,13 @@ def record_base(base: dict, pr_store: Store | None = None) -> None:
 @dataclass(frozen=True)
 class Case:
     """A bug the set takes from production or from an operator, not from history:
-    `rival` when another author's merged PR beat our fix, `case-study` when an
-    operator names it. It carries everything a replay needs, so it is never
-    re-screened. `oracle` is `tests` when the merged PR's tests qualify as the
-    oracle on `base_sha`, `craft-only` when the pre-fix tree builds but they do
-    not, and `unusable` (with `detail`) otherwise."""
+    `rival` when another author's PR beat our fix, `case-study` when an operator
+    names it. The reference is the PR's merged fix, made on `merge_sha^1`, or an
+    open PR's diff at its head, made on `pre_sha` (`merge_sha` empty). It carries
+    everything a replay needs, so it is never re-screened. `oracle` is `tests`
+    when a merged PR's tests qualify as the oracle on `base_sha`, `craft-only`
+    when the pre-fix tree's patch applies but there is no such oracle, and
+    `unusable` (with `detail`) otherwise."""
     case: str
     source: Literal["rival", "case-study"]
     issue: int
@@ -254,12 +256,14 @@ class Case:
     landed_diff: str
     test_files: list[str]
     nontest_files: list[str]
+    pre_sha: str = ""
 
     def instance(self) -> replay.Instance:
         return replay.Instance(issue=self.issue, pr=self.pr, merge_sha=self.merge_sha,
                                landed_diff=self.landed_diff, test_files=list(self.test_files),
                                nontest_files=list(self.nontest_files),
-                               report_title=self.report_title, report_body=self.report_body)
+                               report_title=self.report_title, report_body=self.report_body,
+                               pre_sha=self.pre_sha)
 
 
 def record_case(case: Case, pr_store: Store | None = None) -> None:
@@ -299,16 +303,40 @@ def rival_candidates(issues: IssueStore) -> list[tuple[int, int]]:
     return sorted(pairs)
 
 
+class OpenPr(NamedTuple):
+    fork: str
+    head: str
+    diff: str
+
+
+def _open_rival(pr: int) -> OpenPr | None:
+    """An open PR read live as the operator at its current head: the base-branch
+    commit it forks from and its diff against that commit. None when it is not
+    open or GitHub refuses a read."""
+    raw = gh.fetch_pr(pr)
+    if not raw or raw.get("state") != "open":
+        return None
+    head = raw["head"]["sha"]
+    span = f"repos/{settings.repo()}/compare/{raw['base']['sha']}...{head}"
+    fork = ((gh.gh_json(span) or {}).get("merge_base_commit") or {}).get("sha")
+    diff = gh.gh_bytes(span, accept="application/vnd.github.diff")
+    if not fork or not diff:
+        return None
+    return OpenPr(fork=fork, head=head, diff=diff.decode("utf-8", "replace"))
+
+
 def qualify_case(source: Literal["rival", "case-study"], issue: int, pr: int, *,
                  pin: prove.PinnedBase, report: tuple[str, str], prof: RepoProfile,
                  run_r6: bool) -> Case:
-    """`issue` with `pr`'s merged fix as its reference, on the tree just before
-    that fix landed (`pre_patch` over the pin): `tests` when the fix's own tests
-    pass R6 there, `craft-only` when that tree's `pre_patch` applies but they do
-    not, else `unusable` with why: no report text, not merged, not in the pin,
-    dependencies drifted from the pin's (the image would not install the old
-    tree faithfully), or an R6 sandbox fault (re-harvest to retry). Without
-    `run_r6` a case with tests is taken as `tests` unproven."""
+    """`issue` with `pr`'s fix as its reference, on the tree the fix was made on
+    (`pre_patch` over the pin): a merged PR's tree just before it landed, or an
+    open PR's fork point. `tests` when a merged fix's own tests pass R6 there,
+    `craft-only` when that tree's `pre_patch` applies and there is no such oracle
+    (an open PR's tests are unaccepted, so never one), else `unusable` with why:
+    no report text, neither merged nor open, not in the pin, dependencies
+    drifted from the pin's (the image would not install the old tree
+    faithfully), or an R6 sandbox fault (re-harvest to retry). Without `run_r6` a
+    case with tests is taken as `tests` unproven."""
     case = Case(case=f"{'rival' if source == 'rival' else 'case'}-{issue}-{pr}", source=source,
                 issue=issue, pr=pr, merge_sha="", base_sha=pin.sha, oracle="unusable",
                 detail="", report_title=report[0], report_body=report[1], landed_diff="",
@@ -316,26 +344,30 @@ def qualify_case(source: Literal["rival", "case-study"], issue: int, pr: int, *,
     if not (report[0].strip() or report[1].strip()):
         return replace(case, detail="no report text for the issue")
     merged = replay._gh_pr(pr)
-    if merged is None:
-        return replace(case, detail=f"#{pr} is not merged")
-    merge_sha = merged["merge_sha"]
+    opened = None if merged else _open_rival(pr)
+    if merged:
+        case = replace(case, merge_sha=merged["merge_sha"])
+    elif opened:
+        case = replace(case, pre_sha=opened.fork, detail=f"#{pr} is open; judged at {opened.head[:7]}")
+    else:
+        return replace(case, detail=f"#{pr} is neither merged nor open")
+    pre_fix = case.instance().pre_fix
     try:
-        landed = replay._git(pin.clone, "diff", "--binary", f"{merge_sha}^1", merge_sha)
-        pre_patch = replay.transform_to_p(pin.clone, merge_sha, pin.sha, prof)
-        before = replay.dep_declarations(pin.clone, f"{merge_sha}^1", prof)
+        landed = (opened.diff if opened else
+                  replay._git(pin.clone, "diff", "--binary", pre_fix, case.merge_sha))
+        pre_patch = replay.transform_to_p(pin.clone, pre_fix, pin.sha, prof)
+        before = replay.dep_declarations(pin.clone, pre_fix, prof)
         now = replay.dep_declarations(pin.clone, pin.sha, prof)
     except subprocess.CalledProcessError as e:
-        return replace(case, merge_sha=merge_sha,
-                       detail=f"not-in-pin: {(e.stderr or str(e)).strip()[:200]}")
+        return replace(case, detail=f"not-in-pin: {(e.stderr or str(e)).strip()[:200]}")
     if before != now:
         drifted = sorted(k for k in set(before) | set(now) if before.get(k) != now.get(k))
-        return replace(case, merge_sha=merge_sha,
-                       detail=f"deps drifted from the pin's: {', '.join(drifted[:5])}")
+        return replace(case, detail=f"deps drifted from the pin's: {', '.join(drifted[:5])}")
     paths = diffpaths.changed_paths(landed)
-    case = replace(case, merge_sha=merge_sha, landed_diff=landed,
+    case = replace(case, landed_diff=landed,
                    test_files=[p for p in paths if diffpaths.is_test_path(p)],
                    nontest_files=[p for p in paths if not diffpaths.is_test_path(p)])
-    if case.test_files:
+    if case.test_files and merged:
         if not run_r6:
             return replace(case, oracle="tests", detail="R6 not run (dry run)")
         ok, reason = replay.validate_known_fix(pin, pre_patch, case.instance(),
@@ -396,8 +428,8 @@ def harvest_cases(*, dry_run: bool) -> int:
 
 
 def add_case(issue: int, pr: int, *, dry_run: bool) -> int:
-    """Qualify and record one case an operator names: `issue` with `pr`'s merged
-    fix as the reference."""
+    """Qualify and record one case an operator names: `issue` with `pr`'s fix
+    as the reference."""
     pin, _, reported = _case_inputs()
     return _qualify_all("case-study", [(issue, pr)], dry_run=dry_run, pin=pin,
                         reported=reported)
@@ -499,7 +531,7 @@ def _correct(rec: dict) -> bool:
 
 def _craft(records: list[dict]) -> dict[str, dict]:
     """Craft per fixer configuration (`<prompt_sha>/<models>`): how the judged
-    fixed runs fared against the merged fix, the standard's points a loss or tie
+    fixed runs fared against the human fix, the standard's points a loss or tie
     fell short on, and the flags fixed runs raised."""
     out: dict[str, dict] = {}
     for rec in records:
@@ -575,7 +607,7 @@ def _scorecard_md(name: str, card: dict, records: list[dict]) -> str:
     from pipeline.evals import craft_judge
     for key, c in card.get("craft", {}).items():
         lines += ["", f"## Craft: `{key}`", "",
-                  f"{c['judged']} fixes judged against the merged fix: {c['wins']} better, "
+                  f"{c['judged']} fixes judged against the human fix: {c['wins']} better, "
                   f"{c['ties']} tied, {c['losses']} worse ({c['errors']} judge errors); "
                   f"craft rate {pct(c['rate'])}."]
         top = sorted(c["losses_by_point"].items(), key=lambda kv: (-kv[1], kv[0]))[:3]
@@ -774,7 +806,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     cs = c.add_subparsers(dest="cases_command", required=True)
     h = cs.add_parser("harvest", help="qualify every rival case the issue store names")
     h.add_argument("--dry-run", action="store_true", help="print, skip R6, record nothing")
-    a = cs.add_parser("add", help="add a case study: an issue and the merged PR to judge by")
+    a = cs.add_parser("add", help="add a case study: an issue and the PR to judge by")
     a.add_argument("--issue", type=int, required=True)
     a.add_argument("--pr", type=int, required=True)
     a.add_argument("--dry-run", action="store_true", help="print, skip R6, record nothing")

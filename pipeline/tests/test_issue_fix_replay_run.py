@@ -340,7 +340,7 @@ def test_transform_to_p_drops_dependency_manifest_sections(tmp_path, generic_pro
     merge = _git(repo, "rev-parse", "HEAD").strip()
     assert _git(repo, "rev-parse", "HEAD^1").strip() == parent  # first parent is P
 
-    transform = replay.transform_to_p(repo, merge, base, generic_profile)
+    transform = replay.transform_to_p(repo, f"{merge}^1", base, generic_profile)
     assert "src/app.py" in transform
     assert "package.json" not in transform
     assert "src/other.py" not in transform  # reached only via the merge's second parent
@@ -363,7 +363,7 @@ def test_transform_to_p_applies_to_the_scrubbed_base(tmp_path, generic_profile) 
     pin = _commit(repo, {"src/app.py": "one\ntwo\n", ".env.e2e.example": "A=2\n"}, "later")
     verify_driver.scrub_checkout(repo)
 
-    transform = replay.transform_to_p(repo, merge, pin, generic_profile)
+    transform = replay.transform_to_p(repo, f"{merge}^1", pin, generic_profile)
 
     assert "GIT binary patch" in transform
     assert ".env.e2e.example" not in transform
