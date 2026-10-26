@@ -426,6 +426,8 @@ def test_cases_from_another_repo_are_ignored(ledger, monkeypatch):
 def test_case_instance_carries_its_inputs():
     inst = _case(9).instance()
     assert (inst.issue, inst.pr, inst.merge_sha) == (9, 90, "m" * 40)
+    assert inst.pre_fix == "m" * 40 + "^1"
+    assert replace(_case(9), pre_sha="f" * 40).instance().pre_fix == "f" * 40
     assert inst.landed_diff.startswith("diff --git") and inst.nontest_files == ["x"]
     assert (inst.report_title, inst.report_body) == ("t", "b")
 
@@ -455,7 +457,8 @@ LANDED_TESTS = LANDED + ("diff --git a/src/a.test.ts b/src/a.test.ts\n--- a/src/
 @pytest.fixture
 def qualifying(monkeypatch, tmp_path):
     """The pin, gh and git faked; returns knobs the test sets."""
-    knobs = {"merged": True, "landed": LANDED, "r6": (True, ""), "flatten": True}
+    knobs = {"merged": True, "landed": LANDED, "r6": (True, ""), "flatten": True, "open": None,
+             "pre_fix": []}
     monkeypatch.setattr(replay, "_gh_pr", lambda pr: {"merge_sha": "m" * 40, "author": "a",
                                                       "opened_at": None}
                         if knobs["merged"] else None)
@@ -465,10 +468,18 @@ def qualifying(monkeypatch, tmp_path):
             raise subprocess.CalledProcessError(128, ["git"], stderr="bad object")
         return knobs["landed"]
     monkeypatch.setattr(replay, "_git", git)
-    monkeypatch.setattr(replay, "transform_to_p", lambda *a, **k: "PRE")
+    monkeypatch.setattr(eval_set, "_open_rival", lambda pr: knobs["open"])
+
+    def transform_to_p(clone, pre_fix, base_sha, prof):
+        knobs["pre_fix"].append(pre_fix)
+        return "PRE"
+    monkeypatch.setattr(replay, "transform_to_p", transform_to_p)
     monkeypatch.setattr(replay, "validate_known_fix", lambda *a, **k: knobs["r6"])
 
-    def flatten(*a, **k):
+    knobs["flattened"] = []
+
+    def flatten(clone, *patches, **k):
+        knobs["flattened"].append(patches)
         if not knobs["flatten"]:
             raise ValueError("does not apply")
         return tmp_path / "p.diff"
@@ -491,10 +502,65 @@ def _qualify(knobs, source="rival"):
                                  prof=profile.active(), run_r6=True)
 
 
-def test_an_unmerged_rival_is_unusable(qualifying):
+def test_a_rival_closed_unmerged_is_unusable(qualifying):
     qualifying["merged"] = False
     case = _qualify(qualifying)
-    assert case.oracle == "unusable" and "not merged" in case.detail
+    assert case.oracle == "unusable" and "neither merged nor open" in case.detail
+
+
+def test_an_open_rival_is_craft_only_on_the_pin(qualifying):
+    qualifying["merged"] = False
+    qualifying["r6"] = None  # an open PR's tests are no oracle, so R6 never runs
+    qualifying["open"] = eval_set.OpenPr(head="h" * 40, diff=LANDED_TESTS)
+    case = _qualify(qualifying)
+    assert (case.oracle, case.merge_sha, case.pre_sha, case.head_sha) == (
+        "craft-only", "", "p" * 40, "h" * 40)
+    assert case.landed_diff == LANDED_TESTS and case.test_files == ["src/a.test.ts"]
+    assert qualifying["pre_fix"] == ["p" * 40]
+    assert qualifying["flattened"][-1] == ("PRE", LANDED_TESTS)
+
+
+def test_a_rival_github_refuses_is_retried_not_written_off(qualifying):
+    qualifying["merged"] = False
+    qualifying["open"] = "GitHub refused the read"
+    case = _qualify(qualifying)
+    assert case.oracle == "unusable" and "re-harvest to retry" in case.detail
+
+
+def test_an_open_rival_whose_diff_misses_the_pin_is_unusable(qualifying):
+    qualifying["merged"] = False
+    qualifying["open"] = eval_set.OpenPr(head="h" * 40, diff=LANDED)
+    qualifying["flatten"] = False
+    assert _qualify(qualifying).oracle == "unusable"
+
+
+def test_a_merged_rival_is_rebuilt_from_the_merge_first_parent(qualifying):
+    _qualify(qualifying)
+    assert qualifying["pre_fix"] == ["m" * 40 + "^1"]
+
+
+def test_open_rival_reads_the_diff_at_the_head(monkeypatch):
+    from pipeline import gh
+    prs = {5: {"state": "open", "base": {"sha": "B"}, "head": {"sha": "H"}},
+           6: {"state": "closed", "base": {"sha": "B"}, "head": {"sha": "H"}},
+           8: {"state": "open", "base": {"sha": "B"}, "head": {"sha": "TOO-BIG"}}}
+    monkeypatch.setattr(gh, "fetch_pr", lambda n, **k: prs.get(n))
+    seen = []
+
+    def gh_bytes(path, **k):
+        seen.append(path)
+        return None if "TOO-BIG" in path else b"diff --git a/x b/x\n"
+    monkeypatch.setattr(gh, "gh_bytes", gh_bytes)
+    assert eval_set._open_rival(5) == eval_set.OpenPr(head="H", diff="diff --git a/x b/x\n")
+    assert seen[0].endswith("/compare/B...H")
+    assert eval_set._open_rival(6) is None
+    assert isinstance(eval_set._open_rival(7), str) and isinstance(eval_set._open_rival(8), str)
+
+
+def test_a_case_row_from_before_open_rivals_still_loads(ledger):
+    eval_set.record_case(_case(9))
+    ledger.rows[0]["stats"].pop("pre_sha")
+    assert eval_set.load_cases()[0].pre_sha == ""
 
 
 def test_a_merge_the_pin_lacks_is_not_in_pin(qualifying):
@@ -565,6 +631,17 @@ def test_run_replays_cases_beside_the_fair_bugs(builder, ledger, tmp_path, monke
     stats = {s["case"]: s for s in (r["stats"] for r in ledger.rows
                                     if r["phase"] == "replay:instance")}
     assert stats["rival-7"]["source"] == "rival" and stats["1"]["source"] == "history"
+    assert stats["rival-7"]["reference"] == "m" * 40
+
+
+def test_an_open_case_records_the_head_it_was_judged_at(builder, ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    eval_set.record_case(replace(_case(7), merge_sha="", pre_sha="b" * 40, head_sha="h" * 40))
+    monkeypatch.setattr(replay, "run_instance", _fake_runner([]))
+    eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues={7}, resume=False)
+    stats = [r["stats"] for r in ledger.rows if r["phase"] == "replay:instance"]
+    assert [s["reference"] for s in stats] == ["h" * 40]
 
 
 def test_an_issue_both_fair_and_rival_is_run_as_both(builder, ledger, tmp_path, monkeypatch):
