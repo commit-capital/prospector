@@ -295,7 +295,7 @@ def test_a_run_replays_each_fair_bug_once_per_pass_and_resumes(builder, ledger, 
     _build()
     ran: list[tuple[int, str]] = []
 
-    def run_instance(inst, *, base, base_sha, profile, workdir, run_lane, judge_contract):
+    def run_instance(inst, *, base, base_sha, profile, workdir, run_lane, judge_contract, **kw):
         ran.append((inst.issue, base_sha))
         return {"issue": inst.issue, "pr": inst.pr, "ending": "fixed", "oracle_pass": True,
                 "seconds": 1.0, "agent_runs": 4}
@@ -322,7 +322,7 @@ def test_a_run_measures_the_lane_it_names(builder, ledger, tmp_path, monkeypatch
     _build()
     lanes: set = set()
 
-    def run_instance(inst, *, base, base_sha, profile, workdir, run_lane, judge_contract):
+    def run_instance(inst, *, base, base_sha, profile, workdir, run_lane, judge_contract, **kw):
         lanes.add(run_lane)
         return {"issue": inst.issue, "pr": inst.pr, "ending": "no-fix", "agent_runs": 1,
                 "lane": {"reviews": []}}
@@ -343,7 +343,7 @@ def test_a_run_halts_when_the_agent_can_serve_nothing(builder, ledger, tmp_path,
     _build()
     ran: list[int] = []
 
-    def run_instance(inst, *, base, base_sha, profile, workdir, run_lane, judge_contract):
+    def run_instance(inst, *, base, base_sha, profile, workdir, run_lane, judge_contract, **kw):
         ran.append(inst.issue)
         return {"issue": inst.issue, "pr": inst.pr, "ending": "agent-unavailable",
                 "detail": "You've hit your weekly limit", "agent_runs": 1}

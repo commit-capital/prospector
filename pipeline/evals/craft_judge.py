@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+import tempfile
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -168,6 +169,18 @@ def flags(fix_patch: str, base: Path) -> list[str]:
             found.append("duplicated-block")
             break
     return found
+
+
+def score_craft(base_clone: Path, pre_patch: str, ours: str, reference: str, *,
+                title: str, body: str) -> dict:
+    """`ours` judged against `reference`, and its flags, over the tree the fixes
+    apply to: `base_clone` with `pre_patch` applied, built for the judgment and
+    removed after. {"craft": a `Craft` as a dict, "flags": [...]}."""
+    from issue_triage import lane_tree
+    with tempfile.TemporaryDirectory(prefix="craft-judge-") as tmp:
+        tree = lane_tree.materialize(base_clone, Path(tmp) / "src", pre_patch=pre_patch or None)
+        craft = judge(tree, ours, reference, title=title, body=body)
+        return {"craft": asdict(craft), "flags": flags(ours, tree)}
 
 
 def fixer_config(lane: Literal["staged", "solo", "cross"]) -> dict[str, str]:

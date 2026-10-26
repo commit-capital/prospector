@@ -126,3 +126,21 @@ def test_the_judge_reads_only_the_tree(tmp_path, monkeypatch):
     cj.judge(tmp_path, OURS, REF, title="t", body="b")
     assert seen["allow_gh"] is False and seen.get("edit_root") is None
     assert [str(Path(p)) for p in seen["read_root"]] == [str(tmp_path)]
+
+
+def test_score_craft_judges_over_the_pre_fix_tree(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    (base / "src").mkdir(parents=True)
+    (base / "src" / "a.ts").write_text("export const a = 1;\n")
+    pre = ("diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n"
+           "@@ -1 +1 @@\n-export const a = 1;\n+export const a = 0;\n")
+    seen: dict = {}
+
+    def judge(worktree, ours, reference, *, title, body):
+        seen["text"] = (Path(worktree) / "src" / "a.ts").read_text()
+        seen["tree"] = Path(worktree)
+        return cj.Craft("win", reasons=["r"], points=[1])
+    monkeypatch.setattr(cj, "judge", judge)
+    out = cj.score_craft(base, pre, OURS, REF, title="t", body="b")
+    assert seen["text"] == "export const a = 0;\n" and not seen["tree"].exists()
+    assert out["craft"]["result"] == "win" and out["flags"] == []

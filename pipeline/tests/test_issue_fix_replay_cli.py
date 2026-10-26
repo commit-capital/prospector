@@ -74,7 +74,7 @@ def _mock_pipeline(monkeypatch: pytest.MonkeyPatch, instances: list[replay.Insta
     calls: list[int] = []
 
     def fake_run_instance(inst: replay.Instance, *, base, base_sha, profile, workdir,
-                          run_lane, judge_contract) -> dict:
+                          run_lane, judge_contract, judge_craft, fixer) -> dict:
         calls.append(inst.issue)
         return recs[inst.issue]
 
@@ -230,7 +230,7 @@ def test_run_survives_a_crashed_instance(wired, monkeypatch) -> None:
     monkeypatch.setattr(replay, "screen", lambda cand, **kw: (by_issue[cand.issue], None))
 
     def fake_run_instance(inst, *, base, base_sha, profile, workdir, run_lane,
-                          judge_contract=None) -> dict:
+                          judge_contract=None, **kw) -> dict:
         if inst.issue == 8:
             raise ValueError("patch conflict mid-score")
         return recs[inst.issue]

@@ -379,7 +379,9 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
     a run: recorded instances are kept, and `resume` re-runs the faulted ones.
     Writes `<verify scratch>/replay/<name>/scorecard.md` and one `eval-set:run`
     ledger row."""
+    from pipeline.evals import craft_judge
     prof = profile.active()
+    fixer = craft_judge.fixer_config(lane)  # type: ignore[arg-type]
     pr_store = Store()
     manifest = load_manifest(pr_store)
     fair = {i["issue"]: b["base_sha"] for b in manifest["bases"] for i in b["instances"]
@@ -422,7 +424,8 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
         rec = replay.run_instance(
             inst, base=base, base_sha=base.sha, profile=prof,
             workdir=out_dir / f"p{k}" / f"issue-{inst.issue}", run_lane=LANES[lane],
-            judge_contract=replay._judge_contract)
+            judge_contract=replay._judge_contract, judge_craft=craft_judge.score_craft,
+            fixer=fixer)
         if rec.get("ending") == "agent-unavailable":
             unavailable.set()
         return rec
