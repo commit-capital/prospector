@@ -910,3 +910,24 @@ def test_a_run_records_its_reviews_under_its_verdict_subject(cross):
         got = json.loads(gzip.decompress(blob))
         assert got["lane"] == "cross" and "src/x.ts" in got["worktree_patch"]
         assert ".test.ts" in got["worktree_patch"]
+
+
+def test_a_replay_s_judges_read_the_pre_fix_tree(cross, monkeypatch):
+    from issue_triage import trust_boundary
+    pre = ("diff --git a/src/pre.ts b/src/pre.ts\nnew file mode 100644\n--- /dev/null\n"
+           "+++ b/src/pre.ts\n@@ -0,0 +1 @@\n+export const pre = 1;\n")
+    seen: dict = {}
+
+    def prefer(worktree, fixes, **kw):
+        seen["prefer"] = (Path(worktree) / "src" / "pre.ts").exists()
+        return {"pick": fixes[0].index, "reason": "r", "model": "m"}
+    monkeypatch.setattr(review_issue_fix, "preferred_fix", prefer)
+    real_judge = trust_boundary.judge
+
+    def judge(worktree, base_dir, fix_patch, **kw):
+        seen["boundary"] = (Path(base_dir) / "src" / "pre.ts").exists()
+        return real_judge(worktree, base_dir, fix_patch, **kw)
+    monkeypatch.setattr(trust_boundary, "judge", judge)
+    assert cross["run"](pre_patch=pre).ending == "fixed"
+    assert seen == {"prefer": True, "boundary": True}
+    assert not (cross["workdir"] / "pre-fix").exists()
