@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from itertools import zip_longest
 from pathlib import Path
 
-from pipeline import diffpaths, profile, settings, storekit
+from pipeline import diffpaths, headless_agent, profile, settings, storekit
 from pipeline.evals import craft_judge, eval_set, reviewer_eval
 from pipeline.evals import issue_fix_replay as replay
 from pipeline.store import Store
@@ -55,16 +55,20 @@ def init_pin(path: Path = reviewer_eval.PINS) -> None:
     path.write_text(json.dumps(pins, indent=2, sort_keys=True) + "\n")
 
 
-def samples(store: Store, prompt_sha: str, models: str) -> dict[str, list[dict]]:
-    """The scored replay records of the configuration `prompt_sha`/`models`,
-    by case id; a machine fault is no sample."""
+def samples(store: Store, prompt_sha: str, models: str,
+            bases: dict[str, str]) -> dict[str, list[dict]]:
+    """The scored replay records of the configuration `prompt_sha`/`models`
+    for each case of `bases` on its base there, by case id; a machine fault is
+    no sample."""
     out: dict[str, list[dict]] = {}
     for rec in store.runs(limit=eval_set._LEDGER_SCAN, phase="replay:instance"):
         stats = rec.raw.get("stats") or {}
         fixer = stats.get("fixer") or {}
+        case = eval_set._case_of(stats)
         if ((fixer.get("prompt_sha"), fixer.get("models")) == (prompt_sha, models)
+                and bases.get(case) == stats.get("base_sha")
                 and not replay._is_fault(stats.get("ending"))):
-            out.setdefault(eval_set._case_of(stats), []).append(stats)
+            out.setdefault(case, []).append(stats)
     return out
 
 
@@ -81,14 +85,6 @@ def choose_gate_set(manifest: dict, cases: list[eval_set.Case], size: int = 12) 
     picked = [c.case for c in sorted(cases, key=lambda c: -c.issue) if c.oracle != "unusable"]
     spread = [n for row in zip_longest(*_history(manifest)) for n in row if n is not None]
     return (picked + spread)[:size]
-
-
-def usable_gate_set(gate_set: list[str], manifest: dict,
-                    cases: list[eval_set.Case]) -> tuple[list[str], list[str]]:
-    """`gate_set` split into the cases still runnable and those that are not."""
-    runnable = {n for row in _history(manifest) for n in row} | {
-        c.case for c in cases if c.oracle != "unusable"}
-    return ([c for c in gate_set if c in runnable], [c for c in gate_set if c not in runnable])
 
 
 def _fix_key(rec: dict) -> str:
@@ -177,8 +173,9 @@ def _models(models: str) -> Iterator[None]:
             os.environ["TRIAGE_ISSUE_FIX_MODELS"] = before
 
 
-def _run_args(prompt_sha: str, missing: list[str]) -> dict:
-    return {"name": f"fixer-gate-{prompt_sha}", "passes": SAMPLES, "concurrency": 1,
+def _run_args(prompt_sha: str, models: str, missing: list[str]) -> dict:
+    tag = hashlib.sha256(models.encode()).hexdigest()[:8]
+    return {"name": f"fixer-gate-{prompt_sha}-{tag}", "passes": SAMPLES, "concurrency": 1,
             "refresh": False, "issues": None, "resume": True, "lane": "cross",
             "only": set(missing)}
 
@@ -187,7 +184,10 @@ def run_candidate(missing: list[str]) -> None:
     """Replay `missing` under this checkout's fixer, on the code's default models."""
     cand = config()
     with _models(cand["model"]):
-        eval_set.run(**_run_args(cand["prompt_sha"], missing))
+        code = eval_set.run(**_run_args(cand["prompt_sha"], cand["model"], missing))
+    if code != 0:
+        raise RuntimeError(f"the candidate's run exited {code}: it planned nothing (2) "
+                           f"or halted on an unavailable agent (3); see its output")
 
 
 def run_pinned(pin: dict, store: Store, missing: list[str]) -> None:
@@ -200,7 +200,7 @@ def run_pinned(pin: dict, store: Store, missing: list[str]) -> None:
             f"remove that pin and run --init")
     env = {**os.environ, "TRIAGE_SKIP_DOTENV": "1", "TRIAGE_ISSUE_FIX_MODELS": pin["model"],
            "TRIAGE_STORE_URL": store.engine.url.render_as_string(hide_password=False)}
-    args = _run_args(pin["prompt_sha"], missing)
+    args = _run_args(pin["prompt_sha"], pin["model"], missing)
     with reviewer_eval.pinned_checkout(commit) as wt:
         done = subprocess.run(
             ["uv", "run", "--project", str(wt), "python", "-m", "pipeline.evals.eval_set", "run",
@@ -216,18 +216,36 @@ def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
-def _score(runs: dict[str, list[dict]], crafts: dict[str, list[dict]], *,
+def _craft_values(store: Store, case: str, runs: list[dict], *, cache: CraftCache,
+                  rejudge: Rejudge) -> tuple[list[float], list[str]]:
+    """Each run's craft as a number (win 1, tie ½, loss 0; a run with no fix
+    counts as a loss, so proposing less never helps) and the standard's
+    points the losses and ties fell short on. A fixed run the judge gave no
+    verdict on is left out."""
+    values: list[float] = []
+    points: list[str] = []
+    for rec in runs:
+        if rec.get("ending") != "fixed":
+            values.append(0.0)
+            continue
+        craft = craft_of(store, case, rec, cache=cache, rejudge=rejudge)
+        if craft is None:
+            continue
+        values.append(_CRAFT_VALUE[craft["result"]])
+        if craft["result"] != "win":
+            points += [str(p) for p in craft.get("points") or []]
+    return values, points
+
+
+def _score(runs: dict[str, list[dict]], crafts: dict[str, tuple[list[float], list[str]]], *,
            compared: list[str], oracle: list[str], judged: list[str]) -> FixerScore:
     oracle_rate = _mean([_mean([float(eval_set._correct(r)) for r in runs[c]]) or 0.0
                          for c in oracle])
-    craft_rate = _mean([_mean([_CRAFT_VALUE[x["result"]] for x in crafts[c]]) or 0.0
-                        for c in judged])
+    craft_rate = _mean([_mean(crafts[c][0]) or 0.0 for c in judged])
     points: dict[str, int] = {}
     for c in judged:
-        for x in crafts[c]:
-            if x["result"] != "win":
-                for point in x.get("points") or []:
-                    points[str(point)] = points.get(str(point), 0) + 1
+        for point in crafts[c][1]:
+            points[point] = points.get(point, 0) + 1
     return FixerScore(
         cases=len(compared), oracle_cases=len(oracle),
         oracle_rate=None if oracle_rate is None else round(oracle_rate, 3),
@@ -240,52 +258,52 @@ def gate(store: Store, *, pins_path: Path = reviewer_eval.PINS, reset_gate_set: 
          top_up_candidate: Callable[[list[str]], None] | None = None,
          rejudge: Rejudge | None = None) -> FixerGateResult:
     """Score the pinned fixer and this checkout's on the pin's gate set, topping
-    each side up to SAMPLES runs per case, and both sides' craft under today's
-    judge. The candidate passes when no oracle case the pin passed in every run
-    fails in every one of its runs, its oracle rate is no more than one case's
-    worth below the pin's, and so is its craft rate. Below MIN_JUDGED cases
-    judged on both sides the gate is provisional and passes, reporting what it
-    would have refused."""
+    each side up to SAMPLES runs per case on the case's current base, and both
+    sides' craft under today's judge. The candidate passes when every case has
+    its samples on both sides, no oracle case the pin passed in every run fails
+    in every one of its runs, its oracle rate is no more than one case's worth
+    below the pin's, and so is its craft rate. Below MIN_JUDGED cases judged on
+    both sides the gate is provisional: it passes when every case has its
+    samples, reporting what it would have refused. A gate-set case the set no
+    longer runs is dropped and reported."""
     pin = json.loads(pins_path.read_text())[PIN]
     cand = config()
     manifest, cases = eval_set.load_manifest(store), eval_set.load_cases(store)
     chosen = (None if reset_gate_set else pin.get("gate_set")) or choose_gate_set(manifest,
                                                                                     cases)
-    keep, dropped = usable_gate_set(chosen, manifest, cases)
+    jobs = {j.case: j for j in eval_set.plan_jobs(store, manifest, refresh=False, issues=None,
+                                                  only=set(chosen), cases=True)}
+    keep, dropped = [c for c in chosen if c in jobs], [c for c in chosen if c not in jobs]
+    bases = {c: jobs[c].base_sha for c in keep}
     with_tests = {c.case for c in cases if c.oracle == "tests"}
-    runs: dict[str, dict[str, list[dict]]] = {}
-    for side, conf, top_up in (
-            ("pinned", pin, top_up_pinned or (lambda m: run_pinned(pin, store, m))),
-            ("candidate", cand, top_up_candidate or run_candidate)):
-        have = samples(store, conf["prompt_sha"], conf["model"])
+
+    def sampled(conf: dict, top_up: Callable[[list[str]], None]) -> dict[str, list[dict]]:
+        have = samples(store, conf["prompt_sha"], conf["model"], bases)
         missing = [c for c in keep if len(have.get(c, [])) < SAMPLES]
         if missing:
             top_up(missing)
-            have = samples(store, conf["prompt_sha"], conf["model"])
-        runs[side] = {c: have[c] for c in keep if have.get(c)}
-    compared = [c for c in keep if c in runs["pinned"] and c in runs["candidate"]]
+            have = samples(store, conf["prompt_sha"], conf["model"], bases)
+        return have
+    runs = {"candidate": sampled(cand, top_up_candidate or run_candidate)}
+    same = (pin["prompt_sha"], pin["model"]) == (cand["prompt_sha"], cand["model"])
+    runs["pinned"] = runs["candidate"] if same else sampled(
+        pin, top_up_pinned or (lambda m: run_pinned(pin, store, m)))
+    unsampled = [c for c in keep if any(len(runs[side].get(c, [])) < SAMPLES for side in runs)]
+    compared = [c for c in keep if c not in unsampled]
 
-    jobs: dict[str, eval_set._Job] = {}
-
-    def planned_rejudge(case: str, rec: dict) -> dict | None:
-        if not jobs:  # the replay inputs are assembled once, when first needed
-            jobs.update({j.case: j for j in eval_set.plan_jobs(
-                store, manifest, refresh=False, issues=None, only=set(keep), cases=True)})
-        return rejudger(jobs)(case, rec)
     cache = load_craft_cache(store)
-    crafts = {side: {c: [x for r in runs[side][c]
-                         if (x := craft_of(store, c, r, cache=cache,
-                                           rejudge=rejudge or planned_rejudge))]
+    crafts = {side: {c: _craft_values(store, c, runs[side][c], cache=cache,
+                                      rejudge=rejudge or rejudger(jobs))
                      for c in compared} for side in runs}
     oracle = [c for c in compared if c.isdigit() or c in with_tests]
-    judged = [c for c in compared if crafts["pinned"][c] and crafts["candidate"][c]]
+    judged = [c for c in compared if crafts["pinned"][c][0] and crafts["candidate"][c][0]]
     scores = {side: _score(runs[side], crafts[side], compared=compared, oracle=oracle,
                            judged=judged) for side in runs}
-    reasons = []
+    reasons = [f"no {SAMPLES} scored runs on both sides for: {', '.join(unsampled)}"
+               ] if unsampled else []
     for c in oracle:
         p, q = runs["pinned"][c], runs["candidate"][c]
-        if (len(p) >= SAMPLES and all(map(eval_set._correct, p))
-                and len(q) >= SAMPLES and not any(map(eval_set._correct, q))):
+        if all(map(eval_set._correct, p)) and not any(map(eval_set._correct, q)):
             reasons.append(f"case {c}: the pin passed the oracle in every run; "
                            f"the candidate failed it in every run")
     for measure, n in (("oracle_rate", len(oracle)), ("craft_rate", len(judged))):
@@ -295,9 +313,9 @@ def gate(store: Store, *, pins_path: Path = reviewer_eval.PINS, reset_gate_set: 
                            f"more than one case's worth lower")
     provisional = len(judged) < MIN_JUDGED
     return FixerGateResult(pinned=scores["pinned"], candidate=scores["candidate"],
-                           passed=provisional or not reasons, provisional=provisional,
-                           reasons=reasons, gate_set=keep, dropped=dropped,
-                           unsampled=[c for c in keep if c not in compared])
+                           passed=not unsampled and (provisional or not reasons),
+                           provisional=provisional, reasons=reasons, gate_set=keep,
+                           dropped=dropped, unsampled=unsampled)
 
 
 def write_pin(result: FixerGateResult, pins_path: Path = reviewer_eval.PINS) -> None:
@@ -337,7 +355,11 @@ def main(argv: list[str]) -> int:
         ap.error("give --init or --live")
     store = Store()
     started = storekit.now()
-    result = gate(store, reset_gate_set=args.reset_gate_set)
+    try:
+        result = gate(store, reset_gate_set=args.reset_gate_set)
+    except (headless_agent.AgentUnavailable, reviewer_eval.PinUnreplayable, RuntimeError) as e:
+        print(f"the fixer gate could not run: {e}", file=sys.stderr)
+        return 2
     store.append_run({"phase": RUN_PHASE, "started": started, "finished": storekit.now(),
                       "trigger": "cli", "stats": asdict(result)})
     print(_summary(result))
