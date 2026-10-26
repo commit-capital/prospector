@@ -96,14 +96,15 @@ def test_a_lint_command_offers_the_agent_the_lint_lane(tmp_path, monkeypatch):
 
 def test_the_house_style_carries_the_craft_points():
     text = authoring.HOUSE_STYLE.lower()
-    for phrase in ("types", "another language", "case the report implies", "capabilit",
-                   "entry point", "never log"):
+    for phrase in ("types", "another language", "complete", "removing behavior",
+                   "public interface", "assert outcomes", "never narrate"):
         assert phrase in text, phrase
 
 
 def test_the_design_question_asks_by_them():
     text = authoring.DESIGN_QUESTION.lower()
-    for phrase in ("another language", "case the report implies", "capabilit"):
+    for phrase in ("another language", "where the same bug reaches", "behavior callers rely",
+                   "narrate", "interface"):
         assert phrase in text, phrase
 
 
