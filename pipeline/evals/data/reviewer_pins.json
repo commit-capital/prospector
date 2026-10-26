@@ -8,10 +8,20 @@
   },
   "fix-review": {
     "model": "opus",
-    "prompt_sha": "b686c8c84ac985e9",
+    "prompt_sha": "a8a25dd1edaf7b2a",
     "provisional": true,
-    "run": null,
-    "score": null
+    "run": "2026-10-26T16:26:07+00:00",
+    "score": {
+      "cases": 0,
+      "failed": 0,
+      "must_catch": 0,
+      "over": 0,
+      "partial": 0,
+      "right": 0,
+      "should_pass": 0,
+      "under": 0,
+      "unreplayable": 0
+    }
   },
   "fixability": {
     "model": "sonnet",
