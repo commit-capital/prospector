@@ -122,8 +122,8 @@ def judge(worktree: Path, ours: str, reference: str, *, title: str, body: str) -
 
 
 _STRING = re.compile(r"""(["'`])((?:\\.|(?!\1).)*)\1""")
-_SQL = re.compile(r"\b(SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b",
-                  re.IGNORECASE)
+_SQL = re.compile(r"\b(SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM"
+                  r"|WHERE\s+\w+\s*(=|!=|<>|<|>|\bIN\b|\bLIKE\b))", re.IGNORECASE)
 _SHELL = re.compile(r" && | \| |^\s*(rm |curl |sh -c)")
 _WINDOW = 4
 

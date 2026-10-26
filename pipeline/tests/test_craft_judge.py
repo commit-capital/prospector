@@ -144,3 +144,10 @@ def test_score_craft_judges_over_the_pre_fix_tree(tmp_path, monkeypatch):
     out = cj.score_craft(base, pre, OURS, REF, title="t", body="b")
     assert seen["text"] == "export const a = 0;\n" and not seen["tree"].exists()
     assert out["craft"]["result"] == "win" and out["flags"] == []
+
+
+def test_flags_a_hand_built_where_clause(tmp_path):
+    where = _added("src/u.ts", "const clause = \"WHERE active = \" + \"'true'\" + \" AND id != \" + id;")
+    assert cj.flags(where, tmp_path) == ["foreign-text"]
+    prose = _added("src/u.ts", "throw new Error(\"where did the user go?\");")
+    assert cj.flags(prose, tmp_path) == []
