@@ -241,12 +241,11 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     } catch { /* storage blocked: the tab just won't remember its session */ }
   }, [effectiveActiveId, repo]);
   // The page thread is always empty and follows the URL; its first message makes
-  // it a named session, whose subject is frozen at creation.
+  // it a named session. A session asks about the item open now, so one
+  // conversation can walk a list; on a general page it keeps its last item.
   const liveSubj = subjectFromLocation(loc.pathname, loc.search);
   const hasConversation = msgs.length > 0;
-  const subj = activeSession
-    ? { ...activeSession.subject, label: activeSession.label }
-    : liveSubj;
+  const subj = activeSession && liveSubj.kind === "general" ? activeSession.subject : liveSubj;
   const threadId = effectiveActiveId ?? subj.key;
   // Whatever PR list the operator is currently viewing (e.g. PR Explorer's
   // active filters) rides along regardless of subject — including when a PR's
@@ -421,9 +420,10 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     let chatId = effectiveActiveId;
     let key = currentTitleKey;
     if (chatId) {
-      // Fresh activity floats a named session back to the top of Recent.
+      // Fresh activity floats a named session back to the top of Recent, under
+      // the item it was last asked about.
       const id = chatId;
-      setSessions((prev) => touchSession(prev, id, Date.now()));
+      setSessions((prev) => touchSession(prev, id, Date.now(), subj));
     } else {
       // A page thread's first message makes it a session of its own, so it
       // stays under Recent after the operator moves on.
@@ -475,7 +475,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   // rather than just clearing the visible log, so the agent stops resuming a
   // weeks-old claude session full of stale context — the bug behind "it keeps
   // referring to things in our previous conversation." Named from wherever the
-  // operator is looking right now; that subject is then frozen for this session.
+  // operator is looking right now.
   const createSession = useCallback(() => {
     setRecentOpen(false);
     clearAnchor();
