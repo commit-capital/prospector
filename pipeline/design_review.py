@@ -125,6 +125,13 @@ def huntable(pr: Pr) -> bool:
             and (age is None or age >= coverage.FAULT_RETRY_HOURS))
 
 
+def retrying(pr: Pr) -> bool:
+    """Whether `pr`'s head already has a design review the current rubric
+    keeps, so the hunter would take it only to retry a faulted coverage run."""
+    entry = pr.review_entry(reviewers.DESIGN.id) or {}
+    return entry.get("reviewed_sha") == pr.head_sha and not reviewers.design_outdated(entry)
+
+
 def _within(clone: Path, path: str) -> bool:
     target = (clone / path).resolve()
     return target.is_relative_to(clone) and target.is_file()

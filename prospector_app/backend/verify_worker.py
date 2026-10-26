@@ -556,6 +556,16 @@ def hunt_key(item: tuple[int, Pr]) -> tuple[int, bool, float, int]:
             pr.disposition != "merge", -_pain(pr), n)
 
 
+def design_hunt_key(item: tuple[int, Pr]) -> tuple[bool, tuple[int, bool, float, int]]:
+    """hunt_key, behind every head with no design review: a retry of a faulted
+    coverage run (design_review.retrying) waits, so a head that keeps faulting
+    never holds the lane."""
+    return (design_review.retrying(item[1]), hunt_key(item))
+
+
+LANE_KEYS = {"security": hunt_key, "verify": hunt_key, "design": design_hunt_key}
+
+
 def _pools(prs: dict[int, Pr], open_lanes: frozenset[str]) -> dict[str, list[tuple[int, Pr]]]:
     """Each hunt lane's candidates, unordered: the PRs `next_auto` picks from."""
     me = settings.worker_id()
@@ -583,7 +593,7 @@ def hunt_candidates(limit: int = 5) -> dict[str, list[int]]:
     lanes = frozenset(lane for lane in HUNT_ROTATION
                       if lane != "design" or settings.design_review_mode() != "off")
     pools = _pools(data.prs(), lanes)
-    return {lane: [n for n, _ in sorted(pool, key=hunt_key)[:limit]]
+    return {lane: [n for n, _ in sorted(pool, key=LANE_KEYS[lane])[:limit]]
             for lane, pool in pools.items()}
 
 
@@ -595,10 +605,11 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
     with no design review (design_review.huntable), or ("resweep", n) for a
     concluded verification whose repro the harness broke. Every lane orders a
     maintainer's PR (gates.priority_author) first, then an analyzed merge pick,
-    then by highest community pain, then lowest PR number.
+    then by highest community pain, then lowest PR number; the design lane
+    puts a coverage retry behind them all (design_hunt_key).
 
     A maintainer's PR in any pool is picked before anything else, in
-    HUNT_ROTATION order. Otherwise the lanes with work take turns in that
+    HUNT_ROTATION order, unless it is only a design coverage retry. Otherwise the lanes with work take turns in that
     order — a first pick goes to security — so no backlog starves the others;
     a resweep runs only when every pool is empty, since a PR with no
     verification at all buys more than a second opinion on one that already
@@ -609,16 +620,17 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
     global _last_auto_lane
     prs = data.prs()
 
-    def _has_priority(pool: list[tuple[int, Pr]]) -> bool:
+    def _has_priority(lane: str, pool: list[tuple[int, Pr]]) -> bool:
         return any(gates.priority_author(pr.author, pr.author_association)
+                   and not (lane == "design" and design_review.retrying(pr))
                    for _, pr in pool)
 
     pools = _pools(prs, open_lanes)
-    lane = (next((name for name in HUNT_ROTATION if _has_priority(pools[name])), None)
+    lane = (next((name for name in HUNT_ROTATION if _has_priority(name, pools[name])), None)
             or _rotate([name for name in HUNT_ROTATION if pools[name]]))
     if lane is not None:
         _last_auto_lane = lane
-        return (lane, min(pools[lane], key=hunt_key)[0])
+        return (lane, min(pools[lane], key=LANE_KEYS[lane])[0])
     if "verify" not in open_lanes:
         return None
     resweep_pool = [(n, pr) for n, pr in prs.items() if auto_resweepable(pr)]

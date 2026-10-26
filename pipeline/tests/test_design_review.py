@@ -315,3 +315,11 @@ def test_a_failed_review_is_recorded_as_failed(monkeypatch, clone, diff):
                              subject=verdict_log.Subject("pr", 9102))
     [rec] = Store().review_verdicts(subject_kind="pr", subject=9102)
     assert rec.verdict == "failed"
+
+
+def test_retrying_is_a_head_whose_current_review_stands():
+    fault = {"status": "fault", "reason": "this machine has no pinned base image x"}
+    assert design_review.retrying(_pr(reviews=_reviewed(fault, LONG_AGO))) is True
+    assert design_review.retrying(_pr()) is False
+    moved = {"design": {"kind": "review", "reviewed_sha": "o" * 40, "findings": [], "checks": []}}
+    assert design_review.retrying(_pr(reviews=moved)) is False
