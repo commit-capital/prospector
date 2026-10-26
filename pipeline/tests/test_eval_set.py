@@ -393,3 +393,37 @@ def test_scorecard_md_names_the_points_lost_on():
 def test_rows_without_a_fixer_add_no_craft_section():
     recs = [{"issue": 1, "ending": "r6-red"}, _craft_rec("win")]
     assert list(eval_set.scorecard(recs, bugs=1)["craft"]) == ["s1/opus"]
+
+
+# --- rival and case-study cases ----------------------------------------------
+
+
+def _case(issue: int = 9, *, source: str = "rival", oracle: str = "craft-only",
+          detail: str = "", pr: int = 90) -> eval_set.Case:
+    return eval_set.Case(
+        case=f"{'rival' if source == 'rival' else 'case'}-{issue}", source=source,  # type: ignore[arg-type]
+        issue=issue, pr=pr, merge_sha="m" * 40, base_sha="b" * 40, oracle=oracle,  # type: ignore[arg-type]
+        detail=detail, report_title="t", report_body="b", landed_diff="diff --git a/x b/x\n",
+        test_files=[], nontest_files=["x"])
+
+
+def test_cases_round_trip_latest_per_case_wins(ledger):
+    eval_set.record_case(_case(9, detail="first"))
+    eval_set.record_case(_case(8))
+    eval_set.record_case(_case(9, detail="second"))
+    got = eval_set.load_cases()
+    assert [c.case for c in got] == ["rival-8", "rival-9"]
+    assert got[1].detail == "second"
+
+
+def test_cases_from_another_repo_are_ignored(ledger, monkeypatch):
+    eval_set.record_case(_case(9))
+    monkeypatch.setenv("TRIAGE_REPO", "other/repo")
+    assert eval_set.load_cases() == []
+
+
+def test_case_instance_carries_its_inputs():
+    inst = _case(9).instance()
+    assert (inst.issue, inst.pr, inst.merge_sha) == (9, 90, "m" * 40)
+    assert inst.landed_diff.startswith("diff --git") and inst.nontest_files == ["x"]
+    assert (inst.report_title, inst.report_body) == ("t", "b")

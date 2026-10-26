@@ -37,8 +37,9 @@ import threading
 import traceback
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import replace
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
+from typing import Literal
 
 from issue_triage import link_prs
 from pipeline import gh, profile, prove, settings, storekit, verify_driver, verify_gc
@@ -49,6 +50,7 @@ from pipeline.store import Store
 # The ledger phases the set and its runs are recorded under.
 BASE_PHASE = "eval-set:base"
 RUN_PHASE = "eval-set:run"
+CASE_PHASE = "eval-set:case"
 
 # Ledger rows scanned for the set's bases, newest first.
 _LEDGER_SCAN = 50_000
@@ -225,6 +227,54 @@ def record_base(base: dict, pr_store: Store | None = None) -> None:
     (pr_store or Store()).append_run({
         "phase": BASE_PHASE, "started": base.get("qualified_at") or storekit.now(),
         "finished": storekit.now(), "trigger": "cli", "stats": stats})
+
+
+@dataclass(frozen=True)
+class Case:
+    """A bug the set takes from production or from an operator, not from history:
+    `rival` when another author's merged PR beat our fix, `case-study` when an
+    operator names it. It carries everything a replay needs, so it is never
+    re-screened. `oracle` is `tests` when the merged PR's tests qualify as the
+    oracle on `base_sha`, `craft-only` when the pre-fix tree builds but they do
+    not, and `unusable` (with `detail`) otherwise."""
+    case: str
+    source: Literal["rival", "case-study"]
+    issue: int
+    pr: int
+    merge_sha: str
+    base_sha: str
+    oracle: Literal["tests", "craft-only", "unusable"]
+    detail: str
+    report_title: str
+    report_body: str
+    landed_diff: str
+    test_files: list[str]
+    nontest_files: list[str]
+
+    def instance(self) -> replay.Instance:
+        return replay.Instance(issue=self.issue, pr=self.pr, merge_sha=self.merge_sha,
+                               landed_diff=self.landed_diff, test_files=list(self.test_files),
+                               nontest_files=list(self.nontest_files),
+                               report_title=self.report_title, report_body=self.report_body)
+
+
+def record_case(case: Case, pr_store: Store | None = None) -> None:
+    now = storekit.now()
+    (pr_store or Store()).append_run({"phase": CASE_PHASE, "started": now, "finished": now,
+                                      "trigger": "cli",
+                                      "stats": {**asdict(case), "repo": settings.repo()}})
+
+
+def load_cases(pr_store: Store | None = None) -> list[Case]:
+    """This repository's cases, the latest row per case, by case id."""
+    names = {f.name for f in fields(Case)}
+    cases: dict[str, Case] = {}
+    for rec in (pr_store or Store()).runs(limit=_LEDGER_SCAN, phase=CASE_PHASE):
+        stats = (rec.raw.get("stats") or {}) if isinstance(rec, storekit.PhaseRun) else {}
+        if stats.get("repo") == settings.repo() and stats.get("case"):
+            cases.pop(stats["case"], None)
+            cases[stats["case"]] = Case(**{k: v for k, v in stats.items() if k in names})
+    return sorted(cases.values(), key=lambda c: c.case)
 
 
 def _fixes(members: list[replay.Instance]) -> int:
