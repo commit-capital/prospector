@@ -436,3 +436,120 @@ def test_writable_chat_process_uses_operator_environment(temp_store, tmp_path, m
     assert "GITHUB_TOKEN" not in captured["env"]
     allowed = captured["cmd"][captured["cmd"].index("--allowedTools") + 1]
     assert "Bash(prospector_app/agent/gh-write:*)" in allowed
+
+
+_STATUS_DETAIL = {
+    **_PR_DETAIL, "github_state": "open", "head_sha": "abc1234def",
+    "merge_gate": {"ok": False, "reason": "Greptile 4/5 is below the 5/5 bar",
+                   "overridable": False, "override_kind": None},
+    "checks": {"passed": 1, "total": 2, "checks": [
+        {"name": "Code review", "status": "fail", "detail": "Greptile 4/5 ⚠stale", "stale": False},
+        {"name": "CI", "status": "pass", "detail": "passing", "stale": True},
+    ]},
+    "stale_sections": ["reviews"],
+}
+
+
+def test_pr_context_shows_what_the_pr_page_shows(temp_store):
+    with mock.patch.object(chat.service, "pr_detail", return_value=_STATUS_DETAIL), \
+         mock.patch.object(chat.service, "get_diff", return_value={"diff": ""}):
+        out = chat._pr_context(101, None, None)
+    assert "head abc1234, GitHub state open" in out
+    assert "Merge button: blocked — Greptile 4/5 is below the 5/5 bar" in out
+    assert "Code review: fail — Greptile 4/5 ⚠stale" in out
+    assert "CI: pass — passing (an older commit)" in out
+    assert "`reingest` refreshes): reviews" in out
+
+
+def test_pr_context_skips_the_gate_on_a_merged_pr(temp_store):
+    merged = {**_STATUS_DETAIL, "github_state": "merged"}
+    with mock.patch.object(chat.service, "pr_detail", return_value=merged), \
+         mock.patch.object(chat.service, "get_diff", return_value={"diff": ""}):
+        out = chat._pr_context(101, None, None)
+    assert "GitHub state merged" in out
+    assert "Merge button" not in out and "Checks" not in out
+
+
+def test_issue_context_shows_the_fix_lane(temp_store):
+    detail = {**_ISSUE_DETAIL, "fix_status": "pr-open", "fix_reason": "awaiting review",
+              "fix_pr": 3001}
+    with mock.patch.object(chat.issues, "get_issue", return_value=detail):
+        out = chat._issue_context(2928)
+    assert "Issue-fix lane: pr-open — awaiting review · fix PR #3001" in out
+
+
+def test_a_session_gets_each_new_items_context_once(temp_store, tmp_path, monkeypatch):
+    monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
+    monkeypatch.setattr(chat.service, "pr_detail", lambda n: {"github_state": "open"})
+    monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
+    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
+    monkeypatch.setattr(chat, "_pr_context", lambda pr, *a, **k: f"CTX-PR-{pr}")
+
+    captured: list[list[str]] = []
+
+    class FakeProc:
+        pid = 1
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = self._gen()
+        async def _gen(self):
+            yield b'{"type":"result","session_id":"sess-A"}\n'
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*cmd, **kw):
+        captured.append(list(cmd))
+        return FakeProc()
+
+    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
+
+    async def drive():
+        for pr in (101, 102, 101, 102):
+            async for _ in chat.stream_chat("can I re-trigger?", pr=pr, chat_id="walk"):
+                pass
+    asyncio.run(drive())
+
+    prompts = [c[c.index("-p") + 1] for c in captured]
+    assert "CTX-PR-101" in prompts[0]
+    assert "CTX-PR-102" in prompts[1] and "opened another item" in prompts[1]
+    # Back on an item it was shown: the switch and a fresh STATUS, not the whole context.
+    assert "CTX-PR" not in prompts[2] and "PR #101 again" in prompts[2]
+    assert "STATUS" in prompts[2]
+    assert "CTX-PR" not in prompts[3] and "PR #102 again" in prompts[3]
+    assert all("-r" in c for c in captured[1:])
+
+
+def test_staying_on_one_item_sends_no_context_again(temp_store, tmp_path, monkeypatch):
+    monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
+    monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
+    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
+    monkeypatch.setattr(chat, "_pr_context", lambda pr, *a, **k: f"CTX-PR-{pr}")
+
+    captured: list[list[str]] = []
+
+    class FakeProc:
+        pid = 1
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = self._gen()
+        async def _gen(self):
+            yield b'{"type":"result","session_id":"sess-A"}\n'
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*cmd, **kw):
+        captured.append(list(cmd))
+        return FakeProc()
+
+    monkeypatch.setattr(claude_backend.asyncio, "create_subprocess_exec", fake_exec)
+
+    async def drive():
+        for q in ("first", "second"):
+            async for _ in chat.stream_chat(q, pr=101, chat_id="stay"):
+                pass
+    asyncio.run(drive())
+
+    second = captured[1][captured[1].index("-p") + 1]
+    assert "CTX-PR" not in second and "another item" not in second

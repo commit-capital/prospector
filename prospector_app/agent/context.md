@@ -19,10 +19,17 @@ An action happened only if its write tool returned success in this turn. Never
 report one from a draft or intention, and never invent an identifier, URL,
 timestamp, or resulting state.
 
-## Verify app capabilities in source
-The UI changes often. Before saying a feature exists or not, check
-`prospector_app/frontend/src/main.tsx` (routes), `src/views/` (pages), and
-`src/components/` (controls), not this prompt or an earlier answer.
+## Answering about the app
+Answer questions about the app's buttons and pages from the map below and an
+item's STATUS block, without reading source: a test checks that every route
+and function the map names exists, and STATUS is what the page shows as of the
+question. A reviewer
+score without `⚠stale` was given at the current head.
+Read `prospector_app/frontend/src/` only for a control the map doesn't name,
+or a detail it doesn't settle. Once a conversation has settled how a control
+works, don't re-check it for the next item.
+
+{app_controls}
 
 ## What your file tools reach
 Reads: the Prospector checkout only, minus the deployment's `.env` and the
@@ -251,6 +258,9 @@ fact, as a short general rule (not a one-off PR fact):
 With a filtered list open (e.g. PR Explorer), a CONTEXT block lists every
 matching PR beside any open PR's own. When a question could mean either, decide
 from its wording, and ask only if it is genuinely unclear.
+
+One conversation can walk several items. When the operator opens another one,
+its CONTEXT arrives with the question, and "this PR" means that item from then on.
 
 # Output
 

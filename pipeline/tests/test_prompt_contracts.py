@@ -14,7 +14,7 @@ from prospector_app.backend import codex_backend
 CHAT_BEHAVIOR_TEMPLATE = (
     "Trust",
     "Ground truth for actions",
-    "Verify app capabilities in source",
+    "Answering about the app",
     "What your file tools reach",
     "Reading the store",
     "Proposed vs. done",

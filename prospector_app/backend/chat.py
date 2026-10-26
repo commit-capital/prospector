@@ -76,9 +76,12 @@ from pipeline import storekit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = Path(__file__).resolve().parents[1]
-# Gitignored cache for per-thread machine-local state (partials, provider session ids).
+# Gitignored cache for per-thread machine-local state (partials, provider session ids,
+# the items a provider session has been shown).
 SESSION_DIR = APP_ROOT / "cache" / "chat"
 AGENT_CONTEXT = APP_ROOT / "agent" / "context.md"
+# The app's controls map, set into the manual (kept honest by test_agent_controls).
+AGENT_CONTROLS = APP_ROOT / "agent" / "controls.md"
 DIFF_BUDGET = 16000
 
 _BACKENDS: dict[str, agent_backend.AgentBackend] = {
@@ -118,8 +121,8 @@ def _bot_token() -> str | None:
     return _BOT_TOKEN
 
 def system_prompt() -> str:
-    """The agent's operating manual (agent/context.md), injected as its system
-    prompt. REQUIRED — a missing or empty file is a hard failure, never a silent
+    """The agent's operating manual (agent/context.md plus controls.md), injected
+    as its system prompt. REQUIRED — a missing or empty file is a hard failure, never a silent
     fall back to a lesser prompt: running the triage agent without its real
     context is worse than refusing to run it."""
     try:
@@ -128,6 +131,10 @@ def system_prompt() -> str:
         raise RuntimeError(f"app agent context missing: {AGENT_CONTEXT} ({e})") from e
     if not text:
         raise RuntimeError(f"app agent context is empty: {AGENT_CONTEXT}")
+    controls = AGENT_CONTROLS.read_text().strip()
+    if not controls:
+        raise RuntimeError(f"app controls map is empty: {AGENT_CONTROLS}")
+    text = text.replace("{app_controls}", controls)
     review_bar = review_policy.merge_bar_sentence()
     mentions = [f"{r.label} `{r.retrigger_mention}`"
                 for r in review_policy.active_reviewers(reviewers.REVIEW)
@@ -285,14 +292,24 @@ def load_thread(ctx_id: str) -> list[dict]:
     return [{"role": r[0], "text": r[1], "at": r[2]} for r in rows]
 
 
-def _session_id(ctx_id: str) -> str | None:
+def _meta(ctx_id: str) -> dict:
     p = _meta_path(ctx_id)
     if p.exists():
         try:
-            return json.loads(p.read_text()).get("session_id")
+            return json.loads(p.read_text())
         except json.JSONDecodeError:
-            return None
-    return None
+            return {}
+    return {}
+
+
+def _write_meta(ctx_id: str, **fields: object) -> None:
+    mp = _meta_path(ctx_id)
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    mp.write_text(json.dumps({**_meta(ctx_id), **fields}))
+
+
+def _session_id(ctx_id: str) -> str | None:
+    return _meta(ctx_id).get("session_id")
 
 
 def _save(ctx_id: str, role: str, text: str, session_id: str | None) -> None:
@@ -302,9 +319,7 @@ def _save(ctx_id: str, role: str, text: str, session_id: str | None) -> None:
             operator=_op_slug(), ctx_id=ctx_id, role=role, text=text,
             at=datetime.now(timezone.utc).isoformat()))
     if session_id:
-        mp = _meta_path(ctx_id)
-        mp.parent.mkdir(parents=True, exist_ok=True)
-        mp.write_text(json.dumps({"session_id": session_id}))
+        _write_meta(ctx_id, session_id=session_id)
 
 
 def _activity_lines(acts: list[dict]) -> list[str]:
@@ -319,6 +334,47 @@ def _activity_lines(acts: list[dict]) -> list[str]:
         out.append(f"  - {a.get('at')}: {a.get('kind') or '?'}{reason} "
                    f"as {a.get('identity') or '?'}{op}{detail}")
     return out
+
+
+def _pr_status(detail: dict) -> list[str]:
+    """What the PR page shows as of this turn: GitHub state, the merge gate, the
+    check rows, stale facts, and the re-trigger buttons. No pipeline verdict."""
+    state = detail.get("github_state")
+    head = (detail.get("head_sha") or "")[:7] or "?"
+    lines = [f"STATUS as the PR page shows it now (head {head}, GitHub state {state}):"]
+    if state in ("merged", "closed"):
+        return lines
+    gate = detail.get("merge_gate") or {}
+    if gate.get("ok"):
+        lines.append("  Merge button: enabled")
+    elif gate:
+        kind = gate.get("override_kind")
+        lines.append(f"  Merge button: blocked — {gate.get('reason')}"
+                     + (f" (a typed reason overrides this {kind} block)" if kind else ""))
+    checks = detail.get("checks") or {}
+    if checks.get("checks"):
+        lines.append(f"  Checks ({checks.get('passed')}/{checks.get('total')} passed):")
+        for c in checks["checks"]:
+            stale = " (an older commit)" if c.get("stale") else ""
+            lines.append(f"    - {c.get('name')}: {c.get('status')} — {c.get('detail')}{stale}")
+    if stale_sections := detail.get("stale_sections"):
+        lines.append(f"  Facts judged at an older head (`reingest` refreshes): "
+                     f"{', '.join(stale_sections)}")
+    mentions = [f"{r.label} `{r.retrigger_mention}`"
+                for r in review_policy.active_reviewers(reviewers.REVIEW) if r.retrigger_mention]
+    if mentions:
+        lines.append("  Re-trigger buttons on the Code review row (post the mention as the bot; "
+                     f"no commit needed): {', '.join(mentions)}")
+    return lines
+
+
+def _return_context(subject: str, pr: int | None) -> str:
+    """A short re-grounding for an item this session was shown earlier: a PR's
+    current STATUS, else just the item's name."""
+    if pr:
+        return "\n".join([f"CONTEXT: PR #{pr} again (its details were given earlier)",
+                          *_pr_status(service.pr_detail(pr) or {})])
+    return f"CONTEXT: {subject} again (its details were given earlier)"
 
 
 def _pr_context(pr: int, file: str | None, line: int | None) -> str:
@@ -340,6 +396,7 @@ def _pr_context(pr: int, file: str | None, line: int | None) -> str:
                      "anything the pipeline recommends is only a proposal until "
                      "it appears here):")
         lines.extend(_activity_lines(acts))
+    lines.extend(_pr_status(detail))
     if file and line:
         lines.append(f"\nThe reviewer is asking specifically about {file}:{line}.")
     diff = (service.get_diff(pr) or {}).get("diff", "")
@@ -409,6 +466,9 @@ def _issue_context(n: int) -> str:
                      "anything the pipeline recommends is only a proposal until "
                      "it appears here):")
         lines.extend(_activity_lines(acts))
+    if d.get("fix_status"):
+        pr_note = f" · fix PR #{d['fix_pr']}" if d.get("fix_pr") else ""
+        lines.append(f"Issue-fix lane: {d['fix_status']} — {d.get('fix_reason')}{pr_note}")
     dups = d.get("duplicates") or []
     if dups:
         lines.append(f"Dedup cluster {d.get('cluster')} groups it with "
@@ -706,10 +766,23 @@ async def _run_turn(backend: agent_backend.AgentBackend, ctx_id: str, question: 
         # The Explorer's filtered set grounds a new or reconstructed session.
         visible = (f"{_visible_prs_context(prs, prs_total, spec)}\n\n"
                    if (prs or spec is not None) and ground else "")
-        # The subject's facts (a PR/cluster's context) are injected at thread start and
-        # re-injected on a re-ground, since the fresh session has lost them.
-        base = (f"{_build_context(pr, cluster, issue, file, line, advisory, alert_source, alert)}\n\n"
-                if ground else "")
+        # A subject's facts (a PR/cluster's context) are injected at thread start, on
+        # a re-ground (the fresh session has lost them), and the first time the
+        # thread is asked about it, so one session can walk a list of items.
+        subject = _ctx_id(pr, cluster, issue, advisory, alert_source, alert)
+        meta = {} if ground or sid is None else _meta(ctx_id)
+        seen: list[str] = meta.get("subjects", [])
+        switched = not ground and subject != "general" and subject != meta.get("current")
+        base = ""
+        if ground or (switched and subject not in seen):
+            base = f"{_build_context(pr, cluster, issue, file, line, advisory, alert_source, alert)}\n\n"
+        elif switched:
+            base = f"{_return_context(subject, pr)}\n\n"
+        if switched:
+            base = ("The operator has opened another item; questions are about it "
+                    f"unless they say otherwise.\n{base}")
+        if ground or switched:
+            _write_meta(ctx_id, subjects=sorted({*seen, subject}), current=subject)
         # On a re-ground the session starts cold, so replay the prior turns to continue.
         replay = f"{_thread_digest(thread)}\n\n" if needs_reground else ""
         if is_first:
@@ -717,7 +790,7 @@ async def _run_turn(backend: agent_backend.AgentBackend, ctx_id: str, question: 
         elif needs_reground:
             prompt = f"{base}{replay}{visible}REVIEWER QUESTION: {anchored}{question}"
         else:
-            prompt = f"{visible}{anchored}{question}"
+            prompt = f"{base}{visible}{anchored}{question}"
 
         # A successful mint unlocks the agent's curated upstream helpers. The chat
         # process uses the operator environment for reads, and each write helper

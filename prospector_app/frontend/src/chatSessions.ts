@@ -2,8 +2,8 @@ import type { AgentSubject } from "./agentSubject";
 
 // A named conversation thread (#343), independent of whatever the operator is
 // currently viewing — created via "+ New" or by a page thread's first message,
-// switched between via the Recent menu. Its subject is frozen at creation so the session keeps asking
-// about its own subject even after the operator navigates elsewhere. Persisted
+// switched between via the Recent menu. Its subject is the item it was last
+// asked about, which it keeps while the operator is on a general page. Persisted
 // to localStorage only (no cross-device sync); the backend thread itself is
 // addressed by `id` as an opaque chat_id and needs no record of the label.
 // An archived session (`archivedAt` set) moves to the Recent menu's Archived
@@ -53,8 +53,10 @@ export function restoreSession(sessions: ChatSession[], id: string, now: number)
   }));
 }
 
-export function touchSession(sessions: ChatSession[], id: string, now: number): ChatSession[] {
-  return capSessions(sessions.map((s) => s.id === id ? { ...s, lastActiveAt: now } : s));
+export function touchSession(sessions: ChatSession[], id: string, now: number,
+  subject: AgentSubject): ChatSession[] {
+  return capSessions(sessions.map((s) => s.id === id
+    ? { ...s, label: subject.label, subject, lastActiveAt: now } : s));
 }
 
 // The most recently active live session about this subject.

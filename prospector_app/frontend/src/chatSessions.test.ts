@@ -9,6 +9,7 @@ import {
   liveSessions,
   restoreSession,
   sessionForSubject,
+  touchSession,
   type ChatSession,
 } from "./chatSessions.ts";
 
@@ -54,4 +55,11 @@ test("a subject's session is its most recently active live one", () => {
     about("other", "pr:2", 7)];
   assert.equal(sessionForSubject(sessions, "pr:1")?.id, "new");
   assert.equal(sessionForSubject(sessions, "pr:3"), null);
+});
+
+test("a session asked about another item is found under that item", () => {
+  const pr2: ChatSession["subject"] = { kind: "pr", key: "pr:2", number: 2, label: "PR #2" };
+  const out = touchSession([session("walk", 1)], "walk", 9, pr2);
+  assert.equal(sessionForSubject(out, "pr:2")?.id, "walk");
+  assert.equal(out[0].lastActiveAt, 9);
 });
