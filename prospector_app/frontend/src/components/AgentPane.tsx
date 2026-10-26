@@ -240,19 +240,13 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
       else sessionStorage.removeItem(key);
     } catch { /* storage blocked: the tab just won't remember its session */ }
   }, [effectiveActiveId, repo]);
-  // A page thread's subject stays frozen while streaming or while it has messages. The
-  // pane re-anchors to the current URL only when the thread is empty — on first load or
-  // after "New chat". A named session never drifts with the URL: its subject was frozen
-  // at creation, and opening another item switches the pane to that item's thread.
+  // The page thread is always empty and follows the URL; its first message makes
+  // it a named session, whose subject is frozen at creation.
   const liveSubj = subjectFromLocation(loc.pathname, loc.search);
-  const [frozenSubj, setFrozenSubj] = useState(liveSubj);
   const hasConversation = msgs.length > 0;
-  if (!activeSession && !streaming && !hasConversation
-      && frozenSubj.key !== liveSubj.key)
-    setFrozenSubj(liveSubj);
   const subj = activeSession
     ? { ...activeSession.subject, label: activeSession.label }
-    : (streaming || hasConversation) ? frozenSubj : liveSubj;
+    : liveSubj;
   const threadId = effectiveActiveId ?? subj.key;
   // Whatever PR list the operator is currently viewing (e.g. PR Explorer's
   // active filters) rides along regardless of subject — including when a PR's
@@ -370,6 +364,10 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     setStreaming(false);
     setInterrupted(false);
     clearAnchor();
+    // The page thread has no history of its own: a subject-keyed backend thread
+    // predates named sessions and is not this conversation.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- clear the thread left behind
+    if (!effectiveActiveId) { setMsgs([]); return; }
     let stale = false;
     const p = ctxParams();
     api.chatHistory(p).catch(() => ({ messages: [], running: false })).then((d) => {
@@ -426,7 +424,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
       // Fresh activity floats a named session back to the top of Recent.
       const id = chatId;
       setSessions((prev) => touchSession(prev, id, Date.now()));
-    } else if (!hasConversation) {
+    } else {
       // A page thread's first message makes it a session of its own, so it
       // stays under Recent after the operator moves on.
       const session: ChatSession = {
@@ -498,24 +496,22 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   // session comes back to the live list. The thread left behind keeps running.
   const switchSession = useCallback((id: string | null) => {
     setRecentOpen(false);
-    if (id === effectiveActiveId && (id !== null || subj.key === liveSubj.key)) return;
+    if (id === effectiveActiveId) return;
     clearAnchor();
     speech.stop();
     setInput("");
     setMsgs([]);
-    if (id) {
-      setSessions((prev) => restoreSession(prev, id, Date.now()));
-    } else {
-      setFrozenSubj(subjectFromLocation(loc.pathname, loc.search));
-    }
+    if (id) setSessions((prev) => restoreSession(prev, id, Date.now()));
     setActiveSessionId(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveActiveId, subj.key, liveSubj.key, clearAnchor, speech.stop, loc.pathname, loc.search]);
+  }, [effectiveActiveId, clearAnchor, speech.stop]);
 
-  // Opening a PR, issue, cluster or alert shows its latest session, or its page
-  // thread when it has none. General pages keep whatever conversation is open.
+  // Opening a PR, issue, cluster or alert from an empty pane shows its latest
+  // session, or its page thread when it has none. A conversation in progress
+  // stays open wherever the operator browses, as do general pages.
   useEffect(() => {
-    if (liveSubj.kind === "general" || activeSession?.subject.key === liveSubj.key) return;
+    if (liveSubj.kind === "general" || hasConversation || streaming
+        || activeSession?.subject.key === liveSubj.key) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- follow the operator to the item they opened
     switchSession(sessionForSubject(sessions, liveSubj.key)?.id ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -537,12 +533,11 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
       speech.stop();
       setInput("");
       setMsgs([]);
-      setFrozenSubj(subjectFromLocation(loc.pathname, loc.search));
       setActiveSessionId(null);
     }
     setSessions((prev) => archiveSession(prev, id, Date.now()));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveActiveId, streaming, clearAnchor, speech.stop, loc.pathname, loc.search]);
+  }, [effectiveActiveId, streaming, clearAnchor, speech.stop]);
 
   // Esc stops an in-flight answer (the textarea is disabled while streaming, so
   // listen on the window).
@@ -592,7 +587,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
                     <div className={`ap-recent-item${!effectiveActiveId ? " active" : ""}`}>
                       <button className="ap-recent-select" role="menuitem" onClick={() => switchSession(null)}>
                         <span className="ap-recent-name">
-                          {titles[titleKey(null, liveSubj.key)] ?? "Current page chat"}
+                          Current page chat
                         </span>
                         <span className="ap-recent-subject">current page · {liveSubj.label}</span>
                       </button>
