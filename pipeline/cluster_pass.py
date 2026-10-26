@@ -249,6 +249,8 @@ def assign(store: Store, limit: int, concurrency: int, outage: _Outage,
             futures = {wave.submit(pool, agent, u): str(u["subsystem"]) for u in units}
             _gather(futures, stage, wave, commit)
     if not stage.attempted:
+        # commit_assignments binds after each unit; bind here when no unit ran
+        cluster_driver.sync_bound_memberships(store)
         _say("  no summarized PR is waiting for a cluster.")
         return stage
     _record(store, "cluster:assign", started, {**totals, "attempted": stage.attempted},

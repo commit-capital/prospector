@@ -283,8 +283,7 @@ def commit_clusters(store: Store, proposed: list[dict],
             created.append(cid)
         cl.set_members(members)        # adds new + wires backrefs, removes departed + clears
         existing[cid] = cl
-    created.extend(_sync_linked_issue_memberships(store))
-    created.extend(_sync_identical_change_memberships(store))
+    created.extend(sync_bound_memberships(store))
     standalone = mark_standalone(store)
     return {"created": created, "updated": updated,
             "dropped_singletons": dropped, "standalone": standalone}
@@ -460,6 +459,12 @@ def split_cluster(store: Store, cid: int, groups: list[dict]) -> tuple[list[int]
         if not pr.cluster_ids:
             pr.mark_standalone()
     return resulting, []
+
+
+def sync_bound_memberships(store: Store) -> list[int]:
+    """Put PRs referencing one issue, and PRs making one change, into a shared
+    cluster. Returns created cluster ids."""
+    return _sync_linked_issue_memberships(store) + _sync_identical_change_memberships(store)
 
 
 def _sync_identical_change_memberships(store: Store) -> list[int]:
@@ -708,8 +713,7 @@ def commit_assignments(store: Store, payload: dict) -> dict:
             continue
         store.edit_pr(p).mark_standalone()
         standalone += 1
-    created += len(_sync_linked_issue_memberships(store))
-    created += len(_sync_identical_change_memberships(store))
+    created += len(sync_bound_memberships(store))
     return {"joined": joined, "created": created, "standalone": standalone, "errors": errors}
 
 

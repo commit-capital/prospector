@@ -203,6 +203,25 @@ class TestAssign:
         cluster_pass.assign(store, 2, 1, cluster_pass._Outage(), None)
         assert calls == [[3, 2]]
 
+    def test_an_idle_pass_binds_a_standalone_respin_to_its_original(self, store, monkeypatch):
+        for n in (1, 2, 3):
+            _pr(store, n, summarized=True)
+        cluster = store.create_cluster(7, "p")
+        cluster.set_members([1, 3])
+        cluster.set_outcome("merge-ready")
+        store.edit_pr(2).mark_standalone()
+        for n, at in ((1, 3), (2, 9)):
+            set_section(store, n, "signals",
+                        {"diffstat": {"additions": 1, "deletions": 0, "changed_files": 1}})
+            (diff_cache.DIFFS / f"h{n}.diff").write_text(
+                f"diff --git a/x b/x\nindex h{n}\n--- a/x\n+++ b/x\n@@ -{at},1 +{at},2 @@\n ctx\n+y\n")
+        monkeypatch.setattr(cluster_driver, "run_assign_agent",
+                            lambda *a, **k: pytest.fail("no PR is waiting to be placed"))
+        stage = cluster_pass.assign(store, 10, 1, cluster_pass._Outage(), None)
+        assert stage.attempted == 0
+        assert store.load_pr(2).cluster_ids == [7]
+        assert store.load_cluster(7).outcome is None
+
 
 class TestRun:
     @pytest.fixture(autouse=True)
