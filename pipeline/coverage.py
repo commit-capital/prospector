@@ -307,7 +307,7 @@ def measure(clone: Path, *, base_sha: str, tier: int, pr: int, head_sha: str) ->
             "coverage", image, patch=patch, tier=tier, test_cmd=command(tests, list(wanted)),
             base_sha=base_sha, head_sha=head_sha, timeout=TIMEOUT_SECONDS,
             tail_bytes=TAIL_BYTES, coverage_tool=tool, coverage_request=req)
-    except ValueError as e:
+    except (ValueError, verify_driver.DiffTooLarge) as e:
         return done(ERROR, str(e), tests=[])
     except (verify_driver.FetchFailure, verify_driver.BuildFailure, OSError,
             subprocess.SubprocessError) as e:

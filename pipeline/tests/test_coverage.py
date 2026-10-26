@@ -340,3 +340,13 @@ def test_measure_records_a_fetch_failure_as_a_fault(monkeypatch, tmp_path, scrat
     monkeypatch.setattr(verify_driver, "fetch_patch", fail)
     rec = sb.measure()
     assert (rec["status"], rec["reason"]) == ("fault", "gh down")
+
+
+def test_measure_records_a_diff_too_large_for_github_as_an_error(monkeypatch, tmp_path, scratch):
+    sb = _Sandbox(monkeypatch, tmp_path, scratch)
+
+    def fail(pr: int, head: str) -> Path:
+        raise verify_driver.DiffTooLarge("GitHub refuses PR #7's diff for its size")
+    monkeypatch.setattr(verify_driver, "fetch_patch", fail)
+    rec = sb.measure()
+    assert rec["status"] == "error" and not coverage.is_fault(rec)

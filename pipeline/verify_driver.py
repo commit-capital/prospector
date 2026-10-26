@@ -1417,8 +1417,16 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
 class FetchFailure(RuntimeError):
     """The PR's diff could not be fetched from GitHub. Usually transient
     (upstream load, a network blip) — verify_pr re-queues the request rather
-    than recording a terminal error."""
+    than recording a terminal error — except DiffTooLarge."""
 
+
+class DiffTooLarge(FetchFailure):
+    """GitHub refuses the PR's diff for its size (HTTP 406: over 300 files or
+    20,000 lines). It is the PR's, so retrying does not help."""
+
+
+# GitHub's answer to a diff request over its size limits.
+_TOO_LARGE = re.compile(r"\(HTTP 406\)|diff exceeded the maximum")
 
 # fetch_patch attempts one gh call per entry plus a final one, sleeping the
 # entry's seconds between attempts.
@@ -1429,7 +1437,8 @@ def fetch_patch(pr: int, head_sha: str) -> Path:
     """The PR's diff as a patch file on the host, fetched through the operator's
     read-only gh login. It is mounted read-only into the sandbox as data.
     Retries transient upstream failures with a short backoff; raises
-    FetchFailure when every attempt fails."""
+    FetchFailure when every attempt fails, DiffTooLarge at once when GitHub
+    refuses the diff for its size."""
     out = SCRATCH / "patches"
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{head_sha}.patch"
@@ -1445,6 +1454,8 @@ def fetch_patch(pr: int, head_sha: str) -> Path:
             path.write_text(p.stdout)
             return path
         stderr = p.stderr.strip()
+        if _TOO_LARGE.search(stderr):
+            raise DiffTooLarge(f"GitHub refuses PR #{pr}'s diff for its size: {stderr}")
         if backoff is not None:
             time.sleep(backoff)
     raise FetchFailure(f"cannot fetch patch for PR #{pr}: {stderr}")

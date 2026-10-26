@@ -1841,6 +1841,21 @@ class TestFetchPatch:
             vd.fetch_patch(1, "hdead")
         assert len(sleeps) == 2
 
+    def test_a_diff_too_large_for_github_fails_at_once(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path)
+        sleeps: list[float] = []
+        monkeypatch.setattr(vd.time, "sleep", sleeps.append)
+        too_large = ("gh: Sorry, the diff exceeded the maximum number of files (300). "
+                     "Consider using 'List pull requests files' API (HTTP 406)")
+
+        def fake_run(argv, **kw):
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr=too_large)
+
+        monkeypatch.setattr(vd.subprocess, "run", fake_run)
+        with pytest.raises(vd.DiffTooLarge, match="maximum number of files"):
+            vd.fetch_patch(1, "hbig")
+        assert sleeps == []
+
     def test_fetch_failure_is_a_runtime_error(self):
         assert issubclass(vd.FetchFailure, RuntimeError)
 

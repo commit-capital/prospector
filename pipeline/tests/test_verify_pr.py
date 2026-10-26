@@ -907,3 +907,14 @@ class TestAgentReach:
         monkeypatch.setattr(vp, "_call_agent_json", fake)
         vp._judge_verdict(1, "sig", None, {"red_exit": 1}, {"ran": False})
         assert roots == [[]]
+
+
+def test_a_diff_too_large_for_github_errors_without_a_requeue(store, pinned, monkeypatch):
+    def too_large(rec, image, base, tier, baseline, *, suite_config=None):
+        raise verify_driver.DiffTooLarge("GitHub refuses PR #1's diff for its size")
+
+    monkeypatch.setattr(verify_driver, "verify_pr", too_large)
+    store.edit_pr(1).record_verify_request("queued", queued_at=_now())
+    vp.run(store, 1, from_queue=True)
+    req = _request(store)
+    assert (req["status"], req["error_kind"]) == ("error", "fetch-error")

@@ -50,3 +50,27 @@ def test_no_design_picks_while_design_review_is_off(store, monkeypatch):
     monkeypatch.setattr(design_review, "huntable", lambda pr: True)
     monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "off")
     assert verify_worker.hunt_candidates()["design"] == []
+
+
+def test_a_maintainer_s_coverage_retry_waits_behind_every_unreviewed_head(store, monkeypatch):
+    monkeypatch.setattr(gates, "blocked_on_security", lambda pr: False)
+    monkeypatch.setattr(verify_worker, "auto_verifiable", lambda pr: False)
+    monkeypatch.setattr(design_review, "huntable", lambda pr: True)
+    monkeypatch.setattr(design_review, "retrying", lambda pr: pr.number == 3)
+    monkeypatch.setattr(gates, "priority_author", lambda author, association: True)
+    assert verify_worker.hunt_candidates()["design"] == [5, 7, 9, 3]
+    assert verify_worker.next_auto(frozenset({"design"})) == ("design", 5)
+
+
+def test_a_maintainer_s_coverage_retry_does_not_take_the_lane_first(store, monkeypatch):
+    monkeypatch.setattr(gates, "blocked_on_security", lambda pr: pr.number == 9)
+    monkeypatch.setattr(verify_worker, "auto_verifiable", lambda pr: False)
+    monkeypatch.setattr(design_review, "huntable", lambda pr: pr.number == 3)
+    monkeypatch.setattr(design_review, "retrying", lambda pr: True)
+    monkeypatch.setattr(gates, "priority_author",
+                        lambda author, association: author == "maintainer")
+    store.save_pr({"pr": 3, "meta": {"title": "pr 3", "state": "open", "head_sha": "a" * 40,
+                                     "author": "maintainer"}})
+    data.refresh()
+    monkeypatch.setattr(verify_worker, "_last_auto_lane", "design")
+    assert verify_worker.next_auto(frozenset({"security", "design"})) == ("security", 9)
