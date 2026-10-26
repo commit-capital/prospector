@@ -861,8 +861,7 @@ def test_a_fixed_run_is_craft_judged_against_the_landed_fix(tmp_path, generic_pr
     assert rec["craft"]["result"] == "loss" and rec["flags"] == ["foreign-text"]
     assert rec["fixer"] == {"prompt_sha": "f", "models": "opus"}
     assert rec["merge_sha"] == "m" * 40
-    assert rec["landed_fix"] == call["reference"] and rec["our_fix"] == call["ours"]
-    assert rec["our_fix_truncated"] is False and rec["landed_fix_truncated"] is False
+    assert rec["our_fix"] == call["ours"] and rec["our_fix_truncated"] is False
 
 
 def test_an_unfixed_run_is_not_judged(tmp_path, generic_profile, monkeypatch) -> None:
@@ -876,3 +875,24 @@ def test_a_judge_error_still_records_the_row(tmp_path, generic_profile, monkeypa
                         {"craft": {"result": None, "points": [], "reasons": [],
                                    "judge_sha": "j", "error": "boom"}, "flags": []})
     assert rec["craft"]["error"] == "boom" and rec["oracle_pass"] is True
+
+
+def test_a_judge_outage_keeps_the_scored_row(tmp_path, generic_profile, monkeypatch) -> None:
+    from pipeline import headless_agent
+    monkeypatch.setattr(replay, "transform_to_p",
+                        lambda base_clone, merge_sha, base_sha, profile: "PRE")
+    _mock_legs(monkeypatch, red=_RED_2020, lane_green=_GREEN_00, oracle_green=_GREEN_00)
+
+    def judge_craft(*a, **k):
+        raise headless_agent.AgentUnavailable("usage limit")
+    rec = replay.run_instance(_instance(), base=_base(tmp_path), base_sha="e" * 40,
+                              profile=generic_profile, workdir=tmp_path / "work",
+                              run_lane=lambda **kw: _lane("fixed"), judge_craft=judge_craft,
+                              fixer={"prompt_sha": "f", "models": "opus"})
+    assert rec["ending"] == "fixed" and rec["oracle_pass"] is True
+    assert rec["craft"]["result"] is None and rec["craft_unavailable"] is True
+
+
+def test_the_row_keeps_our_fix_but_not_the_merged_one(tmp_path, generic_profile, monkeypatch) -> None:
+    rec, _ = _craft_run(tmp_path, generic_profile, monkeypatch, "fixed")
+    assert rec["our_fix"] and "landed_fix" not in rec and rec["merge_sha"] == "m" * 40

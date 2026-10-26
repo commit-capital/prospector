@@ -115,7 +115,10 @@ def judge(worktree: Path, ours: str, reference: str, *, title: str, body: str) -
              {"A": "ref", "B": "ours"}.get(second["better"], "tie")}
     result: Literal["win", "tie", "loss"] = (
         "win" if sides == {"ours"} else "loss" if sides == {"ref"} else "tie")
-    points = sorted({p for a in (first, second) for p in a.get("points") or []
+    # An answer's points name the worse fix's shortfalls, so only an answer that
+    # preferred the reference names ours.
+    against = [a for a, ref_is in ((first, "B"), (second, "A")) if a["better"] == ref_is]
+    points = sorted({p for a in against for p in a.get("points") or []
                      if type(p) is int and 1 <= p <= len(POINTS)})
     return Craft(result, reasons=[str(a.get("reason") or "") for a in (first, second)],
                  points=points)
@@ -126,27 +129,48 @@ _SQL = re.compile(r"\b(SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELET
                   r"|WHERE\s+\w+\s*(=|!=|<>|<|>|\bIN\b|\bLIKE\b))", re.IGNORECASE)
 _SHELL = re.compile(r" && | \| |^\s*(rm |curl |sh -c)")
 _WINDOW = 4
+# A sibling file larger than this is not read for copied blocks.
+_NEAR_MAX = 512_000
 
 
-def _added(fix_patch: str) -> list[tuple[str, list[str]]]:
-    """Each non-test file's runs of consecutive added lines."""
+_IMPORT = re.compile(r"^(import|from|use|require|#include|using|package)\b")
+# Paths a fix's craft is not judged on: prose, changelogs and lockfiles, which
+# one side carries and the other rarely does.
+_NOT_SOURCE = re.compile(r"(^|/)(docs?/|\.changeset/|CHANGELOG|CHANGES|HISTORY)"
+                         r"|\.(md|mdx|rst|txt)$"
+                         r"|(^|/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|poetry\.lock"
+                         r"|uv\.lock|Cargo\.lock|go\.sum|Gemfile\.lock|composer\.lock)$",
+                         re.IGNORECASE)
+
+
+def source_only(patch: str) -> str:
+    """`patch` without tests, prose, changelogs, lockfiles or binary hunks."""
+    return "".join(block for path, block in diffpaths.diff_blocks(patch)
+                   if not (diffpaths.is_test_path(path) or _NOT_SOURCE.search(path)
+                           or "GIT binary patch" in block))
+
+
+def _changes(fix_patch: str) -> list[tuple[str, list[list[str]], list[str]]]:
+    """Each file's runs of consecutive added lines, and its removed lines."""
     out = []
     for path, block in diffpaths.diff_blocks(fix_patch):
-        if diffpaths.is_test_path(path):
-            continue
         runs: list[list[str]] = [[]]
+        removed: list[str] = []
         for line in block.split("\n"):
             if line.startswith("+") and not line.startswith("+++"):
                 runs[-1].append(line[1:])
             elif runs[-1]:
                 runs.append([])
-        out += [(path, run) for run in runs if run]
+            if line.startswith("-") and not line.startswith("---"):
+                removed.append(line[1:])
+        out.append((path, [run for run in runs if run], removed))
     return out
 
 
 def _windows(lines: list[str]) -> set[tuple[str, ...]]:
     kept = [s for s in (line.strip() for line in lines) if len(s) > 3]
-    return {tuple(kept[i:i + _WINDOW]) for i in range(len(kept) - _WINDOW + 1)}
+    return {w for w in (tuple(kept[i:i + _WINDOW]) for i in range(len(kept) - _WINDOW + 1))
+            if not all(_IMPORT.match(line) for line in w)}
 
 
 def flags(fix_patch: str, base: Path) -> list[str]:
@@ -155,17 +179,18 @@ def flags(fix_patch: str, base: Path) -> list[str]:
     shell command) and `duplicated-block` (four or more added lines that the base
     version of a touched file, or a sibling file of the same kind, already has)."""
     found = []
-    runs = _added(fix_patch)
+    changes = _changes(source_only(fix_patch))
     if any(_SQL.search(m.group(2)) or _SHELL.search(m.group(2))
-           for _, run in runs for line in run for m in _STRING.finditer(line)):
+           for _, runs, _ in changes for run in runs for line in run
+           for m in _STRING.finditer(line)):
         found.append("foreign-text")
-    for path, run in runs:
-        new = _windows(run)
-        if not new:
-            continue
+    for path, runs, removed in changes:
+        moved = _windows(removed)
         target = base / path
-        near = [p for p in target.parent.glob(f"*{target.suffix}") if p.is_file()]
-        if any(new & _windows(p.read_text(errors="replace").splitlines()) for p in near):
+        near = [p for p in target.parent.glob(f"*{target.suffix}")
+                if p.is_file() and p.stat().st_size < _NEAR_MAX] if target.suffix else []
+        if any((_windows(run) - moved) & _windows(p.read_text(errors="replace").splitlines())
+               for run in runs for p in near):
             found.append("duplicated-block")
             break
     return found
@@ -175,8 +200,15 @@ def score_craft(base_clone: Path, pre_patch: str, ours: str, reference: str, *,
                 title: str, body: str) -> dict:
     """`ours` judged against `reference`, and its flags, over the tree the fixes
     apply to: `base_clone` with `pre_patch` applied, built for the judgment and
-    removed after. {"craft": a `Craft` as a dict, "flags": [...]}."""
+    removed after, both compared on their source only (`source_only`).
+    {"craft": a `Craft` as a dict, "flags": [...]}, or, when a side changes no
+    source, {"craft": None, "flags": [], "craft_skipped": why}."""
     from issue_triage import lane_tree
+    ours, reference = source_only(ours), source_only(reference)
+    if not ours.strip() or not reference.strip():
+        side = "our fix" if not ours.strip() else "the reference fix"
+        return {"craft": None, "flags": [],
+                "craft_skipped": f"{side} changes no source to compare"}
     with tempfile.TemporaryDirectory(prefix="craft-judge-") as tmp:
         tree = lane_tree.materialize(base_clone, Path(tmp) / "src", pre_patch=pre_patch or None)
         craft = judge(tree, ours, reference, title=title, body=body)

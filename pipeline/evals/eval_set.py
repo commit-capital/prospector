@@ -206,8 +206,8 @@ def load_manifest(pr_store: Store | None = None) -> dict:
     the ledger, oldest first, each base's latest row winning."""
     pr_store = pr_store or Store()
     bases: dict[str, dict] = {}
-    for rec in pr_store.runs(limit=_LEDGER_SCAN):
-        if not isinstance(rec, storekit.PhaseRun) or rec.phase != BASE_PHASE:
+    for rec in pr_store.runs(limit=_LEDGER_SCAN, phase=BASE_PHASE):
+        if not isinstance(rec, storekit.PhaseRun):
             continue
         stats = rec.raw.get("stats") or {}
         if stats.get("repo") == settings.repo() and stats.get("base_sha"):
@@ -323,8 +323,10 @@ def _craft(records: list[dict]) -> dict[str, dict]:
     fell short on, and the flags fixed runs raised."""
     out: dict[str, dict] = {}
     for rec in records:
-        fixer = rec.get("fixer") or {}
-        key = f"{fixer.get('prompt_sha', '?')}/{fixer.get('models', '?')}"
+        fixer = rec.get("fixer")
+        if not fixer:
+            continue
+        key = f"{fixer.get('prompt_sha')}/{fixer.get('models')}"
         c = out.setdefault(key, {"judged": 0, "wins": 0, "ties": 0, "losses": 0, "errors": 0,
                                  "rate": None, "losses_by_point": {}, "flags": {}})
         if rec.get("ending") == "fixed":
@@ -471,7 +473,7 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
             workdir=out_dir / f"p{k}" / f"issue-{inst.issue}", run_lane=LANES[lane],
             judge_contract=replay._judge_contract, judge_craft=craft_judge.score_craft,
             fixer=fixer)
-        if rec.get("ending") == "agent-unavailable":
+        if rec.get("ending") == "agent-unavailable" or rec.get("craft_unavailable"):
             unavailable.set()
         return rec
 
@@ -505,8 +507,11 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
             print(f"[{done}/{len(jobs)}] issue {inst.issue} pass {k}: {rec.get('ending')} "
                   f"({replay._cell(rec.get('seconds'))}s) {rec.get('detail') or ''}"[:300],
                   flush=True)
-            if rec.get("ending") == "agent-unavailable" and not halted:
-                halted = str(rec.get("detail") or "the agent is unavailable")
+            if (rec.get("ending") == "agent-unavailable" or rec.get("craft_unavailable")) \
+                    and not halted:
+                halted = str(rec.get("detail") if rec.get("ending") == "agent-unavailable"
+                             else (rec.get("craft") or {}).get("error")
+                             or "the agent is unavailable")
                 print(f"halting: {halted}", flush=True)
     if halted:
         print(f"{left} run(s) left for --resume", flush=True)

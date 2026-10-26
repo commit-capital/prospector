@@ -24,9 +24,10 @@ class FakeStore:
         storekit.parse_run(record)
         self.rows.append(record)
 
-    def runs(self, limit: int | None = None, since: str | None = None
-             ) -> list[storekit.RunRecord]:
-        rows = self.rows if limit is None else self.rows[-limit:]
+    def runs(self, limit: int | None = None, since: str | None = None,
+             phase: str | None = None) -> list[storekit.RunRecord]:
+        rows = [r for r in self.rows if phase is None or r.get("phase") == phase]
+        rows = rows if limit is None else rows[-limit:]
         return [storekit.parse_run(r) for r in rows]
 
 

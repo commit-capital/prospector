@@ -150,9 +150,10 @@ class FakeStore:
         storekit.parse_run(record)
         self.rows.append(record)
 
-    def runs(self, limit: int | None = None, since: str | None = None
-             ) -> list[storekit.RunRecord]:
-        rows = self.rows if limit is None else self.rows[-limit:]
+    def runs(self, limit: int | None = None, since: str | None = None,
+             phase: str | None = None) -> list[storekit.RunRecord]:
+        rows = [r for r in self.rows if phase is None or r.get("phase") == phase]
+        rows = rows if limit is None else rows[-limit:]
         return [storekit.parse_run(r) for r in rows]
 
 
@@ -387,3 +388,8 @@ def test_scorecard_md_names_the_points_lost_on():
     md = eval_set._scorecard_md("n", eval_set.scorecard(recs, bugs=1), recs)
     assert "## Craft" in md and "Losing on" in md
     assert craft_judge.POINTS[1][:30] in md
+
+
+def test_rows_without_a_fixer_add_no_craft_section():
+    recs = [{"issue": 1, "ending": "r6-red"}, _craft_rec("win")]
+    assert list(eval_set.scorecard(recs, bugs=1)["craft"]) == ["s1/opus"]
