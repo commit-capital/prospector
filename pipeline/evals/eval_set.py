@@ -707,7 +707,7 @@ class _Job:
 
 def run(*, name: str, passes: int, concurrency: int, refresh: bool,
         issues: set[int] | None, resume: bool, lane: str = "staged",
-        cases: bool = True) -> int:
+        cases: bool = True, only: set[str] | None = None) -> int:
     """Replay every fair bug of the set, and unless not `cases` every usable rival
     and case-study case, through the lane `passes` times, pass by pass, each pass
     recorded as replay run `<name>-p<k>`. Re-invoking continues a run: recorded
@@ -724,9 +724,11 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
               f"profile; run eval_set build to requalify: "
               f"{' '.join(sha[:12] for sha in manifest['stale'])}", flush=True)
     fair = {i["issue"]: b["base_sha"] for b in manifest["bases"] for i in b["instances"]
-            if i["verdict"] == "fair" and (issues is None or i["issue"] in issues)}
+            if i["verdict"] == "fair" and (issues is None or i["issue"] in issues)
+            and (only is None or str(i["issue"]) in only)}
     usable = [c for c in (load_cases(pr_store) if cases else [])
-              if c.oracle != "unusable" and (issues is None or c.issue in issues)]
+              if c.oracle != "unusable" and (issues is None or c.issue in issues)
+              and (only is None or c.case in only)]
     if not fair and not usable:
         print("the evaluation set holds no fair bug or usable case to run", file=sys.stderr)
         return 2
@@ -858,6 +860,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     r.add_argument("--passes", type=int, default=3)
     r.add_argument("--concurrency", type=int, default=3, help="instances in flight")
     r.add_argument("--issues", help="run only these issue numbers, comma-separated")
+    r.add_argument("--only", help="run only these case ids (an issue number for a history "
+                                  "bug), comma-separated")
     r.add_argument("--resume", action="store_true", help="re-run the faulted instances")
     r.add_argument("--refresh", action="store_true", help="re-harvest from GitHub")
     r.add_argument("--lane", choices=sorted(LANES), default="staged",
@@ -891,7 +895,8 @@ def main(argv: list[str]) -> int:
                       if args.issues else None)
             return run(name=args.name, passes=args.passes, concurrency=args.concurrency,
                        refresh=args.refresh, issues=issues, resume=args.resume,
-                       lane=args.lane, cases=not args.no_cases)
+                       lane=args.lane, cases=not args.no_cases,
+                       only=set(args.only.split(",")) if args.only else None)
         return build(target=args.target, min_fixes=args.min_fixes, refresh=args.refresh,
                      concurrency=args.concurrency, dry_run=args.dry_run)
     except prove.NoBase as e:

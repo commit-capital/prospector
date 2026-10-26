@@ -833,3 +833,15 @@ def test_a_run_names_the_stale_bases_it_leaves_out(ledger, capsys):
                         resume=False, cases=False) == 2
     err = capsys.readouterr()
     assert "another sandbox profile" in err.out + err.err and "bbbbbbbbbbbb" in err.out + err.err
+
+
+def test_only_limits_a_run_to_the_named_cases(builder, ledger, tmp_path, monkeypatch):
+    monkeypatch.setattr(eval_set.settings, "verify_scratch", lambda: tmp_path / "vs")
+    _build()
+    eval_set.record_case(_case(7, oracle="tests"))
+    eval_set.record_case(_case(8))
+    ran: list = []
+    monkeypatch.setattr(replay, "run_instance", _fake_runner(ran))
+    eval_set.run(name="r", passes=1, concurrency=1, refresh=False, issues=None, resume=False,
+                 only={"3", "rival-8"})
+    assert sorted(i for i, _, _ in ran) == [3, 8]
