@@ -4,7 +4,9 @@ run the lane over it.
 
 The set is deployment data, so it lives in the store, not the tree: one
 `eval-set:base` runs-ledger row per base (`record_base`), read back as the
-manifest (`load_manifest`), the latest row per base winning.
+manifest (`load_manifest`), the latest row per base winning. A base counts
+only under the sandbox commands it was qualified with (`sandbox_stamp`): its
+tree is history's, but the commands are today's profile's.
 
 A bug is a closed issue with a merged fixing PR — the PR GitHub records as
 closing it, or a merged PR whose title or body says "fixes #N". The corpus is
@@ -31,6 +33,7 @@ many bugs got a proposal at all — coverage.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -45,7 +48,7 @@ from typing import Literal, NamedTuple
 
 from issue_triage import link_prs
 from issue_triage.issue_store import IssueStore
-from pipeline import (diffpaths, gh, profile, prove, settings, storekit, verify_driver,
+from pipeline import (diffpaths, gates, gh, profile, prove, settings, storekit, verify_driver,
                       verify_gc)
 from pipeline.evals import issue_fix_replay as replay
 from pipeline.profile import RepoProfile
@@ -207,9 +210,18 @@ def epoch(clone: Path, members: list[replay.Instance], key: frozenset[tuple[str,
     return last
 
 
+def sandbox_stamp(prof: RepoProfile) -> str:
+    """A hash of the sandbox commands `prof` runs a base under: the whole
+    `verify` section, so any edit there sends every base back to `build`."""
+    raw = json.dumps(asdict(prof.verify), sort_keys=True)
+    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
 def load_manifest(pr_store: Store | None = None) -> dict:
-    """`{"bases": [...], "fair": n}`: the set's bases for this repository, from
-    the ledger, oldest first, each base's latest row winning."""
+    """`{"bases": [...], "fair": n, "stale": [sha, ...]}`: the set's bases for
+    this repository, from the ledger, oldest first, each base's latest row
+    winning. `bases` and `fair` hold those qualified under today's sandbox
+    commands; `stale` names the rest, which `build` requalifies."""
     pr_store = pr_store or Store()
     bases: dict[str, dict] = {}
     for rec in pr_store.runs(limit=_LEDGER_SCAN, phase=BASE_PHASE):
@@ -219,14 +231,16 @@ def load_manifest(pr_store: Store | None = None) -> dict:
         if stats.get("repo") == settings.repo() and stats.get("base_sha"):
             bases.pop(stats["base_sha"], None)
             bases[stats["base_sha"]] = stats
-    ordered = list(bases.values())
+    stamp = sandbox_stamp(profile.active())
+    ordered = [b for b in bases.values() if b.get("sandbox") == stamp]
     return {"bases": ordered, "fair": sum(1 for b in ordered for i in b["instances"]
-                                          if i["verdict"] == "fair")}
+                                          if i["verdict"] == "fair"),
+            "stale": [sha for sha, b in bases.items() if b.get("sandbox") != stamp]}
 
 
 def record_base(base: dict, pr_store: Store | None = None) -> None:
     """Append one base of the set — `{base_sha, span, fixes, qualified_at,
-    instances}` — to the ledger."""
+    sandbox, instances}` — to the ledger."""
     stats = {**base, "repo": settings.repo(), "tier": TIER}
     (pr_store or Store()).append_run({
         "phase": BASE_PHASE, "started": base.get("qualified_at") or storekit.now(),
@@ -466,6 +480,31 @@ def _held_base(sha: str) -> prove.PinnedBase:
         return prove.held(sha, TIER)
 
 
+# `docker run`'s own exits: the daemon failed, or the container's command could
+# not be invoked or found. The sandbox reports a failing compile as its sentinel.
+_LAUNCH_FAULTS = frozenset({125, 126, 127})
+
+
+def _compile_failure(base: prove.PinnedBase, prof: RepoProfile) -> str | None:
+    """Why the profile's compile command fails over `base`'s pristine tree, or
+    None when it passes or there is none: a base that fails it fails every
+    lane run on it before a fix is judged, a timeout or an out-of-memory kill
+    included. Raises `prove.SandboxFault` when docker could not start the
+    container."""
+    cmd = prof.verify.compile_cmd
+    if not cmd:
+        return None
+    exit_code, tail = verify_driver.run_phase(
+        "compile", base.image, tier=base.tier, test_cmd=cmd, base_sha=base.sha,
+        head_sha="pristine", pristine=True)
+    if exit_code == gates.SENTINEL_PASS:
+        return None
+    excerpt = verify_driver.error_excerpt(tail)
+    if exit_code in _LAUNCH_FAULTS:
+        raise prove.SandboxFault(f"the compile phase exited {exit_code}: {excerpt}")
+    return f"exit {exit_code}" + (f": {excerpt}" if excerpt else "")
+
+
 def build(*, target: int, min_fixes: int, refresh: bool, concurrency: int,
           dry_run: bool) -> int:
     """Add bases to the set, most distinct fixes first, until it holds
@@ -494,11 +533,21 @@ def build(*, target: int, min_fixes: int, refresh: bool, concurrency: int,
         except (verify_driver.BuildFailure, prove.NoBase) as e:
             print(f"  base {sha[:12]} did not build: {str(e)[-300:]}", flush=True)
             continue
-        rows = replay.qualify_instances(base, sha, members, profile=prof,
-                                        concurrency=concurrency)
+        try:
+            broken = _compile_failure(base, prof)
+        except prove.SandboxFault as e:
+            print(f"  base {sha[:12]} could not be checked: {e}", flush=True)
+            continue
+        if broken:
+            print(f"  base {sha[:12]} fails the compile command: {broken[:300]}", flush=True)
+            rows = [replay.Qualification(m.issue, m.pr, "base-compile", 0.0, broken[:300])
+                    for m in members]
+        else:
+            rows = replay.qualify_instances(base, sha, members, profile=prof,
+                                            concurrency=concurrency)
         record_base({
             "base_sha": sha, "span": span, "fixes": _fixes(members),
-            "qualified_at": storekit.now(),
+            "qualified_at": storekit.now(), "sandbox": sandbox_stamp(prof),
             "instances": [{"issue": q.issue, "pr": q.pr, "verdict": q.verdict,
                            "detail": q.detail} for q in rows]})
         built.add(sha)
@@ -511,14 +560,18 @@ def build(*, target: int, min_fixes: int, refresh: bool, concurrency: int,
 
 
 def import_file(path: Path) -> int:
-    """Record every base a manifest file names that the ledger lacks."""
-    have = {b["base_sha"] for b in load_manifest()["bases"]}
-    bases = json.loads(path.read_text())["bases"]
-    for base in bases:
-        if base["base_sha"] not in have:
-            record_base(base)
-    print(f"recorded {sum(1 for b in bases if b['base_sha'] not in have)} of "
-          f"{len(bases)} base(s)", flush=True)
+    """Record every base a manifest file names that the ledger lacks, or holds
+    only stale where the file's row is current."""
+    manifest = load_manifest()
+    stamp = sandbox_stamp(profile.active())
+    current = {b["base_sha"] for b in manifest["bases"]}
+    stale = set(manifest["stale"])
+    new = [b for b in json.loads(path.read_text())["bases"]
+           if b["base_sha"] not in current
+           and (b["base_sha"] not in stale or b.get("sandbox") == stamp)]
+    for base in new:
+        record_base(base)
+    print(f"recorded {len(new)} base(s)", flush=True)
     return 0
 
 
@@ -666,6 +719,10 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
     fixer = craft_judge.fixer_config(lane)  # type: ignore[arg-type]
     pr_store = Store()
     manifest = load_manifest(pr_store)
+    if manifest["stale"]:
+        print(f"left out {len(manifest['stale'])} base(s) qualified under another sandbox "
+              f"profile; run eval_set build to requalify: "
+              f"{' '.join(sha[:12] for sha in manifest['stale'])}", flush=True)
     fair = {i["issue"]: b["base_sha"] for b in manifest["bases"] for i in b["instances"]
             if i["verdict"] == "fair" and (issues is None or i["issue"] in issues)}
     usable = [c for c in (load_cases(pr_store) if cases else [])

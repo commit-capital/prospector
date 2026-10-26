@@ -171,8 +171,13 @@ the first commit after the group's last fixing merge whose dependencies still
 match, so the base holds every fix and equals none — held against the verify
 sweep (`verify_gc.hold`). Its bugs are qualified without an agent, and the
 base's verdicts are appended to the runs ledger as an `eval-set:base` row: the
-set is deployment data, so it lives in the store, never the tree. A build
-resumes past the bases the ledger names.
+set is deployment data, so it lives in the store, never the tree. A base's
+tree is history's but the sandbox commands are today's profile's, so each row
+is stamped with the `verify` section it was qualified under: the profile's
+compile command first runs once over the pristine base (a base that fails it
+holds no fair bug), and `run` leaves out bases with another stamp, naming them.
+A build resumes past the bases the ledger names under today's stamp and
+requalifies the rest.
 
 `run` replays every fair bug through a lane — `--lane staged` (default, the
 lane above) or `--lane solo`, the one-agent baseline (`solo_lane.py`: one agent
