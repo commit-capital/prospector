@@ -92,3 +92,31 @@ def test_a_lint_command_offers_the_agent_the_lint_lane(tmp_path, monkeypatch):
     note = authoring.lint_note("/bin/check")
     assert note.startswith("`/bin/check lint` runs the repository's lint")
     assert "refuses a change" in note
+
+
+def test_the_house_style_carries_the_craft_points():
+    text = authoring.HOUSE_STYLE.lower()
+    for phrase in ("types", "another language", "case the report implies", "capabilit",
+                   "entry point", "never log"):
+        assert phrase in text, phrase
+
+
+def test_the_design_question_asks_by_them():
+    text = authoring.DESIGN_QUESTION.lower()
+    for phrase in ("another language", "case the report implies", "capabilit"):
+        assert phrase in text, phrase
+
+
+def test_both_stay_short():
+    assert len(authoring.HOUSE_STYLE.split()) < 300
+    assert len(authoring.DESIGN_QUESTION.split()) < 200
+
+
+def test_both_stay_general():
+    import re
+
+    from pipeline import settings
+    for text in (authoring.HOUSE_STYLE, authoring.DESIGN_QUESTION):
+        assert settings.repo().split("/")[-1] not in text
+        assert not re.search(r"\w+/\w+\.\w+", text)
+        assert not re.search(r"#\d", text)
