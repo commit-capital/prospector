@@ -9,6 +9,7 @@ The test-file convention has a TypeScript twin in
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import re
 from collections.abc import Callable
 
@@ -91,6 +92,31 @@ def diff_blocks(text: str) -> list[tuple[str, str]]:
         tok = block.partition("\n")[0].split(" ")[-1]
         blocks.append((tok[2:] if tok.startswith("b/") else tok, block))
     return blocks
+
+
+_STUB_COUNTS = re.compile(r"^# .*(\+\d+ -\d+)$")
+
+
+def change_key(text: str) -> str | None:
+    """A digest of what a diff changes, independent of the commit and base it was
+    taken against: each file's path and its added and removed lines, with hunk
+    positions and context left out (the idea behind `git patch-id`). A file the
+    diff reduced to a stub counts by its +/- line counts. None for a diff that
+    names no file."""
+    blocks = diff_blocks(text)
+    if not blocks:
+        return None
+    h = hashlib.sha256()
+    for path, block in blocks:
+        h.update(f"\0{path}\n".encode())
+        for line in block.split("\n")[1:]:
+            if line.startswith(("+++ ", "--- ")):
+                continue
+            if line.startswith(("+", "-")):
+                h.update(f"{line}\n".encode())
+            elif m := _STUB_COUNTS.match(line):
+                h.update(f"{m[1]}\n".encode())
+    return h.hexdigest()
 
 
 def filter_diff(text: str, predicate: Callable[[str], bool]) -> str:
