@@ -881,7 +881,8 @@ def _finalize(n: int, rc: int, tail: str) -> None:
                 started_at=req.get("started_at"), finished_at=_now(),
                 error_kind="exception",
                 error=f"verify_pr exited {rc} without recording a result",
-                log_tail=tail or None, source=req.get("source"), host=me)
+                log_tail=tail or None, attempts=req.get("attempts"),
+                source=req.get("source"), host=me)
     data.refresh()
 
 

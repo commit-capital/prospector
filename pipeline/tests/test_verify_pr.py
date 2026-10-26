@@ -12,6 +12,7 @@ import socket
 import pytest
 
 from pipeline import diff_cache
+from pipeline import gates
 from pipeline import profile
 from pipeline import store as S
 from pipeline import verify_driver
@@ -918,3 +919,17 @@ def test_a_diff_too_large_for_github_errors_without_a_requeue(store, pinned, mon
     vp.run(store, 1, from_queue=True)
     req = _request(store)
     assert (req["status"], req["error_kind"]) == ("error", "fetch-error")
+
+
+def test_a_head_s_runs_stay_counted_through_its_error(store, pinned, monkeypatch):
+    def fetch_fail(rec, image, base, tier, baseline, *, suite_config=None):
+        raise verify_driver.FetchFailure("HTTP 500")
+
+    monkeypatch.setattr(verify_driver, "verify_pr", fetch_fail)
+    store.edit_pr(1).record_verify_request("queued", queued_at=_now())
+    for _ in range(vp.TRANSIENT_MAX_ATTEMPTS):
+        vp.run(store, 1, from_queue=True)
+    req = _request(store)
+    assert (req["status"], req["attempts"]) == ("error", vp.TRANSIENT_MAX_ATTEMPTS - 1)
+    ok, why = gates.verify_retry_allowed(store.load_pr(1), worker="elsewhere")
+    assert not ok and "runs" in why

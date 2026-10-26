@@ -676,6 +676,28 @@ def test_a_resolution_whose_continue_stops_fails_a_crash_and_refuses_a_verdict(
         assert req["result"]["output"] == stderr.strip()
 
 
+def test_a_resolution_that_leaves_no_change_rests_the_head(store, monkeypatch, tmp_path):
+    booked: list[str] = []
+    monkeypatch.setattr(fix_worker.lane_health, "note_failure",
+                        lambda lane, **kw: booked.append(lane))
+    fix_queue.queue_pr(1, "rebase")
+    paused = json.dumps({"phase": "conflicted", "conflicts": ["one.txt"],
+                         "worktree": str(tmp_path / "wt"), "base_branch": "master"})
+    probe = _Probe(overrides={"state": (0, paused), "continue": (0, ""), "diff": (0, "")})
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    monkeypatch.setattr(fix_worker.resolve_conflicts, "resolve",
+                        lambda wt, paths, **kw: {"resolutions": [
+                            {"path": "one.txt", "rationale": "kept the base"}]})
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "refused"
+    assert "no change against the base" in req["refused_reason"]
+    assert booked == []
+    assert probe.calls[-1] == ("abort",) and not _pushed(probe)
+
+
 def test_approved_resolve_pushes_the_kept_tree_without_rederiving(store, monkeypatch):
     store.load_pr(1).record_fix_request(
         "approved", "resolve", queued_at=NOW,
