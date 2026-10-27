@@ -112,3 +112,18 @@ fails when the code no longer matches. To change them:
 The gate set is every usable rival and case-study case, topped up to twelve
 with fair history bugs spread across the bases. It changes only with
 `--reset-gate-set`; a case no longer runnable is dropped and reported.
+
+### Fixer lessons
+
+`uv run python -m pipeline.evals.fixer_lessons` reads the code's fixer's latest
+craft losses under today's judge (a tie that fell short on a point counts): our
+fix, the human fix, the judge's reasons and points, the mechanical flags, and
+the operator's words on the issue (why they chose another PR, notes on labeled
+reviews). One agent that reads nothing but that evidence proposes one rewrite
+of one line of `HOUSE_STYLE` or a fixer prompt. The host refuses it unless the
+line occurs once in its file, the rewrite replaces rather than extends it, it
+names no repository, path, issue or file from the losses, and the text stays
+within its cap; a refusal is retried once. The result is written under
+`<verify scratch>/fixer-lessons/` as `edit.diff` and `lessons.md`, never
+committed or recorded. Apply it with `git apply` if it is worth trying: the pin
+test then fails, and `fixer_eval --live` decides.
