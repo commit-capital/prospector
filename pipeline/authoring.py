@@ -13,11 +13,12 @@ what it can do whatever a doc says.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import re
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipeline import gh, profile
+from pipeline import gh, profile, settings
 
 HOUSE_STYLE = """\
 Write the change the way this repository's own code is written:
@@ -31,6 +32,31 @@ Write the change the way this repository's own code is written:
 - Name values for what they hold, keep logic plain rather than clever, and define each rule once. Comment only a non-obvious why; never narrate the change or the issue.
 - Add a test in the neighbouring tests' style (directory, runner, fixtures, helpers) that drives the public interface they drive, not a private helper. Assert outcomes; assert message text only when that text is the fix. Weaken no existing test.
 None of this licenses a refactor: leave alone any code the change does not need."""
+
+# The word counts HOUSE_STYLE and DESIGN_QUESTION stay under: every fix author
+# and design judge reads them on every run.
+HOUSE_STYLE_MAX_WORDS = 300
+DESIGN_QUESTION_MAX_WORDS = 200
+
+_PATH = re.compile(r"\w+/[\w./-]*\w\.\w+")
+_ISSUE = re.compile(r"#\d")
+
+
+def general(text: str, *, names: Iterable[str] = ()) -> str | None:
+    """Why `text` is not general enough for the standard or a fixer prompt
+    (it names this repository, a path, an issue, or one of `names`), or None."""
+    repo = settings.repo().split("/")[-1]
+    if repo and re.search(rf"\b{re.escape(repo)}\b", text, re.IGNORECASE):
+        return f"it names the repository ({repo})"
+    if m := _PATH.search(text):
+        return f"it names a path ({m.group()})"
+    if _ISSUE.search(text):
+        return "it names an issue"
+    for name in names:
+        if name and name in text:
+            return f"it names {name}"
+    return None
+
 
 # What a reviewer asks of an agent-authored change on HOUSE_STYLE's grounds, in
 # every lane that reviews one.
