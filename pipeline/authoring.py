@@ -46,14 +46,15 @@ def general(text: str, *, names: Iterable[str] = ()) -> str | None:
     """Why `text` is not general enough for the standard or a fixer prompt
     (it names this repository, a path, an issue, or one of `names`), or None."""
     repo = settings.repo().split("/")[-1]
-    if repo and re.search(rf"\b{re.escape(repo)}\b", text, re.IGNORECASE):
+    # A name shorter than this reads as a plain word in prose.
+    if len(repo) >= 4 and re.search(rf"\b{re.escape(repo)}\b", text, re.IGNORECASE):
         return f"it names the repository ({repo})"
     if m := _PATH.search(text):
         return f"it names a path ({m.group()})"
     if _ISSUE.search(text):
         return "it names an issue"
     for name in names:
-        if name and name in text:
+        if name and re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text):
             return f"it names {name}"
     return None
 

@@ -110,7 +110,7 @@ def target(tmp_path, monkeypatch):
     """A git repository holding one target text, as TARGETS["T"]."""
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / "style.py").write_text(f'STYLE = """\\\n{TEXT}"""\n')
-    monkeypatch.setattr(fixer_lessons, "TARGETS", {"T": ("style.py", lambda: TEXT, 60)})
+    monkeypatch.setattr(fixer_lessons, "TARGETS", {"T": ("style.py", "STYLE", lambda: TEXT, 60)})
     return tmp_path
 
 
@@ -206,3 +206,37 @@ def test_the_agent_reads_nothing_but_its_prompt(monkeypatch):
     assert fixer_lessons.ask("p") == {"target": "T"}
     assert seen["allow_gh"] is False and seen["edit_root"] is None and seen["env_allow"] == ()
     assert seen["read_root"] == [seen["cwd"]]
+
+
+@pytest.mark.parametrize("new", [
+    '- Keep tests."""; __import__("os").system("sh"); _ = """x',
+    "- Name values plainly \\",
+    "- Name values\u2028plainly for what they hold.",
+])
+def test_an_edit_that_breaks_out_of_the_string_is_refused(target, new):
+    assert fixer_lessons.check(_edit(new=new), [_loss()], root=target)
+
+
+def test_an_edit_that_guts_the_line_is_refused(target):
+    assert fixer_lessons.check(_edit(new=""), [_loss()], root=target)
+    assert fixer_lessons.check(_edit(new="- Name."), [_loss()], root=target)
+
+
+def test_old_must_be_a_whole_line(target):
+    reason = fixer_lessons.check(_edit(old="Name values for what", new="Call values by"),
+                                 [_loss()], root=target)
+    assert reason and "line" in reason
+
+
+def test_names_match_whole_words_only(target):
+    loss = _loss(issue=5, ours=OURS.replace("src/q.ts", "src/main.ts"))
+    assert fixer_lessons.check(_edit(new="- Name values the way maintainers name them in 5 "
+                                         "places, and compare typed fields."), [loss],
+                               root=target) is None
+
+
+def test_an_edit_naming_an_identifier_from_a_loss_is_refused(target):
+    loss = _loss(ours=OURS.replace("sql('WHERE x = 1')", "buildWhereClause(x)"))
+    reason = fixer_lessons.check(_edit(new="- Never write a helper like buildWhereClause."),
+                                 [loss], root=target)
+    assert reason and "buildWhereClause" in reason

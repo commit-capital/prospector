@@ -8,8 +8,10 @@ fixer pin test, and the fixer gate decides whether it stays.
 from __future__ import annotations
 
 import argparse
+import ast
 import difflib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -28,17 +30,21 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # How many words a fixer prompt may grow by in one lesson.
 PROMPT_GROWTH_WORDS = 30
 
-# The texts a lesson may edit: each sits verbatim in its source file, so a line
-# of it anchors there. Each maps to (repo-relative file, its text now, the most
-# words it may hold after the edit).
-TARGETS: dict[str, tuple[str, Callable[[], str], int]] = {
-    "HOUSE_STYLE": ("pipeline/authoring.py", lambda: authoring.HOUSE_STYLE,
+# The texts a lesson may edit: each a module constant whose lines sit verbatim
+# in its source file, so a line of it anchors there. Each maps to
+# (repo-relative file, the constant's name, its text now, the most words it may
+# hold after the edit).
+TARGETS: dict[str, tuple[str, str, Callable[[], str], int]] = {
+    "HOUSE_STYLE": ("pipeline/authoring.py", "HOUSE_STYLE", lambda: authoring.HOUSE_STYLE,
                     authoring.HOUSE_STYLE_MAX_WORDS),
-    "solo_lane.PROMPT": ("issue_triage/solo_lane.py", lambda: solo_lane.PROMPT,
+    "solo_lane.PROMPT": ("issue_triage/solo_lane.py", "PROMPT", lambda: solo_lane.PROMPT,
                          len(solo_lane.PROMPT.split()) + PROMPT_GROWTH_WORDS),
-    "reproduce_issue.PROMPT": ("issue_triage/reproduce_issue.py", lambda: reproduce_issue.PROMPT,
+    "reproduce_issue.PROMPT": ("issue_triage/reproduce_issue.py", "PROMPT",
+                               lambda: reproduce_issue.PROMPT,
                                len(reproduce_issue.PROMPT.split()) + PROMPT_GROWTH_WORDS),
 }
+# An identifier distinctive enough to be a loss's own: camelCase or snake_case.
+_IDENTIFIER = re.compile(r"\b(?=\w*(?:[a-z][A-Z]|[a-z0-9]_[a-z]))[A-Za-z_]\w{3,}\b")
 
 Jobs = Callable[[set[str]], dict[str, eval_set._Job]]
 
@@ -100,13 +106,13 @@ def losses(store: Store, issues: IssueStore, *, jobs: Jobs | None = None,
     for stats in found[:limit]:
         case, craft = eval_set._case_of(stats), stats["craft"]
         inst = planned[case].instance
-        out.append(Loss(case=case, issue=int(stats["issue"]), title=inst.report_title,
+        out.append(Loss(case=case, issue=int(stats.get("issue") or 0), title=inst.report_title,
                         ours=craft_judge.source_only(str(stats.get("our_fix") or "")),
                         reference=craft_judge.source_only(inst.landed_diff),
                         result=craft["result"], reasons=list(craft.get("reasons") or []),
                         points=list(craft.get("points") or []),
                         flags=list(stats.get("flags") or []),
-                        notes=_notes(store, choices, int(stats["issue"]))))
+                        notes=_notes(store, choices, int(stats.get("issue") or 0))))
     return out
 
 
@@ -147,9 +153,15 @@ Answer with one JSON object and nothing else:
 """
 
 
+def _fenced(text: str) -> str:
+    """`text` in a code fence longer than any backtick run inside it."""
+    fence = "`" * max(3, *(len(run) + 1 for run in re.findall(r"`+", text)), 0)
+    return f"{fence}\n{text}\n{fence}"
+
+
 def build_prompt(losses: list[Loss]) -> str:
     targets = "\n\n".join(f"### {name} (at most {cap} words)\n\n```\n{text()}\n```"
-                           for name, (_, text, cap) in TARGETS.items())
+                           for name, (_, _, text, cap) in TARGETS.items())
     blocks = []
     for loss in losses:
         notes = "\n".join(f"- {n}" for n in loss.notes) or "(none)"
@@ -157,8 +169,8 @@ def build_prompt(losses: list[Loss]) -> str:
             f"### Case {loss.case} ({loss.result}; points {loss.points or 'none'}; "
             f"flags {loss.flags or 'none'})\n\n"
             f"{reproduce_issue.report_block(loss.title, '')}\n\n"
-            f"Our fix:\n```\n{review_issue_fix.clip(loss.ours)}\n```\n\n"
-            f"The maintainers' fix:\n```\n{review_issue_fix.clip(loss.reference)}\n```\n\n"
+            f"Our fix:\n{_fenced(review_issue_fix.clip(loss.ours))}\n\n"
+            f"The maintainers' fix:\n{_fenced(review_issue_fix.clip(loss.reference))}\n\n"
             "The judge's reasons:\n" + "\n".join(f"- {r}" for r in loss.reasons) + "\n\n"
             f"Operator notes:\n{notes}")
     return headless_agent.fill(PROMPT, {"__TARGETS__": targets,
@@ -174,34 +186,69 @@ def ask(prompt: str) -> dict:
 
 
 def _names(losses: list[Loss]) -> list[str]:
-    """What a general line must not name: each loss's changed files and issue."""
+    """What a general line must not name: each loss's changed files, the
+    distinctive identifiers its fixes add, and its issue number."""
     names: set[str] = set()
     for loss in losses:
-        for path in diffpaths.changed_paths(loss.ours + loss.reference):
+        diff = loss.ours + loss.reference
+        for path in diffpaths.changed_paths(diff):
             base = path.rsplit("/", 1)[-1]
             names.update(n for n in (base, base.split(".")[0]) if len(n) >= 4)
-        names.add(str(loss.issue))
+        for line in diff.splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                names.update(_IDENTIFIER.findall(line))
+        if len(str(loss.issue)) >= 3:
+            names.add(str(loss.issue))
     return sorted(names)
 
 
+def _constant(tree: ast.Module, name: str) -> ast.Assign | None:
+    return next((node for node in tree.body if isinstance(node, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)), None)
+
+
+def _only_constant_changed(before: str, after: str, name: str, value: str) -> bool:
+    """Whether `after` is `before` with module constant `name` now `value` and
+    nothing else changed."""
+    try:
+        trees = ast.parse(before), ast.parse(after)
+    except SyntaxError:
+        return False
+    nodes = [_constant(t, name) for t in trees]
+    if (nodes[1] is None or not isinstance(nodes[1].value, ast.Constant)
+            or nodes[1].value.value != value):
+        return False
+    for node in nodes:
+        if node is not None:
+            node.value = ast.Constant("")
+    return ast.dump(trees[0]) == ast.dump(trees[1])
+
+
 def check(edit: Edit, losses: list[Loss], *, root: Path = REPO_ROOT) -> str | None:
-    """Why the host refuses `edit`, or None: it must replace one line that
-    occurs once in its target's source and text, rewrite rather than extend
-    it, stay general, and keep the text within its cap."""
+    """Why the host refuses `edit`, or None: it must replace a whole line of
+    its target that occurs once in the source file with one printable line of
+    plain prose that rewrites rather than extends or guts it, stays general,
+    keeps the text within its cap, and leaves the file the same program with
+    only that constant changed."""
     if edit.target not in TARGETS:
         return f"{edit.target!r} is not one of {', '.join(TARGETS)}"
-    path, text, cap = TARGETS[edit.target]
-    if not edit.old.strip() or "\n" in edit.old or "\n" in edit.new:
-        return "old and new must each be one non-empty line"
-    if edit.old not in text() or (root / path).read_text().count(edit.old) != 1:
-        return "old must be a line of the text that occurs exactly once in its file"
+    path, constant, text, cap = TARGETS[edit.target]
+    source = (root / path).read_text()
+    if edit.old not in text().splitlines() or source.count(edit.old) != 1:
+        return "old must be a whole line of the text that occurs exactly once in its file"
+    if not edit.new.isprintable() or '"""' in edit.new or "\\" in edit.new:
+        return "new must be one line of printable text with no quotes-block or backslash"
     if edit.new.strip() == edit.old.strip() or edit.old.strip() in edit.new:
         return "new must rewrite old, not repeat or extend it"
+    if 2 * len(edit.new.split()) < len(edit.old.split()):
+        return "new must keep the rule, not cut it to under half its words"
     if why := authoring.general(edit.new, names=_names(losses)):
         return f"new is not general: {why}"
-    words = len(text().replace(edit.old, edit.new).split())
-    if words > cap:
-        return f"the text would hold {words} words, past its {cap}"
+    value = text().replace(edit.old, edit.new)
+    if len(value.split()) > cap:
+        return f"the text would hold {len(value.split())} words, past its {cap}"
+    if not _only_constant_changed(source, source.replace(edit.old, edit.new), constant, value):
+        return f"the edit would change more of {path} than {constant}"
     return None
 
 
