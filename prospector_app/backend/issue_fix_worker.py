@@ -1,30 +1,32 @@
 """The issue-fix review lane (`TRIAGE_ISSUE_FIX_WORKER=1`): drain the issues'
 fix requests on the machine that holds the sandbox.
 
-One request at a time, the oldest queued first. A `solve` may run on any
-issue-fix worker; every other action needs the files and held base of the run it
-acts on, so only the host that run names takes it. A claim is a compare-and-swap
-(`IssueStore.claim_fix_request`), so two machines never both take one.
-`fix_review_runner.run_request` carries it out. Between requests the lane reads
-the replies to questions asked on GitHub every half hour (`poll_replies`); every
-ten minutes it follows up its open pull requests (`issue_triage.followup`, as
-`TRIAGE_ISSUE_FIX_FOLLOWUP` allows), then ingests the in-scope issues updated
-since, starts another attempt where a reply or an edited
-report calls for one, and brings GitHub in line with their attempts
-(`issue_triage.public_loop`, as `TRIAGE_ISSUE_FIX_PUBLIC` allows); and, with `TRIAGE_ISSUE_FIX_HUNT=1`, it
-queues one `solve` for a fresh issue (`hunt`) within
-`settings.issue_fix_hunt_budget()` a UTC day, from the issues the triage
-judged fixable (`triage`, TRIAGE_BATCH of the newest before each hunt; the
-older backlog once, by `prospector triage-backfill`). The lane books every ending
-on the machine's `issue-fix` health and picks nothing while that lane is
+`settings.issue_fix_slots()` slot threads each claim and carry out one request
+at a time, the oldest queued first. A `solve` may run on any issue-fix worker;
+every other action needs the files and held base of the run it acts on, so only
+the host that run names takes it. A claim is a compare-and-swap
+(`IssueStore.claim_fix_request`), so two slots or machines never both take one.
+`fix_review_runner.run_request` carries it out. Beside the slots, one
+coordinator thread reads the replies to questions asked on GitHub every half
+hour (`poll_replies`); every ten minutes it follows up its open pull requests
+(`issue_triage.followup`, as `TRIAGE_ISSUE_FIX_FOLLOWUP` allows), then ingests
+the in-scope issues updated since, starts another attempt where a reply or an
+edited report calls for one, and brings GitHub in line with their attempts
+(`issue_triage.public_loop`, as `TRIAGE_ISSUE_FIX_PUBLIC` allows); and, with
+`TRIAGE_ISSUE_FIX_HUNT=1` and a slot free, it queues one `solve` for a fresh
+issue (`hunt`) within `settings.issue_fix_hunt_budget()` a UTC day, from the
+issues the triage judged fixable (`triage`, TRIAGE_BATCH of the newest before
+each hunt; the older backlog once, by `prospector triage-backfill`). The lane
+books every ending on the machine's `issue-fix` health and picks nothing while that lane is
 tripped. Agent work no operator asked for — a request automation queued, the
 hunter's pick, the routing of replies — waits while the machine's AI capacity
 is paused (`lane_health.capacity_open`); an operator's request runs regardless.
 
 A beat thread writes the lane's heartbeat to the shared store for as long as
-the drain loop runs. A request does not survive the process carrying it out, so
-on start and every RECLAIM_SECONDS the lane queues again, attempts unchanged,
-each `running` request no worker will finish (`recover_orphans`).
+the coordinator or any slot runs. A request does not survive the process
+carrying it out, so on start and every RECLAIM_SECONDS the lane queues again,
+attempts unchanged, each `running` request no worker will finish
+(`recover_orphans`).
 """
 from __future__ import annotations
 
@@ -46,7 +48,8 @@ from issue_triage import (
 )
 from issue_triage.issue_model import Issue
 from issue_triage.issue_store import IssueStore
-from pipeline import capacity, gates, headless_agent, prove, settings, storekit, verdict_log
+from pipeline import (capacity, gates, headless_agent, prove, settings, storekit, verdict_log,
+                      verify_driver)
 from pipeline.store import Store
 from prospector_app.backend import (data, lane_health, profile_gate, schema_gate, verify_worker, worker_log,
                                     worker_loops)
@@ -67,7 +70,7 @@ HUNT_SKIP_LABELS = frozenset({"enhancement", "documentation", "question"})
 # tries of the issue.
 FAILED_RETRY_COOLDOWN = timedelta(hours=1)
 HUNT_MAX_ATTEMPTS = 3
-# How often the drain loop looks for requests a worker that is gone left running.
+# How often the coordinator looks for requests a worker that is gone left running.
 RECLAIM_SECONDS = 300.0
 # The request actions that run no agent: a `propose` pushes a proven patch and
 # opens its pull request.
@@ -78,11 +81,12 @@ MECHANICAL_ACTIONS = frozenset({"propose"})
 STARTED_AT = storekit.now()
 
 stop = threading.Event()
-# Set when the drain loop has ended, its request in flight finished; the
-# heartbeat beats until then.
+# Set once the coordinator and every slot have ended, their requests in flight
+# finished; the heartbeat beats until then.
 _drained = threading.Event()
 _threads: list[threading.Thread] = []
-state: dict = {"current": None, "last_outcome": None}
+_state_lock = threading.Lock()
+state: dict = {"current": set(), "last_outcome": None}
 
 
 def enabled() -> bool:
@@ -94,8 +98,8 @@ def running() -> bool:
 
 
 def startup() -> bool:
-    """Start the lane's drain and beat threads when the flag is on. Returns
-    whether it runs."""
+    """Start the lane's coordinator, slot and beat threads when the flag is on.
+    Returns whether it runs."""
     if not enabled():
         return False
     if running():
@@ -103,44 +107,62 @@ def startup() -> bool:
     worker_log.install()
     stop.clear()
     _drained.clear()
-    _threads[:] = [
-        threading.Thread(target=_drain_loop, name="issue-fix-worker", daemon=True),
-        threading.Thread(target=_beat_loop, name="issue-fix-worker-beat", daemon=True),
-    ]
+    slots = settings.issue_fix_slots()
+    if slots > 1 and slots > (large := verify_driver.large_slots()):
+        print(f"[issue-fix] warning: {slots} issue-fix slots but {large} large sandbox "
+              f"slots; the extra slots wait on the sandbox", flush=True)
+    workers = [threading.Thread(target=_drain, name="issue-fix-worker", daemon=True),
+               *(threading.Thread(target=_slot_loop, name=f"issue-fix-slot-{i}", daemon=True)
+                 for i in range(slots))]
+    _threads[:] = [*workers, threading.Thread(target=_beat_loop, args=(workers,),
+                                              name="issue-fix-worker-beat", daemon=True)]
     for t in _threads:
         t.start()
     return True
 
 
 def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
-    """Signal the lane to stop and wait for it; a request in flight finishes."""
+    """Signal the lane to stop and wait up to `timeout` for it; the requests in
+    flight finish."""
     stop.set()
+    deadline = time.monotonic() + timeout
     for t in _threads:
-        t.join(timeout)
+        t.join(max(0.0, deadline - time.monotonic()))
     alive = running()
     if not alive:
         _threads.clear()
     return not alive
 
 
+def in_flight() -> list[int]:
+    """The issues this process's slots are carrying out."""
+    with _state_lock:
+        return sorted(state["current"])
+
+
 def beat() -> None:
-    """Write this lane's liveness, the issue in flight, and whether its hunter is
-    on to the shared store."""
+    """Write this lane's liveness, the issues in flight, and whether its hunter
+    is on to the shared store."""
+    ids = in_flight()
     data.store().save_issue_fix_worker({
         "host": settings.worker_id(), "pid": os.getpid(), "last_beat": storekit.now(),
-        "current_issue": state["current"], "autohunt": settings.issue_fix_hunt()})
+        "current_issue": min(ids) if ids else None, "current_issues": ids,
+        "autohunt": settings.issue_fix_hunt()})
 
 
-def _beat_loop() -> None:
-    """Beat until the drain loop has ended, then drop the heartbeat, so a lane
-    switched off is not read as one that went dark."""
-    while not _drained.is_set():
+def _beat_loop(workers: list[threading.Thread]) -> None:
+    """Beat until every one of `workers` has ended, then drop the heartbeat, so
+    a lane switched off is not read as one that went dark."""
+    while any(t.is_alive() for t in workers):
         try:
             if not schema_gate.paused("issue-fix"):
                 beat()
         except Exception:
             traceback.print_exc()
-        _drained.wait(POLL_SECONDS)
+        deadline = time.monotonic() + POLL_SECONDS
+        for t in workers:
+            t.join(max(0.0, deadline - time.monotonic()))
+    _drained.set()
     try:
         data.store().clear_issue_fix_worker(settings.worker_id())
     except Exception:
@@ -223,7 +245,8 @@ def run_once(store: IssueStore) -> bool:
     claimed = store.claim_fix_request(n, host=host, hosts=hosts)
     if claimed is None:
         return False
-    state["current"] = n
+    with _state_lock:
+        state["current"].add(n)
     print(f"[issue-fix] #{n}: {claimed['action']}", flush=True)
     metering = (capacity.metered(LANE) if _unattended(claimed, issues[n].fix_run)
                 else contextlib.nullcontext())
@@ -235,7 +258,8 @@ def run_once(store: IssueStore) -> bool:
         lane_health.trip_agent_lanes(str(e))
         return True
     finally:
-        state["current"] = None
+        with _state_lock:
+            state["current"].discard(n)
     state["last_outcome"] = f"#{n}: {outcome}"
     print(f"[issue-fix] #{n}: {outcome}", flush=True)
     after = store.load_issue(n)
@@ -447,14 +471,23 @@ def _reclaim(store: IssueStore) -> None:
               flush=True)
 
 
-def _drain_loop() -> None:
-    try:
-        _drain()
-    finally:
-        _drained.set()
+def _slot_loop() -> None:
+    """Claim and carry out requests, one at a time, until `stop`."""
+    store = IssueStore()
+    while not stop.is_set():
+        ran = False
+        try:
+            if (not schema_gate.paused("issue-fix") and not profile_gate.paused("issue-fix")
+                    and lane_health.open_or_retest(LANE)):
+                ran = run_once(store)
+        except Exception:
+            traceback.print_exc()
+        stop.wait(1.0 if ran else POLL_SECONDS)
 
 
 def _drain() -> None:
+    """The coordinator: reclaim, replies, the ten-minute pass, triage and the
+    hunt, each on its own timer while the slots run."""
     store = IssueStore()
     last_replies = 0.0
     last_followup = 0.0
@@ -464,7 +497,6 @@ def _drain() -> None:
         traceback.print_exc()
     last_reclaim = time.monotonic()
     while not stop.is_set():
-        ran = False
         if schema_gate.paused("issue-fix") or profile_gate.paused("issue-fix"):
             stop.wait(POLL_SECONDS)
             continue
@@ -473,17 +505,15 @@ def _drain() -> None:
                 last_reclaim = time.monotonic()
                 _reclaim(store)
             if lane_health.open_or_retest(LANE):
-                ran = run_once(store)
-                if not ran:
-                    if time.monotonic() - last_replies > REPLY_POLL_SECONDS:
-                        poll_replies(store)
-                        last_replies = time.monotonic()
-                    if time.monotonic() - last_followup > FOLLOWUP_POLL_SECONDS:
-                        _every_ten_minutes(store)
-                        last_followup = time.monotonic()
-                    if settings.issue_fix_hunt():
-                        triage(store, TRIAGE_BATCH)
-                        hunt(store)
+                if time.monotonic() - last_replies > REPLY_POLL_SECONDS:
+                    poll_replies(store)
+                    last_replies = time.monotonic()
+                if time.monotonic() - last_followup > FOLLOWUP_POLL_SECONDS:
+                    _every_ten_minutes(store)
+                    last_followup = time.monotonic()
+                if settings.issue_fix_hunt() and len(in_flight()) < settings.issue_fix_slots():
+                    triage(store, TRIAGE_BATCH)
+                    hunt(store)
         except Exception:
             traceback.print_exc()
-        stop.wait(1.0 if ran else POLL_SECONDS)
+        stop.wait(POLL_SECONDS)

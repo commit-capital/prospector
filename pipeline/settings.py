@@ -497,6 +497,11 @@ def sandbox_large_slots() -> int | None:
     return n or None
 
 
+def issue_fix_slots() -> int:
+    """How many issue-fix requests this machine carries out at once."""
+    return positive_int("TRIAGE_ISSUE_FIX_SLOTS", 1)
+
+
 def sandbox_large_cpus() -> int | None:
     """The CPUs each large-class sandbox phase gets, as TRIAGE_SANDBOX_LARGE_CPUS
     names it; None sizes it from the Docker VM (`verify_driver.large_cpus`)."""

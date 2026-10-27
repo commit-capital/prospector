@@ -137,6 +137,9 @@ SETTINGS: tuple[Setting, ...] = (
     _i("TRIAGE_SANDBOX_LARGE_SLOTS", "machine", "Large sandbox phases at once", "auto",
        "Compile, build and full-suite phases (10 GB each) run at once; auto sizes it to "
        "the Docker VM's memory.", maximum=8),
+    _i("TRIAGE_ISSUE_FIX_SLOTS", "machine", "Issue-fix runs at once", "1",
+       "How many issue-fix requests this machine carries out at once. Each needs a large "
+       "sandbox slot for its suite runs.", maximum=8),
     _i("TRIAGE_SANDBOX_LARGE_CPUS", "machine", "CPUs per large phase", "auto",
        "CPUs each large phase gets; auto shares the Docker VM's CPUs.", maximum=32),
     _i("TRIAGE_DOCKER_MIN_FREE_GB", "machine", "Docker disk warning (GB free)", "20",
