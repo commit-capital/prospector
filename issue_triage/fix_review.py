@@ -260,11 +260,13 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
     instruction; `notes` are words from anyone else — the issue's author, the
     code reviewers, CI — which the fix agent weighs as data. `rivals` names other
     authors' pull requests whose tests a `send-back` judges the fix by. A request that
-    retries a failed one of the same action carries its attempt count on.
-    (ok, reason)."""
-    issue = store.load_issue(n)
-    if issue is None:
+    retries a failed one of the same action carries its attempt count on. The
+    request, follow-up edit and thread entry land in one compare-and-swap, so a
+    request that lands first is never overwritten. (ok, reason)."""
+    got = store.stamped_issue(n)
+    if got is None:
         return False, f"issue #{n} is not in the store"
+    issue, stamp = got
     if (issue.raw.get("meta") or {}).get("state") != "open":
         return False, f"issue #{n} is closed"
     chosen = fix_choice.chosen(issue)
@@ -289,19 +291,21 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
         section["notes"] = notes.strip()
     if rivals:
         section["rivals"] = list(rivals)
-    issue.record_fix_request(section)
+    issue.stage_fix_request(section)
     fu = issue.fix_followup
     if action == "send-back" and source == "operator" and fu and "approved" in fu:
-        issue.record_fix_followup({k: v for k, v in fu.items() if k != "approved"})
+        issue.stage_fix_followup({k: v for k, v in fu.items() if k != "approved"})
     given = answer or {}
     words = "\n\n".join(w for w in ((guidance or "").strip(), str(given.get("text") or "").strip(),
                                     (notes or "").strip()) if w)
     if given.get("label"):
         words = f"Answered {given['label']}" + (f": {words}" if words else "")
     if words:
-        issue.append_fix_thread({"at": section["queued_at"], "by": by, "source": source,
-                                 "kind": "answer" if action == "answer" else "comment",
-                                 "action": action, "text": words})
+        issue.stage_fix_thread({"at": section["queued_at"], "by": by, "source": source,
+                                "kind": "answer" if action == "answer" else "comment",
+                                "action": action, "text": words})
+    if not store.save_issue_if(issue, stamp):
+        return False, "another request landed first"
     return True, f"{action} queued"
 
 

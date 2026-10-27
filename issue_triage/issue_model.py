@@ -269,8 +269,13 @@ class Issue:
         _stamp(self.rec, "fix_run", section, None)
         self._persist()
 
-    def record_fix_followup(self, section: dict) -> None:
+    def stage_fix_followup(self, section: dict) -> None:
+        """Stage the follow-up record without persisting, for a
+        compare-and-swap."""
         _stamp(self.rec, "fix_followup", section, None)
+
+    def record_fix_followup(self, section: dict) -> None:
+        self.stage_fix_followup(section)
         self._persist()
 
     def stage_fix_thread(self, entry: dict, *, keep: int = 50) -> None:
