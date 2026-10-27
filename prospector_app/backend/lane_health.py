@@ -117,6 +117,17 @@ def trip_kind(lane: str) -> str | None:
     return str(tripped.get("kind") or "unknown") if tripped else None
 
 
+def is_open(lane: str) -> bool:
+    """Whether `lane` is neither paused nor tripped; never runs a self-test."""
+    try:
+        return (not lane_pause.paused(settings.worker_id(), lane)
+                and not worker_health.is_tripped(worker_health.load(data.store(),
+                                                                    settings.worker_id()), lane))
+    except Exception:
+        traceback.print_exc()
+        return True
+
+
 def open_or_retest(lane: str) -> bool:
     """Whether `lane` may pick work now. A lane an operator paused
     (lane_pause) answers False. A tripped lane whose retest is due

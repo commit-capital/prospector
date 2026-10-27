@@ -17,8 +17,8 @@ edited report calls for one, and brings GitHub in line with their attempts
 issue (`hunt`) within `settings.issue_fix_hunt_budget()` a UTC day, from the
 issues the triage judged fixable (`triage`, TRIAGE_BATCH of the newest before
 each hunt; the older backlog once, by `prospector triage-backfill`). The lane
-books every ending on the machine's `issue-fix` health and picks nothing while that lane is
-tripped. Agent work no operator asked for — a request automation queued, the
+books every ending on the machine's `issue-fix` health and picks nothing while
+that lane is tripped; only the coordinator retests it. Agent work no operator asked for — a request automation queued, the
 hunter's pick, the routing of replies — waits while the machine's AI capacity
 is paused (`lane_health.capacity_open`); an operator's request runs regardless.
 
@@ -65,9 +65,8 @@ SHUTDOWN_TIMEOUT = 10.0
 HUNT_MAX_AGE = timedelta(days=30)
 HUNT_SKIP_LABELS = frozenset({"enhancement", "documentation", "question"})
 # A failed request is the machine's (a base or sandbox that could not run),
-# never a verdict on the issue. The hunter queues a
-# failed `solve` again once it has rested this long, up to HUNT_MAX_ATTEMPTS
-# tries of the issue.
+# never a verdict on the issue. The hunter queues a failed `solve` again once it
+# has rested this long, up to HUNT_MAX_ATTEMPTS tries of the issue.
 FAILED_RETRY_COOLDOWN = timedelta(hours=1)
 HUNT_MAX_ATTEMPTS = 3
 # How often the coordinator looks for requests a worker that is gone left running.
@@ -86,7 +85,7 @@ stop = threading.Event()
 _drained = threading.Event()
 _threads: list[threading.Thread] = []
 _state_lock = threading.Lock()
-state: dict = {"current": set(), "last_outcome": None}
+state: dict[str, set[int]] = {"current": set()}
 
 
 def enabled() -> bool:
@@ -232,7 +231,8 @@ def next_request(issues: dict, host: str) -> int | None:
 
 
 def run_once(store: IssueStore) -> bool:
-    """Claim and carry out one request. Whether one ran."""
+    """Claim and carry out one request. Whether to look again at once: one
+    ran, or another slot or machine claimed the pick first."""
     host = settings.worker_id()
     # Only the queued rows, filtered server-side: this runs every POLL_SECONDS
     # on every worker, and reading the whole issue table each tick was most of
@@ -245,7 +245,7 @@ def run_once(store: IssueStore) -> bool:
     hosts = None if req.get("action") == "solve" else frozenset({host})
     claimed = store.claim_fix_request(n, host=host, hosts=hosts)
     if claimed is None:
-        return False
+        return True
     with _state_lock:
         state["current"].add(n)
     print(f"[issue-fix] #{n}: {claimed['action']}", flush=True)
@@ -261,7 +261,6 @@ def run_once(store: IssueStore) -> bool:
     finally:
         with _state_lock:
             state["current"].discard(n)
-    state["last_outcome"] = f"#{n}: {outcome}"
     print(f"[issue-fix] #{n}: {outcome}", flush=True)
     after = store.load_issue(n)
     faulted = bool(after and (after.fix_run or {}).get("fault"))
@@ -298,12 +297,9 @@ def poll_replies(store: IssueStore) -> int:
     return queued
 
 
-def _hunted_today(issues: dict) -> int:
-    midnight = storekit.utc_midnight()
-    return sum(1 for i in issues.values()
-               if (i.fix_request or {}).get("source") == "hunter"
-               and (at := storekit.parse_ts((i.fix_request or {}).get("queued_at"))) is not None
-               and at >= midnight)
+def _budget_spent(store: IssueStore) -> bool:
+    since = storekit.utc_midnight().isoformat(timespec="seconds")
+    return store.hunted_since(since) >= settings.issue_fix_hunt_budget()
 
 
 def _retryable(req: dict | None) -> bool:
@@ -425,8 +421,7 @@ def fill(store: IssueStore, want: int) -> list[int]:
     for _, n, tri in sorted((p for p in picks if p[2].get("verdict") == "go"), reverse=True):
         if len(queued) >= want:
             break
-        hunted = _hunted_today(store.issues_matching(("fix_request", "source"), ["hunter"]))
-        if hunted >= settings.issue_fix_hunt_budget() or not lane_health.capacity_open(LANE):
+        if _budget_spent(store) or not lane_health.capacity_open(LANE):
             break
         ok, _ = fix_review.queue(store, n, "solve", by="hunter", source="hunter",
                                  guidance=tri.get("guidance"), notes=tri.get("notes"))
@@ -486,11 +481,20 @@ def _slot_loop() -> None:
         ran = False
         try:
             if (not schema_gate.paused("issue-fix") and not profile_gate.paused("issue-fix")
-                    and lane_health.open_or_retest(LANE)):
+                    and lane_health.is_open(LANE)):
                 ran = run_once(store)
         except Exception:
             traceback.print_exc()
         stop.wait(1.0 if ran else POLL_SECONDS)
+
+
+def _idle(store: IssueStore, slots: int) -> int:
+    """The slots no request in flight or queued `solve` will fill; at or below
+    zero when none is idle."""
+    queued_solves = sum(
+        1 for i in store.issues_matching(("fix_request", "status"), ["queued"]).values()
+        if (i.fix_request or {}).get("action") == "solve")
+    return slots - len(in_flight()) - queued_solves
 
 
 def _drain(slots: int) -> None:
@@ -519,14 +523,10 @@ def _drain(slots: int) -> None:
                 if time.monotonic() - last_followup > FOLLOWUP_POLL_SECONDS:
                     _every_ten_minutes(store)
                     last_followup = time.monotonic()
-                if settings.issue_fix_hunt():
-                    queued_solves = sum(
-                        1 for i in store.issues_matching(("fix_request", "status"), ["queued"]).values()
-                        if (i.fix_request or {}).get("action") == "solve")
-                    idle = slots - len(in_flight()) - queued_solves
-                    if idle > 0:
-                        triage(store, TRIAGE_BATCH)
-                        fill(store, idle)
+                if (settings.issue_fix_hunt() and not _budget_spent(store)
+                        and (idle := _idle(store, slots)) > 0):
+                    triage(store, TRIAGE_BATCH)
+                    fill(store, idle)
         except Exception:
             traceback.print_exc()
         stop.wait(POLL_SECONDS)

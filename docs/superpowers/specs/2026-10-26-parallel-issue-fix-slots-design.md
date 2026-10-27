@@ -66,7 +66,7 @@ Three rules carry this, and each needs a test.
    (`fix_request`), and `fix_review.queue` refuses while one is `queued` or
    `running` (`IN_FLIGHT`), so one issue can never carry two runs.
 3. **One hunter per machine.** Only the coordinator calls `hunt` and `triage`,
-   so the daily-budget count (`_hunted_today`) and the pick run single-threaded
+   so the daily-budget count (`IssueStore.hunted_since`) and the pick run single-threaded
    here.
 
 `fix_review.queue` is a read-check-write, not a compare-and-swap, so two

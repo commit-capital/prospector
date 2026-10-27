@@ -259,8 +259,74 @@ def test_a_fill_keeps_to_the_daily_budget_across_calls(hunting, monkeypatch):
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_HUNT_BUDGET", "1")
     stale = issue_data.issues()
     monkeypatch.setattr(issue_data, "issues", lambda: stale)
+    monkeypatch.setattr(hunting, "issues_matching", lambda *a: pytest.fail("read records"))
     assert issue_fix_worker.fill(hunting, 3) == [2]
     assert issue_fix_worker.fill(hunting, 3) == []
+
+
+class _OnePass(threading.Event):
+    """A `stop` that ends a loop after its first wait, recording each wait."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waits: list[float] = []
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waits.append(timeout or 0.0)
+        self.set()
+        return True
+
+
+@pytest.fixture
+def one_pass(monkeypatch) -> _OnePass:
+    one = _OnePass()
+    monkeypatch.setattr(issue_fix_worker, "stop", one)
+    monkeypatch.setattr(issue_fix_worker.schema_gate, "paused", lambda lane: False)
+    monkeypatch.setattr(issue_fix_worker.profile_gate, "paused", lambda lane: False)
+    return one
+
+
+@pytest.mark.parametrize("budget, triaged", [("1", False), ("2", True)])
+def test_a_spent_budget_skips_the_hunt(hunting, monkeypatch, one_pass, budget, triaged):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_HUNT", "1")
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_HUNT_BUDGET", budget)
+    assert issue_fix_worker.hunt(hunting) == 2
+    calls: list[str] = []
+    monkeypatch.setattr(issue_fix_worker, "IssueStore", lambda: hunting)
+    monkeypatch.setattr(issue_fix_worker, "_reclaim", lambda s: None)
+    monkeypatch.setattr(issue_fix_worker, "poll_replies", lambda s: 0)
+    monkeypatch.setattr(issue_fix_worker, "_every_ten_minutes", lambda s: None)
+    monkeypatch.setattr(lane_health, "open_or_retest", lambda lane: True)
+    monkeypatch.setattr(issue_fix_worker, "triage", lambda s, n: calls.append("triage") or [])
+    issue_fix_worker._drain(3)
+    assert (calls == ["triage"]) is triaged
+
+
+def test_idle_slots_are_those_no_solve_fills(store, monkeypatch):
+    assert issue_fix_worker._idle(store, 3) == 3
+    fix_review.queue(store, 1, "solve", by="op")
+    monkeypatch.setattr(issue_fix_worker, "in_flight", lambda: [7])
+    assert issue_fix_worker._idle(store, 3) == 1
+    store.edit_issue(2).record_fix_run({"ending": "fixed", "patch": "p", "host": "studio"})
+    fix_review.queue(store, 2, "propose", by="op")
+    assert issue_fix_worker._idle(store, 3) == 1
+    assert issue_fix_worker._idle(store, 2) == 0
+    assert issue_fix_worker._idle(store, 1) == -1
+
+
+def test_no_idle_slot_hunts_nothing(hunting, monkeypatch, one_pass):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_HUNT", "1")
+    calls: list[str] = []
+    monkeypatch.setattr(issue_fix_worker, "IssueStore", lambda: hunting)
+    monkeypatch.setattr(issue_fix_worker, "_reclaim", lambda s: None)
+    monkeypatch.setattr(issue_fix_worker, "poll_replies", lambda s: 0)
+    monkeypatch.setattr(issue_fix_worker, "_every_ten_minutes", lambda s: None)
+    monkeypatch.setattr(lane_health, "open_or_retest", lambda lane: True)
+    monkeypatch.setattr(issue_fix_worker, "_idle", lambda s, slots: 0)
+    monkeypatch.setattr(issue_fix_worker, "triage", lambda s, n: calls.append("triage") or [])
+    monkeypatch.setattr(issue_fix_worker, "fill", lambda s, want: calls.append("fill") or [])
+    issue_fix_worker._drain(3)
+    assert calls == []
 
 
 def test_a_fill_stops_when_capacity_closes_midway(hunting, capacity, monkeypatch):
@@ -494,7 +560,7 @@ def test_racing_claims_on_one_request_land_once(store):
 def slots(monkeypatch):
     """Slot threads to start, joined with `stop` set however the test ends."""
     monkeypatch.setattr(issue_fix_worker, "POLL_SECONDS", 0.01)
-    monkeypatch.setattr(lane_health, "open_or_retest", lambda lane: True)
+    monkeypatch.setattr(lane_health, "is_open", lambda lane: True)
     monkeypatch.setattr(issue_fix_worker.schema_gate, "paused", lambda lane: False)
     monkeypatch.setattr(issue_fix_worker.profile_gate, "paused", lambda lane: False)
     started: list[threading.Thread] = []
@@ -533,12 +599,18 @@ def test_slots_run_every_request_once_and_no_issue_twice(store, monkeypatch, slo
         fix_review.queue(store, n, "solve", by="op")
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_SLOTS", "3")
     ran: list[int] = []
-    peak = [0]
+    together: list[list[int]] = []
+    # The first two requests each wait for the other, so two slots run at once.
+    overlap = threading.Barrier(
+        2, action=lambda: together.append(issue_fix_worker.in_flight()), timeout=5)
+    lock = threading.Lock()
 
     def run_request(s, n, req, *, on_step):
-        ran.append(n)
-        peak[0] = max(peak[0], len(issue_fix_worker.in_flight()))
-        time.sleep(0.05)
+        with lock:
+            ran.append(n)
+            first_two = len(ran) <= 2
+        if first_two:
+            overlap.wait()
         return "done", "ok"
 
     monkeypatch.setattr(fix_review_runner, "run_request", run_request)
@@ -548,8 +620,35 @@ def test_slots_run_every_request_once_and_no_issue_twice(store, monkeypatch, slo
     issue_fix_worker.stop.set()
     for t in workers:
         t.join(5)
-    assert sorted(ran) == [1, 2, 3, 4, 5, 6] and peak[0] > 1
+    assert sorted(ran) == [1, 2, 3, 4, 5, 6]
+    assert len(together) == 1 and len(together[0]) == 2
     assert all(store.load_issue(n).fix_request["host"] == "studio" for n in range(1, 7))
+
+
+def test_a_slot_never_retests_a_tripped_lane(store, monkeypatch, one_pass):
+    rec = {"lanes": {"issue-fix": {"tripped": {"at": "2020-01-01T00:00:00+00:00",
+                                               "kind": "sandbox", "reason": "r"}}}}
+    retests: list[str] = []
+    monkeypatch.setattr(lane_health.worker_health, "load", lambda st, host: rec)
+    monkeypatch.setattr(lane_health.lane_pause, "paused", lambda host, lane: False)
+    monkeypatch.setattr(lane_health.worker_selftest, "run", lambda kind: retests.append(kind) or "down")
+    monkeypatch.setattr(issue_fix_worker, "run_once", lambda s: pytest.fail("picked"))
+    monkeypatch.setattr(issue_fix_worker, "IssueStore", lambda: store)
+    issue_fix_worker._slot_loop()
+    assert retests == []
+    monkeypatch.setattr(lane_health, "note_account", lambda: None)
+    monkeypatch.setattr(lane_health, "_update", lambda fn: {})
+    assert not lane_health.open_or_retest("issue-fix") and retests == ["sandbox"]
+
+
+def test_a_lost_claim_looks_again_at_once(store, monkeypatch, one_pass):
+    fix_review.queue(store, 2, "solve", by="op")
+    monkeypatch.setattr(store, "claim_fix_request", lambda n, **kw: None)
+    monkeypatch.setattr(lane_health, "is_open", lambda lane: True)
+    monkeypatch.setattr(issue_fix_worker, "IssueStore", lambda: store)
+    assert issue_fix_worker.run_once(store)
+    issue_fix_worker._slot_loop()
+    assert one_pass.waits == [1.0]
 
 
 def test_the_heartbeat_outlives_a_slot_still_running(store, beats, monkeypatch, slots):
@@ -595,6 +694,8 @@ def test_more_slots_than_large_sandbox_slots_warns(monkeypatch, capsys):
         assert issue_fix_worker.startup()
     finally:
         issue_fix_worker.shutdown(5)
+        issue_fix_worker.stop.clear()
+        issue_fix_worker._drained.clear()
     warnings = [line for line in capsys.readouterr().out.splitlines()
                 if line.startswith("[issue-fix] warning:")]
     assert len(warnings) == 1 and "4" in warnings[0] and "2" in warnings[0]
