@@ -18,9 +18,10 @@ issue (`hunt`) within `settings.issue_fix_hunt_budget()` a UTC day, from the
 issues the triage judged fixable (`triage`, TRIAGE_BATCH of the newest before
 each hunt; the older backlog once, by `prospector triage-backfill`). The lane
 books every ending on the machine's `issue-fix` health and picks nothing while
-that lane is tripped; only the coordinator retests it. Agent work no operator asked for — a request automation queued, the
-hunter's pick, the routing of replies — waits while the machine's AI capacity
-is paused (`lane_health.capacity_open`); an operator's request runs regardless.
+that lane is tripped; only the coordinator retests it. Agent work no operator
+asked for — a request automation queued, the hunter's pick, the routing of
+replies — waits while the machine's AI capacity is paused
+(`lane_health.capacity_open`); an operator's request runs regardless.
 
 A beat thread writes the lane's heartbeat to the shared store for as long as
 the coordinator or any slot runs. A request does not survive the process

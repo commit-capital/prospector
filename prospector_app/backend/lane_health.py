@@ -1,9 +1,10 @@
 """What the two workers call to keep their lane health current.
 
 Every ending goes through `note_failure` or `note_success`; the drain loops ask
-`open_or_retest` before each pick. The policy is pipeline/worker_health.py;
-the escalation is prospector_app/backend/escalation.py; this is the glue that
-knows this machine's worker id and runs the self-test.
+`open_or_retest` before each pick, and the issue-fix slots ask `is_open`. The
+policy is pipeline/worker_health.py; the escalation is
+prospector_app/backend/escalation.py; this is the glue that knows this
+machine's worker id and runs the self-test.
 """
 from __future__ import annotations
 
@@ -120,9 +121,9 @@ def trip_kind(lane: str) -> str | None:
 def is_open(lane: str) -> bool:
     """Whether `lane` is neither paused nor tripped; never runs a self-test."""
     try:
-        return (not lane_pause.paused(settings.worker_id(), lane)
-                and not worker_health.is_tripped(worker_health.load(data.store(),
-                                                                    settings.worker_id()), lane))
+        me = settings.worker_id()
+        return (not lane_pause.paused(me, lane)
+                and not worker_health.is_tripped(worker_health.load(data.store(), me), lane))
     except Exception:
         traceback.print_exc()
         return True
