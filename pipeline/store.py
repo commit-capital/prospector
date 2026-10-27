@@ -1442,10 +1442,9 @@ class Store:
         {host, pid, last_beat, current_issue, current_issues, autohunt}}}`) —
         which machines' issue-fix lanes are up, when each last beat, the issues
         each is carrying out (`current_issue` the lowest, None when idle), and
-        whether each one's hunter is on. Orphan
-        recovery reads it to tell a claim a live lane holds from one a dead
-        lane left; the machine roster and the offline watch read it beside the
-        verify and fix registries."""
+        whether each one's hunter is on. Orphan recovery reads it to tell a
+        claim a live lane holds from one a dead lane left; the machine roster
+        and the offline watch read it beside the verify and fix registries."""
         return self._load_registry("issue_fix_worker", {"hosts": {}})
 
     def save_issue_fix_worker(self, record: dict) -> None:
