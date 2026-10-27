@@ -724,6 +724,7 @@ def atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
     try:
+        os.fchmod(fd, 0o644)
         with os.fdopen(fd, "w") as f:
             f.write(text)
         os.replace(tmp, path)

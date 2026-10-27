@@ -1,6 +1,7 @@
 """storekit: the generic validated-store + freshness primitives shared by the PR
 and issue stores."""
 import os
+import stat
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -210,7 +211,20 @@ def test_atomic_write_text_replaces_whole_and_leaves_no_temp(tmp_path):
     storekit.atomic_write_text(path, "a")
     storekit.atomic_write_text(path, "b")
     assert path.read_text() == "b"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
     assert list(out.iterdir()) == [path]
+
+
+def test_failed_replace_leaves_no_temp(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+
+    def boom(src, dst):
+        raise OSError("boom")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        storekit.atomic_write_text(out / "x.json", "a")
+    assert list(out.iterdir()) == []
 
 
 def test_concurrent_atomic_writes_use_distinct_temp_files(tmp_path, monkeypatch):
