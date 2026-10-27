@@ -56,6 +56,8 @@ from prospector_app.backend import (data, lane_health, profile_gate, schema_gate
 
 LANE = "issue-fix"
 POLL_SECONDS = 20.0
+# How soon a slot looks again after it ran a request or lost its pick to another.
+BUSY_POLL_SECONDS = 1.0
 REPLY_POLL_SECONDS = 30 * 60
 # How often an idle worker follows up the pull requests it proposed and syncs
 # the public loop.
@@ -485,7 +487,7 @@ def _slot_loop() -> None:
                 ran = run_once(store)
         except Exception:
             traceback.print_exc()
-        stop.wait(1.0 if ran else POLL_SECONDS)
+        stop.wait(BUSY_POLL_SECONDS if ran else POLL_SECONDS)
 
 
 def _idle(store: IssueStore, slots: int) -> int:

@@ -560,6 +560,7 @@ def test_racing_claims_on_one_request_land_once(store):
 def slots(monkeypatch):
     """Slot threads to start, joined with `stop` set however the test ends."""
     monkeypatch.setattr(issue_fix_worker, "POLL_SECONDS", 0.01)
+    monkeypatch.setattr(issue_fix_worker, "BUSY_POLL_SECONDS", 0.01)
     monkeypatch.setattr(lane_health, "is_open", lambda lane: True)
     monkeypatch.setattr(issue_fix_worker.schema_gate, "paused", lambda lane: False)
     monkeypatch.setattr(issue_fix_worker.profile_gate, "paused", lambda lane: False)
@@ -648,7 +649,7 @@ def test_a_lost_claim_looks_again_at_once(store, monkeypatch, one_pass):
     monkeypatch.setattr(issue_fix_worker, "IssueStore", lambda: store)
     assert issue_fix_worker.run_once(store)
     issue_fix_worker._slot_loop()
-    assert one_pass.waits == [1.0]
+    assert one_pass.waits == [issue_fix_worker.BUSY_POLL_SECONDS]
 
 
 def test_the_heartbeat_outlives_a_slot_still_running(store, beats, monkeypatch, slots):
