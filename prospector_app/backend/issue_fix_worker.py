@@ -111,7 +111,8 @@ def startup() -> bool:
     if slots > 1 and slots > (large := verify_driver.large_slots()):
         print(f"[issue-fix] warning: {slots} issue-fix slots but {large} large sandbox "
               f"slots; the extra slots wait on the sandbox", flush=True)
-    workers = [threading.Thread(target=_drain, name="issue-fix-worker", daemon=True),
+    workers = [threading.Thread(target=_drain, args=(slots,), name="issue-fix-worker",
+                      daemon=True),
                *(threading.Thread(target=_slot_loop, name=f"issue-fix-slot-{i}", daemon=True)
                  for i in range(slots))]
     _threads[:] = [*workers, threading.Thread(target=_beat_loop, args=(workers,),
@@ -407,29 +408,36 @@ def _judge(store: IssueStore, issue: Issue, base: prove.PinnedBase, trigger: str
     return True
 
 
-def hunt(store: IssueStore) -> int | None:
-    """Queue a `solve` for the most promising huntable issue the fixability
-    triage judged `go` at its current content, a maintainer's ahead of any
-    other, then an easy fix, then by fixability, then the newest
-    (`fixability.hunt_key`), within the day's budget and while the lane's AI
-    capacity is open. The triage's replies ride as notes. The issue queued, or
-    None. Reads the app's issue snapshot; the queue write re-checks the issue
-    on the store."""
+def fill(store: IssueStore, want: int) -> list[int]:
+    """Queue up to `want` `solve`s for the most promising huntable issues the
+    fixability triage judged `go` at their current content, a maintainer's
+    ahead of any other, then an easy fix, then by fixability, then the newest
+    (`fixability.hunt_key`), never past the day's budget and only while the
+    lane's AI capacity is open. The triage's replies ride as notes. The issues
+    queued. Picks come from the app's issue snapshot; the day's count is read
+    from the store, and each queue write re-checks the issue there."""
     from prospector_app.backend import issue_data
 
+    queued: list[int] = []
     issues = issue_data.issues()
-    if _hunted_today(issues) >= settings.issue_fix_hunt_budget():
-        return None
     picks = [(fixability.hunt_key(i, maintainer=m), n, fixability.current(i) or {})
              for m, n, i in _huntable(issues)]
     for _, n, tri in sorted((p for p in picks if p[2].get("verdict") == "go"), reverse=True):
-        if not lane_health.capacity_open(LANE):
-            return None
+        if len(queued) >= want:
+            break
+        hunted = _hunted_today(store.issues_matching(("fix_request", "source"), ["hunter"]))
+        if hunted >= settings.issue_fix_hunt_budget() or not lane_health.capacity_open(LANE):
+            break
         ok, _ = fix_review.queue(store, n, "solve", by="hunter", source="hunter",
                                  guidance=tri.get("guidance"), notes=tri.get("notes"))
         if ok:
-            return n
-    return None
+            queued.append(n)
+    return queued
+
+
+def hunt(store: IssueStore) -> int | None:
+    """`fill` for one slot: the issue queued, or None."""
+    return next(iter(fill(store, 1)), None)
 
 
 def _follow_up(store: IssueStore) -> None:
@@ -485,9 +493,9 @@ def _slot_loop() -> None:
         stop.wait(1.0 if ran else POLL_SECONDS)
 
 
-def _drain() -> None:
+def _drain(slots: int) -> None:
     """The coordinator: reclaim, replies, the ten-minute pass, triage and the
-    hunt, each on its own timer while the slots run."""
+    hunt, each on its own timer while the `slots` slot threads run."""
     store = IssueStore()
     last_replies = 0.0
     last_followup = 0.0
@@ -511,9 +519,14 @@ def _drain() -> None:
                 if time.monotonic() - last_followup > FOLLOWUP_POLL_SECONDS:
                     _every_ten_minutes(store)
                     last_followup = time.monotonic()
-                if settings.issue_fix_hunt() and len(in_flight()) < settings.issue_fix_slots():
-                    triage(store, TRIAGE_BATCH)
-                    hunt(store)
+                if settings.issue_fix_hunt():
+                    queued_solves = sum(
+                        1 for i in store.issues_matching(("fix_request", "status"), ["queued"]).values()
+                        if (i.fix_request or {}).get("action") == "solve")
+                    idle = slots - len(in_flight()) - queued_solves
+                    if idle > 0:
+                        triage(store, TRIAGE_BATCH)
+                        fill(store, idle)
         except Exception:
             traceback.print_exc()
         stop.wait(POLL_SECONDS)

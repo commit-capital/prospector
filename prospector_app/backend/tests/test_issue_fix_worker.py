@@ -251,6 +251,30 @@ def test_the_hunter_keeps_to_its_daily_budget(hunting, monkeypatch):
     assert issue_fix_worker.hunt(hunting) is None
 
 
+def test_a_fill_queues_one_per_idle_slot(hunting):
+    assert issue_fix_worker.fill(hunting, 3) == [2, 1]
+
+
+def test_a_fill_keeps_to_the_daily_budget_across_calls(hunting, monkeypatch):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_HUNT_BUDGET", "1")
+    stale = issue_data.issues()
+    monkeypatch.setattr(issue_data, "issues", lambda: stale)
+    assert issue_fix_worker.fill(hunting, 3) == [2]
+    assert issue_fix_worker.fill(hunting, 3) == []
+
+
+def test_a_fill_stops_when_capacity_closes_midway(hunting, capacity, monkeypatch):
+    queue = fix_review.queue
+
+    def closing(*args, **kwargs):
+        result = queue(*args, **kwargs)
+        capacity["open"] = False
+        return result
+
+    monkeypatch.setattr(fix_review, "queue", closing)
+    assert issue_fix_worker.fill(hunting, 3) == [2]
+
+
 def test_the_hunter_queues_nothing_while_capacity_is_paused(hunting, capacity):
     capacity["open"] = False
     assert issue_fix_worker.hunt(hunting) is None
@@ -539,7 +563,7 @@ def test_the_heartbeat_outlives_a_slot_still_running(store, beats, monkeypatch, 
 
     monkeypatch.setattr(fix_review_runner, "run_request", run_request)
     monkeypatch.setattr(issue_fix_worker, "IssueStore", lambda: store)
-    monkeypatch.setattr(issue_fix_worker, "_drain", lambda: None)
+    monkeypatch.setattr(issue_fix_worker, "_drain", lambda slots: None)
     monkeypatch.setattr(issue_fix_worker, "_threads", [])
     monkeypatch.setattr(issue_fix_worker.worker_log, "install", lambda: None)
     monkeypatch.setattr(issue_fix_worker.verify_driver, "large_slots", lambda: 8)
