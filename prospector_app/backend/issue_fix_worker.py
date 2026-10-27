@@ -23,9 +23,8 @@ is paused (`lane_health.capacity_open`); an operator's request runs regardless.
 
 A beat thread writes the lane's heartbeat to the shared store for as long as
 the drain loop runs. A request does not survive the process carrying it out, so
-on start and every RECLAIM_SECONDS the lane ends `failed` each `running` request
-no worker will finish (`recover_orphans`), which the operator or the hunter
-then retries.
+on start and every RECLAIM_SECONDS the lane queues again, attempts unchanged,
+each `running` request no worker will finish (`recover_orphans`).
 """
 from __future__ import annotations
 
@@ -62,8 +61,8 @@ SHUTDOWN_TIMEOUT = 10.0
 # How recent an issue the hunter picks.
 HUNT_MAX_AGE = timedelta(days=30)
 HUNT_SKIP_LABELS = frozenset({"enhancement", "documentation", "question"})
-# A failed request is the machine's (a worker restarted mid-run, a base or
-# sandbox that could not run), never a verdict on the issue. The hunter queues a
+# A failed request is the machine's (a base or sandbox that could not run),
+# never a verdict on the issue. The hunter queues a
 # failed `solve` again once it has rested this long, up to HUNT_MAX_ATTEMPTS
 # tries of the issue.
 FAILED_RETRY_COOLDOWN = timedelta(hours=1)
@@ -149,15 +148,15 @@ def _beat_loop() -> None:
 
 
 def recover_orphans(store: IssueStore) -> list[int]:
-    """End `failed` the `running` requests no worker will finish: this host's
+    """Queue again the `running` requests no worker will finish: this host's
     own claimed before this process started, and any host's whose issue-fix
     heartbeat has been silent past worker_health.OFFLINE_AFTER_SECONDS (a host
     with no heartbeat is judged by its claim's age). A claim a live lane holds
     is its run, never touched from here, and a request that ended since it was
-    read is left as it ended. Returns the issues marked."""
+    read is left as it ended. Returns the issues requeued."""
     me = settings.worker_id()
     registry = data.store().load_issue_fix_worker()
-    marked: list[int] = []
+    requeued_issues: list[int] = []
     for n, issue in sorted(store.issues_matching(("fix_request", "status"), ["running"]).items()):
         req = issue.fix_request or {}
         host = req.get("host")
@@ -170,7 +169,7 @@ def recover_orphans(store: IssueStore) -> list[int]:
             who = f"the issue-fix worker on {host} went offline"
         else:
             continue
-        reason = f"interrupted: {who} mid-{req.get('action')}"
+        note = f"requeued: {who} mid-{req.get('action')}"
         got = store.stamped_issue(n)
         if got is None:
             continue
@@ -178,12 +177,12 @@ def recover_orphans(store: IssueStore) -> list[int]:
         if current.fix_request != req:
             continue
         now = storekit.now()
-        current.stage_fix_request({**req, "status": "failed", "finished_at": now,
-                                   "reason": reason})
-        current.stage_fix_thread({"at": now, "by": "worker", "kind": "note", "text": reason})
+        requeued = {k: v for k, v in req.items() if k not in ("host", "started_at")}
+        current.stage_fix_request({**requeued, "status": "queued"})
+        current.stage_fix_thread({"at": now, "by": "worker", "kind": "note", "text": note})
         if store.save_issue_if(current, stamp):
-            marked.append(n)
-    return marked
+            requeued_issues.append(n)
+    return requeued_issues
 
 
 def _unattended(req: dict, run: dict | None) -> bool:
@@ -442,9 +441,9 @@ def _every_ten_minutes(store: IssueStore) -> None:
 
 
 def _reclaim(store: IssueStore) -> None:
-    marked = recover_orphans(store)
-    if marked:
-        print(f"[issue-fix] marked failed, left running by a worker that is gone: {marked}",
+    requeued = recover_orphans(store)
+    if requeued:
+        print(f"[issue-fix] requeued, left running by a worker that is gone: {requeued}",
               flush=True)
 
 

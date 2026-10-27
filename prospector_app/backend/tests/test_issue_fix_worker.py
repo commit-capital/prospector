@@ -449,17 +449,31 @@ def test_a_lane_that_has_drained_drops_its_heartbeat(store, beats, monkeypatch):
     assert "studio" not in beats.load_issue_fix_worker()["hosts"]
 
 
-def test_a_claim_this_host_made_before_the_process_started_ends_failed(store, beats, monkeypatch):
+def test_a_claim_this_host_made_before_the_process_started_is_requeued(store, beats, monkeypatch):
     beats.save_issue_fix_worker({"host": "studio", "last_beat": _ago()})
     _claimed(store, 1, "studio", at=_ago(minutes=5))
     monkeypatch.setattr(issue_fix_worker, "STARTED_AT", _ago(minutes=1))
     assert issue_fix_worker.recover_orphans(store) == [1]
     issue = store.load_issue(1)
-    status, reason = fix_review.fix_status(issue)
-    assert status == "failed" and reason.startswith("interrupted:") and "restarted" in reason
-    assert issue.fix_request["finished_at"]
-    assert issue.fix_thread[-1]["by"] == "worker" and issue.fix_thread[-1]["text"] == reason
-    assert fix_review.queue(store, 1, "solve", by="op")[0]
+    req = issue.fix_request
+    assert req["status"] == "queued" and req["attempts"] == 1
+    assert not {"host", "started_at", "finished_at", "reason"} & req.keys()
+    note = issue.fix_thread[-1]
+    assert note["by"] == "worker" and note["text"].startswith("requeued:")
+    assert "restarted" in note["text"]
+
+
+def test_a_restart_requeues_every_slot_s_claim_without_spending_an_attempt(
+        store, beats, monkeypatch):
+    for n in (1, 2):
+        _claimed(store, n, "studio", at=_ago(minutes=5))
+    issue = store.edit_issue(2)
+    issue.record_fix_request({**issue.fix_request, "attempts": 2})
+    monkeypatch.setattr(issue_fix_worker, "STARTED_AT", _ago(minutes=1))
+    assert issue_fix_worker.recover_orphans(store) == [1, 2]
+    assert [store.load_issue(n).fix_request["status"] for n in (1, 2)] == ["queued"] * 2
+    assert store.load_issue(2).fix_request["attempts"] == 2
+    assert issue_fix_worker.run_once(store)
 
 
 def test_a_claim_this_process_made_is_left_running(store, beats, monkeypatch):
@@ -475,7 +489,7 @@ def test_a_claim_this_process_made_is_left_running(store, beats, monkeypatch):
     (None, _ago(hours=2), [1]),
     (None, _ago(minutes=5), []),
 ], ids=["silent", "live", "never-beat-old-claim", "never-beat-fresh-claim"])
-def test_another_host_s_claim_ends_failed_once_its_heartbeat_is_silent(
+def test_another_host_s_claim_is_requeued_once_its_heartbeat_is_silent(
         store, beats, beat, claimed, want):
     if beat:
         beats.save_issue_fix_worker({"host": "laptop", "last_beat": beat})
@@ -483,7 +497,8 @@ def test_another_host_s_claim_ends_failed_once_its_heartbeat_is_silent(
     assert issue_fix_worker.recover_orphans(store) == want
     req = store.load_issue(1).fix_request
     if want:
-        assert req["status"] == "failed" and "laptop went offline" in req["reason"]
+        assert req["status"] == "queued" and "host" not in req
+        assert "laptop went offline" in store.load_issue(1).fix_thread[-1]["text"]
     else:
         assert req["status"] == "running"
 
