@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
 
-from pipeline import diffpaths, gates, profile, verify_driver
+from pipeline import diffpaths, gates, profile, storekit, verify_driver
 
 if TYPE_CHECKING:
     from pipeline.store import Store
@@ -366,7 +366,7 @@ def suite_baseline(base: PinnedBase, pre_patch: str | None, *, label: str) -> li
         pass
     failed = _baseline_run(base, pre_patch, label=label)
     cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps(failed))
+    storekit.atomic_write_text(cache, json.dumps(failed))
     return failed
 
 
@@ -395,7 +395,7 @@ def suite_regress(base: PinnedBase, pre_patch: str | None, patch: str, *,
     baseline = suite_baseline(base, pre_patch, label=label)
     exclude = verify_driver.SCRATCH / "suite-exclude" / f"{_tree_key(base, pre_patch)}.json"
     exclude.parent.mkdir(parents=True, exist_ok=True)
-    exclude.write_text(json.dumps(baseline))
+    storekit.atomic_write_text(exclude, json.dumps(baseline))
     patch_file = compose(label, patch)
 
     def run() -> tuple[int, str]:
@@ -430,8 +430,8 @@ def suite_regress(base: PinnedBase, pre_patch: str | None, patch: str, *,
                                      | set(verify_driver._advisory_failures(tail2)))
         return out
     baseline = sorted(set(baseline) | set(fresh))
-    _baseline_cache(base, pre_patch).write_text(json.dumps(baseline))
-    exclude.write_text(json.dumps(baseline))
+    storekit.atomic_write_text(_baseline_cache(base, pre_patch), json.dumps(baseline))
+    storekit.atomic_write_text(exclude, json.dumps(baseline))
     out["rebaselined"] = added
     out["excluded"] = len(baseline)
     third, tail3 = run()

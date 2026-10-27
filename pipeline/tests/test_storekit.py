@@ -1,5 +1,7 @@
 """storekit: the generic validated-store + freshness primitives shared by the PR
 and issue stores."""
+import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -200,3 +202,34 @@ def test_max_age_window_is_independent_of_the_local_timezone(tz, local_tz):
     assert not storekit.is_current_core(sec, "against_updated_at", "T", max_age_days=7)
     assert storekit.currency_failure_core(
         sec, "against_updated_at", "T", max_age_days=7) == "8d old, outside the 7d window"
+
+
+def test_atomic_write_text_replaces_whole_and_leaves_no_temp(tmp_path):
+    out = tmp_path / "out"
+    path = out / "x.json"
+    storekit.atomic_write_text(path, "a")
+    storekit.atomic_write_text(path, "b")
+    assert path.read_text() == "b"
+    assert list(out.iterdir()) == [path]
+
+
+def test_concurrent_atomic_writes_use_distinct_temp_files(tmp_path, monkeypatch):
+    path = tmp_path / "x.json"
+    barrier = threading.Barrier(2)
+    sources: list[str] = []
+    real_replace = os.replace
+
+    def replace(src, dst):
+        sources.append(str(src))
+        barrier.wait(timeout=10)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    threads = [threading.Thread(target=storekit.atomic_write_text, args=(path, text))
+               for text in ("first" * 1000, "second" * 1000)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(set(sources)) == 2
+    assert path.read_text() in {"first" * 1000, "second" * 1000}

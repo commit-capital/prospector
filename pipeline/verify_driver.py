@@ -750,7 +750,7 @@ def write_suite_config() -> Path:
             "this repository has no suite")
     SCRATCH.mkdir(parents=True, exist_ok=True)
     path = SCRATCH / "suite-config.json"
-    path.write_text(json.dumps({
+    storekit.atomic_write_text(path, json.dumps({
         "wrapper": suite.wrapper, "server_project": suite.server_project,
         "preflight": suite.preflight, "home_env": suite.home_env,
         "instance_env": suite.instance_env}))
@@ -763,7 +763,7 @@ def write_exclude_file(base_sha: str, baseline: list[str]) -> Path:
     out = SCRATCH / "exclude"
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{base_sha[:12]}.json"
-    path.write_text(json.dumps(sorted(baseline)))
+    storekit.atomic_write_text(path, json.dumps(sorted(baseline)))
     return path
 
 
