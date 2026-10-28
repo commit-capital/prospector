@@ -3,9 +3,9 @@ attempts grouped by lane and stage with each one's own words, the same stop
 repeating on one subject, whose fault each week's stops were, and the fixes
 parked for an operator now.
 
-It reads the issue ledger and issue snapshot `issue_data` already holds in
-memory, so a request costs one pass over the window's rows and the open issues
-with a fix attempt.
+It reads the issue and PR ledgers and the issue snapshot that `issue_data` and
+`data` already hold in memory, so a request costs one pass over the window's
+rows and the open issues with a fix attempt.
 """
 from __future__ import annotations
 
@@ -16,10 +16,9 @@ from typing import TypedDict
 from issue_triage import fix_outcome, fix_review, trust_boundary
 from pipeline import storekit
 from pipeline.outcomes import Asked
-from prospector_app.backend import issue_data
+from prospector_app.backend import data, issue_data
 
 CASES_MAX = 40
-SUCCESS = ("fixed", "reproduced")
 
 
 class Case(TypedDict):
@@ -108,9 +107,9 @@ def summarize(rows: list[dict], *, since: str) -> tuple[int, list[Group], list[R
         issue = raw.get("issue") if isinstance(raw.get("issue"), int) else None
         weeks[_week(at)][got["fault"] or "ok"] += 1
         leaves = [str(d) for d in (raw.get("stats") or {}).get("leaves") or []]
-        if got["stage"] in SUCCESS and not leaves:
+        if got["fault"] is None and not leaves:
             continue
-        if got["stage"] not in SUCCESS:
+        if got["fault"] is not None:
             key = (got["lane"], got["stage"], got["subject"]["kind"], got["subject"]["number"])
             repeats[key] += 1
             last.setdefault(key, (at, issue))
@@ -153,6 +152,8 @@ def summary(days: int) -> Summary:
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
     rows = [r.raw for r in issue_data.runs() if isinstance(r, storekit.PhaseRun)
             and r.phase in (fix_outcome.RUN_PHASE, fix_outcome.HANDBACK_PHASE)]
+    rows += [r.raw for r in data.runs(since=since)
+             if isinstance(r, storekit.PhaseRun) and "outcome" in r.raw]
     attempts, groups, repeats, weeks = summarize(rows, since=since)
     return {"days": days, "since": since, "attempts": attempts, "groups": groups,
             "repeats": repeats, "weeks": weeks, "parked": parked()}

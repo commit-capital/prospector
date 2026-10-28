@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from issue_triage import fix_outcome
+from pipeline import pr_outcomes
 from issue_triage.issue_model import Issue
 from prospector_app.backend import issue_data, outcome_summary
 
@@ -42,6 +43,24 @@ def test_the_window_groups_stops_by_stage_with_their_words():
     assert weeks == [
         {"week": "2026-10-19", "ok": 0, "machine": 0, "subject": 0, "judged": 3},
         {"week": "2026-10-26", "ok": 2, "machine": 1, "subject": 0, "judged": 1}]
+
+
+def test_pr_lane_rows_group_and_repeat_like_the_issue_lane_s():
+    def fix_row(at: str) -> dict:
+        return {"phase": "fix:single", "pr": 15927, "finished": at, "stats": {},
+                "outcome": pr_outcomes.autofix(15927, "h" * 40, action="resolve",
+                                               status="failed", detail="no diff",
+                                               kind="run-failed", judged=None)}
+    rows = [fix_row("2026-10-21T10:00:00+00:00"), fix_row("2026-10-22T10:00:00+00:00"),
+            {"phase": "design-review:run", "pr": 9, "finished": "2026-10-22T11:00:00+00:00",
+             "outcome": pr_outcomes.design(9, "h" * 40, "reviewed")}]
+    attempts, groups, repeats, _ = outcome_summary.summarize(
+        rows, since="2026-10-01T00:00:00+00:00")
+    assert attempts == 3
+    assert [(g["lane"], g["stage"], g["count"], g["cases"][0]["pr"]) for g in groups] == [
+        ("autofix", "run-failed", 2, 15927)]
+    assert [(r["lane"], r["kind"], r["number"], r["count"]) for r in repeats] == [
+        ("autofix", "pr", 15927, 2)]
 
 
 def _issue(n: int, run: dict, **sections: object) -> Issue:
