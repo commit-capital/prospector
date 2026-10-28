@@ -1,14 +1,16 @@
 import type { IssueDetail, IssueFixHold } from "../../api";
 
 export type HoldKind = IssueFixHold["kind"] | "partial" | "handed-back";
-export interface HoldReason { kind: HoldKind; text: string }
+/** A headline, and for a hold from trust_boundary.holds, the hold itself. */
+export interface HoldReason { kind: HoldKind; text: string; hold?: IssueFixHold }
 
-const HEADLINE: Record<IssueFixHold["kind"], (d: IssueDetail) => string> = {
-  intake: (d) => `The intake audit read the report as ${d.fix_run?.intake?.verdict ?? "unclear"}`,
+const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+
+const HEADLINE: Record<IssueFixHold["kind"], (h: IssueFixHold, d: IssueDetail) => string> = {
+  intake: (_, d) => `The intake audit read the report as ${d.fix_run?.intake?.verdict ?? "unclear"}`,
   rival: () => "Another open PR covers what ours misses",
   single: () => "Only one candidate's tests reproduce the bug",
-  boundary: (d) => d.fix_run?.boundary?.crossings?.length ? "It crosses a trust boundary"
-    : "The trust-boundary review gave no answer",
+  boundary: (h) => h.crossings?.length ? "It crosses a trust boundary" : cap(h.text),
 };
 
 /** Why the issue's fix waits on the operator, most pressing first: a PR handed
@@ -20,13 +22,9 @@ export function holdReasons(d: IssueDetail): HoldReason[] {
   if (fu?.state === "handed-back" && String(fu.pr) === String(d.fix_pr)) {
     out.push({ kind: "handed-back", text: `#${fu.pr} came back to you` });
   }
-  for (const h of d.fix_holds ?? []) out.push({ kind: h.kind, text: HEADLINE[h.kind](d) });
-  const cov = d.fix_coverage;
-  if (d.fix_partial && cov) {
-    const handled = cov.defects.filter((c) => c.status !== "not-addressed").length;
-    out.push({ kind: "partial",
-               text: `Partial fix: ${handled} of ${cov.defects.length} reported defects handled` });
-  }
+  for (const h of d.fix_holds ?? []) out.push({ kind: h.kind, text: HEADLINE[h.kind](h, d), hold: h });
+  const note = d.fix_coverage?.note;
+  if (d.fix_partial && note) out.push({ kind: "partial", text: cap(note) });
   return out;
 }
 

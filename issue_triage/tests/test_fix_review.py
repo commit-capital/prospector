@@ -406,6 +406,8 @@ def test_the_page_s_coverage_carries_each_defect_s_claim_test(store):
     _run(store, reviews=PARTIAL, claims=[claim])
     cov = fix_review.coverage(store.load_issue(7))
     assert cov is not None and cov["state"] == "partial"
+    assert cov["note"] == "partial fix: 2 of 3 reported defects handled; not addressed: " \
+        "a session stuck in submitting is never reconciled at startup"
     by_defect = {d["defect"]: d for d in cov["defects"]}
     ruled = by_defect["cancel after a restart is a no-op that returns 200"]
     assert ruled["status"] == "out-of-scope"

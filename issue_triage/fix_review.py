@@ -110,14 +110,22 @@ def partial(issue: Issue) -> str | None:
                                                                           "running") else None
 
 
+class ShownClaim(TypedDict):
+    status: str | None
+    why: str | None
+    ruling: str | None
+
+
 class ShownDefect(issue_gates.CoverageEntry, total=False):
-    claim: dict[str, str | None]
+    claim: ShownClaim
 
 
 class ShownCoverage(TypedDict):
     state: Literal["complete", "partial", "unchecked"]
     defects: list[ShownDefect]
     unshown: list[ShownDefect]
+    # `partial_note`, for a partial fix.
+    note: str | None
 
 
 def coverage(issue: Issue) -> ShownCoverage | None:
@@ -137,11 +145,13 @@ def coverage(issue: Issue) -> ShownCoverage | None:
             entry = ShownDefect(**d)
             claim = claims.get(issue_gates.defect_key(d["defect"]))
             if claim:
-                entry["claim"] = {k: claim.get(k) for k in ("status", "why", "ruling")}
+                entry["claim"] = ShownClaim(status=claim.get("status"), why=claim.get("why"),
+                                            ruling=claim.get("ruling"))
             out.append(entry)
         return out
 
-    return ShownCoverage(state=cov.state, defects=shown(cov.defects), unshown=shown(cov.unshown))
+    return ShownCoverage(state=cov.state, defects=shown(cov.defects), unshown=shown(cov.unshown),
+                         note=partial_note(run))
 
 
 def fix_status(issue: Issue) -> tuple[str, str] | None:

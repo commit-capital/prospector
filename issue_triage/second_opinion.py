@@ -303,28 +303,29 @@ def co_authors(entries: list[dict] | None) -> list[str]:
     return [c for r in credit(entries) if (c := co_author(str(r["author"])))]
 
 
-def _gaps(entries: list[dict] | None) -> list[dict]:
+def gaps(entries: list[dict] | None) -> list[dict]:
+    """The comparisons that hold a fix: those whose gap stays open, at most three."""
     return [e for e in entries or [] if e.get("verdict") == "gap-open"][:3]
 
 
 def flag(entries: list[dict] | None) -> str | None:
     """Why a fix another open pull request still covers more of the report than
     waits for an operator."""
-    gaps = _gaps(entries)
-    if not gaps:
+    held = gaps(entries)
+    if not held:
         return None
     return "another open pull request covers what this fix misses: " + "; ".join(
-        f"#{e['pr']} ({e['why']})" for e in gaps)
+        f"#{e['pr']} ({e['why']})" for e in held)
 
 
 def held_line(entries: list[dict] | None) -> tuple[str, str]:
     """`flag`'s hold as the plain sentence the issue page leads with, and the
     phrase in it that names what the comparison found."""
-    gaps = _gaps(entries)
-    refs = [f"#{e['pr']}" for e in gaps]
+    held = gaps(entries)
+    refs = [f"#{e['pr']}" for e in held]
     prs = refs[0] if len(refs) == 1 else f"{', '.join(refs[:-1])} and {refs[-1]}"
-    one = len(gaps) == 1
-    found = (("a case" if one else "cases") + " ours misses" if any(e.get("missed") for e in gaps)
+    one = len(held) == 1
+    found = (("a case" if one else "cases") + " ours misses" if any(e.get("missed") for e in held)
              else "tests our fix fails")
     verb = ("handles" if one else "handle") if "misses" in found else ("has" if one else "have")
     return (f"Prospector has a working fix but is holding it: {prs} {verb} {found}. "

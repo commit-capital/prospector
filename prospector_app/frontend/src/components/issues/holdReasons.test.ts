@@ -4,22 +4,17 @@ import type { IssueDetail } from "../../api";
 import { holdReasons, testFailures } from "./holdReasons.ts";
 
 const issue = (extra: object): IssueDetail => ({ number: 14149, fix_pr: null, ...extra } as unknown as IssueDetail);
-const defect = (d: string, status: string) => ({ defect: d, status, evidence: "" });
 
-test("a parked fix lists every hold, then that it is partial, with how much it handles", () => {
-  const d = issue({
-    fix_holds: [{ kind: "rival", text: "another open pull request covers what this fix misses: #14150" },
-                { kind: "boundary", text: "it crosses a trust boundary" }],
-    fix_run: { boundary: { crossings: [{ kind: "auth", where: "a", what: "w", requested: true }] } },
-    fix_partial: true,
-    fix_coverage: { state: "partial", unshown: [], defects: [
-      defect("deltas are trimmed", "addressed"), defect("whitespace deltas dropped", "already-fixed"),
-      defect("stored comments can't be repaired", "not-addressed")] },
-  });
+test("a parked fix lists every hold, then that it is partial", () => {
+  const rival = { kind: "rival", text: "another open pull request covers what this fix misses: #14150", prs: [14150] };
+  const boundary = { kind: "boundary", text: "it crosses a trust boundary",
+                     crossings: [{ kind: "auth", where: "a", what: "w", requested: true }] };
+  const d = issue({ fix_holds: [rival, boundary], fix_partial: true,
+                    fix_coverage: { state: "partial", defects: [], unshown: [], note: "partial fix: 2 of 3" } });
   assert.deepEqual(holdReasons(d), [
-    { kind: "rival", text: "Another open PR covers what ours misses" },
-    { kind: "boundary", text: "It crosses a trust boundary" },
-    { kind: "partial", text: "Partial fix: 2 of 3 reported defects handled" },
+    { kind: "rival", text: "Another open PR covers what ours misses", hold: rival },
+    { kind: "boundary", text: "It crosses a trust boundary", hold: boundary },
+    { kind: "partial", text: "Partial fix: 2 of 3" },
   ]);
 });
 
@@ -29,10 +24,10 @@ test("a fix PR handed back leads, and a green one has nothing held", () => {
   assert.deepEqual(holdReasons(issue({ fix_pr: 15363, fix_followup: { pr: 15363, state: "ready" } })), []);
 });
 
-test("a boundary hold with no crossings says the review gave no answer", () => {
-  assert.equal(holdReasons(issue({ fix_holds: [{ kind: "boundary", text: "the trust-boundary review did not finish" }],
-                                   fix_run: { boundary: { failed: true, crossings: [] } } }))[0].text,
-    "The trust-boundary review gave no answer");
+test("a boundary hold that names no crossing says why in the backend's words", () => {
+  assert.equal(holdReasons(issue({ fix_holds: [{ kind: "boundary", text: "no trust-boundary review was recorded",
+                                                 crossings: [] }] }))[0].text,
+    "No trust-boundary review was recorded");
 });
 
 // #14149's rival #14150, run against our fix (vitest, with its colour codes).

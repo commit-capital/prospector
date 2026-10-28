@@ -1500,8 +1500,17 @@ export interface IssueFixCoverageView {
   state: "complete" | "partial" | "unchecked";
   defects: IssueFixDefect[];
   unshown: IssueFixDefect[];
+  /** What a partial fix leaves, in one sentence (fix_review.partial_note). */
+  note: string | null;
 }
-export interface IssueFixHold { kind: "intake" | "rival" | "single" | "boundary"; text: string }
+/** One reason a fixed attempt waits for an operator (trust_boundary.holds):
+ *  a "rival" hold's open PRs, a "boundary" hold's crossings. */
+export interface IssueFixHold {
+  kind: "intake" | "rival" | "single" | "boundary";
+  text: string;
+  prs?: number[];
+  crossings?: IssueFixCrossing[];
+}
 /** One trust boundary a fix crosses (issue_triage/trust_boundary.py). */
 export interface IssueFixCrossing {
   kind: string;

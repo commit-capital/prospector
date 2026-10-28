@@ -85,8 +85,8 @@ function ReasonDetail({ r, d }: { r: HoldReason; d: IssueDetail }) {
         </ul>
       );
     case "boundary": {
-      const crossings = run?.boundary?.crossings ?? [];
-      if (!crossings.length) return <div>{d.fix_holds?.find((h) => h.kind === "boundary")?.text}</div>;
+      const crossings = r.hold?.crossings ?? [];
+      if (!crossings.length) return null;
       return (
         <ul className="held-list">
           {crossings.map((c, i) => (
@@ -99,15 +99,13 @@ function ReasonDetail({ r, d }: { r: HoldReason; d: IssueDetail }) {
     case "rival":
       return (
         <div>
-          {(run?.second_opinion ?? []).filter((e) => e.verdict === "gap" || e.verdict === "gap-open")
+          {(run?.second_opinion ?? []).filter((e) => r.hold?.prs?.includes(e.pr))
             .map((e) => <div key={e.pr}><GitHubPRLink n={e.pr} />: {e.why}.</div>)}
           <a href={`#${issueSectionId("rivals")}`}>The comparison is below.</a>
         </div>
       );
-    case "partial": {
-      const left = d.fix_coverage?.defects.filter((c) => c.status === "not-addressed") ?? [];
-      return <div>Not fixed: {left.map((c) => c.defect).join("; ")}. Each defect's evidence is below.</div>;
-    }
+    case "partial":
+      return <div>Each defect's evidence is below.</div>;
   }
 }
 

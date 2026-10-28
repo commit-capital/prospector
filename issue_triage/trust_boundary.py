@@ -21,7 +21,7 @@ import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 from issue_triage import intake_audit, reproduce_issue, review_issue_fix, second_opinion
 from pipeline import diffpaths, gates, headless_agent, settings, verdict_log
@@ -198,13 +198,15 @@ def comments(boundary: dict | None) -> list[str]:
             for c in (boundary or {}).get("crossings") or [] if not c.get("requested")]
 
 
-def hold(boundary: dict | None, *, maintainer_filed: bool) -> str | None:
+def holding(boundary: dict | None, *,
+            maintainer_filed: bool) -> tuple[str, list[dict]] | None:
     """Why a fixed attempt whose run recorded `boundary` waits for an
-    operator's Propose, or None when it may be proposed on its own."""
+    operator's Propose, and the crossings that hold it (none when the review
+    is missing or failed), or None when it may be proposed on its own."""
     if boundary is None:
-        return None if maintainer_filed else "no trust-boundary review was recorded"
+        return None if maintainer_filed else ("no trust-boundary review was recorded", [])
     if boundary.get("failed"):
-        return "the trust-boundary review did not finish"
+        return "the trust-boundary review did not finish", []
     crossings = [c for c in boundary.get("crossings") or [] if c.get("kind") not in LOW_RISK]
     if maintainer_filed:
         held, why = ([c for c in crossings if not c.get("requested")],
@@ -214,15 +216,22 @@ def hold(boundary: dict | None, *, maintainer_filed: bool) -> str | None:
     if not held:
         return None
     named = "; ".join(f"{c.get('kind')} ({c.get('what')})" for c in held[:3])
-    return f"it crosses a trust boundary {why}: {named}"
+    return f"it crosses a trust boundary {why}: {named}", held
 
 
-HoldKind = Literal["intake", "rival", "single", "boundary"]
+def hold(boundary: dict | None, *, maintainer_filed: bool) -> str | None:
+    """`holding`'s reason alone."""
+    held = holding(boundary, maintainer_filed=maintainer_filed)
+    return held[0] if held else None
 
 
 class Hold(TypedDict):
-    kind: HoldKind
+    kind: Literal["intake", "rival", "single", "boundary"]
     text: str
+    # The open pull requests a "rival" hold names, and the crossings a
+    # "boundary" hold names.
+    prs: NotRequired[list[int]]
+    crossings: NotRequired[list[dict]]
 
 
 def holds(issue: Issue) -> list[Hold]:
@@ -230,18 +239,22 @@ def holds(issue: Issue) -> list[Hold]:
     pressing first: a report the intake audit did not read as clear
     (`intake_audit.flag`), another open pull request that covers what the fix
     misses (`second_opinion.flag`), a fix only one candidate's reproduction backs
-    (`cross_lane.lone_reproduction`), and `hold`."""
+    (`cross_lane.lone_reproduction`), and `holding`."""
     run = issue.fix_run or {}
     if run.get("ending") != "fixed" or (run.get("proposal") or {}).get("pr"):
         return []
+    out: list[Hold] = []
+    if intake := intake_audit.flag(run.get("intake")):
+        out.append(Hold(kind="intake", text=intake))
+    if rivals := second_opinion.gaps(run.get("second_opinion")):
+        out.append(Hold(kind="rival", text=second_opinion.flag(run.get("second_opinion")) or "",
+                        prs=[e["pr"] for e in rivals]))
+    if (run.get("agreement") or {}).get("single"):
+        out.append(Hold(kind="single", text="only one candidate's tests reproduce the defect"))
     maintainer = gates.priority_author(issue.author, issue.author_association)
-    reasons: list[tuple[HoldKind, str | None]] = [
-        ("intake", intake_audit.flag(run.get("intake"))),
-        ("rival", second_opinion.flag(run.get("second_opinion"))),
-        ("single", "only one candidate's tests reproduce the defect"
-                   if (run.get("agreement") or {}).get("single") else None),
-        ("boundary", hold(run.get("boundary"), maintainer_filed=maintainer))]
-    return [Hold(kind=kind, text=text) for kind, text in reasons if text]
+    if boundary := holding(run.get("boundary"), maintainer_filed=maintainer):
+        out.append(Hold(kind="boundary", text=boundary[0], crossings=boundary[1]))
+    return out
 
 
 def held(issue: Issue) -> str | None:

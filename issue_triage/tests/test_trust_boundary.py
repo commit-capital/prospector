@@ -183,11 +183,17 @@ def test_every_hold_is_listed_most_pressing_first(tmp_path):
                                            "author": "rando", "author_association": "NONE"}})
     store.edit_issue(7).record_fix_run({
         "ending": "fixed", "patch": "p",
-        "boundary": {"crossings": [{"kind": "auth", "where": "a", "what": "w", "requested": True}]},
+        "boundary": {"crossings": [{"kind": "auth", "where": "a", "what": "w", "requested": True},
+                                   {"kind": "validation", "where": "b", "what": "v", "requested": True}]},
         "intake": {"verdict": "suspicious", "findings": [], "reason": "talks to the agent"},
+        "second_opinion": [{"pr": 8, "verdict": "gap-open", "why": "w"},
+                           {"pr": 9, "verdict": "gap", "why": "w"}],
         "agreement": {"reproductions": [1], "agreed": [], "single": True}})
     issue = store.load_issue(7)
-    assert [h["kind"] for h in trust_boundary.holds(issue)] == ["intake", "single", "boundary"]
+    held = trust_boundary.holds(issue)
+    assert [h["kind"] for h in held] == ["intake", "rival", "single", "boundary"]
+    assert held[1].get("prs") == [8]
+    assert [c["kind"] for c in held[3].get("crossings", [])] == ["auth"]
     assert trust_boundary.held(issue) == trust_boundary.holds(issue)[0]["text"]
 
 
