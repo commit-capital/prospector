@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
-from pipeline import settings
+from pipeline import settings, storekit
 
 SCRATCH = settings.verify_scratch()
 
@@ -287,8 +287,7 @@ def held_shas() -> frozenset[str]:
 def hold(sha: str) -> None:
     """Add `sha`'s generation to the held list."""
     held = held_shas() | {sha[:12]}
-    HELD_FILE.parent.mkdir(parents=True, exist_ok=True)
-    HELD_FILE.write_text("".join(f"{s}\n" for s in sorted(held)))
+    storekit.atomic_write_text(HELD_FILE, "".join(f"{s}\n" for s in sorted(held)))
 
 
 def plan(generations: list[Generation], pinned_sha: str | None,

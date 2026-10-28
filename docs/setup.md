@@ -149,8 +149,9 @@ journalctl -u prospector-worker -f
 No inbound security-group rule is needed for this worker-only process. It binds
 the API to loopback and reaches the shared queue through `TRIAGE_STORE_URL`.
 Stopping the unit lets an in-flight subprocess finish only until systemd's
-default stop timeout, so stop it while idle or re-queue an interrupted run from
-the app.
+default stop timeout, so stop it while idle. An interrupted issue-fix run queues
+itself again when the worker next starts; a verification interrupted past its
+first steps waits for a re-queue from the app.
 
 Autofix additionally needs a **contributor-push identity** on the machine: a
 GitHub user account — your own, or a dedicated one — whose SSH key pushes

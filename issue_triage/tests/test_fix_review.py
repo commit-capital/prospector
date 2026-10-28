@@ -78,6 +78,26 @@ def test_one_request_at_a_time(store):
     assert not ok and "already queued" in why
 
 
+def test_two_queues_racing_on_one_issue_land_one(store, monkeypatch):
+    real = store.stamped_issue
+    calls = []
+
+    def racing(n):
+        got = real(n)
+        if not calls:
+            calls.append(n)
+            assert fix_review.queue(store, n, "solve", by="op") == (True, "solve queued")
+        return got
+
+    monkeypatch.setattr(store, "stamped_issue", racing)
+    assert fix_review.queue(store, 7, "solve", by="hunter", source="hunter",
+                            guidance="from the hunter") == (
+        False, "another request landed first")
+    issue = store.load_issue(7)
+    assert issue.fix_request["requested_by"] == "op"
+    assert not any(e["by"] == "hunter" for e in issue.fix_thread)
+
+
 @pytest.mark.parametrize("action,kw,run,why", [
     ("send-back", {"guidance": ""}, {}, "needs your comments"),
     ("send-back", {"guidance": "g"}, {"patch": ""}, "no change"),

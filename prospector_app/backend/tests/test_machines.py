@@ -55,11 +55,13 @@ def test_roster_composes_beats_health_and_pins(store):
 
 def test_roster_shows_the_issue_fix_lane_and_the_issue_it_is_on(store):
     store.save_issue_fix_worker({"host": "mac-1", "last_beat": _iso(0.1), "pid": 1,
-                                 "current_issue": 14335, "autohunt": True})
+                                 "current_issue": 14335, "current_issues": [14335, 14400],
+                                 "autohunt": True})
     [m] = machines.roster()["machines"]
     assert m["host"] == "mac-1" and m["online"] is True
     beat = m["beats"]["issue-fix"]
     assert beat["online"] is True and beat["current_issue"] == 14335
+    assert beat["current_issues"] == [14335, 14400]
     assert beat["current_pr"] is None and beat["autohunt"] is True
 
 

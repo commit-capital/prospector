@@ -182,3 +182,15 @@ def test_all_issues_reads_only_the_numbers_asked_for(tmp_path):
         st.save_issue({"issue": n, "meta": dict(GOOD_META)})
     assert sorted(st.all_issues(numbers=[3, 1, 99])) == [1, 3]
     assert st.all_issues(numbers=[]) == {}
+
+
+def test_hunted_since_counts_the_hunter_s_requests_queued_since(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    for n, source, at in ((1, "hunter", "2026-10-27T03:00:00+00:00"),
+                          (2, "hunter", "2026-10-27T00:00:00+00:00"),
+                          (3, "hunter", "2026-10-26T23:59:59+00:00"),
+                          (4, "operator", "2026-10-27T05:00:00+00:00")):
+        st.save_issue({"issue": n, "meta": dict(GOOD_META), "fix_request": {
+            "action": "solve", "status": "queued", "source": source, "queued_at": at}})
+    st.save_issue({"issue": 5, "meta": dict(GOOD_META)})
+    assert st.hunted_since("2026-10-27T00:00:00+00:00") == 2

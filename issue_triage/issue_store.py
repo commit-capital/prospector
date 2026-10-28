@@ -263,6 +263,15 @@ class IssueStore:
         server-side. See storekit Collection.where_json."""
         return self._issues.where_json(path, values)
 
+    def hunted_since(self, since: str) -> int:
+        """How many issues hold a hunter's fix request queued at or after
+        `since`, counted server-side."""
+        from sqlalchemy import and_
+        data = schema.issues.c.data
+        return self._issues.count(and_(
+            data[("fix_request", "source")].as_string() == "hunter",
+            data[("fix_request", "queued_at")].as_string() >= since))
+
     def issue_ids(self) -> set[int]:
         return self._issues.ids()
 

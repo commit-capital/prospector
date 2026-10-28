@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -716,11 +717,24 @@ def utc_day(now: datetime | None = None) -> str:
     return utc_midnight(now).date().isoformat()
 
 
-def atomic_write(path: Path, payload: dict) -> None:
+def atomic_write_text(path: Path, text: str) -> None:
+    """Replace `path` with `text` in one rename, so a reader (a sandbox mount)
+    never sees a partial file. Each call stages in its own temp file, so
+    concurrent writers of one path do not share a half-written one."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n")
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
+    try:
+        os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def atomic_write(path: Path, payload: dict) -> None:
+    atomic_write_text(path, json.dumps(payload, indent=1, sort_keys=True) + "\n")
 
 
 _WARNED_UNKNOWN_SECTIONS: set[tuple[str, str]] = set()
