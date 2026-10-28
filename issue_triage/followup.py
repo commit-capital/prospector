@@ -65,7 +65,7 @@ from typing import TYPE_CHECKING
 
 from datetime import datetime, timezone
 
-from issue_triage import reply_router, second_opinion
+from issue_triage import issue_display, reply_router, second_opinion
 from pipeline import ci_signal, diffpaths, gates, gh, prove, review_fetch, review_policy
 from pipeline import reviewers, settings, storekit, verify_driver
 
@@ -121,6 +121,10 @@ class PrState:
     feedback: list[reply_router.Reply] = field(default_factory=list)
 
 
+CI = "CI"
+MAINTAINER = "a maintainer"
+
+
 @dataclass(frozen=True)
 class Step:
     kind: str  # done | hand-back | describe | rerun | revise | wait | ready
@@ -135,6 +139,9 @@ class Step:
     untraced: bool = False
     # A hand-back for CI that fails outside the change: an approval holds over it.
     outside: bool = False
+    # Whose bar a hand-back's change could not clear: CI, MAINTAINER, or the
+    # blocking automated reviewers' labels.
+    by: str | None = None
 
 
 def read(pr: int) -> PrState | None:
@@ -377,11 +384,11 @@ def decide(pr: PrState, fu: dict | None, *, logs: dict[str, str] | None = None,
         return Step("wait", f"{fu['state']} at this head")
     if missed and not feedback:
         return Step("hand-back", f"the change a maintainer asked for did not land: {missed}",
-                    maintainer=True)
+                    maintainer=True, by=MAINTAINER)
     if feedback:
         if int(fu.get("maintainer_revisions") or 0) >= MAX_MAINTAINER_REVISIONS:
             return Step("hand-back", f"{MAX_MAINTAINER_REVISIONS} revisions for maintainer "
-                                     "reviews spent", maintainer=True)
+                                     "reviews spent", maintainer=True, by=MAINTAINER)
         return Step("revise", "a maintainer asked for a change", guidance=feedback,
                     maintainer=True)
     if rivals:
@@ -412,13 +419,13 @@ def decide(pr: PrState, fu: dict | None, *, logs: dict[str, str] | None = None,
             said = {BASE_FAILS: "fails on the base too", PASSES: "passes with the change"}
             return Step("hand-back", f"CI still fails after a re-run ({jobs}), and in the "
                         "sandbox " + "; ".join(f"{n} {said[v]}" for n, v in files.items()),
-                        outside=True)
+                        outside=True, by=CI)
         if not caused and fu.get("ci_untraced_revised"):
             return Step("hand-back", f"CI still fails after a re-run and a revision ({jobs}), "
                                      "and the sandbox traced no failure to the change",
-                        outside=True)
+                        outside=True, by=CI)
         if int(fu.get("revisions") or 0) >= MAX_REVISIONS:
-            return Step("hand-back", f"{MAX_REVISIONS} revisions spent; CI still fails")
+            return Step("hand-back", f"{MAX_REVISIONS} revisions spent; CI still fails", by=CI)
         if caused:
             return Step("revise", "the change fails " + ", ".join(caused)
                         + " in the sandbox, which pass without it",
@@ -433,7 +440,8 @@ def decide(pr: PrState, fu: dict | None, *, logs: dict[str, str] | None = None,
     if blocking:
         if int(fu.get("revisions") or 0) >= MAX_REVISIONS:
             return Step("hand-back", f"{MAX_REVISIONS} revisions spent; "
-                                     + "; ".join(v.reason or v.label for v in blocking))
+                                     + "; ".join(v.reason or v.label for v in blocking),
+                        by=" and ".join(v.label for v in blocking))
         return Step("revise", "; ".join(v.reason or v.label for v in blocking),
                     notes=_reviewer_notes(pr.number, blocking))
     if waiting:
@@ -570,7 +578,7 @@ def poll(store: IssueStore, *, mode: str | None = None,
         elif step.kind in ("hand-back", "ready"):
             fu["state"] = "handed-back" if step.kind == "hand-back" else "ready"
             fu["judged"] = {"head_sha": state.head_sha, "reason": step.reason[:400],
-                            "outside": step.outside}
+                            "outside": step.outside, "by": step.by}
             if step.kind == "hand-back" and not step.outside:
                 fu.pop("approved", None)
             _note(store, n, (f"Handed back to you: {step.reason}." if step.kind == "hand-back"
@@ -624,6 +632,8 @@ def poll(store: IssueStore, *, mode: str | None = None,
             else:
                 _note(store, n, f"Could not queue a revision: {why}.")
         _save(store, n, fu, held)
+        if step.kind in ("hand-back", "ready"):
+            issue_display.write_story(store, n, trigger="followup")
     return acted
 
 

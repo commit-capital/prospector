@@ -5,14 +5,15 @@ import { type FixDecision, sendBackDraft } from "./fixDecision";
 
 /** The Summary's two answers to a fix PR waiting on the operator, side by side:
  *  approve it as it stands and leave it to the maintainers, or send it back
- *  with comments for a full fix. */
+ *  with comments: for a full fix when it fixes only part of the issue, else for
+ *  whatever brought it back. */
 export function FixDecisionCards({ d, decision, onChanged }: {
   d: IssueDetail; decision: FixDecision; onChanged: () => void;
 }) {
   const { dryRun, pushToast } = useExec();
   const { pr } = decision;
   const [partial, setPartial] = useState(decision.partial);
-  const [text, setText] = useState(() => sendBackDraft(d));
+  const [text, setText] = useState(() => sendBackDraft(d, decision.partial));
   const [busy, setBusy] = useState(false);
 
   const act = (call: () => Promise<unknown>, done: string) => {
@@ -52,24 +53,26 @@ export function FixDecisionCards({ d, decision, onChanged }: {
       </div>
       <div className="fix-decision-or">or</div>
       <div className="fix-decision-card">
-        <h4>Request full fix</h4>
+        <h4>{decision.partial ? "Request full fix" : "Send it back"}</h4>
         <div className="small">
-          <b>Means:</b> you agree with the reviewer that #{pr} isn't enough. The agent revises it
-          with your comments and pushes the revision onto #{pr}
+          <b>Means:</b>{" "}
+          {decision.partial ? <>you agree #{pr} doesn't fix all of #{d.number}. </> : null}
+          Prospector revises #{pr} with your comments and pushes the revision onto it
           {dryRun ? " (in dry run nothing is pushed)" : ""}.
         </div>
         <div className="muted small">
-          If the revision still leaves part of the issue, or ends without a fix, it comes back
-          to you.
+          If the revision {decision.partial ? "still leaves part of the issue" : "doesn't clear it"},
+          or ends without a fix, it comes back to you.
         </div>
         <textarea className="fix-goal" rows={6} value={text} onChange={(e) => setText(e.target.value)}
+                  placeholder={`What should change in #${pr}?`}
                   aria-label={`Your comments for the revision of #${pr}`} />
         <div className="row-actions">
           <button className="btn-secondary sm" disabled={busy || !text.trim()}
             onClick={() => act(() => api.issueFix(d.number, { action: "send-back", guidance: text,
                                                              dry_run: dryRun }),
                                `Sent back: the revision goes onto #${pr}`)}>
-            Send back for re-fix{dryRun ? " (dry run)" : ""}
+            Send back{dryRun ? " (dry run)" : ""}
           </button>
         </div>
       </div>

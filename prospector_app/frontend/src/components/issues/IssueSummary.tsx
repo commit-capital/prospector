@@ -187,9 +187,35 @@ function IssueStory({ d }: { d: IssueDetail }) {
   );
 }
 
-/** "Prospector analysis:" — the triage verdict's chips, then its reasoning,
- *  marked as older when a fix attempt started after it. */
+/** A fix held up by Prospector itself rather than the code: a fault to fix in
+ *  Prospector, not one to retry. */
+function ProspectorFault({ d }: { d: IssueDetail }) {
+  const f = d.prospector_fault;
+  if (!f) return null;
+  return (
+    <div className="verdict-banner v-risk" role="alert">
+      <span className="vb-icon">🛠️</span>
+      <div>
+        <div className="vb-headline">{f.certain ? "Prospector broke" : "Likely a Prospector bug"}</div>
+        <div>{f.text}</div>
+        <div className="vb-detail">Fix this in Prospector; retrying the fix as it stands will likely fail the same way.</div>
+      </div>
+    </div>
+  );
+}
+
+/** What happened to our fix once there is one to tell; until then, "Prospector
+ *  analysis:" — the triage verdict's chips, then its reasoning, marked as older
+ *  when a fix attempt started after it. */
 function IssueAnalysis({ d }: { d: IssueDetail }) {
+  if (d.story) {
+    return (
+      <div className="issue-analysis">
+        <div className="analysis-label">What happened</div>
+        <div className="issue-rationale">{d.story.text}</div>
+      </div>
+    );
+  }
   const a = d.analysis;
   if (!a) return <div className="muted small">Not yet analyzed. Run Issue analysis from the Control tab.</div>;
   const started = d.fix_run?.started;
@@ -306,7 +332,8 @@ function ChoosePR({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) {
 function suggestedAction(d: IssueDetail): string {
   if (d.fix_choice) return `Going with #${d.fix_choice.pr} as the fix`
     + (d.fix_choice.reason ? `: ${d.fix_choice.reason}` : "");
-  if (fixDecision(d)) return "Needs your review: approve as-is or request a full fix";
+  const decision = fixDecision(d);
+  if (decision) return `Needs your review: approve as-is or ${decision.partial ? "request a full fix" : "send it back"}`;
   if (d.fix_approved && d.fix_pr != null) return `Approved: #${d.fix_pr} is with the maintainers`;
   if (d.fix_pr == null && d.fix_held) return "Needs your review: open the fix's PR or send it back";
   const a = d.analysis;
@@ -327,6 +354,7 @@ export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () =
   return (
     <section className="suggestion summary-panel issue-summary tone-yellow">
       <h3 className="summary-title">Summary</h3>
+      <ProspectorFault d={d} />
       <IssueStory d={d} />
       {d.body && (
         <Collapsible className="summary-description" summary={<>Full issue report</>}>

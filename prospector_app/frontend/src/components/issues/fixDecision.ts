@@ -19,10 +19,17 @@ export function fixDecision(d: IssueDetail): FixDecision | null {
 const OUT_OF_REPORT = new Set(["outside-report", "deliberate"]);
 const key = (s: string) => s.toLowerCase().split(/\s+/).filter(Boolean).join(" ");
 
-/** The send-back's starting words: the reviewer's reasons and the defects the
- *  reviews say the fix leaves, less those a claim test ruled out of the
- *  report, as the operator's comments to the fixer. */
-export function sendBackDraft(d: IssueDetail): string {
+/** The send-back's starting words, as the operator's comments to the fixer.
+ *  For a `partial` fix: the reviewer's reasons and the defects the reviews say
+ *  it leaves, less those a claim test ruled out of the report. For one handed
+ *  back for another reason: why it came back, in the story's words or else the
+ *  status line's. For a green one: nothing. */
+export function sendBackDraft(d: IssueDetail, partial: boolean): string {
+  if (!partial) {
+    if (d.fix_followup?.state !== "handed-back") return "";
+    return [d.story?.text ?? d.status_line.text,
+            `Revise #${d.fix_pr} so it clears that, and change nothing else.`].join("\n\n");
+  }
   const ruled = new Map((d.fix_run?.claims ?? []).map((c) => [key(c.defect), c.ruling]));
   const left = (d.fix_run?.reviews ?? []).flatMap((r) => r.coverage ?? [])
     .filter((c) => c.status === "not-addressed" && !OUT_OF_REPORT.has(ruled.get(key(c.defect)) ?? ""))

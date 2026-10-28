@@ -28,6 +28,10 @@ documented below, and opens the app in your browser once it is serving
 
 # 2. run the app and open the printed frontend URL
 uv run prospector serve --dev   # or: ./run-prospector.sh
+
+# 3. later, from another terminal: let the worker runs in flight finish,
+#    then stop, git pull and restart in that terminal
+./update-prospector.sh
 ```
 
 On a checkout with no deployment configured, the app opens a setup wizard

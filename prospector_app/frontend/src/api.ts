@@ -1708,6 +1708,12 @@ export interface IssueDisplay { bug: string; fix: string }
 export interface IssueDetail extends IssueRow {
   body: string | null;
   display: IssueDisplay | null;
+  /** What happened to Prospector's fix and why it waits on you, in plain
+   *  words (issue_display.current_story). */
+  story: { text: string } | null;
+  /** What in Prospector itself broke: `certain` for a failed request or a run
+   *  that faulted (fix_review.machine_fault), else the story's reading. */
+  prospector_fault: { text: string; certain: boolean } | null;
   analysis: IssueAnalysis | null;
   fixed_comment: string | null;
   dup_comment: string | null;

@@ -128,7 +128,7 @@ __FIXES__
 ATTEMPT = """
 ## The current attempt
 
-The clone already holds an earlier attempt at this fix: its tests and its change, uncommitted. Revise it in light of the guidance and notes above: keep what still serves, change or discard the rest, rewrite it from scratch if that is what it takes. You may edit or delete the tests this attempt added (they are not the repository's own); the rule on existing tests below covers the repository's.
+The clone already holds an earlier attempt at this fix: its tests and its change, uncommitted. Revise it in light of the guidance and notes above: keep what still serves, change or discard the rest, rewrite it from scratch if that is what it takes. You may edit or delete the tests this attempt added (they are not the repository's own); the rule on existing tests below covers the repository's. Your tools cannot delete a file: add "deleted": ["<repo-relative path>", ...] to your answer naming each file to delete (a deleted file that is not a test goes under "changes" too), and the host deletes it before it checks your change.
 
 What the earlier attempt said it did: __SUMMARY__
 Its reading of the root cause: __ROOT_CAUSE__
@@ -158,7 +158,7 @@ def author(worktree: str, *, title: str, body: str, env: dict[str, str],
            contributor_docs: Sequence[authoring.Doc] = (),
            on_event: Callable[[tuple], None] | None = None) -> dict:
     """Run the one agent over the clone at `worktree`: its answer, either
-    `{"summary", "root_cause", "tests", "changes"}` or `{"give_up", "kind"}`.
+    `{"summary", "root_cause", "tests", "changes", "deleted"}` or `{"give_up", "kind"}`.
     Raises ValueError when the answer is neither. `model` pins the agent's
     model; None takes the configured one. `guidance` is a maintainer's words,
     which the prompt ranks above the agent's reading of the report; `notes` are
@@ -206,6 +206,7 @@ def author(worktree: str, *, title: str, body: str, env: dict[str, str],
     return {"summary": str(verdict.get("summary") or "").strip(),
             "root_cause": str(verdict.get("root_cause") or "").strip(),
             "tests": [str(t) for t in verdict.get("tests") or [] if t],
+            "deleted": [str(p) for p in verdict.get("deleted") or [] if p],
             "changes": [{"path": str(c.get("path")), "rationale": str(c.get("rationale") or "")}
                         for c in changes if isinstance(c, dict) and c.get("path")],
             "responses": [{"comment": str(r.get("comment") or ""),
@@ -352,6 +353,10 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
             return finish("not-a-defect" if verdict["kind"] == "not-a-defect" else "no-fix",
                           verdict["give_up"])
 
+        try:
+            lane_tree.remove(clone, verdict.get("deleted") or [])
+        except ValueError as e:
+            return finish("fix-untrusted", str(e))
         on_step("re-gating the fix")
         patch = lane_tree.authored_patch(clone)
         paths = diffpaths.changed_paths(patch)

@@ -27,11 +27,12 @@ from issue_triage import (
     dispute_question,
     fix_choice,
     fix_pr_body,
+    followup,
     issue_gates,
     second_opinion,
     trust_boundary,
 )
-from pipeline import diffpaths, gates, settings, storekit
+from pipeline import diffpaths, gates, reviewers, settings, storekit
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue
@@ -135,6 +136,35 @@ def status_line(issue: Issue) -> StatusLine:
     return {**line, "text": line["text"] + (" It fixes only part of the report." if partial(issue) else "")}
 
 
+def _blocked_by(judged: dict) -> str | None:
+    """Whose bar a hand-back's change could not clear (`followup.Step.by`). A
+    judgment without `by` names its blocker in its reason."""
+    if judged.get("by"):
+        return str(judged["by"])
+    reason = str(judged.get("reason") or "")
+    if reason.endswith("CI still fails"):
+        return followup.CI
+    named = [r.label for r in reviewers.REVIEWERS.values() if r.id in reason.lower()]
+    return " and ".join(named) or None
+
+
+def _handed_back_line(pr: object, fu: dict) -> str:
+    judged = fu.get("judged") or {}
+    why = judged.get("reason") or fu.get("reason") or ""
+    by = _blocked_by(judged)
+    revisions = int(fu.get("revisions") or 0)
+    tries = (f", and {revisions} revision{'s' if revisions != 1 else ''} didn't fix it"
+             if revisions else "")
+    if by == followup.CI:
+        return (f"Prospector's fix #{pr} fails CI for a reason outside its change." if judged.get("outside")
+                else f"Prospector's fix #{pr} fails CI{tries}.")
+    if by == followup.MAINTAINER:
+        return f"A maintainer asked for a change to Prospector's fix #{pr} that it couldn't make{tries}."
+    if by:
+        return f"Prospector's fix #{pr} failed the {by} review{tries}."
+    return f"Prospector's fix #{pr} came back to you: {why}."
+
+
 def _held_line(issue: Issue) -> str | StatusLine:
     held = trust_boundary.held(issue)
     rivals = (issue.fix_run or {}).get("second_opinion")
@@ -179,8 +209,7 @@ def _fix_status(issue: Issue) -> tuple[str, str, str | StatusLine] | None:
             return ("review", f"#{pr} is green — ready for your review",
                     f"Prospector's fix #{pr} passes its checks and waits for your review.")
         if fu.get("state") == "handed-back":
-            return ("review", f"#{pr} handed back: {why}",
-                    f"Prospector's fix #{pr} came back to you: {why}.")
+            return "review", f"#{pr} handed back: {why}", _handed_back_line(pr, fu)
         if fu.get("state") == "watching" and fu.get("reason"):
             return "pr-open", f"#{pr}: {fu['reason']}", f"Prospector's fix is open as #{pr}: {fu['reason']}."
         return "pr-open", f"#{pr}", f"Prospector's fix is open as #{pr}."
@@ -200,6 +229,18 @@ def _fix_status(issue: Issue) -> tuple[str, str, str | StatusLine] | None:
     if ending in FAULT_ENDINGS or run.get("fault"):
         return "failed", f"{ending}: {detail}", broke
     return "declined", f"{ending}: {detail}", "Prospector tried to fix this and couldn't."
+
+
+def machine_fault(issue: Issue) -> str | None:
+    """What in Prospector itself broke on issue's latest fix request or run —
+    a request that failed, or a run that ended on the machine's condition
+    (FAULT_ENDINGS) — or None."""
+    req, run = issue.fix_request or {}, issue.fix_run or {}
+    if req.get("status") == "failed":
+        return str(req.get("reason") or f"{req.get('action')} failed")
+    if run.get("fault") or run.get("ending") in FAULT_ENDINGS:
+        return f"{run.get('ending')}: {run.get('detail') or ''}".strip()
+    return None
 
 
 def approval(issue: Issue) -> dict | None:

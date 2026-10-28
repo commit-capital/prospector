@@ -26,6 +26,7 @@ commands:
   security-review  3-lens adversarial security review of one PR
   activity-backfill  reconstruct missing activity-log entries for bot closes (dry-run default)
   triage-backfill  judge the fixability of every huntable issue not yet triaged, while AI capacity allows
+  drain            let this machine's worker lanes finish their runs before a restart
 
 `prospector <command> --help` shows the command's own options.
 """
@@ -121,6 +122,12 @@ def _triage_backfill(argv: list[str]) -> int:
     return 0
 
 
+def _drain(argv: list[str]) -> int:
+    from prospector_app.backend import host_drain
+
+    return host_drain.main(argv)
+
+
 COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "serve": _serve,
     "ingest": _ingest,
@@ -131,6 +138,7 @@ COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "security-review": _security_review,
     "activity-backfill": _activity_backfill,
     "triage-backfill": _triage_backfill,
+    "drain": _drain,
 }
 
 
