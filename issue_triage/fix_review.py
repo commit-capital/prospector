@@ -96,7 +96,8 @@ def outcome(record: dict) -> str:
     """A finished run's ending in the words the thread uses: a partial fix
     names itself."""
     result = record.get("result") or {}
-    note = partial_note({**record, "reviews": result.get("reviews"), "claims": result.get("claims")})
+    note = partial_note({**record, "reviews": result.get("reviews"),
+                         "claims": result.get("claims")})
     return f"{note} — {record['detail']}" if note else f"{record['ending']} — {record['detail']}"
 
 
@@ -516,7 +517,8 @@ def distill(record: dict, question: dict | None = None) -> dict:
         "reviews": reviews, "boundary": res.get("boundary"), "intake": res.get("intake"),
         "second_opinion": res.get("second_opinion"),
         "revisions": [_round(r) for r in res.get("revisions") or []],
-        "claims": [{k: c.get(k) for k in ("defect", "fix", "status", "why", "paths", "round")}
+        "claims": [{k: c.get(k) for k in ("defect", "fix", "status", "why", "ruling", "paths",
+                                          "round")}
                    for c in res.get("claims") or []],
         "candidates": candidates,
         "question": None, "proposal": None,

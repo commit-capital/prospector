@@ -368,6 +368,8 @@ def _cov(*statuses):
 @pytest.mark.parametrize("statuses,state", [
     (("addressed",), "complete"),
     (("addressed", "already-fixed"), "complete"),
+    # Issue #16930: a cross-referenced issue the report leaves to another PR.
+    (("addressed", "out-of-scope"), "complete"),
     # Issue #14777: logging fixed, cancel and startup reconcile left.
     (("addressed", "not-addressed", "not-addressed"), "partial"),
 ])
@@ -390,6 +392,41 @@ def test_a_revision_s_coverage_supersedes_the_review_it_answered():
                {"coverage": _cov("addressed", "addressed")}]
     assert issue_gates.fix_coverage(reviews).state == "complete"
     assert issue_gates.fix_coverage(reviews[::-1]).state == "partial"
+
+
+@pytest.mark.parametrize("ruling,out_of_scope", [
+    # Issue #15441: the report's "it may be worth" extra.
+    ("outside-report", True),
+    # Issue #16648: the unbounded retry is documented as intended.
+    ("deliberate", True),
+    ("untestable", False), ("handled", False), (None, False)])
+def test_a_claim_test_ruling_the_defect_out_of_the_report_takes_it_out_of_coverage(
+        ruling, out_of_scope):
+    reviews = [{"lens": "scope-safety", "verdict": "safe",
+                "coverage": _cov("addressed", "not-addressed")}]
+    claims = [{"defect": "Defect  1", "status": "unshown", "why": "optional", "ruling": ruling}]
+    cov = issue_gates.fix_coverage(reviews, claims)
+    # Any other unshown claim sets the defect apart, which still keeps the issue open.
+    assert cov.state == "complete" and cov.closes == out_of_scope
+    assert bool(cov.unshown) != out_of_scope
+    if out_of_scope:
+        assert cov.having("out-of-scope")[0]["evidence"] == "the host's claim test: optional"
+    assert issue_gates.review_comments(reviews, claims)[1] == (
+        [] if out_of_scope else ["not addressed: defect 1 (e)"])
+
+
+def test_the_latest_claim_on_a_defect_rules_it():
+    reviews = [{"coverage": _cov("not-addressed")}]
+    ruled = {"defect": "defect 0", "status": "unshown", "why": "", "ruling": "outside-report"}
+    shown = {"defect": "defect 0", "status": "shown", "why": "", "ruling": None}
+    assert issue_gates.fix_coverage(reviews, [ruled, shown]).state == "partial"
+    assert issue_gates.fix_coverage(reviews, [shown, ruled]).state == "complete"
+
+
+def test_a_model_that_leaves_a_defect_outweighs_one_that_calls_it_out_of_scope():
+    reviews = [_account("opus", ("a", "out-of-scope")),
+               _account("codex:gpt-x", ("a", "not-addressed"))]
+    assert issue_gates.fix_coverage(reviews).state == "partial"
 
 
 def test_a_left_defect_no_claim_test_shows_is_out_of_scope_but_does_not_close():

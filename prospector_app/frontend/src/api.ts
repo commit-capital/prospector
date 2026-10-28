@@ -1487,7 +1487,7 @@ export interface IssueFixReview {
 }
 export interface IssueFixCoverage {
   defect: string;
-  status: "addressed" | "not-addressed" | "already-fixed";
+  status: "addressed" | "not-addressed" | "already-fixed" | "out-of-scope";
   evidence: string;
 }
 /** One trust boundary a fix crosses (issue_triage/trust_boundary.py). */
@@ -1545,6 +1545,9 @@ export interface IssueFixClaim {
   fix?: string;
   status: "shown" | "unshown";
   why: string;
+  /** Why an unshown claim's agent gave up (claim_test.RULINGS); "outside-report"
+   *  and "deliberate" take the defect out of the fix's coverage. */
+  ruling?: "handled" | "deliberate" | "outside-report" | "untestable" | null;
   paths: string[];
   round?: number;
 }

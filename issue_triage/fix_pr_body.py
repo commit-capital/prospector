@@ -65,8 +65,8 @@ def commit_message(issue: int, summary: str, co_authors: Sequence[str] = (), *,
 
 def _coverage(issue: int, coverage: issue_gates.Coverage, claims: list[dict]) -> list[str]:
     """What the fix leaves of the report, with the tests that show it, and
-    what it argues the base already handles, each with the reviewer's
-    evidence. A shown claim the fix passes is no longer what remains."""
+    what it argues the base already handles or the report does not ask it
+    for, each with its evidence. A shown claim the fix passes is no longer what remains."""
     def entries(status: issue_gates.CoverageStatus) -> list[str]:
         return [f"- {inert(d['defect'], 200)}"
                 + (f" ({inert(d['evidence'], 300)})" if d["evidence"] else "")
@@ -88,6 +88,9 @@ def _coverage(issue: int, coverage: issue_gates.Coverage, claims: list[dict]) ->
     already = entries("already-fixed")
     if already:
         out += ["", "The reviewer found the base already handles:", *already]
+    beyond = entries("out-of-scope")
+    if beyond:
+        out += ["", f"#{issue} also mentions, without asking this fix for it:", *beyond]
     return out
 
 
@@ -230,7 +233,7 @@ def render(*, issue: int, result: dict, tests: list[str], base_sha: str, report_
     `related` is the related-PR search's answer, None when it did not run.
     `partial` is an operator's word that the fix covers only part of its
     report, whatever the reviews account."""
-    coverage = issue_gates.fix_coverage(result.get("reviews"))
+    coverage = issue_gates.fix_coverage(result.get("reviews"), result.get("claims"))
     closes = coverage.closes and not partial
     changes = [f"- `{inert(c.get('path', ''), 200)}`: {inert(c.get('rationale', ''))}"
                for c in (result.get("changes") or [])]

@@ -1247,7 +1247,7 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
 
     summary = str(result.get("summary") or "")
     title_text = fix_pr_body.title(issue, summary)
-    closes = issue_gates.fix_coverage(result.get("reviews")).closes
+    closes = issue_gates.fix_coverage(result.get("reviews"), result.get("claims")).closes
     message = fix_pr_body.commit_message(
         issue, summary, second_opinion.co_authors(result.get("second_opinion")), closes=closes)
     tests = [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)]
@@ -1344,7 +1344,8 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
     stored = issue_data.store().load_issue(issue)
     approved = (fix_review.approval(stored) if stored else None) or {}
     partial = bool(approved.get("partial"))
-    closes = issue_gates.fix_coverage(result.get("reviews")).closes and not partial
+    closes = (issue_gates.fix_coverage(result.get("reviews"), result.get("claims")).closes
+              and not partial)
     message = fix_pr_body.commit_message(
         issue, summary, second_opinion.co_authors(result.get("second_opinion")), closes=closes)
     tests = [p for p in diffpaths.changed_paths(patch) if diffpaths.is_test_path(p)]

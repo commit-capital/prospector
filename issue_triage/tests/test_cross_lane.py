@@ -724,11 +724,12 @@ CLAIM_PATCH = ("diff --git a/src/claim.test.ts b/src/claim.test.ts\nnew file mod
                "+test('cancel', () => expect(y).toBe(2));\n")
 
 
-def _claim(status: str) -> claim_test.Claim:
+def _claim(status: str, ruling: claim_test.Ruling | None = None) -> claim_test.Claim:
     shown = status == "shown"
     return claim_test.Claim(defect=GAP["defect"], fix="f" * 16,
                             status="shown" if shown else "unshown",
                             why="fails twice" if shown else "no failing test could be written",
+                            ruling=ruling,
                             patch=CLAIM_PATCH if shown else "",
                             paths=["src/claim.test.ts"] if shown else [],
                             red_tail="expected 2, got undefined", agent_runs=2)
@@ -755,7 +756,7 @@ def answered(reviser, monkeypatch):
 
     def prove_claim(spec, *, defect, tests, fix, workdir, proof_patch, label, on_step=None):
         reviser["claims"].append({"defect": defect, "fix": fix})
-        return _claim(reviser["claim"])
+        return _claim(reviser["claim"], reviser.get("ruling"))
 
     monkeypatch.setattr(claim_test, "prove_claim", prove_claim)
     green = prove.green_legs
@@ -808,6 +809,16 @@ def test_a_dispute_of_a_claim_no_test_shows_is_judged_by_a_fresh_review(answered
     assert "no failing test was shown" in brief
     assert 'The bot disputed "not addressed' in answered["reviewed"][-1]["history"]
     assert "src/claim.test.ts" not in res.result["patch"]
+
+
+def test_a_leftover_the_claim_test_rules_out_of_the_report_spends_no_revision(answered):
+    """#16930: the report leaves #2922's prose-cost bug to another PR."""
+    answered.update(claim="unshown", ruling="outside-report", verdicts=[PARTIAL])
+    res = answered["run"]()
+    assert res.ending == "fixed" and answered["revised_with"] == []
+    assert issue_gates.fix_coverage(res.result["reviews"], res.result["claims"]).state == "complete"
+    assert res.result["claims"][0]["ruling"] == "outside-report"
+    assert res.result["revisions"] == []
 
 
 def test_a_complete_safe_review_asks_for_no_revision(answered):
