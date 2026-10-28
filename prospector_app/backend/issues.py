@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from issue_triage import fix_review
+from issue_triage import feature_screen, fix_review
 from issue_triage import issue_display
 from issue_triage import issue_links
 from issue_triage import pr_index
@@ -351,7 +351,44 @@ def get_issue(n: int) -> dict | None:
     row["fix_approved"] = fix_review.approval(i)
     row["fix_held"] = trust_boundary.held(i)
     row["fix_choice"] = i.fix_choice if fix_choice.chosen(i) is not None else None
+    screen = feature_screen.current(i)
+    row["feature_screen"] = (None if screen is None else
+                             {**{k: v for k, v in screen.items() if k != "mockup"},
+                              "has_mockup": bool(screen.get("mockup"))})
+    row["feature_decision"] = i.feature_decision
     return row
+
+
+_SIZE_RANK = {"small": 0, "medium": 1, "large": 2}
+
+
+def feature_requests() -> dict:
+    """The shortlist: open issues whose current screen says `consider` and that
+    no maintainer has decided, smallest first, then newest screened."""
+    _sync_store_root()
+    rows: list[dict] = []
+    for n, i in issue_data.full_issues().items():
+        screen = feature_screen.current(i)
+        if i.state != "open" or screen is None or screen.get("verdict") != "consider" \
+                or i.feature_decision is not None:
+            continue
+        rows.append({"issue": n, "title": i.title,
+                     "url": f"https://github.com/{settings.repo()}/issues/{n}",
+                     "why": screen.get("why"), "size": screen.get("size"),
+                     "precedents": screen.get("precedents") or [],
+                     "has_mockup": bool(screen.get("mockup")),
+                     "screened_at": (i.section("feature_screen") or {}).get("checked_at")})
+    rows.sort(key=lambda r: r["screened_at"] or "", reverse=True)
+    rows.sort(key=lambda r: _SIZE_RANK.get(r["size"], len(_SIZE_RANK)))
+    return {"items": rows, "count": len(rows)}
+
+
+def feature_mockup(n: int) -> str | None:
+    """The current screen's mockup page for issue `n`, or None."""
+    _sync_store_root()
+    i = issue_data.load_full_issues([int(n)]).get(int(n))
+    screen = feature_screen.current(i) if i is not None else None
+    return (screen or {}).get("mockup") or None
 
 
 _REPRO_RANK = {"A": 5, "B": 4, "C": 3, "D": 2, "E": 1, "F": 0}

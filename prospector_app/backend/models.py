@@ -120,6 +120,11 @@ class IssueFixBody(BaseModel):
     dry_run: bool = False
 
 
+class FeatureDecisionBody(BaseModel):
+    decision: Literal["implement", "decline", "reopen"]
+    guidance: str | None = None
+
+
 class IssueFixApproveBody(BaseModel):
     # A partial approval keeps the pull request from closing the issue.
     partial: bool = False

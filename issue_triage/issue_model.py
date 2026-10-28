@@ -269,6 +269,12 @@ class Issue:
         self._store.set_issue_section(self.number, "feature_decision",
                                       self.rec["feature_decision"])
 
+    def clear_feature_decision(self) -> None:
+        """Remove the decision alone, so a screen recorded meanwhile survives."""
+        assert self._store is not None, "a store-less Issue view is read-only"
+        self.rec.pop("feature_decision", None)
+        self._store.set_issue_section(self.number, "feature_decision", None)
+
     def stage_fix_public(self, section: dict) -> None:
         """Stage the public-loop record without persisting, for a
         compare-and-swap."""
