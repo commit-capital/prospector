@@ -51,6 +51,10 @@
       "preflight": "preflight:workspace-links",
       "home_env": "YOURAPP_HOME",
       "instance_env": "YOURAPP_INSTANCE_ID"
+    },
+    "e2e": {
+      "config": "tests/e2e/playwright.config.ts",
+      "channel_env": "YOURAPP_PLAYWRIGHT_CHANNEL"
     }
   },
   "autofix": {

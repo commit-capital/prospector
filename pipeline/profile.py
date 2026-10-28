@@ -110,6 +110,18 @@ class SuiteConfig:
     instance_env: str | None = None
 
 
+# The in-app lane's repository contract: the Playwright config the sandbox runs
+# against the booted app, the whole-phase timeout for one suite run, spec files
+# that never run, and the env var the repository's config reads for a Playwright
+# browser channel. A profile without this section has no in-app lane.
+@dataclass(frozen=True)
+class E2eConfig:
+    config: str
+    boot_timeout_s: int = 600
+    exclude: tuple[str, ...] = ()
+    channel_env: str | None = None
+
+
 # The VERIFY sandbox's repository policy: the fixed red/green test runner and
 # flags derive_test_command builds commands from, the pnpm version the sandbox
 # image caches (the target repository's packageManager pin), the optional
@@ -133,6 +145,7 @@ class VerifyPolicy:
     lint_cmd: str | None = None
     test_setup: str | None = None
     suite: SuiteConfig | None = None
+    e2e: E2eConfig | None = None
 
 
 ARTIFACT_CATEGORIES: tuple[str, ...] = ("lockfile", "migrations", "locale", "vendored", "generated")
@@ -398,10 +411,36 @@ def _parse_suite(raw: object, source: str) -> SuiteConfig:
     )
 
 
+def _parse_repo_path(raw: object, source: str, where: str) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise _fail(source, where, "must be a non-empty string")
+    if raw.startswith("/") or ".." in raw.split("/"):
+        raise _fail(source, where, "must be a repo-relative path")
+    return raw
+
+
+def _parse_e2e(raw: object, source: str) -> E2eConfig:
+    section = _require_object(raw, source, "verify.e2e", {
+        "config", "boot_timeout_s", "exclude", "channel_env"})
+    config = _parse_repo_path(section.get("config"), source, "verify.e2e.config")
+    timeout = section.get("boot_timeout_s", E2eConfig.boot_timeout_s)
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
+        raise _fail(source, "verify.e2e.boot_timeout_s", "must be a positive integer")
+    exclude = _parse_str_list(section.get("exclude", []), source, "verify.e2e.exclude")
+    for entry in exclude:
+        _parse_repo_path(entry, source, "verify.e2e.exclude")
+    channel_env = _parse_opt_str(section, "channel_env", source, "verify.e2e")
+    if channel_env is not None and not re.fullmatch(r"[A-Z][A-Z0-9_]*", channel_env):
+        raise _fail(source, "verify.e2e.channel_env",
+                    "must be an upper-case environment variable name")
+    return E2eConfig(config=config, boot_timeout_s=timeout, exclude=exclude,
+                     channel_env=channel_env)
+
+
 def _parse_verify(raw: object, source: str) -> VerifyPolicy:
     section = _require_object(raw, source, "verify", {
         "test_runner", "test_flags", "pnpm_version", "compile_cmd", "build_cmd",
-        "lint_cmd", "test_setup", "suite"})
+        "lint_cmd", "test_setup", "suite", "e2e"})
     runner = (_parse_str_list(section["test_runner"], source, "verify.test_runner")
               if "test_runner" in section else VerifyPolicy.test_runner)
     if not runner:
@@ -414,13 +453,15 @@ def _parse_verify(raw: object, source: str) -> VerifyPolicy:
                     "must be an exact semver string (e.g. 9.15.4)")
     suite = (_parse_suite(section["suite"], source)
              if section.get("suite") is not None else None)
+    e2e = (_parse_e2e(section["e2e"], source)
+           if section.get("e2e") is not None else None)
     return VerifyPolicy(test_runner=runner, test_flags=flags,
                         pnpm_version=pnpm,
                         compile_cmd=_parse_opt_str(section, "compile_cmd", source, "verify"),
                         build_cmd=_parse_opt_str(section, "build_cmd", source, "verify"),
                         lint_cmd=_parse_opt_str(section, "lint_cmd", source, "verify"),
                         test_setup=_parse_opt_str(section, "test_setup", source, "verify"),
-                        suite=suite)
+                        suite=suite, e2e=e2e)
 
 
 def _parse_artifact_rules(raw: object, source: str) -> tuple[ArtifactRule, ...]:
