@@ -49,6 +49,28 @@ def test_a_parked_change_is_your_move(store):
     assert (out["column"], out["bucket"], out["owner"]) == ("act", "approve-parked", "you")
 
 
+def test_a_parked_change_names_the_bar_that_stopped_it(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    rec = _rec()
+    rec["fix_request"] = {"action": "resolve", "status": "awaiting-review", "source": "auto",
+                          "against_head_sha": HEAD, "host": "w", "queued_at": _now(),
+                          "result": {"auto_review": {"bar": {
+                              "ok": False, "reason": "the behavior-lens reviewer did not clear it: x"}}}}
+    out = _classify(store, rec)
+    assert out["reason"] == ("the agent's conflict resolve is parked for you: "
+                             "the behavior-lens reviewer did not clear it: x")
+
+
+def test_a_parked_action_autopush_skips_says_so(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "")
+    rec = _rec()
+    rec["fix_request"] = {"action": "describe", "status": "awaiting-review", "source": "auto",
+                          "against_head_sha": HEAD, "host": "w", "queued_at": _now()}
+    out = _classify(store, rec)
+    assert out["reason"] == ("the rewritten description is parked for you: "
+                             "unattended pushes are off for describe")
+
+
 def test_a_needs_human_pick_is_handed_to_you(store):
     rec = _rec()
     rec["analysis"] = {"disposition": "needs-human", "rationale": "rewrites the storage layer",

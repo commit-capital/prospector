@@ -107,6 +107,7 @@ export const TERMS: Record<string, GlossaryEntry> = {
   "col.safety": { title: "Safety", meaning: "The security review result: GREEN, YELLOW, RED, or — if not reviewed." },
   "col.cluster": { title: "Cluster", meaning: "The group of PRs that fix the same problem. Click to open it." },
   "col.updated": { title: "Updated", meaning: "When the PR last changed. Icons show what the author did since we acted: ↩ reopened · ⬆ pushed changes · 💬 replied." },
+  "col.status": { title: "Status", meaning: "Where the PR stands with the automation, and whose move it is." },
   "col.disposition": { title: "Disposition", meaning: "What we plan to do with this PR. Hover a value to see why." },
   "col.author": { title: "Author", meaning: "Who opened the PR." },
   "col.review": { title: "Review", meaning: "What the automated code reviewers think. Each one has to approve before merging." },
