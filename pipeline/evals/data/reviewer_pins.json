@@ -8,9 +8,9 @@
   },
   "fix-review": {
     "model": "opus",
-    "prompt_sha": "a8a25dd1edaf7b2a",
+    "prompt_sha": "9e90b61031a9f380",
     "provisional": true,
-    "run": "2026-10-26T16:26:07+00:00",
+    "run": "2026-10-28T19:46:19+00:00",
     "score": {
       "cases": 0,
       "failed": 0,
