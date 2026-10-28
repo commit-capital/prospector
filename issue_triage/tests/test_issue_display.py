@@ -131,3 +131,20 @@ def test_no_story_without_a_thread_or_an_agent(tmp_path):
     st = _seed(tmp_path)
     assert idp.write_story(st, 5, trigger="followup") is False
     assert idp.write_story(_with_thread(tmp_path / "t"), 5, trigger="followup") is False
+
+
+def test_a_held_fix_s_story_is_told_the_hold_and_retired_by_it(tmp_path, monkeypatch):
+    st = _with_thread(tmp_path)
+    st.edit_issue(5).record_fix_run({"ending": "fixed", "detail": "ok", "patch": "diff --git a/x b/x\n",
+                                     "host": "studio", "question": None, "proposal": None})
+    asked: list[str] = []
+    monkeypatch.setattr(idp.display_pass, "ask", lambda prompt: asked.append(prompt) or STORY)
+    idp.write_story(st, 5, trigger="followup")
+    st.edit_issue(5).record_fix_run({**st.load_issue(5).fix_run, "second_opinion": [
+        {"pr": 14804, "author": "a", "verdict": "gap-open", "why": "it misses the setup screen"}]})
+    assert idp.current_story(st.load_issue(5)) is None
+    idp.write_story(st, 5, trigger="followup")
+    assert "WHY PROSPECTOR IS HOLDING IT: another open pull request covers what this fix misses: " \
+           "#14804 (it misses the setup screen)" in asked[-1]
+    assert idp.check_story({**STORY, "story": "Go with #14804."}, idp.story_inputs(st.load_issue(5))) == \
+        {"text": "Go with #14804.", "prospector_fault": STORY["prospector_fault"]}

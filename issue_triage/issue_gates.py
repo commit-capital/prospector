@@ -16,7 +16,7 @@ review_comments reads every review into what the fixer must answer.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 from issue_triage.issue_freshness import is_current
@@ -346,14 +346,17 @@ class Coverage:
     """How much of its report a fix covers. `state` is "complete" when every
     defect the reviewer found in the report is addressed by the change, already
     handled on the base, or out of the report's scope, "partial" when one is
-    none of these, and "unchecked" when no review carries a usable account;
-    only "complete" closes the issue."""
+    none of these, and "unchecked" when no review carries a usable account.
+    `unshown` holds the not-addressed defects a claim test could not show
+    remain (`claim_test`), which `state` and `defects` leave out; only
+    "complete" with none unshown closes the issue."""
     state: Literal["complete", "partial", "unchecked"]
     defects: list[CoverageEntry]
+    unshown: list[CoverageEntry] = field(default_factory=list)
 
     @property
     def closes(self) -> bool:
-        return self.state == "complete"
+        return self.state == "complete" and not self.unshown
 
     def having(self, status: CoverageStatus) -> list[CoverageEntry]:
         return [d for d in self.defects if d["status"] == status]
@@ -386,7 +389,9 @@ def fix_coverage(reviews: list[dict] | None, claims: list[dict] | None = None) -
     are one, with the status from _COVERAGE_RANK. A defect left not addressed
     whose latest claim test (`claims`, in the reviewer's words) ruled it
     outside the report or deliberate (OUT_OF_REPORT_RULINGS) is out of scope,
-    with that ruling as its evidence."""
+    with that ruling as its evidence. Any other not-addressed defect whose
+    latest claim is unshown moves to `unshown`, unless that would leave no
+    defect in scope."""
     accounts: dict[object, list[CoverageEntry]] = {}
     for review in reviews or []:
         defects = coverage_entries(review.get("coverage"))
@@ -408,9 +413,16 @@ def fix_coverage(reviews: list[dict] | None, claims: list[dict] | None = None) -
                 and claim.get("ruling") in OUT_OF_REPORT_RULINGS):
             merged[key] = {**d, "status": "out-of-scope",
                            "evidence": f"the host's claim test: {claim.get('why') or ''}"}
+    claimed = {key: c.get("status") for key, c in ruled.items()}
     out = list(merged.values())
+    unshown = [d for d in out if d["status"] == "not-addressed"
+               and claimed.get(_defect_key(d["defect"])) == "unshown"]
+    if len(unshown) < len(out):
+        out = [d for d in out if d not in unshown]
+    else:
+        unshown = []
     partial = any(d["status"] == "not-addressed" for d in out)
-    return Coverage("partial" if partial else "complete", out)
+    return Coverage("partial" if partial else "complete", out, unshown)
 
 
 def revision_passed(round_: dict) -> bool | None:
@@ -431,9 +443,9 @@ def review_comments(reviews: list[dict] | None,
     reviewer's latest answer counts (latest_reviews), so any model's judged
     rejection rejects, and every model's comments are combined. A judged
     rejection comments its reason and concerns and rejects; a reported defect
-    the merged coverage account (fix_coverage, with `claims`) leaves unaddressed is a comment
-    that does not reject, since a proven fix for part of a report stands as a
-    partial fix. A reviewer that reached no verdict comments nothing: its
+    the merged coverage account (fix_coverage, with `claims`) leaves unaddressed,
+    shown to remain or not, is a comment that does not reject, since a proven
+    fix for part of a report stands as a partial fix. A reviewer that reached no verdict comments nothing: its
     failure is the caller's to read, never a pass."""
     rejected = False
     comments: list[str] = []
@@ -445,7 +457,8 @@ def review_comments(reviews: list[dict] | None,
                      for c in [review.get("reason") or "not safe", *(review.get("concerns") or [])]]
     comments += [f"not addressed: {d['defect']}" + (f" ({d['evidence']})" if d["evidence"]
                                                     else "")
-                 for d in fix_coverage(reviews, claims).having("not-addressed")]
+                 for cov in [fix_coverage(reviews, claims)]
+                 for d in [*cov.having("not-addressed"), *cov.unshown]]
     return rejected, list(dict.fromkeys(comments))
 
 

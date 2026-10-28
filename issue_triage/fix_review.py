@@ -8,8 +8,9 @@ latest attempt (`fix_run`) and no other request is in flight; the words an
 operator gives with it land in the thread (`fix_thread`). `fix_status` derives,
 on read, whose move the attempt waits on; a proposal's follow-up record
 (`fix_followup`) counts only while it follows the run's own pull request.
-An operator's approval (`approve`) leaves an open pull request to the
-maintainers: it rides on the follow-up record and holds (`approval`) through
+A pull request the follow-up finds green is left to the maintainers unless it
+is a partial fix, which waits for an operator. An operator's approval
+(`approve`) leaves an open pull request to the maintainers: it rides on the follow-up record and holds (`approval`) through
 later heads and revisions, until the follow-up hands the pull request back for
 something new the fixer failed at — not for CI that fails outside the change.
 `distill` turns a finished run's `result.json` record into the `fix_run` the app
@@ -73,7 +74,8 @@ def _ended(proposal: dict, fu: dict) -> tuple[str, str, str] | None:
 
 def partial_note(run: dict) -> str | None:
     """What a fixed run whose coverage is partial leaves of its report, or None
-    for any other run."""
+    for any other run. Defects the base already handles count as handled; those
+    no claim test showed remain are named apart."""
     if run.get("ending") != "fixed":
         return None
     coverage = issue_gates.fix_coverage(run.get("reviews"), run.get("claims"))
@@ -81,11 +83,13 @@ def partial_note(run: dict) -> str | None:
         return None
     left = coverage.having("not-addressed")
     already = coverage.having("already-fixed")
-    return (f"partial fix: {len(coverage.having('addressed'))} of {len(coverage.defects)} "
-            "reported defects addressed"
-            + (f", {len(already)} already handled on the base" if already else "")
+    return (f"partial fix: {len(coverage.defects) - len(left)} of {len(coverage.defects)} "
+            "reported defects handled"
+            + (f", {len(already)} of them already on the base" if already else "")
             + "; not addressed: "
-            + fix_pr_body.inert("; ".join(d["defect"] for d in left)))
+            + fix_pr_body.inert("; ".join(d["defect"] for d in left))
+            + ("; not shown to remain: " + fix_pr_body.inert("; ".join(
+                d["defect"] for d in coverage.unshown)) if coverage.unshown else ""))
 
 
 def outcome(record: dict) -> str:
@@ -99,10 +103,11 @@ def outcome(record: dict) -> str:
 
 def partial(issue: Issue) -> str | None:
     """`partial_note` while the attempt waits on a review or an open pull
-    request, the statuses that present it as a fix."""
+    request, the statuses that present it as a fix, or while a request runs
+    against it."""
     status = _fix_status(issue)
-    return partial_note(issue.fix_run or {}) if status and status[0] in ("review",
-                                                                          "pr-open") else None
+    return partial_note(issue.fix_run or {}) if status and status[0] in ("review", "pr-open",
+                                                                          "running") else None
 
 
 def fix_status(issue: Issue) -> tuple[str, str] | None:
@@ -185,8 +190,12 @@ def _fix_status(issue: Issue) -> tuple[str, str, str | StatusLine] | None:
                 f"You chose #{pr} as the fix, so Prospector stopped its own.")
     req, run = issue.fix_request, issue.fix_run
     if req and req.get("status") in IN_FLIGHT:
-        return ("running", f"{req.get('action')} {req.get('status')}",
-                "Prospector is working on a fix right now.")
+        working: str | StatusLine = "Prospector is working on a fix right now."
+        if trust_boundary.held(issue):
+            line = _held_line(issue)
+            working = (StatusLine(text=f"{line['text']} {working}", see=line["see"])
+                       if isinstance(line, dict) else f"{line} {working}")
+        return "running", f"{req.get('action')} {req.get('status')}", working
     broke = "Prospector's last fix attempt broke down before it finished."
     if req and req.get("status") == "failed":
         return "failed", str(req.get("reason") or f"{req.get('action')} failed"), broke
@@ -206,6 +215,9 @@ def _fix_status(issue: Issue) -> tuple[str, str, str | StatusLine] | None:
                     f"You approved Prospector's fix #{pr}; it's with the maintainers."
                     + (f" It came back once: {why}." if fu.get("state") == "handed-back" else ""))
         if fu.get("state") == "ready":
+            if partial_note(run) is None:
+                return ("pr-open", f"#{pr} is green; with the maintainers",
+                        f"Prospector's fix #{pr} passes its checks; it's with the maintainers.")
             return ("review", f"#{pr} is green — ready for your review",
                     f"Prospector's fix #{pr} passes its checks and waits for your review.")
         if fu.get("state") == "handed-back":
