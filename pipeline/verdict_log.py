@@ -28,6 +28,7 @@ VERDICTS: dict[str, tuple[str, ...]] = {
     "trust-boundary": ("pass", "hold", "failed"),
     "intake": ("clear", "suspicious", "malicious", "failed"),
     "fixability": ("go", "ask", "skip", "failed"),
+    "feature-screen": ("consider", "unclear", "not-a-fit", "failed"),
 }
 REVIEWERS: tuple[str, ...] = tuple(VERDICTS)
 RETENTION_DAYS = 90
