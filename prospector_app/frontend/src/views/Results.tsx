@@ -6,6 +6,10 @@ import { Collapsible } from "../components/Collapsible";
 const LANES: Record<string, string> = {
   "issue-fix": "Issue fix",
   "issue-followup": "Fix PR follow-up",
+  "design-review": "Design review",
+  "security-review": "Security review",
+  verify: "Test run",
+  autofix: "PR autofix",
 };
 
 /** Each stage in plain words (pipeline/outcomes.py STAGES). */
@@ -30,6 +34,32 @@ const STAGES: Record<string, string> = {
   reviewer: "a code reviewer kept objecting",
   maintainer: "a maintainer's change didn't land",
   fixer: "the fixer couldn't make the change asked for",
+  blocking: "found blocking design problems",
+  coverage: "couldn't measure test coverage",
+  "no-diff": "couldn't fetch the PR's diff",
+  error: "the run crashed",
+  yellow: "found YELLOW security findings",
+  red: "found RED security findings",
+  held: "a lens didn't finish, so no verdict was trusted",
+  "not-verified": "the test run didn't verify the fix",
+  regressed: "the change broke a test that passed before",
+  escalate: "the test run needs a person to judge it",
+  "unverifiable-no-test": "the PR has no test to run",
+  "unverifiable-needs-live-agent": "the test needs a live agent",
+  "deps-touched": "the PR changes dependencies, which the sandbox never installs",
+  "needs-rebase": "the PR needs a rebase before it can run",
+  "refused-safety": "refused to run the PR's code",
+  "no-base": "no pinned base on this machine",
+  "fetch-error": "couldn't fetch the PR",
+  "agent-failed": "the agent failed",
+  "agent-unavailable": "the agent was unavailable",
+  "sandbox-error": "the sandbox broke",
+  "base-lane": "the base fails its own tests",
+  interrupted: "the worker restarted mid-run",
+  hold: "a sandbox phase errored, so no verdict was trusted",
+  exception: "the run crashed",
+  refused: "refused the change",
+  "run-failed": "the run failed on the machine",
 };
 
 const FAULTS: Record<string, { label: string; tone: "red" | "yellow" | "muted" }> = {

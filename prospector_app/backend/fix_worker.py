@@ -649,12 +649,11 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
     terminal status the caller has already written."""
     entry = fix_queue.ledger_entry(
         n, req, status, detail, host or settings.worker_id(), _now(),
-        trigger="autohunt" if req.get("source") in AUTO_SOURCES else None, judged=judged)
+        trigger="autohunt" if req.get("source") in AUTO_SOURCES else None, judged=judged,
+        kind=kind)
     signature = (req.get("objection") or {}).get("signature")
     if signature:
         entry["stats"]["objection"] = signature
-    if status == "failed":
-        entry["stats"]["kind"] = kind
     try:
         data.store().append_run(entry)
     except Exception:

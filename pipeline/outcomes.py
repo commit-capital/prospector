@@ -26,6 +26,15 @@ STAGES: dict[str, tuple[str, ...]] = {
                   "not-a-defect", "proof", "compile", "suite", "review", "revision",
                   "guardrail", "declined", "sandbox", "agent", "base"),
     "issue-followup": ("ci", "ci-outside", "reviewer", "maintainer", "fixer"),
+    "design-review": ("reviewed", "blocking", "coverage", "no-diff", "agent", "error"),
+    "security-review": ("green", "yellow", "red", "held", "no-diff", "agent", "error"),
+    "verify": ("verified", "not-verified", "regressed", "escalate", "unverifiable-no-test",
+               "unverifiable-needs-live-agent", "deps-touched", "needs-rebase",
+               "refused-safety", "no-base", "fetch-error",
+               "agent-failed", "agent-unavailable", "sandbox-error", "base-lane",
+               "interrupted", "hold", "exception"),
+    "autofix": ("pushed", "parked", "cancelled", "refused", "run-failed",
+                "agent-unavailable"),
 }
 
 
