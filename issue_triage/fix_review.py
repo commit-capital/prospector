@@ -8,8 +8,9 @@ latest attempt (`fix_run`) and no other request is in flight; the words an
 operator gives with it land in the thread (`fix_thread`). `fix_status` derives,
 on read, whose move the attempt waits on; a proposal's follow-up record
 (`fix_followup`) counts only while it follows the run's own pull request.
-An operator's approval (`approve`) leaves an open pull request to the
-maintainers: it rides on the follow-up record and holds (`approval`) through
+A pull request the follow-up finds green is left to the maintainers unless it
+is a partial fix, which waits for an operator. An operator's approval
+(`approve`) leaves an open pull request to the maintainers: it rides on the follow-up record and holds (`approval`) through
 later heads and revisions, until the follow-up hands the pull request back for
 something new the fixer failed at — not for CI that fails outside the change.
 `distill` turns a finished run's `result.json` record into the `fix_run` the app
@@ -204,6 +205,9 @@ def _fix_status(issue: Issue) -> tuple[str, str, str | StatusLine] | None:
                     f"You approved Prospector's fix #{pr}; it's with the maintainers."
                     + (f" It came back once: {why}." if fu.get("state") == "handed-back" else ""))
         if fu.get("state") == "ready":
+            if partial_note(run) is None:
+                return ("pr-open", f"#{pr} is green; with the maintainers",
+                        f"Prospector's fix #{pr} passes its checks; it's with the maintainers.")
             return ("review", f"#{pr} is green — ready for your review",
                     f"Prospector's fix #{pr} passes its checks and waits for your review.")
         if fu.get("state") == "handed-back":
