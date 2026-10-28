@@ -246,11 +246,12 @@ def revise(solo, tmp_path, monkeypatch):
     monkeypatch.setattr(review_issue_fix, "review", fake_review)
     base = prove.PinnedBase(sha="a" * 40, tier=2, image="img", clone=tmp_path / "base")
 
-    def run() -> fix_lane.LaneResult:
+    def run(advisory: frozenset[str] = frozenset()) -> fix_lane.LaneResult:
         spec = fix_lane.LaneSpec(issue=7, title="x is wrong", body="x should be 2", base=base,
                                  guidance="x must be 2, not 3", notes="CI fails in x.test.ts")
         return solo_lane.run(spec, workdir=tmp_path / "work", start_patch=EARLIER,
-                             attempt={"summary": "set x to 3", "root_cause": "r"}, review=True)
+                             attempt={"summary": "set x to 3", "root_cause": "r"}, review=True,
+                             advisory=advisory)
 
     seen["run"] = run
     return seen
@@ -289,6 +290,25 @@ def test_a_revision_the_reviewer_judges_unsafe_ends_fix_rejected(solo, revise):
                         "concerns": []}
     res = revise["run"]()
     assert res.ending == "fix-rejected" and "too wide" in res.detail
+
+
+def test_an_advisory_lens_comments_on_a_revision_without_rejecting_it(solo, monkeypatch, revise):
+    def by_lens(worktree, patch, **kw):
+        unsafe = kw["lens"] == "design"
+        return {"lens": kw["lens"], "verdict": "unsafe" if unsafe else "safe",
+                "reason": "copies the setup of a sibling test" if unsafe else "ok", "concerns": []}
+
+    monkeypatch.setattr(review_issue_fix, "review", by_lens)
+    assert revise["run"]().ending == "fix-rejected"
+    res = revise["run"](frozenset({"design"}))
+    assert res.ending == "fixed"
+    assert any(r["lens"] == "design" and r["verdict"] == "unsafe" for r in res.result["reviews"])
+
+
+def test_an_advisory_lens_does_not_excuse_another_lens_s_rejection(solo, revise):
+    revise["review"] = {"lens": "scope-safety", "verdict": "unsafe", "reason": "too wide",
+                        "concerns": []}
+    assert revise["run"](frozenset({"design"})).ending == "fix-rejected"
 
 
 def test_without_review_the_one_agent_lane_asks_no_reviewer(solo, revise):

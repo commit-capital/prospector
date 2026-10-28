@@ -2,6 +2,7 @@
 evidence a revision is handed, and a dry-run poll that writes nothing upstream."""
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
@@ -19,6 +20,7 @@ PATCH = """diff --git a/ui/src/EmailMessageCard.tsx b/ui/src/EmailMessageCard.ts
 -a
 +b
 """
+REVISED = PATCH.replace("+b", "+c")
 
 
 def _check(name: str = "tests", conclusion: str | None = "success", run_id: int = 1,
@@ -206,7 +208,7 @@ def test_a_poll_traces_the_failure_in_the_sandbox_and_revises(store, monkeypatch
     fu = store.load_issue(7).fix_followup
     assert traced == [[ROUTE_TEST]]
     assert fu["ci_attribution"] == {"head_sha": HEAD, "files": {ROUTE_TEST: followup.CAUSED}}
-    assert fu["revisions"] == 1 and "ci_untraced_revised" not in fu
+    assert "revisions" not in fu and "ci_untraced_revised" not in fu
     assert ROUTE_TEST in store.load_issue(7).fix_request["notes"]
 
 
@@ -280,7 +282,7 @@ def test_a_live_poll_queues_a_follow_up_revision(store, monkeypatch):
     req = store.load_issue(7).fix_request
     assert req["action"] == "send-back" and req["source"] == "followup"
     assert "guidance" not in req and "objected to the change" in req["notes"]
-    assert store.load_issue(7).fix_followup["revisions"] == 1
+    assert "revisions" not in store.load_issue(7).fix_followup  # counted when it finishes
 
 
 def _run_follow_up(store: IssueStore, **words: str) -> str:
@@ -319,7 +321,7 @@ def test_a_fixed_follow_up_revision_goes_onto_the_same_pull_request(store, monke
     from prospector_app.backend import executor
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_FOLLOWUP", "live")
     monkeypatch.setattr(fix_review_runner, "revise", lambda *a, **k: {
-        "ending": "fixed", "detail": "ok", "result": {"patch": PATCH}})
+        "ending": "fixed", "detail": "ok", "result": {"patch": REVISED}})
     monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
     calls = []
     monkeypatch.setattr(executor, "update_issue_fix_proposal",
@@ -329,6 +331,70 @@ def test_a_fixed_follow_up_revision_goes_onto_the_same_pull_request(store, monke
     assert calls == [(7, 9, {"push": True, "token": "t", "dry_run": False})]
     assert out.startswith("Revised #9")
     assert store.load_issue(7).fix_run["proposal"] == {"pr": 9, "url": "u"}
+
+
+def _pushes(monkeypatch) -> None:
+    from prospector_app.backend import executor
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_FOLLOWUP", "live")
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    monkeypatch.setattr(executor, "update_issue_fix_proposal",
+                        lambda n, pr, **kw: {"status": "executed", "detail": "Pushed"})
+
+
+@pytest.mark.parametrize("ran, counted", [
+    ({"ending": "fixed", "detail": "ok", "result": {"patch": REVISED}}, "revisions"),
+    ({"ending": "fix-rejected", "detail": "design: copies setup"}, "revisions"),
+    ({"ending": "fix-unproven", "detail": "the full suite fails"}, "revisions"),
+    ({"ending": "sandbox", "fault": True, "detail": "the suite timed out"}, "revision_faults"),
+    ({"ending": "agent-unavailable", "fault": True, "detail": "usage limit"}, "revision_faults"),
+])
+def test_a_follow_up_revision_is_counted_when_it_finishes(store, monkeypatch, ran, counted):
+    _pushes(monkeypatch)
+    monkeypatch.setattr(fix_review_runner, "revise", lambda *a, **k: ran)
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "revisions": 1})
+    _run_follow_up(store)
+    fu = store.load_issue(7).fix_followup
+    other = "revision_faults" if counted == "revisions" else "revisions"
+    assert fu[counted] == (2 if counted == "revisions" else 1)
+    assert int(fu.get(other) or 0) == (1 if other == "revisions" else 0)
+
+
+def test_a_follow_up_revision_that_crashes_spends_nothing(store, monkeypatch):
+    def crashes(*a, **k):
+        raise RuntimeError("the issue-fix worker restarted mid-send-back")
+
+    monkeypatch.setattr(fix_review_runner, "revise", crashes)
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "revisions": 1})
+    with contextlib.suppress(RuntimeError):
+        _run_follow_up(store)
+    fu = store.load_issue(7).fix_followup
+    assert fu["revisions"] == 1 and "revision_faults" not in fu
+
+
+def test_a_revision_that_leaves_the_code_alone_comes_back_with_the_fixer_s_answer(
+        store, monkeypatch, tmp_path):
+    _pushes(monkeypatch)
+    kept = json.loads((tmp_path / "issue-7" / "result.json").read_text())
+    answer = {"comment": "Unsupported hosts fail test setup", "answer": "disputed",
+              "why": "the suite only runs on linux runners"}
+    monkeypatch.setattr(fix_review_runner, "revise", lambda *a, **k: {
+        "ending": "fixed", "detail": "ok",
+        "result": {"patch": kept["result"]["patch"], "responses": [answer]}})
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "revisions": 1,
+                                             "head_sha": HEAD})
+    out = _run_follow_up(store)
+    fu = store.load_issue(7).fix_followup
+    assert "left the code as it was" in out and "only runs on linux runners" in out
+    assert fu["state"] == "handed-back" and fu["revisions"] == 1
+    assert "only runs on linux runners" in fu["judged"]["reason"]
+
+
+def test_revisions_that_break_down_on_the_machine_hand_back_at_their_own_cap():
+    fu = {**DESCRIBED, "revision_faults": followup.MAX_REVISION_FAULTS}
+    step = _decide(_pr(views=[_greptile(reviewers.FAIL)]), fu)
+    assert step.kind == "hand-back" and "broke down on the machine" in step.reason
+    assert _decide(_pr(views=[_greptile(reviewers.FAIL)]),
+                   {**DESCRIBED, "revisions": followup.MAX_REVISIONS - 1}).kind == "revise"
 
 
 def test_a_reviewer_that_reviewed_the_pull_request_gates_it(monkeypatch):
@@ -544,7 +610,8 @@ def test_a_finished_follow_up_that_never_said_how_is_read_once_more(store, monke
 
 def test_a_new_proposal_is_followed_past_an_earlier_one_s_finished_record(store, monkeypatch):
     store.edit_issue(7).record_fix_followup({"pr": 5, "state": "done", "closed_as": "closed",
-                                             "described_head": HEAD, "revisions": 2})
+                                             "described_head": HEAD,
+                                             "revisions": followup.MAX_REVISIONS})
     monkeypatch.setattr(followup, "read", lambda pr: _pr())
     followup.poll(store, mode="dry-run")
     fu = store.load_issue(7).fix_followup
@@ -609,7 +676,7 @@ def test_a_hand_back_for_ci_outside_the_change_says_so():
     untraced = _decide(_pr([_check("typecheck", "failure", run_id=4)]),
                        {**RERAN, "ci_untraced_revised": True}, logs=logs)
     assert untraced.kind == "hand-back" and untraced.outside
-    spent = _decide(_pr(views=[_greptile(reviewers.FAIL)]), {**DESCRIBED, "revisions": 2})
+    spent = _decide(_pr(views=[_greptile(reviewers.FAIL)]), {**DESCRIBED, "revisions": followup.MAX_REVISIONS})
     assert spent.kind == "hand-back" and not spent.outside
 
 
@@ -640,7 +707,8 @@ def test_re_describing_an_approved_hand_back_keeps_it_handed_back(store, monkeyp
 def test_a_hand_back_records_whether_ci_outside_the_change_caused_it(store, monkeypatch):
     monkeypatch.setattr(followup, "read", lambda pr: _pr(views=[_greptile(reviewers.FAIL)]))
     store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching",
-                                             "described_head": HEAD, "revisions": 2})
+                                             "described_head": HEAD,
+                                             "revisions": followup.MAX_REVISIONS})
     followup.poll(store, mode="live")
     fu = store.load_issue(7).fix_followup
     assert fu["state"] == "handed-back" and fu["judged"]["outside"] is False
@@ -682,7 +750,7 @@ def test_an_operator_s_send_back_that_still_leaves_part_comes_back_to_them(store
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_FOLLOWUP", "live")
     monkeypatch.setattr(fix_review_runner, "revise", lambda *a, **k: {
         "ending": "fixed", "detail": "ok",
-        "result": {"patch": PATCH, "reviews": PARTIAL_REVIEW}})
+        "result": {"patch": REVISED, "reviews": PARTIAL_REVIEW}})
     monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
     monkeypatch.setattr(executor, "update_issue_fix_proposal",
                         lambda n, pr, **kw: {"status": "executed", "detail": "Pushed"})
@@ -698,7 +766,8 @@ def test_an_operator_s_send_back_that_still_leaves_part_comes_back_to_them(store
 def test_a_hand_back_for_something_new_ends_the_approval_for_good(store, monkeypatch):
     monkeypatch.setattr(followup, "read", lambda pr: _pr(views=[_greptile(reviewers.FAIL)]))
     store.edit_issue(7).record_fix_followup({
-        "pr": 9, "state": "watching", "described_head": HEAD, "revisions": 2,
+        "pr": 9, "state": "watching", "described_head": HEAD,
+        "revisions": followup.MAX_REVISIONS,
         "approved": {"by": "op", "judged": {"reason": "old"}, "partial": True}})
     followup.poll(store, mode="live")
     fu = store.load_issue(7).fix_followup
