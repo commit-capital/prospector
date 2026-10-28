@@ -47,15 +47,18 @@ _stop = threading.Event()
 
 
 def spent_today(runs: Iterable[storekit.RunRecord], today: str) -> tuple[int, int]:
-    """(PRs summarized, clusters analyzed) by the lane's passes on UTC day
-    `today` (YYYY-MM-DD)."""
+    """(PRs summarized or left unplaced by a failed assign, clusters analyzed)
+    by the lane's passes on UTC day `today` (YYYY-MM-DD)."""
     prs = clusters = 0
     for rec in runs:
         if not isinstance(rec, storekit.PhaseRun) or rec.raw.get("trigger") != TRIGGER:
             continue
         if not str(rec.finished or rec.started or "").startswith(today):
             continue
-        attempted = (rec.raw.get("stats") or {}).get("attempted")
+        stats = rec.raw.get("stats") or {}
+        if rec.phase == "cluster:assign" and isinstance(stats.get("unplaced"), int):
+            prs += stats["unplaced"]
+        attempted = stats.get("attempted")
         if not isinstance(attempted, int):
             continue
         if rec.phase == "cluster:summaries":

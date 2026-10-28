@@ -62,6 +62,11 @@ def test_a_crashed_reviewer_is_unsafe_and_failed(monkeypatch):
     assert r["out"].get("failed") is True
 
 
+def test_an_agent_outage_raises_rather_than_failing_the_review(monkeypatch):
+    with pytest.raises(headless_agent.AgentUnavailable):
+        _run(monkeypatch, headless_agent.AgentUnavailable("not logged in"))
+
+
 def test_a_judged_unsafe_is_not_marked_failed(monkeypatch):
     r = _run(monkeypatch, json.dumps({"verdict": "unsafe", "reason": "regression"}))
     assert "failed" not in r["out"]

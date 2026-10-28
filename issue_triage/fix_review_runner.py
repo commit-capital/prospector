@@ -329,7 +329,7 @@ def run_request(store: IssueStore, n: int, req: dict, *,
     except headless_agent.AgentUnavailable as e:
         _finish(store, n, req, "failed", f"the agent is unavailable: {e}")
         raise
-    except (RequestFailed, prove.NoBase, prove.SandboxFault, RuntimeError, ValueError) as e:
+    except Exception as e:
         outcome, status = f"{action} failed: {e}", "failed"
     _finish(store, n, req, status, outcome)
     _note(store, n, outcome)
@@ -463,6 +463,9 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
         raise RequestFailed(f"the revision could not go onto #{pr}: {res.get('detail')}")
     if res.get("status") == "dry-run":
         result_file.write_text(kept)
+        if own_round:
+            # No push went out (no bot token), so the same revision is due again.
+            _count_revision(store, n, pr, fault=True)
         return f"Dry run: {res.get('detail')}"
     distilled = fix_review.distill(record)
     distilled["proposal"] = proposal

@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
-from pipeline import headless_agent
+from pipeline import capacity, headless_agent
 
 AGENT_TIMEOUT_SECONDS = 900
 
@@ -153,7 +153,8 @@ def review(worktree: str, *, pr: int, title: str, merge_diff: str, resolution: s
     Only a well-formed, explicit `safe` returns safe. A reviewer that never
     reached a verdict — it crashed, timed out, or answered without one — also
     carries `failed: True`, so the caller can tell a judgment on the change
-    from the machine's failure to judge it."""
+    from the machine's failure to judge it. An agent outage or a closed AI
+    capacity gate raises: no reviewer ran."""
     if lens not in LENSES:
         raise ValueError(f"unknown review lens: {lens!r}")
     worktree = os.path.realpath(worktree)
@@ -166,6 +167,8 @@ def review(worktree: str, *, pr: int, title: str, merge_diff: str, resolution: s
             allow_gh=False, cwd=worktree, edit_root=None, read_root=worktree,
             git_root=worktree, env_allow=(),
             timeout=AGENT_TIMEOUT_SECONDS, on_event=on_event)
+    except (headless_agent.AgentUnavailable, capacity.CapacityPaused):
+        raise
     except RuntimeError as e:
         return _unsafe(f"the reviewing agent did not finish: {e}", failed=True)
     try:
