@@ -140,9 +140,10 @@ powers: it acts only through its confirm-first helpers.
   - On an outsider's PR, it's the existing human merge with its override. That path
     still runs `merge_eligibility`, the threat re-scan and the compile preflight.
   - No new stored override.
-- **Abandon on our PR** closes the PR and ends the issue's fix attempt through
-  `fix_review`, so the factory doesn't propose it again. On an outsider's PR it's
-  the existing close.
+- **Abandon on our PR** is the existing close, and that also ends the issue's fix
+  attempt: the issue hunter never re-picks an issue that has a `fix_run`
+  (`issue_fix_worker._huntable`), and the follow-up records the PR closed. On an
+  outsider's PR it's the existing close.
 - **Stage path:**
   - It gains "Analysis" first (summarized, clustered and analyzed) and "Conflicts"
     (merge conflicts or drift) before CI.
