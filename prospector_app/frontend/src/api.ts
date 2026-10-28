@@ -1710,7 +1710,7 @@ export interface IssueFilterSpec {
 export type IssueDisposition = "not-planned" | "completed" | "fixed" | "dup";
 /** The issue pipeline's per-issue triage verdict (issue ANALYZE). */
 export type IssueTriageDisposition = "close-dup" | "close-fixed" | "request-changes" | "request-repro"
-  | "link-pr" | "needs-human";
+  | "link-pr" | "needs-human" | "close-disputed";
 /** The stored analysis section: the verdict plus the agent's written reasons. */
 interface IssueAnalysis {
   disposition: IssueTriageDisposition;
@@ -1760,6 +1760,15 @@ export interface IssueDetail extends IssueRow {
   fix_approved?: IssueFixApproval | null;
   /** The fixability triage against the report bar (issue_triage/fixability.py). */
   fix_triage?: IssueFixTriage | null;
+  /** Prospector's unattended close (issue_triage/close_out.py), with the
+   *  author's reply once they disputed it. */
+  fix_closed?: IssueFixClosed | null;
+}
+export interface IssueFixClosed {
+  kind: "not-in-repo" | "external" | "already-fixed";
+  at: string;
+  disputed?: { at: string; by: string; reply: string } | null;
+  reopened?: string | null;
 }
 /** Whether an issue meets the report bar: `gaps` its author was asked to close,
  *  `asked` what became of that comment, `current` false once a reply or edit

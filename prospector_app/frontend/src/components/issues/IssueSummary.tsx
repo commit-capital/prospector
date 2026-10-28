@@ -349,6 +349,9 @@ function suggestedAction(d: IssueDetail): string {
     case "request-repro": return "Ask the reporter for a reproduction";
     case "link-pr": return "Keep open: a linked PR addresses it";
     case "needs-human": return "Needs your decision";
+    case "close-disputed": return d.fix_closed?.disputed
+      ? `${d.fix_closed.disputed.by} disputes Prospector's close as ${d.fix_closed.kind}: reopen it or leave it closed`
+      : "Prospector's close is disputed";
     default: return "Not yet analyzed";
   }
 }
