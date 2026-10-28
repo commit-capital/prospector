@@ -97,6 +97,7 @@ const VIEW_NAMES: [string, string][] = [
   ["/security", "Security"],
   ["/pipeline/activity", "Activity"],
   ["/pipeline/policy", "Policy"],
+  ["/pipeline/results", "Results"],
   ["/pipeline/setup", "Machines & policy"],
   ["/pipeline/data", "Data"],
   ["/pipeline", "Pipeline"],
@@ -126,6 +127,7 @@ const SUB_NAVS: { prefix: string; tabs: { to: string; label: string; end?: boole
   { prefix: "/pipeline", tabs: [
     { to: "/pipeline/control", label: "Health & queues" },
     { to: "/pipeline/activity", label: "Throughput & audit" },
+    { to: "/pipeline/results", label: "Results" },
     { to: "/pipeline/policy", label: "Policy" },
     { to: "/pipeline/setup", label: "Machines & policy" },
     { to: "/pipeline/data", label: "Data" },
@@ -609,8 +611,8 @@ function Nav() {
 // again.
 const KEPT_PAGES: ReadonlySet<string> = new Set([
   "/", "/prs/list", "/prs/clusters", "/issues", "/security", "/security/threats",
-  "/security/actions", "/pipeline/control", "/pipeline/activity", "/pipeline/policy",
-  "/pipeline/setup", "/pipeline/data",
+  "/security/actions", "/pipeline/control", "/pipeline/activity", "/pipeline/results",
+  "/pipeline/policy", "/pipeline/setup", "/pipeline/data",
 ]);
 
 // How long after the first page mounts the other tabs are read ahead, so the

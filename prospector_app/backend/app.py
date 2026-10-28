@@ -58,6 +58,7 @@ from prospector_app.backend import jobs
 from prospector_app.backend import freshness_live
 from prospector_app.backend import models
 from prospector_app.backend import onboarding
+from prospector_app.backend import outcome_summary
 from prospector_app.backend import push_identity
 from prospector_app.backend import pipeline_status
 from prospector_app.backend import pr_history
@@ -1181,6 +1182,13 @@ def policy_reviewers():
     """Each Prospector-run reviewer's scorecard and the runs to label
     (reviewer_ratchet.policy)."""
     return reviewer_ratchet.policy()
+
+
+@app.get("/api/results")
+def lane_results(days: int = Query(30, ge=1, le=400)):
+    """Where the lanes' attempts stopped over the last `days`, and the fixes
+    parked now (outcome_summary.summary)."""
+    return outcome_summary.summary(days)
 
 
 @app.get("/api/policy/trust-ladder")

@@ -72,6 +72,7 @@ const router = createBrowserRouter([
       { path: "pipeline/control", lazy: lazyView(loadPipeline) },
       { path: "pipeline/activity", lazy: lazyView(() => import("./views/Activity")) },
       { path: "pipeline/policy", lazy: lazyView(() => import("./views/Policy")) },
+      { path: "pipeline/results", lazy: lazyView(() => import("./views/Results")) },
       { path: "pipeline/setup", lazy: lazyView(() => import("./views/Setup")) },
       { path: "pipeline/data", lazy: lazyView(() => import("./views/Tables")) },
       { path: "pipeline/data/:name", lazy: lazyView(() => import("./views/TableDetail")) },
