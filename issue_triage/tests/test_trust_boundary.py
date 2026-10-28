@@ -176,6 +176,21 @@ def test_a_report_the_intake_audit_did_not_clear_holds_its_fix(tmp_path):
     assert "talks to the agent" in (trust_boundary.held(store.load_issue(7)) or "")
 
 
+def test_every_hold_is_listed_most_pressing_first(tmp_path):
+    store = IssueStore(tmp_path)
+    store.save_issue({"issue": 7, "meta": {"title": "t", "state": "open", "body": "b",
+                                           "updated_at": "2026-10-01T00:00:00Z",
+                                           "author": "rando", "author_association": "NONE"}})
+    store.edit_issue(7).record_fix_run({
+        "ending": "fixed", "patch": "p",
+        "boundary": {"crossings": [{"kind": "auth", "where": "a", "what": "w", "requested": True}]},
+        "intake": {"verdict": "suspicious", "findings": [], "reason": "talks to the agent"},
+        "agreement": {"reproductions": [1], "agreed": [], "single": True}})
+    issue = store.load_issue(7)
+    assert [h["kind"] for h in trust_boundary.holds(issue)] == ["intake", "single", "boundary"]
+    assert trust_boundary.held(issue) == trust_boundary.holds(issue)[0]["text"]
+
+
 def test_a_fix_one_reproduction_backs_is_held(tmp_path):
     store = IssueStore(tmp_path)
     store.save_issue({"issue": 7, "meta": {"title": "t", "state": "open", "body": "b",

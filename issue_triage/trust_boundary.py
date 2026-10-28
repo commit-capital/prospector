@@ -10,7 +10,7 @@ wording can talk away. `hold` reads that record. A LOW_RISK crossing never
 holds a fix; any other is authorized only when a maintainer filed the issue (`gates.priority_author`) and its report asks
 for it; a fix with any other crossing, a fix whose reviewer gave no usable
 answer, and a fix with no record on an issue someone else filed wait for an
-operator's Propose. A held fix still ends `fixed`; `held` says why an issue's
+operator's Propose. A held fix still ends `fixed`; `holds` says why an issue's
 attempt waits. A crossing the report did not ask for goes back to the fixer as
 a review comment (`comments`), so a revision can drop it.
 """
@@ -21,7 +21,7 @@ import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from issue_triage import intake_audit, reproduce_issue, review_issue_fix, second_opinion
 from pipeline import diffpaths, gates, headless_agent, settings, verdict_log
@@ -217,18 +217,35 @@ def hold(boundary: dict | None, *, maintainer_filed: bool) -> str | None:
     return f"it crosses a trust boundary {why}: {named}"
 
 
-def held(issue: Issue) -> str | None:
-    """Why issue's fixed, unproposed attempt waits for an operator, or None: a
-    report the intake audit did not read as clear (`intake_audit.flag`), another
-    open pull request that covers what the fix misses (`second_opinion.flag`), a
-    fix only one candidate's reproduction backs (`cross_lane.lone_reproduction`),
-    else `hold`."""
+HoldKind = Literal["intake", "rival", "single", "boundary"]
+
+
+class Hold(TypedDict):
+    kind: HoldKind
+    text: str
+
+
+def holds(issue: Issue) -> list[Hold]:
+    """Every reason issue's fixed, unproposed attempt waits for an operator, most
+    pressing first: a report the intake audit did not read as clear
+    (`intake_audit.flag`), another open pull request that covers what the fix
+    misses (`second_opinion.flag`), a fix only one candidate's reproduction backs
+    (`cross_lane.lone_reproduction`), and `hold`."""
     run = issue.fix_run or {}
     if run.get("ending") != "fixed" or (run.get("proposal") or {}).get("pr"):
-        return None
+        return []
     maintainer = gates.priority_author(issue.author, issue.author_association)
-    return (intake_audit.flag(run.get("intake"))
-            or second_opinion.flag(run.get("second_opinion"))
-            or ("only one candidate's tests reproduce the defect"
-                if (run.get("agreement") or {}).get("single") else None)
-            or hold(run.get("boundary"), maintainer_filed=maintainer))
+    reasons: list[tuple[HoldKind, str | None]] = [
+        ("intake", intake_audit.flag(run.get("intake"))),
+        ("rival", second_opinion.flag(run.get("second_opinion"))),
+        ("single", "only one candidate's tests reproduce the defect"
+                   if (run.get("agreement") or {}).get("single") else None),
+        ("boundary", hold(run.get("boundary"), maintainer_filed=maintainer))]
+    return [Hold(kind=kind, text=text) for kind, text in reasons if text]
+
+
+def held(issue: Issue) -> str | None:
+    """Why issue's fixed, unproposed attempt waits for an operator: the first of
+    `holds`, or None."""
+    reasons = holds(issue)
+    return reasons[0]["text"] if reasons else None

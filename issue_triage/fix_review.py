@@ -22,7 +22,7 @@ a partial fix wherever the attempt is named (`outcome`, `fix_status`).
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from issue_triage import (
     dispute_question,
@@ -108,6 +108,40 @@ def partial(issue: Issue) -> str | None:
     status = _fix_status(issue)
     return partial_note(issue.fix_run or {}) if status and status[0] in ("review", "pr-open",
                                                                           "running") else None
+
+
+class ShownDefect(issue_gates.CoverageEntry, total=False):
+    claim: dict[str, str | None]
+
+
+class ShownCoverage(TypedDict):
+    state: Literal["complete", "partial", "unchecked"]
+    defects: list[ShownDefect]
+    unshown: list[ShownDefect]
+
+
+def coverage(issue: Issue) -> ShownCoverage | None:
+    """A fixed attempt's coverage (`issue_gates.fix_coverage`) as the issue page
+    shows it, each defect with the latest claim test of it, or None for any
+    other attempt."""
+    run = issue.fix_run or {}
+    if run.get("ending") != "fixed":
+        return None
+    cov = issue_gates.fix_coverage(run.get("reviews"), run.get("claims"))
+    claims = {issue_gates.defect_key(str(c.get("defect") or "")): c
+              for c in run.get("claims") or []}
+
+    def shown(defects: list[issue_gates.CoverageEntry]) -> list[ShownDefect]:
+        out: list[ShownDefect] = []
+        for d in defects:
+            entry = ShownDefect(**d)
+            claim = claims.get(issue_gates.defect_key(d["defect"]))
+            if claim:
+                entry["claim"] = {k: claim.get(k) for k in ("status", "why", "ruling")}
+            out.append(entry)
+        return out
+
+    return ShownCoverage(state=cov.state, defects=shown(cov.defects), unshown=shown(cov.unshown))
 
 
 def fix_status(issue: Issue) -> tuple[str, str] | None:

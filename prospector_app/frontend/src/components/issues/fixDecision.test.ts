@@ -28,26 +28,17 @@ test("approving defaults to a partial fix only when something says it is one", (
     true);
 });
 
+const defect = (d: string, status: string) => ({ defect: d, status, evidence: "" });
+
 test("the send-back draft carries the reviewer's reasons and what the fix leaves", () => {
-  const draft = sendBackDraft(issue({ fix_run: { reviews: [{ lens: "scope-safety", concerns: [],
-    coverage: [{ defect: "cancel is a no-op", status: "not-addressed", evidence: "" },
-               { defect: "the error is swallowed", status: "addressed", evidence: "" }] }] } as
-    unknown as IssueDetail["fix_run"] }), true);
+  const draft = sendBackDraft(issue({ fix_coverage: { state: "partial",
+    defects: [defect("cancel is a no-op", "not-addressed"), defect("the error is swallowed", "addressed"),
+              defect("retry forever", "out-of-scope")],
+    unshown: [defect("startup never reconciles", "not-addressed")] } as IssueDetail["fix_coverage"] }), true);
   assert.match(draft, /#15363 doesn't fix all of #14777/);
   assert.match(draft, /It only adds logging/);
-  assert.match(draft, /- cancel is a no-op/);
-  assert.doesNotMatch(draft, /the error is swallowed/);
-});
-
-test("the draft leaves out a defect a claim test ruled out of the report", () => {
-  const draft = sendBackDraft(issue({ fix_run: {
-    reviews: [{ lens: "scope-safety", concerns: [],
-      coverage: [{ defect: "cancel is a no-op", status: "not-addressed", evidence: "" },
-                 { defect: "Retry  forever", status: "not-addressed", evidence: "" }] }],
-    claims: [{ defect: "retry forever", status: "unshown", why: "documented", ruling: "deliberate",
-               paths: [] }] } as unknown as IssueDetail["fix_run"] }), true);
-  assert.match(draft, /- cancel is a no-op/);
-  assert.doesNotMatch(draft, /Retry/);
+  assert.match(draft, /- cancel is a no-op\n- startup never reconciles/);
+  assert.doesNotMatch(draft, /swallowed|retry/);
 });
 
 test("a draft with nothing from the reviewer still asks for the whole report", () => {
