@@ -3175,3 +3175,60 @@ class TestDockerDisk:
     def test_a_container_that_cannot_start_reports_why(self, monkeypatch):
         self._fake(monkeypatch, 125, "", "docker: write /var/lib/docker/x: no space left on device")
         assert vd.DISK_FULL in str(vd.docker_disk())
+
+
+def _profile_with_e2e() -> profile.RepoProfile:
+    return profile.parse_profile(
+        {"version": 1, "verify": {"e2e": {"config": "tests/e2e/playwright.config.ts"}}}, "t")
+
+
+class TestPlaywrightBrowsers:
+    def test_playwright_version_reads_the_lockfile_key(self, tmp_path):
+        (tmp_path / "pnpm-lock.yaml").write_text(
+            "packages:\n\n  '@playwright/test@1.62.1':\n    resolution: {}\n")
+        assert vd.playwright_version(tmp_path) == "1.62.1"
+
+    def test_playwright_version_is_none_without_playwright(self, tmp_path):
+        (tmp_path / "pnpm-lock.yaml").write_text("packages:\n\n  vitest@3.0.5:\n")
+        assert vd.playwright_version(tmp_path) is None
+
+    def test_playwright_version_is_none_without_a_lockfile(self, tmp_path):
+        assert vd.playwright_version(tmp_path) is None
+
+    def test_playwright_version_refuses_a_non_semver(self, tmp_path):
+        (tmp_path / "pnpm-lock.yaml").write_text("  '@playwright/test@1.2.3;rm -rf':\n")
+        assert vd.playwright_version(tmp_path) is None
+
+    def test_prefetch_installs_chromium_only_at_the_pinned_version(self, tmp_path, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(vd, "_run_build_step", lambda what, argv, env: calls.append(argv))
+        monkeypatch.setattr(vd, "playwright_version", lambda src: "1.62.1")
+        monkeypatch.setattr(profile, "active", _profile_with_e2e)
+        vd.prefetch_browsers(tmp_path / "src", tmp_path / "browsers")
+        script = calls[0][-1]
+        assert "playwright@1.62.1 install chromium" in script
+        assert "PLAYWRIGHT_BROWSERS_PATH=/work/browsers" in script
+        assert "install-deps" not in script and "--with-deps" not in script
+
+    def test_prefetch_is_a_noop_without_playwright(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vd, "playwright_version", lambda src: None)
+        monkeypatch.setattr(profile, "active", _profile_with_e2e)
+        monkeypatch.setattr(vd, "_run_build_step", lambda *a, **k: pytest.fail("ran"))
+        vd.prefetch_browsers(tmp_path, tmp_path / "b")
+
+    def test_prefetch_is_a_noop_without_an_e2e_profile(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vd, "playwright_version", lambda src: "1.62.1")
+        monkeypatch.setattr(profile, "active", lambda: profile.parse_profile({"version": 1}, "t"))
+        monkeypatch.setattr(vd, "_run_build_step", lambda *a, **k: pytest.fail("ran"))
+        vd.prefetch_browsers(tmp_path, tmp_path / "b")
+
+    @pytest.mark.parametrize("code, expected", [(0, True), (1, False)])
+    def test_base_has_browser_probes_the_image_offline(self, monkeypatch, code, expected):
+        seen: list[list[str]] = []
+
+        def run(argv, **kw):
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, code, b"", b"")
+        monkeypatch.setattr(vd.subprocess, "run", run)
+        assert vd.base_has_browser("img:t1") is expected
+        assert "--network" in seen[0] and "none" in seen[0]

@@ -287,6 +287,47 @@ def prefetch_store(src: Path, store: Path) -> None:
         env=launcher_env())
 
 
+_PLAYWRIGHT_KEY_RE = re.compile(r"^\s*'@playwright/test@([^']+)':", re.MULTILINE)
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
+
+
+def playwright_version(src: Path) -> str | None:
+    """The exact `@playwright/test` version `src`'s pnpm lockfile pins, or None
+    when it pins none or a version that is not plain semver (the value reaches
+    a shell command)."""
+    try:
+        text = (src / "pnpm-lock.yaml").read_text()
+    except OSError:
+        return None
+    m = _PLAYWRIGHT_KEY_RE.search(text)
+    return m.group(1) if m and _SEMVER_RE.fullmatch(m.group(1)) else None
+
+
+def prefetch_browsers(src: Path, dest: Path) -> None:
+    """Install into `dest` the Chromium build matching the Playwright version
+    `src` pins, for a profile that runs e2e. Browser builds are tied to the
+    Playwright version, so the browser follows the base. Like `prefetch_store`,
+    it runs inside the sandbox image, with egress; the phases that use the
+    browser are offline."""
+    version = playwright_version(src)
+    if profile.active().verify.e2e is None or version is None:
+        return
+    _run_build_step(
+        "prefetching Chromium",
+        ["docker", "run", "--rm", "-v", f"{dest}:/work/browsers", sandbox_image(),
+         "bash", "-lc",
+         f"PLAYWRIGHT_BROWSERS_PATH=/work/browsers npx -y playwright@{version} install chromium"],
+        env=launcher_env())
+
+
+def base_has_browser(image: str) -> bool:
+    """Whether `image` holds a Chromium build under /work/browsers."""
+    p = subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "sh",
+                        image, "-c", "ls -d /work/browsers/chromium* >/dev/null 2>&1"],
+                       capture_output=True, env=launcher_env(), timeout=120)
+    return p.returncode == 0
+
+
 # A toolchain channel or component a repository's toolchain file names: a
 # release, a dated or named channel, a component. Anything else is refused.
 _RUST_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -555,11 +596,13 @@ def _build_base_image(sha: str, tier: int, ctx: Path, tag: str) -> None:
     src = base_clone_dir(sha)
     pnpm_store = ctx / "pnpm-store"
     rust = ctx / "rust"
+    browsers = ctx / "browsers"
     if ctx.exists():
         shutil.rmtree(ctx)
     ctx.mkdir(parents=True)
     pnpm_store.mkdir()
     rust.mkdir()
+    browsers.mkdir()
 
     cloning = ctx / f"clone-{os.getpid()}-{time.monotonic_ns()}"
     cloning.mkdir()
@@ -575,6 +618,7 @@ def _build_base_image(sha: str, tier: int, ctx: Path, tag: str) -> None:
     if tier == 1:
         prefetch_store(src, pnpm_store)
         prefetch_rust(src, rust)
+        prefetch_browsers(src, browsers)
 
     try:
         _run_build_step(
