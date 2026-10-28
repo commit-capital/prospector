@@ -626,6 +626,8 @@ def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) ->
                 f"baseline capture failed (exit {rc}) — refusing to pin: a pin without "
                 f"a captured baseline leaves the regress phase no exclusion set, so the "
                 f"regression gate cannot tell a pre-existing failure from a regression")
+        if why := implausible_baseline(trailer):
+            raise RuntimeError(f"{why} — refusing to pin an exclusion set that wide")
         failed = [str(f) for f in trailer_failed]
 
         anomalies = trailer.get("anomalies")
@@ -748,13 +750,29 @@ def write_suite_config() -> Path:
             "lane needs its repository contract (wrapper, server_project); add "
             "it to the profile or re-run prepare-base so the pin records that "
             "this repository has no suite")
-    SCRATCH.mkdir(parents=True, exist_ok=True)
-    path = SCRATCH / "suite-config.json"
-    storekit.atomic_write_text(path, json.dumps({
+    text = json.dumps({
         "wrapper": suite.wrapper, "server_project": suite.server_project,
         "preflight": suite.preflight, "home_env": suite.home_env,
-        "instance_env": suite.instance_env}))
+        "instance_env": suite.instance_env})
+    # Named by its content and written once: a file a starting container is
+    # bind-mounting is never replaced under it.
+    path = SCRATCH / f"suite-config-{hashlib.sha256(text.encode()).hexdigest()[:12]}.json"
+    if not path.exists():
+        storekit.atomic_write_text(path, text)
     return path
+
+
+# A baseline failing more than this share of its planned files measured a
+# starved or broken sandbox, not the tree.
+BASELINE_MAX_FAILING_SHARE = 0.25
+
+
+def implausible_baseline(trailer: dict) -> str:
+    """Why a baseline trailer fails too many files to trust, or ""."""
+    planned, failed = trailer.get("planned"), trailer.get("failed") or []
+    if isinstance(planned, int) and len(failed) > planned * BASELINE_MAX_FAILING_SHARE:
+        return f"the baseline failed {len(failed)} of {planned} planned files"
+    return ""
 
 
 def write_exclude_file(base_sha: str, baseline: list[str]) -> Path:

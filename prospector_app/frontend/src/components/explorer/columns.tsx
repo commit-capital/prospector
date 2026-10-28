@@ -13,6 +13,7 @@ import { GitHubPRLink } from "../GitHubPRLink";
 import { DraftChip, StackedChip, TierChip, AckButton } from "../Chips";
 import { AuthorHover } from "../AuthorHover";
 import { LinkedIssues } from "../LinkedIssues";
+import { statusText } from "../prStatus";
 import type { Column } from "../shared/columns";
 
 // Visual aid: a star trails a trusted contributor's handle wherever authors
@@ -282,6 +283,16 @@ export const COLUMNS: ColumnDef[] = [
       : r.disposition
         ? <InfoTip entry={dispositionEntry(r.disposition)} why={dispoWhy(r)} cue={false} focusable={false}>{r.disposition}</InfoTip>
         : <InfoTip entry={NOT_ANALYZED} cue={false} focusable={false}>—</InfoTip>) },
+  { key: "status", label: "Status", defaultOn: true, term: "col.status", cellClass: "small",
+    cell: (r) => {
+      const reason = statusText(r);
+      if (!reason) return "—";
+      return (
+        <InfoTip body={reason} cue={false} focusable={false}>
+          <span className="col-status">{reason}</span>
+        </InfoTip>
+      );
+    } },
 
   // --- default-off opt-in columns ---
   { key: "files", label: "Files", defaultOn: false, term: "col.files", numeric: true, cellClass: "num mono small",

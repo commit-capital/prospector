@@ -1818,6 +1818,58 @@ def test_the_lane_judges_only_this_hosts_unjudged_resolves(store, monkeypatch, a
     assert fix_worker.next_reviewable() == picked
 
 
+_REJECTED = {"tier": {"tier": 2, "pinned_by": ["a.ts"]},
+             "reviews": [{"lens": "behavior", "verdict": "unsafe", "reason": "x"}],
+             "bar": {"ok": False, "reason": "x"}}
+
+
+@pytest.mark.parametrize("gates, budget, extra, picked", [
+    (("objection",), 5, {}, 1),
+    (("objection",), 5, {"rounds": [{"objection": {}}]}, None),
+    (("objection",), 0, {}, None),
+    (("ci",), 5, {}, None),
+    (("objection",), 5, {"auto_review": {**_REJECTED, "tier": {"tier": 0}}}, None),
+], ids=["owed", "already-continued", "budget-spent", "not-opted-in", "tier-0"])
+def test_a_rejection_no_continuation_answered_is_judged_again(store, monkeypatch, gates,
+                                                              budget, extra, picked):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+        autofix=profile.AutofixPolicy(fixable_gates=gates)))
+    monkeypatch.setattr(fix_worker.objections, "budget_left", lambda st, w: budget)
+    fix_worker._review_backoff.clear()
+    _parked_resolve(store, result={**RESOLVE_RESULT, "auto_review": _REJECTED, **extra})
+    assert fix_worker.next_reviewable() == picked
+
+
+def test_a_refused_budget_rests_the_owed_resolve(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+        autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+    reads: list[int] = []
+    monkeypatch.setattr(fix_worker.objections, "budget_left",
+                        lambda st, w: reads.append(1) or 0)
+    fix_worker._review_backoff.clear()
+    _parked_resolve(store, result={**RESOLVE_RESULT, "auto_review": _REJECTED})
+    assert fix_worker.next_reviewable() is None
+    assert fix_worker.next_reviewable() is None
+    assert len(reads) == 1
+
+
+def test_an_owed_continuation_starts_from_the_stamped_rejection(review_lane, store,
+                                                                 monkeypatch):
+    monkeypatch.setattr(fix_worker, "_may_continue", lambda rec, objection: True)
+    continued: list[tuple[dict, dict]] = []
+    monkeypatch.setattr(fix_worker, "_continue_resolve",
+                        lambda n, rec, claimed, head, wt, result, stamp, objection:
+                        continued.append((stamp, objection)))
+    _parked_resolve(store, result={**RESOLVE_RESULT, "auto_review": _REJECTED})
+    fix_worker.review_parked_resolve(1)
+    assert review_lane["review_calls"] == []
+    [(stamp, objection)] = continued
+    assert stamp["reviews"] == _REJECTED["reviews"]
+    assert objection["kind"] == "resolve-review"
+
+
 def test_a_clean_bar_approves_for_the_push_lane(review_lane, store):
     _parked_resolve(store)
     fix_worker.review_parked_resolve(1)
