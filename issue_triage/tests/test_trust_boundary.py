@@ -153,6 +153,7 @@ def test_only_a_fixed_unproposed_attempt_is_held(tmp_path):
     run = {"ending": "fixed", "patch": "p", "boundary": {"crossings": [NETWORK]}}
     store.edit_issue(7).record_fix_run(run)
     assert "network" in (trust_boundary.held(store.load_issue(7)) or "")
+    assert (trust_boundary.held_kind(store.load_issue(7)) or ("",))[0] == "boundary"
     store.edit_issue(7).record_fix_run({**run, "proposal": {"pr": 9}})
     assert trust_boundary.held(store.load_issue(7)) is None
     store.edit_issue(7).record_fix_run({**run, "ending": "no-fix"})
@@ -174,6 +175,7 @@ def test_a_report_the_intake_audit_did_not_clear_holds_its_fix(tmp_path):
     store.edit_issue(7).record_fix_run({"ending": "fixed", "patch": "p",
                                         "boundary": {"crossings": []}, "intake": intake})
     assert "talks to the agent" in (trust_boundary.held(store.load_issue(7)) or "")
+    assert (trust_boundary.held_kind(store.load_issue(7)) or ("",))[0] == "intake"
 
 
 def test_a_fix_one_reproduction_backs_is_held(tmp_path):
@@ -185,6 +187,7 @@ def test_a_fix_one_reproduction_backs_is_held(tmp_path):
            "agreement": {"reproductions": [1], "agreed": [], "single": True}}
     store.edit_issue(7).record_fix_run(run)
     assert "only one candidate" in (trust_boundary.held(store.load_issue(7)) or "")
+    assert (trust_boundary.held_kind(store.load_issue(7)) or ("",))[0] == "single"
     store.edit_issue(7).record_fix_run({**run, "agreement": {"reproductions": [0, 1],
                                                              "agreed": [0, 1]}})
     assert trust_boundary.held(store.load_issue(7)) is None

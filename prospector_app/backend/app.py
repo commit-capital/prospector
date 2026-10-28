@@ -64,6 +64,7 @@ from prospector_app.backend import pr_history
 from prospector_app.backend import pr_search
 from prospector_app.backend import repo_meta
 from prospector_app.backend import review_refresh
+from prospector_app.backend import outcome_summary
 from prospector_app.backend import reviewer_ratchet
 from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service
@@ -1181,6 +1182,13 @@ def policy_reviewers():
     """Each Prospector-run reviewer's scorecard and the runs to label
     (reviewer_ratchet.policy)."""
     return reviewer_ratchet.policy()
+
+
+@app.get("/api/results")
+def lane_results(days: int = Query(30, ge=1, le=400)):
+    """Where the lanes' attempts stopped over the last `days`, and the fixes
+    parked now (outcome_summary.summary)."""
+    return outcome_summary.summary(days)
 
 
 @app.get("/api/policy/trust-ladder")

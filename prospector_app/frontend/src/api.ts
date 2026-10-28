@@ -1636,6 +1636,60 @@ export interface ReviewerPolicy {
   window_days: number;
 }
 
+/** Where the lanes' attempts stopped (prospector_app/backend/outcome_summary.py). */
+export interface ResultCase {
+  issue: number | null;
+  pr: number | null;
+  at: string;
+  trigger: string;
+  by: string | null;
+  words: string;
+  asked: { by: string; words: string } | null;
+  leaves: string[];
+}
+
+export interface ResultGroup {
+  lane: string;
+  stage: string;
+  fault: "machine" | "subject" | "judged" | null;
+  count: number;
+  cases: ResultCase[];
+}
+
+export interface ResultRepeat {
+  lane: string;
+  stage: string;
+  kind: "pr" | "issue";
+  number: number;
+  issue: number | null;
+  count: number;
+  last: string;
+}
+
+export interface ResultWeek {
+  week: string;
+  ok: number;
+  machine: number;
+  subject: number;
+  judged: number;
+}
+
+export interface ResultParked {
+  kind: string;
+  count: number;
+  cases: { issue: number; title: string | null; why: string }[];
+}
+
+export interface LaneResults {
+  days: number;
+  since: string;
+  attempts: number;
+  groups: ResultGroup[];
+  repeats: ResultRepeat[];
+  weeks: ResultWeek[];
+  parked: ResultParked[];
+}
+
 /** A label on a recorded reviewer run (pipeline/verdict_labels.py). */
 export interface VerdictLabel {
   expected: string;
@@ -2479,6 +2533,7 @@ export const api = {
   identities: () => get<IdentitiesResult>("/api/identities"),
   trustLadder: () => get<TrustLadder>("/api/policy/trust-ladder"),
   reviewerPolicy: () => get<ReviewerPolicy>("/api/policy/reviewers"),
+  laneResults: (days: number) => get<LaneResults>(`/api/results?days=${days}`),
   // "Retry live mode" — re-probes whether this machine can mint a bot
   // token, since the backend only probes once and caches the result for its
   // whole lifetime otherwise (see /api/identities/refresh).
