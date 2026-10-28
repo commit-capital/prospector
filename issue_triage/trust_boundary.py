@@ -6,8 +6,8 @@ This one asks whether what was asked for is something only a maintainer may
 authorize. `judge` records the crossings a fix makes as the run's `boundary`:
 the inventory a locked-down reviewer returns (`review`), and every URL host on
 the fix's added lines that the base tree never names (`new_hosts`), which no
-wording can talk away. `hold` reads that record. A crossing is authorized only
-when a maintainer filed the issue (`gates.priority_author`) and its report asks
+wording can talk away. `hold` reads that record. A LOW_RISK crossing never
+holds a fix; any other is authorized only when a maintainer filed the issue (`gates.priority_author`) and its report asks
 for it; a fix with any other crossing, a fix whose reviewer gave no usable
 answer, and a fix with no record on an issue someone else filed wait for an
 operator's Propose. A held fix still ends `fixed`; `held` says why an issue's
@@ -45,11 +45,17 @@ KINDS = {
             "sessions, tokens, ownership checks.",
     "secrets": "reads, writes, logs, returns, or sends a credential, a key, or an environment "
                "variable that holds one.",
-    "validation": "removes or loosens a check — input validation, sanitization, escaping, size "
-                  "or rate limits, CSRF, CORS, signature or origin checks.",
-    "data-exposure": "sends data somewhere it did not go before — logs, telemetry, error "
-                     "messages, API responses, another tenant.",
+    "security-check": "removes or loosens a security check — sanitization, escaping, CSRF, "
+                      "CORS, or a signature or HTTP origin check.",
+    "validation": "removes or loosens any other check — input validation, a format or "
+                  "equality comparison, size or rate limits.",
+    "data-exposure": "sends data somewhere it did not go before — telemetry, API responses, "
+                     "a user-facing message, another tenant.",
+    "logging": "writes more detail into this server's own logs or run logs.",
 }
+# Crossings that never hold a fix. Every other kind, including one the reviewer
+# made up, holds.
+LOW_RISK = frozenset({"validation", "logging"})
 
 PROMPT = """\
 A bot wrote the change below to fix a reported defect in this project. It has not been pushed. A maintainer decides whether it may be, and needs to know every trust boundary it crosses. You are not judging whether the fix is correct, only finding what it crosses.
@@ -199,7 +205,7 @@ def hold(boundary: dict | None, *, maintainer_filed: bool) -> str | None:
         return None if maintainer_filed else "no trust-boundary review was recorded"
     if boundary.get("failed"):
         return "the trust-boundary review did not finish"
-    crossings = boundary.get("crossings") or []
+    crossings = [c for c in boundary.get("crossings") or [] if c.get("kind") not in LOW_RISK]
     if maintainer_filed:
         held, why = ([c for c in crossings if not c.get("requested")],
                      "the report did not ask for")
