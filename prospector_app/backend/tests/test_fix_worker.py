@@ -2056,6 +2056,17 @@ def test_a_review_that_keeps_failing_as_a_machine_waits_for_an_operator(
     assert fix_worker.next_reviewable() is None
 
 
+def test_a_review_no_agent_could_run_is_not_counted(review_lane, store, monkeypatch):
+    def down(wt, **kw):
+        raise capacity.CapacityPaused(capacity.Decision(False, "window full", None))
+    monkeypatch.setattr(fix_worker.review_resolve, "review", down)
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "review_failures" not in req["result"]
+
+
 def test_a_sandbox_refusal_stamps_with_its_reason(review_lane, store, monkeypatch):
     monkeypatch.setattr(
         fix_worker.compile_preflight, "run_command_for_patch",

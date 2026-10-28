@@ -657,8 +657,9 @@ def run_security(n: int) -> int | None:
     several agent runs, so losing the race means dropping the pick rather than
     racing to a duplicate verdict. The claim is released whatever the run does,
     so a failure leaves the PR free for the next attempt rather than parked,
-    and counts the failure toward HUNT_MAX_FAILURES. Both no-run returns mean the snapshot that picked this PR is behind the
-    store, which the caller answers with a refresh and a rest."""
+    and counts the failure toward HUNT_MAX_FAILURES. Both no-run returns mean
+    the snapshot that picked this PR is behind the store, which the caller
+    answers with a refresh and a rest."""
     st = data.store()
     rec = st.load_pr(n)
     if rec is None or not gates.blocked_on_security(rec):
@@ -918,11 +919,13 @@ def release_stale_claims() -> list[int]:
     me = settings.worker_id()
     st = data.store()
     freed: list[int] = []
-    for n in sorted(st.prs_matching(("security_run", "host"), [me])):
-        st.release_security_run(n, host=me)
-        freed.append(n)
-    for n in st.prs_matching(("design_run", "host"), [me]):
-        st.release_design_run(n, host=me)
+    for n, rec in sorted(st.prs_matching(("security_run", "host"), [me]).items()):
+        if (rec.raw.get("security_run") or {}).get("started_at"):
+            st.release_security_run(n, host=me)
+            freed.append(n)
+    for n, rec in st.prs_matching(("design_run", "host"), [me]).items():
+        if (rec.raw.get("design_run") or {}).get("started_at"):
+            st.release_design_run(n, host=me)
     return freed
 
 

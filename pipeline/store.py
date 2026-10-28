@@ -138,10 +138,10 @@ def _claimed(prior: dict | None, host: str) -> dict:
     return run
 
 
-def _released(run: dict, host: str, failed_at: str | None) -> dict | None:
-    """What a released claim leaves: nothing, or its failure count, one higher
-    when the review failed at head `failed_at`."""
-    failures = run.get("failures")
+def _released(run: dict, host: str, head: str | None, failed_at: str | None) -> dict | None:
+    """What a released claim leaves: nothing, or its failure count at the PR's
+    current `head`, one higher when the review failed at head `failed_at`."""
+    failures = run.get("failures") if run_failures(run, head) else None
     if failed_at:
         failures = {"head_sha": failed_at, "count": run_failures(run, failed_at) + 1}
     return {"host": host, "failures": failures} if failures else None
@@ -1654,7 +1654,8 @@ class Store:
         run = rec.get("security_run") or {}
         if run.get("host") not in (None, host):
             return
-        rec["security_run"] = _released(run, host, failed_at)
+        rec["security_run"] = _released(run, host, (rec.get("meta") or {}).get("head_sha"),
+                                        failed_at)
         self._prs.save_if(rec, stamp)
 
     def claim_design_run(self, n: int, *, host: str, stale_after: float) -> bool:
@@ -1679,7 +1680,8 @@ class Store:
         run = rec.get("design_run") or {}
         if run.get("host") not in (None, host):
             return
-        rec["design_run"] = _released(run, host, failed_at)
+        rec["design_run"] = _released(run, host, (rec.get("meta") or {}).get("head_sha"),
+                                      failed_at)
         self._prs.save_if(rec, stamp)
 
     def save_design_review(self, n: int, entry: dict, *, head_sha: str) -> bool:

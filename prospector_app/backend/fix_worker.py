@@ -274,7 +274,8 @@ def recover_orphans() -> list[int]:
                 started_at=req.get("started_at"), finished_at=_now(), error=note,
                 source=req.get("source"), guidance=req.get("guidance"),
                 objection=req.get("objection"), host=me,
-                failures=int(req.get("failures") or 0) + 1)
+                failures=int(req.get("failures") or 0) + 1,
+                head_sha=req.get("against_head_sha"))
             marked.append(n)
     return marked
 
@@ -1682,10 +1683,11 @@ def review_parked_resolve(n: int) -> None:
     if claimed is None:
         return
 
-    def restore(reason: str) -> None:
+    def restore(reason: str, *, ran: bool = True) -> None:
         _review_backoff[n] = time.monotonic()
         result = dict(claimed.get("result") or {})
-        result["review_failures"] = int(result.get("review_failures") or 0) + 1
+        if ran:
+            result["review_failures"] = int(result.get("review_failures") or 0) + 1
         data.store().edit_pr(n).record_fix_request(
             "awaiting-review", "resolve", queued_at=claimed.get("queued_at"),
             started_at=req.get("started_at"), result=result,
@@ -1697,6 +1699,8 @@ def review_parked_resolve(n: int) -> None:
 
     try:
         _judge_claimed_resolve(n, rec, claimed, head, str(worktree), restore)
+    except (headless_agent.AgentUnavailable, capacity.CapacityPaused) as e:
+        restore(f"no reviewer could run: {e}", ran=False)
     except Exception:
         traceback.print_exc()
         restore("the review crashed")
