@@ -729,13 +729,14 @@ class TestReclaim:
         assert req["result"]["reclaimed"]["from"] == "studio"
         assert fix_worker._hunt_attempted(pr, "rebase") is False
 
-    def test_a_reviewer_rejected_resolve_stays_for_the_operator(self, store):
+    def test_a_reviewer_rejected_resolve_is_reclaimed_with_its_verdict(self, store):
         self._beat(store, "studio", hours_ago=30)
-        self._parked_resolve(store, 1, "studio",
-                             reviews=[{"lens": "behavior", "verdict": "unsafe",
-                                       "reason": "drops the base's deletion"}])
-        assert fix_worker.reclaim_stranded_resolves() == []
-        assert store.load_pr(1).fix_request["status"] == "awaiting-review"
+        rejected = {"lens": "behavior", "verdict": "unsafe", "reason": "drops the base's deletion"}
+        self._parked_resolve(store, 1, "studio", reviews=[rejected])
+        assert fix_worker.reclaim_stranded_resolves() == [1]
+        req = store.load_pr(1).fix_request
+        assert req["status"] == "cancelled"
+        assert req["result"]["auto_review"]["reviews"] == [rejected]
 
     def test_a_resolve_on_a_recently_seen_worker_waits(self, store):
         self._beat(store, "studio", hours_ago=3)
