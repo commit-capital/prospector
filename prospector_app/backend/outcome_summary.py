@@ -59,10 +59,16 @@ class Week(TypedDict):
     judged: int
 
 
+class ParkedCase(TypedDict):
+    issue: int
+    title: str | None
+    why: str
+
+
 class Parked(TypedDict):
     kind: str
     count: int
-    cases: list[dict]
+    cases: list[ParkedCase]
 
 
 class Summary(TypedDict):
@@ -73,6 +79,10 @@ class Summary(TypedDict):
     repeats: list[Repeat]
     weeks: list[Week]
     parked: list[Parked]
+
+
+def _at(row: dict) -> str:
+    return str(row.get("finished") or row.get("started") or "")
 
 
 def _week(at: str) -> str:
@@ -87,8 +97,8 @@ def summarize(rows: list[dict], *, since: str) -> tuple[int, list[Group], list[R
     last: dict[tuple[str, str, str, int], tuple[str, int | None]] = {}
     weeks: dict[str, Counter[str]] = defaultdict(Counter)
     attempts = 0
-    for raw in sorted(rows, key=lambda r: str(r.get("finished") or ""), reverse=True):
-        at = str(raw.get("finished") or raw.get("started") or "")
+    for raw in sorted(rows, key=_at, reverse=True):
+        at = _at(raw)
         if at < since:
             continue
         got = fix_outcome.of_row(raw)
@@ -122,7 +132,7 @@ def summarize(rows: list[dict], *, since: str) -> tuple[int, list[Group], list[R
 
 def parked() -> list[Parked]:
     """Open issues whose fix waits on an operator, by why it is held."""
-    out: dict[str, list[dict]] = defaultdict(list)
+    out: dict[str, list[ParkedCase]] = defaultdict(list)
     for n, issue in issue_data.issues().items():
         if issue.state != "open" or not issue.fix_run:
             continue

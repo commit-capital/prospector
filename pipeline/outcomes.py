@@ -16,14 +16,15 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict
 
-FAULTS = ("machine", "subject", "judged")
+Fault = Literal["machine", "subject", "judged"]
+FAULTS: tuple[Fault, ...] = ("machine", "subject", "judged")
 WORDS_MAX = 1200
 
 # Each lane's stages, success first.
 STAGES: dict[str, tuple[str, ...]] = {
     "issue-fix": ("fixed", "reproduced", "reproduction", "readings", "no-fix",
-                  "not-a-defect", "compile", "suite", "review", "revision", "guardrail",
-                  "declined", "sandbox", "agent", "base"),
+                  "not-a-defect", "proof", "compile", "suite", "review", "revision",
+                  "guardrail", "declined", "sandbox", "agent", "base"),
     "issue-followup": ("ci", "ci-outside", "reviewer", "maintainer", "fixer"),
 }
 
@@ -43,22 +44,27 @@ class Outcome(TypedDict):
     lane: str
     subject: Subject
     stage: str
-    fault: str | None
+    fault: Fault | None
     by: str | None
     words: str
     asked: Asked | None
 
 
-def make(lane: str, subject: Subject, stage: str, *, fault: str | None,
+def make(lane: str, subject: Subject, stage: str, *, fault: Fault | None,
          by: str | None = None, words: str = "", asked: Asked | None = None) -> Outcome:
     if stage not in STAGES.get(lane, ()):
         raise ValueError(f"{lane!r} has no stage {stage!r}")
-    if fault is not None and fault not in FAULTS:
-        raise ValueError(f"unknown fault {fault!r}")
     if asked is not None:
         asked = {"by": asked["by"], "words": asked["words"][:WORDS_MAX]}
     return {"lane": lane, "subject": subject, "stage": stage, "fault": fault, "by": by,
             "words": words[:WORDS_MAX], "asked": asked}
+
+
+def _fault(value: object) -> Fault | None:
+    for f in FAULTS:
+        if f == value:
+            return f
+    return None
 
 
 def read(raw: object) -> Outcome | None:
@@ -71,14 +77,13 @@ def read(raw: object) -> Outcome | None:
     if not (isinstance(lane, str) and stage in STAGES.get(lane, ())
             and isinstance(subject, dict) and isinstance(subject.get("number"), int)):
         return None
-    fault = raw.get("fault")
+    sha = subject.get("sha")
+    target: Subject = {"kind": "pr" if subject.get("kind") == "pr" else "issue",
+                       "number": subject["number"], "sha": sha if isinstance(sha, str) else None}
+    by = raw.get("by")
     asked = raw.get("asked")
-    return {"lane": lane,
-            "subject": {"kind": "pr" if subject.get("kind") == "pr" else "issue",
-                        "number": subject["number"],
-                        "sha": subject["sha"] if isinstance(subject.get("sha"), str) else None},
-            "stage": str(stage), "fault": fault if fault in FAULTS else None,
-            "by": raw["by"] if isinstance(raw.get("by"), str) else None,
-            "words": str(raw.get("words") or ""),
-            "asked": ({"by": str(asked.get("by") or ""), "words": str(asked.get("words") or "")}
-                      if isinstance(asked, dict) else None)}
+    who: Asked | None = ({"by": str(asked.get("by") or ""), "words": str(asked.get("words") or "")}
+                         if isinstance(asked, dict) else None)
+    return Outcome(lane=lane, subject=target, stage=str(stage), fault=_fault(raw.get("fault")),
+                   by=by if isinstance(by, str) else None, words=str(raw.get("words") or ""),
+                   asked=who)

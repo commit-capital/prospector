@@ -217,9 +217,6 @@ def hold(boundary: dict | None, *, maintainer_filed: bool) -> str | None:
     return f"it crosses a trust boundary {why}: {named}"
 
 
-HOLD_KINDS = ("intake", "rival", "single", "boundary")
-
-
 def held_kind(issue: Issue) -> tuple[str, str] | None:
     """(kind, why) issue's fixed, unproposed attempt waits for an operator, or
     None: a report the intake audit did not read as clear (`intake_audit.flag`),

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from issue_triage import fix_outcome
-from prospector_app.backend import outcome_summary
+from issue_triage.issue_model import Issue
+from prospector_app.backend import issue_data, outcome_summary
 
 
 def _run(issue: int, ending: str, detail: str, at: str, **stats: object) -> dict:
@@ -41,3 +42,24 @@ def test_the_window_groups_stops_by_stage_with_their_words():
     assert weeks == [
         {"week": "2026-10-19", "ok": 0, "machine": 0, "subject": 0, "judged": 3},
         {"week": "2026-10-26", "ok": 2, "machine": 1, "subject": 0, "judged": 1}]
+
+
+def _issue(n: int, run: dict, **sections: object) -> Issue:
+    return Issue(None, {"issue": n, "meta": {"title": f"t{n}", "state": "open",
+                                             "author": "boss", "author_association": "OWNER"},
+                        "fix_run": run, **sections})
+
+
+def test_parked_fixes_group_by_why_they_are_held(monkeypatch):
+    fixed = {"ending": "fixed", "detail": "ok", "patch": "p", "boundary": {"crossings": []}}
+    issues = {
+        1: _issue(1, {**fixed, "agreement": {"single": True}}),
+        2: _issue(2, {**fixed, "agreement": {"single": True}}),
+        3: _issue(3, fixed),
+        4: _issue(4, {**fixed, "proposal": {"pr": 40}},
+                  fix_followup={"pr": 40, "state": "handed-back", "reason": "6 revisions spent"}),
+        5: _issue(5, {"ending": "no-fix", "detail": "nothing"}),
+    }
+    monkeypatch.setattr(issue_data, "issues", lambda: issues)
+    got = {p["kind"]: [c["issue"] for c in p["cases"]] for p in outcome_summary.parked()}
+    assert got == {"single": [1, 2], "ready": [3], "handed-back": [4]}

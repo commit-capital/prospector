@@ -15,6 +15,7 @@ const STAGES: Record<string, string> = {
   readings: "the candidates read the report differently",
   "no-fix": "no candidate found a fix",
   "not-a-defect": "the report isn't a defect",
+  proof: "the fix's own tests didn't prove it",
   compile: "the fix didn't compile",
   suite: "the fix broke the test suite",
   review: "our reviewer rejected the fix",

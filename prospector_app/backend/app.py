@@ -58,13 +58,13 @@ from prospector_app.backend import jobs
 from prospector_app.backend import freshness_live
 from prospector_app.backend import models
 from prospector_app.backend import onboarding
+from prospector_app.backend import outcome_summary
 from prospector_app.backend import push_identity
 from prospector_app.backend import pipeline_status
 from prospector_app.backend import pr_history
 from prospector_app.backend import pr_search
 from prospector_app.backend import repo_meta
 from prospector_app.backend import review_refresh
-from prospector_app.backend import outcome_summary
 from prospector_app.backend import reviewer_ratchet
 from prospector_app.backend import responses as responses_mod
 from prospector_app.backend import service

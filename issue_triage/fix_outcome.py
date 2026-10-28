@@ -11,7 +11,11 @@ import re
 
 from issue_triage import issue_gates
 from pipeline import outcomes, storekit
-from pipeline.outcomes import Asked, Outcome
+from pipeline.outcomes import Asked, Fault, Outcome
+
+# Whose bar a follow-up step answers, besides the code reviewers' labels.
+CI = "CI"
+MAINTAINER = "a maintainer"
 
 RUN_PHASE = "issue-fix:run"
 HANDBACK_PHASE = "issue-fix:handback"
@@ -21,25 +25,35 @@ _REVIEWER_RE = re.compile(r"^([a-z-]+(?: \([^)]*\))?): ")
 
 _JUDGED_REPRO = ("not-reproduced", "unwritable", "wrong-symptom")
 
+# A fix-unproven detail's leading words name the check it failed.
+_UNPROVEN = (("compile lane", "compile"), ("lint", "compile"),
+             ("full suite", "suite"), ("related-tests", "suite"),
+             ("preservation tests", "suite"),
+             ("independent reproduction", "reproduction"),
+             ("only one reading", "readings"), ("chosen reading", "readings"),
+             ("passes its own reproduction", "no-fix"))
 
-def _stage(ending: str, fault: bool, detail: str) -> tuple[str, str | None]:
+# Endings on the report itself: it is not a defect, its readings disagree, the
+# intake audit refused it, or it closed or changed mid-run.
+_SUBJECT = {"not-a-defect": "not-a-defect", "fix-disputed": "readings",
+            "refused": "declined", "cancelled": "declined"}
+
+
+def _stage(ending: str, fault: bool, detail: str) -> tuple[str, Fault | None]:
     """(stage, fault) for a run that ended `ending` with `detail`."""
     if ending in ("fixed", "reproduced"):
         return ending, None
     if fault or ending in ("sandbox", "agent-unavailable", "run-failed", "base-compile"):
         return {"sandbox": "sandbox", "base-compile": "base"}.get(ending, "agent"), "machine"
-    if ending in ("not-a-defect", "fix-disputed"):
-        return ("not-a-defect" if ending == "not-a-defect" else "readings"), "subject"
+    if ending in _SUBJECT:
+        return _SUBJECT[ending], "subject"
     if ending in _JUDGED_REPRO:
         return "reproduction", "judged"
     if ending == "fix-unproven":
-        for marker, stage in (("compile lane", "compile"), ("full suite", "suite"),
-                              ("independent reproduction", "reproduction"),
-                              ("only one reading", "readings"),
-                              ("passes its own reproduction", "no-fix")):
+        for marker, stage in _UNPROVEN:
             if marker in detail:
                 return stage, "judged"
-        return "no-fix", "judged"
+        return "proof", "judged"
     if ending == "fix-pinned":
         return "suite", "judged"
     if ending == "fix-rejected":
@@ -51,7 +65,7 @@ def _stage(ending: str, fault: bool, detail: str) -> tuple[str, str | None]:
     return "declined", "judged"
 
 
-def _asked(trigger: str, extra: dict | None) -> Asked | None:
+def _asked(trigger: str, extra: dict[str, str] | None) -> Asked | None:
     words = (extra or {}).get("guidance") or (extra or {}).get("notes")
     if not words:
         return None
@@ -59,7 +73,7 @@ def _asked(trigger: str, extra: dict | None) -> Asked | None:
 
 
 def of_run(issue: int, report_sha: str | None, *, ending: str, fault: bool, detail: str,
-           trigger: str, extra: dict | None = None) -> Outcome:
+           trigger: str, extra: dict[str, str] | None = None) -> Outcome:
     stage, blame = _stage(ending, fault, detail)
     by = None
     if stage == "review" and (m := _REVIEWER_RE.match(detail)):
@@ -79,12 +93,11 @@ def leaves(result: dict | None) -> list[str]:
 
 
 def _handback_stage(by: str | None, outside: bool) -> str:
-    from issue_triage import followup
-    if by == followup.CI:
+    if by == CI:
         return "ci-outside" if outside else "ci"
     if by is None:
         return "fixer"
-    return "maintainer" if by == followup.MAINTAINER else "reviewer"
+    return "maintainer" if by == MAINTAINER else "reviewer"
 
 
 def of_handback(issue: int, pr: int, head: str | None, *, by: str | None, reason: str,
@@ -98,7 +111,7 @@ def of_handback(issue: int, pr: int, head: str | None, *, by: str | None, reason
 
 
 def handback_row(issue: int, pr: int, head: str | None, *, by: str | None, reason: str,
-                 outside: bool, revisions: int, words: str = "") -> dict:
+                 outside: bool, revisions: int, words: str = "") -> dict[str, object]:
     """The ledger row for the follow-up handing issue's pull request back."""
     now = storekit.now()
     return {"phase": HANDBACK_PHASE, "issue": issue, "pr": pr, "started": now,

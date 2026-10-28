@@ -125,8 +125,8 @@ class PrState:
     feedback: list[reply_router.Reply] = field(default_factory=list)
 
 
-CI = "CI"
-MAINTAINER = "a maintainer"
+CI = fix_outcome.CI
+MAINTAINER = fix_outcome.MAINTAINER
 
 
 @dataclass(frozen=True)
