@@ -139,11 +139,22 @@ function Rivals({ d }: { d: IssueDetail }) {
           <div>
             <GitHubPRLink n={pr} />{entry?.author ? ` by ${entry.author}` : ""}{" "}
             {entry ? <>
-              <span className={`chip sm ${RIVAL_CHIP[entry.verdict].cls}`}>{RIVAL_CHIP[entry.verdict].text}</span>{" "}
+              {entry.set_aside && entry.verdict === "skipped"
+                ? <span className="chip sm">tests set aside</span>
+                : <span className={`chip sm ${RIVAL_CHIP[entry.verdict].cls}`}>{RIVAL_CHIP[entry.verdict].text}</span>}{" "}
               <span className="muted">{entry.why}</span>
             </> : <span className="muted">not compared: the fix hasn't been run against its tests</span>}
           </div>
+          {entry?.set_aside && entry.verdict !== "skipped" && (
+            <div className="small">Its failing tests are set aside: {entry.set_aside}</div>
+          )}
           {entry?.output && <RivalTests output={entry.output} />}
+          {(entry?.extras?.length ?? 0) > 0 && (
+            <>
+              <div className="small">It also changes what the issue doesn't ask for:</div>
+              <ul className="held-list">{entry?.extras?.map((m, i) => <li key={i}>{m}</li>)}</ul>
+            </>
+          )}
           {(entry?.missed?.length ?? 0) > 0 && (
             <>
               <div className="small">Cases ours misses:</div>

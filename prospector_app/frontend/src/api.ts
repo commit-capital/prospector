@@ -1544,6 +1544,10 @@ export interface IssueFixRivalEntry {
   missed?: string[];
   /** The tail of its tests' run against our fix, with terminal colour codes. */
   output?: string;
+  /** What its failing tests check instead of the report's ask; set, they hold nothing. */
+  set_aside?: string;
+  /** Changes it makes that the report does not ask for. */
+  extras?: string[];
 }
 export interface IssueFixQuestion {
   question: string;
