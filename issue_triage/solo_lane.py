@@ -90,7 +90,7 @@ Give up when the report does not describe a defect in this code, when you cannot
 # Output
 
 Return ONLY a JSON object, as a ```json fenced block: either
-{"summary": "<one line, imperative, usable as a commit message>", "root_cause": "<one or two sentences>", "tests": ["<each test file you added or extended>"], "changes": [{"path": "<repo-relative>", "rationale": "<one or two sentences>"}], "deleted": ["<each file the host should delete, repo-relative; list a deleted file that is not a test under changes too>"], "responses": [{"comment": "<a reviewer comment, when revising>", "answer": "changed|disputed", "why": "<what you changed, or the code that shows the comment is wrong>"}]}
+{"summary": "<one line, imperative, usable as a commit message>", "root_cause": "<one or two sentences>", "tests": ["<each test file you added or extended>"], "changes": [{"path": "<repo-relative>", "rationale": "<one or two sentences>"}], "responses": [{"comment": "<a reviewer comment, when revising>", "answer": "changed|disputed", "why": "<what you changed, or the code that shows the comment is wrong>"}]}
 or {"give_up": "<why>", "kind": "not-a-defect|cannot-reproduce|unclear|other"}.
 """
 
@@ -128,7 +128,7 @@ __FIXES__
 ATTEMPT = """
 ## The current attempt
 
-The clone already holds an earlier attempt at this fix: its tests and its change, uncommitted. Revise it in light of the guidance and notes above: keep what still serves, change or discard the rest, rewrite it from scratch if that is what it takes. You may edit or delete the tests this attempt added (they are not the repository's own); the rule on existing tests below covers the repository's. Your tools cannot delete a file: name each file to delete under "deleted" in your answer, and the host deletes it before it checks your change.
+The clone already holds an earlier attempt at this fix: its tests and its change, uncommitted. Revise it in light of the guidance and notes above: keep what still serves, change or discard the rest, rewrite it from scratch if that is what it takes. You may edit or delete the tests this attempt added (they are not the repository's own); the rule on existing tests below covers the repository's. Your tools cannot delete a file: add "deleted": ["<repo-relative path>", ...] to your answer naming each file to delete (a deleted file that is not a test goes under "changes" too), and the host deletes it before it checks your change.
 
 What the earlier attempt said it did: __SUMMARY__
 Its reading of the root cause: __ROOT_CAUSE__
