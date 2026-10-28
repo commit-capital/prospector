@@ -74,25 +74,29 @@ def _ended(proposal: dict, fu: dict) -> tuple[str, str, str] | None:
 
 def partial_note(run: dict) -> str | None:
     """What a fixed run whose coverage is partial leaves of its report, or None
-    for any other run."""
+    for any other run. Defects the base already handles count as handled; those
+    no claim test showed remain are named apart."""
     if run.get("ending") != "fixed":
         return None
-    coverage = issue_gates.fix_coverage(run.get("reviews"))
+    coverage = issue_gates.fix_coverage(run.get("reviews"), run.get("claims"))
     if coverage.state != "partial":
         return None
     left = coverage.having("not-addressed")
     already = coverage.having("already-fixed")
-    return (f"partial fix: {len(coverage.having('addressed'))} of {len(coverage.defects)} "
-            "reported defects addressed"
-            + (f", {len(already)} already handled on the base" if already else "")
+    return (f"partial fix: {len(coverage.defects) - len(left)} of {len(coverage.defects)} "
+            "reported defects handled"
+            + (f", {len(already)} of them already on the base" if already else "")
             + "; not addressed: "
-            + fix_pr_body.inert("; ".join(d["defect"] for d in left)))
+            + fix_pr_body.inert("; ".join(d["defect"] for d in left))
+            + ("; not shown to remain: " + fix_pr_body.inert("; ".join(
+                d["defect"] for d in coverage.unshown)) if coverage.unshown else ""))
 
 
 def outcome(record: dict) -> str:
     """A finished run's ending in the words the thread uses: a partial fix
     names itself."""
-    note = partial_note({**record, "reviews": (record.get("result") or {}).get("reviews")})
+    result = record.get("result") or {}
+    note = partial_note({**record, "reviews": result.get("reviews"), "claims": result.get("claims")})
     return f"{note} — {record['detail']}" if note else f"{record['ending']} — {record['detail']}"
 
 

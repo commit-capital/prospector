@@ -392,6 +392,20 @@ def test_a_revision_s_coverage_supersedes_the_review_it_answered():
     assert issue_gates.fix_coverage(reviews[::-1]).state == "partial"
 
 
+def test_a_left_defect_no_claim_test_shows_is_out_of_scope_but_does_not_close():
+    reviews = [{"coverage": _cov("addressed", "not-addressed", "not-addressed")}]
+    claims = [{"defect": "Defect 1", "status": "unshown"}, {"defect": "defect 2", "status": "shown"}]
+    cov = issue_gates.fix_coverage(reviews, claims)
+    assert cov.state == "partial" and [d["defect"] for d in cov.unshown] == ["defect 1"]
+    assert [d["defect"] for d in cov.defects] == ["defect 0", "defect 2"]
+    assert not issue_gates.fix_coverage(reviews, [*claims, {**claims[0], "status": "shown"}]).unshown
+    cov = issue_gates.fix_coverage(reviews, [*claims, {**claims[1], "status": "unshown"}])
+    assert cov.state == "complete" and len(cov.unshown) == 2 and not cov.closes
+    only_left = issue_gates.fix_coverage([{"coverage": _cov("not-addressed")}],
+                                         [{"defect": "defect 0", "status": "unshown"}])
+    assert only_left.state == "partial" and not only_left.unshown
+
+
 # --- review comments ---------------------------------------------------------------
 
 def test_a_rejection_and_a_left_defect_are_both_comments_only_the_rejection_rejects():
