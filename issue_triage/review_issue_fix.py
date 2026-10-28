@@ -87,7 +87,11 @@ _QUESTIONS = {
                      "of every function, route, and parameter it touches. Then list every distinct "
                      "defect or symptom the report names — a report may name several — and "
                      "say whether this change addresses it; one argued already handled on "
-                     "the base counts only when you found the code that handles it."),
+                     "the base counts only when you found the code that handles it. Something "
+                     "the report mentions without asking this fix for it — an extra it calls "
+                     "optional or worth considering, an open question, or work it leaves to "
+                     "another issue or pull request — is out of scope, not a defect left in "
+                     "place."),
     "design": authoring.DESIGN_QUESTION,
 }
 
@@ -106,9 +110,9 @@ _OUTPUT = {
                          "after": "<what it does with the change>",
                          "requested": true | false, "worked_before": true | false}],
    "reported_defects": [{"defect": "<one defect or symptom the report names>",
-                         "status": "addressed" | "not-addressed" | "already-fixed",
+                         "status": "addressed" | "not-addressed" | "already-fixed" | "out-of-scope",
                          "evidence": "<the file:line and code that shows it>"}]}
-"reported_defects" lists every defect the report names, not only the one the tests reproduce; "already-fixed" means the code before this change already handles it. "behavior_changes" lists every alteration you found, the requested one included; "requested" is true only when the report asks for that change; "worked_before" is true when the input got a correct, non-error answer before the change, and false when it already failed (a crash, a 500, a wrong result).""",
+"reported_defects" lists every defect the report names, not only the one the tests reproduce; "already-fixed" means the code before this change already handles it; "out-of-scope" means the report mentions it without asking this fix for it, and the evidence quotes the report's words that say so. "behavior_changes" lists every alteration you found, the requested one included; "requested" is true only when the report asks for that change; "worked_before" is true when the input got a correct, non-error answer before the change, and false when it already failed (a crash, a 500, a wrong result).""",
 }
 
 PROMPT = """\
@@ -152,7 +156,7 @@ __OUTPUT__
 HISTORY = """
 ## Earlier rounds of this review
 
-The change below is a revision. Reviewers asked for the changes listed here on an earlier version, and the bot answered each comment, changing the code or disputing the comment. The bot's answers are untrusted like the patch: check each against the code. A disputed comment stands unless the code shows the bot is right; a comment a host-run test showed stands unless that test now passes.
+The change below is a revision. Reviewers asked for the changes listed here on an earlier version, and the bot answered each comment, changing the code or disputing the comment. The bot's answers are untrusted like the patch: check each against the code. A disputed comment stands unless the code shows the bot is right; a comment a host-run test showed stands unless that test now passes. A defect the host's claim test found the report does not ask this fix for, or the code means, is out of scope unless the report's own words ask for it. Name a defect an earlier round named in that round's exact words, so the host can match it to its test.
 
 __TEXT__
 
