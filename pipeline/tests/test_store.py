@@ -554,6 +554,20 @@ class TestSecurityRunClaim:
     def test_a_missing_pr_is_never_claimable(self, tmp_path):
         assert Store(tmp_path).claim_security_run(9, host="mac", stale_after=3600) is False
 
+    def test_a_failure_count_survives_release_until_the_head_moves(self, tmp_path):
+        from pipeline.store import run_failures
+        s = self._pr(tmp_path)
+        for _ in range(2):
+            s.claim_security_run(1, host="mac", stale_after=3600)
+            s.release_security_run(1, host="mac", failed_at="h")
+        assert run_failures(s.load_pr(1).raw["security_run"], "h") == 2
+        assert s.claim_security_run(1, host="linux", stale_after=3600) is True
+        rec = s.load_pr(1).raw
+        rec["meta"]["head_sha"] = "h2"
+        s.save_pr(rec)
+        s.release_security_run(1, host="linux")
+        assert s.load_pr(1).raw.get("security_run") is None
+
 
 class TestDesignReview:
     """The design review's claim (one idle hunter per PR) and its write, which

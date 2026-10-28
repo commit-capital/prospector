@@ -242,6 +242,24 @@ def test_invalid_payload_is_not_committed(tmp_path, monkeypatch, capsys):
     assert st.load_pr(1).disposition is None
 
 
+def test_a_commit_that_raises_is_charged_to_the_budget(tmp_path, monkeypatch):
+    # The ledger row is the lane's daily budget; a commit or wrap-up that
+    # raises must not let the same cluster be analyzed again uncharged.
+    _seed(tmp_path, 1)
+    monkeypatch.setattr(analyze_clusters.headless_agent, "run_agent",
+                        lambda prompt, **kw: _fenced(_bundle_cluster_id(prompt)))
+
+    def boom(store, payload):
+        raise ValueError("bad pr number")
+    monkeypatch.setattr(ad, "commit_analysis", boom)
+    monkeypatch.setattr(analyze_clusters, "_post_steps",
+                        lambda store: (_ for _ in ()).throw(RuntimeError("wrap-up broke")))
+    with pytest.raises(RuntimeError):
+        analyze_clusters.main(["--store", str(tmp_path)])
+    [run] = [r for r in Store(tmp_path).runs() if r.phase == "analyze:commit"]
+    assert run.raw["stats"]["attempted"] == 1 and run.raw["stats"]["failed"] == 1
+
+
 def test_the_analyze_agent_reads_only_its_bundle_and_the_members_diffs(monkeypatch, tmp_path):
     import os
     real = tmp_path / "diffs"

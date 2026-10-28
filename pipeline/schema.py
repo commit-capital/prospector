@@ -126,7 +126,13 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 41 — an issue's `fix_followup` counts its `revisions` when one finishes, up to
 #      six, and `revision_faults` apart; an older worker counts them when queued
 #      and hands the pull request back after two.
-STORE_SCHEMA_VERSION = 41
+# 42 — retry counters that end a lane's retries at one head: a PR's fix_request
+#      `failures` (and `result.review_failures`), a released `security_run` /
+#      `design_run` that keeps its `failures`, an issue's `fix_triage.fails` and
+#      fix request `requeues`. An older worker's writes drop them, so its
+#      retries of that head never end, and an older hunter reads a failed
+#      triage as a standing skip.
+STORE_SCHEMA_VERSION = 42
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

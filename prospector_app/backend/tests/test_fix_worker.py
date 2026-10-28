@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import capacity, headless_agent, profile, review_policy, reviewers
+from pipeline import capacity, headless_agent, profile, review_policy, reviewers, settings
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, fix_queue, fix_worker, sandbox_check
@@ -1608,6 +1608,40 @@ def test_a_failed_ending_is_hunted_again_once_it_cools(store, monkeypatch):
     assert fix_worker.auto_fixable(data.prs()[1]) == ("rebase", None)
 
 
+def _fail_hunted_rebase(store, kind: str = "run-failed") -> None:
+    """Queue, claim and fail PR 1's hunted rebase, then age the failure past
+    the cooldown."""
+    from datetime import datetime, timedelta, timezone
+    fix_queue.queue_pr(1, "rebase", source="auto")
+    claimed = store.claim_fix_request(1, host=settings.worker_id())
+    fix_worker._fail(1, claimed, "the sandbox could not run", kind=kind)
+    rec = store.load_pr(1).raw
+    rec["fix_request"]["finished_at"] = (datetime.now(timezone.utc) - timedelta(
+        seconds=fix_worker.FAILED_RETRY_COOLDOWN_SECONDS + 60)).isoformat()
+    store.save_pr(rec)
+    data.refresh()
+
+
+def test_a_head_that_keeps_failing_rests_from_the_hunter(store, monkeypatch):
+    for _ in range(fix_worker.HUNT_MAX_FAILURES - 1):
+        _fail_hunted_rebase(store)
+        assert fix_worker.next_auto() == ("rebase", 1, None)
+    _fail_hunted_rebase(store, kind=capacity.PAUSED_KIND)  # ran nothing
+    assert fix_worker.next_auto() == ("rebase", 1, None)
+    _fail_hunted_rebase(store)
+    assert store.load_pr(1).fix_request["failures"] == fix_worker.HUNT_MAX_FAILURES
+    assert fix_worker.next_auto() is None
+    # A new head is new work.
+    rec = store.load_pr(1).raw
+    rec["meta"]["head_sha"] = "b" * 40
+    for section in ("signals", "drift", "reviews"):
+        rec[section]["against_head_sha"] = "b" * 40
+    store.save_pr(rec)
+    data.refresh()
+    fix_queue.queue_pr(1, "rebase", source="auto")
+    assert "failures" not in store.load_pr(1).fix_request
+
+
 def test_an_agent_that_does_not_land_is_a_failure_not_a_verdict(store, monkeypatch):
     _queue_fix()
     probe = _fix_probe()
@@ -2055,6 +2089,34 @@ def test_a_sandbox_error_leaves_no_stamp_so_a_recovered_host_retries(
     assert fix_worker.next_reviewable() is None
     fix_worker._review_backoff.clear()
     assert fix_worker.next_reviewable() == 1
+
+
+def test_a_review_that_keeps_failing_as_a_machine_waits_for_an_operator(
+        review_lane, store, monkeypatch):
+    monkeypatch.setattr(
+        fix_worker.compile_preflight, "run_command_for_patch",
+        lambda pr, head, patch, cmd, runs_tests=False: {"cmd": cmd, "error": "no docker"})
+    _parked_resolve(store)
+    for _ in range(fix_worker.MAX_ATTEMPTS):
+        fix_worker._review_backoff.clear()
+        assert fix_worker.next_reviewable() == 1
+        fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert req["result"]["review_failures"] == fix_worker.MAX_ATTEMPTS
+    fix_worker._review_backoff.clear()
+    assert fix_worker.next_reviewable() is None
+
+
+def test_a_review_no_agent_could_run_is_not_counted(review_lane, store, monkeypatch):
+    def down(wt, **kw):
+        raise capacity.CapacityPaused(capacity.Decision(False, "window full", None))
+    monkeypatch.setattr(fix_worker.review_resolve, "review", down)
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "review_failures" not in req["result"]
 
 
 def test_a_sandbox_refusal_stamps_with_its_reason(review_lane, store, monkeypatch):

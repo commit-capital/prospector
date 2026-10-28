@@ -134,7 +134,14 @@ class TestRestrict:
         assert cluster_pass.restrict(payload, unit) == {
             "joins": [{"pr": 1, "cluster_id": 5}],
             "new_clusters": [{"root_problem": "r", "prs": [2, 3]}],
-            "standalone": [3]}
+            "standalone": []}
+
+    def test_a_pr_placed_nowhere_is_standalone(self):
+        unit = {"subsystem": "ui", "existing_clusters": [],
+                "new_prs": [{"pr": 1}, {"pr": 2}, {"pr": 3}]}
+        payload = {"joins": [], "new_clusters": [{"root_problem": "solo", "prs": [1]}],
+                   "standalone": []}
+        assert cluster_pass.restrict(payload, unit)["standalone"] == [1, 2, 3]
 
 
 class TestAssign:
@@ -176,7 +183,31 @@ class TestAssign:
         monkeypatch.setattr(cluster_driver, "run_assign_agent", assign_agent)
         cluster_pass.assign(store, 10, 1, cluster_pass._Outage(), None)
         assert calls == [[1, 2]]
-        assert store.load_pr(2).section("cluster") is None
+        assert store.load_pr(2).section("cluster") is not None
+        assert cluster_driver.assign_payloads(store) == []
+
+    def test_a_failed_unit_s_prs_are_charged_as_unplaced(self, store, monkeypatch):
+        for n in (1, 2):
+            _pr(store, n, summarized=True)
+        monkeypatch.setattr(cluster_driver, "run_assign_agent",
+                            lambda unit, on_event=None: "not json")
+        stage = cluster_pass.assign(store, 10, 1, cluster_pass._Outage(), "worker")
+        assert stage.errored == 1
+        [row] = _ledger(store, "cluster:assign")
+        assert row["stats"]["unplaced"] == 2
+
+    def test_a_commit_that_raises_still_records_the_stage(self, store, monkeypatch):
+        _pr(store, 1, summarized=True)
+        monkeypatch.setattr(cluster_driver, "run_assign_agent",
+                            lambda unit, on_event=None: '```json\n{"standalone": [1]}\n```')
+
+        def boom(store, payload):
+            raise ValueError("bad payload")
+        monkeypatch.setattr(cluster_driver, "commit_assignments", boom)
+        stage = cluster_pass.assign(store, 10, 1, cluster_pass._Outage(), "worker")
+        assert stage.errored == 1
+        [row] = _ledger(store, "cluster:assign")
+        assert row["stats"]["unplaced"] == 1
 
     def test_the_limit_bounds_the_prs_offered(self, store, monkeypatch):
         for n in range(1, 6):
