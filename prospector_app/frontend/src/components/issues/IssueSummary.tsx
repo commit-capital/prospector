@@ -14,6 +14,7 @@ import { FixDecisionCards } from "./FixDecisionCards";
 import { fixDecision } from "./fixDecision";
 import { otherOpenPRs, rivalRows } from "./rivalComparison";
 import { useExec } from "../../ExecContext";
+import { flashTo, issueSectionId } from "../pageAnchor";
 
 type Tone = "green" | "amber" | "red" | "blue" | "purple" | "gold" | "muted";
 type Fact = { tone: Tone; text: string; tip: string };
@@ -148,6 +149,27 @@ function FixPRs({ d }: { d: IssueDetail }) {
   );
 }
 
+/** The status sentence, its pointing phrase a link that scrolls to and
+ *  flashes the section it names. */
+function StatusText({ line }: { line: IssueDetail["status_line"] }) {
+  const at = line.see ? line.text.indexOf(line.see.phrase) : -1;
+  if (!line.see || at < 0) return <>{line.text}</>;
+  const id = issueSectionId(line.see.section);
+  const end = at + line.see.phrase.length;
+  return (
+    <>
+      {line.text.slice(0, at)}
+      <a href={`#${id}`} onClick={(e) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        e.preventDefault();
+        flashTo(el, "center");
+      }}>{line.text.slice(at, end)}</a>
+      {line.text.slice(end)}
+    </>
+  );
+}
+
 /** Where the issue stands, the bug, and the fix it needs, in a sentence each.
  *  ANALYZE writes the card; without one, the analysis gist stands in for the
  *  bug and our fix's summary for the fix. */
@@ -157,7 +179,7 @@ function IssueStory({ d }: { d: IssueDetail }) {
   const ours = d.fix_run?.ending === "fixed" ? d.fix_run.summary : null;
   return (
     <dl className="pr-story">
-      <dt>Status</dt><dd><b>{d.status_line}</b></dd>
+      <dt>Status</dt><dd><b><StatusText line={d.status_line} /></b></dd>
       {bug && <><dt>The bug</dt><dd>{bug}</dd></>}
       {card ? <><dt>Suggested fix</dt><dd>{card.fix}</dd></>
         : ours ? <><dt>Our fix</dt><dd>{ours}</dd></>
@@ -208,7 +230,7 @@ function RivalComparison({ d }: { d: IssueDetail }) {
   const rows = rivalRows(d);
   if (!rows.length) return null;
   return (
-    <div className="issue-analysis">
+    <div className="issue-analysis" id={issueSectionId("rivals")}>
       <div className="analysis-label">Our fix vs. the other open PRs</div>
       <ul style={{ margin: "0 0 0 18px" }}>
         {rows.map(({ pr, entry }) => (

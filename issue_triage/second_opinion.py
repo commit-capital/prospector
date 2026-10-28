@@ -317,14 +317,15 @@ def flag(entries: list[dict] | None) -> str | None:
         f"#{e['pr']} ({e['why']})" for e in gaps)
 
 
-def held_line(entries: list[dict] | None) -> str:
-    """`flag`'s hold as the plain sentence the issue page leads with."""
+def held_line(entries: list[dict] | None) -> tuple[str, str]:
+    """`flag`'s hold as the plain sentence the issue page leads with, and the
+    phrase in it that names what the comparison found."""
     gaps = _gaps(entries)
     refs = [f"#{e['pr']}" for e in gaps]
     prs = refs[0] if len(refs) == 1 else f"{', '.join(refs[:-1])} and {refs[-1]}"
     one = len(gaps) == 1
-    what = (("handles a case" if one else "handle cases") + " ours misses (listed below)"
-            if any(e.get("missed") for e in gaps)
-            else ("has tests" if one else "have tests") + " our fix fails")
-    return (f"Prospector has a working fix but is holding it: {prs} {what}. "
-            f"Go with {prs if one else 'one of them'}, or send ours back to close the gap.")
+    found = (("a case" if one else "cases") + " ours misses" if any(e.get("missed") for e in gaps)
+             else "tests our fix fails")
+    verb = ("handles" if one else "handle") if "misses" in found else ("has" if one else "have")
+    return (f"Prospector has a working fix but is holding it: {prs} {verb} {found}. "
+            f"Go with {prs if one else 'one of them'}, or send ours back to close the gap.", found)

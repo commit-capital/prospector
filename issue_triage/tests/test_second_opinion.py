@@ -140,8 +140,10 @@ def test_only_a_closed_gap_earns_credit_and_an_open_one_holds_the_fix():
         "another open pull request covers what this fix misses: #4 (x.test.ts fails)")
     assert second_opinion.flag(None) is None
     entries.append({"pr": 5, "author": "e", "verdict": "gap-open", "why": "y"})
-    assert second_opinion.held_line(entries).startswith(
+    text, phrase = second_opinion.held_line(entries)
+    assert text.startswith(
         "Prospector has a working fix but is holding it: #4 and #5 have tests our fix fails. Go with one")
+    assert phrase in text
 
 
 # --- the comparison judge -----------------------------------------------------------

@@ -21,7 +21,7 @@ a partial fix wherever the attempt is named (`outcome`, `fix_status`).
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from issue_triage import (
     dispute_question,
@@ -112,26 +112,39 @@ def fix_status(issue: Issue) -> tuple[str, str] | None:
     return status[0], f"{note} — {status[1]}" if note else status[1]
 
 
-def status_line(issue: Issue) -> str:
-    """Where issue stands, in the one plain sentence its page leads with."""
+class StatusPointer(TypedDict):
+    section: str  # the issue page's section: "rivals"
+    phrase: str   # the words in the sentence that link to it
+
+
+class StatusLine(TypedDict):
+    text: str
+    see: StatusPointer | None
+
+
+def status_line(issue: Issue) -> StatusLine:
+    """Where issue stands, in the one plain sentence its page leads with, and
+    the phrase in it that points at a section of the page, if any."""
     status = _fix_status(issue)
     if status is None:
-        return ("This issue is closed." if issue.state != "open"
-                else "Prospector hasn't tried to fix this yet.")
-    return status[2] + (" It fixes only part of the report." if partial(issue) else "")
+        return {"text": "This issue is closed." if issue.state != "open"
+                else "Prospector hasn't tried to fix this yet.", "see": None}
+    line = status[2] if isinstance(status[2], dict) else StatusLine(text=status[2], see=None)
+    return {**line, "text": line["text"] + (" It fixes only part of the report." if partial(issue) else "")}
 
 
-def _held_line(issue: Issue) -> str:
+def _held_line(issue: Issue) -> str | StatusLine:
     held = trust_boundary.held(issue)
     rivals = (issue.fix_run or {}).get("second_opinion")
     if held is None:
         return "Prospector has a working fix that is about to open as a PR."
     if held == second_opinion.flag(rivals):
-        return second_opinion.held_line(rivals)
+        text, phrase = second_opinion.held_line(rivals)
+        return {"text": text, "see": {"section": "rivals", "phrase": phrase}}
     return f"Prospector has a working fix but is holding it: {held}."
 
 
-def _fix_status(issue: Issue) -> tuple[str, str, str] | None:
+def _fix_status(issue: Issue) -> tuple[str, str, str | StatusLine] | None:
     """(status, reason, line): the status, its terse reason, and the plain
     sentence `status_line` gives."""
     pr = fix_choice.chosen(issue)
