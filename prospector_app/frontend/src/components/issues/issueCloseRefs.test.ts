@@ -9,7 +9,7 @@ function row(n: number, extra: Partial<IssueRow> = {}): IssueRow {
     thumbs_up: 0, state: "open", url: "", subsystem: null, repro_grade: null, repro_score: null,
     pain: null, cluster: null, cluster_size: 0, canonical: null, is_dup: false, duplicates: [],
     disposition: null, fixed_by: null, linked_prs: [], linked_pr_count: 0, referenced_pr_count: 0,
-    referenced_merged_count: 0, status_line: "",
+    referenced_merged_count: 0, status_line: { text: "", see: null },
     ...extra,
   };
 }

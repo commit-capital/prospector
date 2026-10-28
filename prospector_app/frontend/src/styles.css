@@ -769,7 +769,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .tier-mark-1 { color: var(--orange); }
 .tier-mark-2 { color: var(--yellow); }
 .checks-panel, .check-row, .check-row-collapsible, .difffile-head { scroll-margin-top: 12px; }
-.difffile-head.anchor-flash, tr.anchor-flash > td, .check-row.anchor-flash, .collapsible.anchor-flash, .checks-panel.anchor-flash { animation: anchor-flash 2.2s ease-out; }
+.difffile-head.anchor-flash, tr.anchor-flash > td, .check-row.anchor-flash, .collapsible.anchor-flash, .checks-panel.anchor-flash, .issue-analysis.anchor-flash { animation: anchor-flash 2.2s ease-out; }
 /* The PR page's reviewer bodies: summary first, then findings, each with its
    headline, a muted location link into the diff, and the verifier's reason. */
 .reviewer-summary { margin: 6px 0 2px; background: none; border: 0; padding: 0; }

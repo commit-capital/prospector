@@ -480,7 +480,7 @@ const ISSUE_COLUMNS: IssueColumn[] = [
     </> },
   { key: "status", label: "Status", defaultOn: false, cellClass: "small",
     title: "Where the issue stands, in one plain sentence",
-    cell: (r) => r.status_line },
+    cell: (r) => r.status_line.text },
   { key: "author", label: "Author", defaultOn: true, sortKey: "author", cellClass: "muted small",
     cell: (r) => <>
       <AuthorHover author={r.author} trusted={r.trusted_author} stats={r.author_stats} fallback="" />

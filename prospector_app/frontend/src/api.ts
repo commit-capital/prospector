@@ -1431,7 +1431,7 @@ export interface IssueRow {
   /** The attempt is a proven fix for only part of its report (fix_review.partial). */
   fix_partial?: boolean;
   /** Where the issue stands, in one plain sentence (fix_review.status_line). */
-  status_line: string;
+  status_line: IssueStatusLine;
   /** Dup-group members folded under this row when the query collapsed dups. */
   dup_rows?: IssueRow[];
 }
@@ -1693,6 +1693,12 @@ interface IssueAnalysis {
   fixed_by?: number | null;
   checked_at?: string | null;
 }
+/** One plain sentence on where an issue stands, and the phrase in it that
+ *  points at a section of its page (fix_review.status_line). */
+export interface IssueStatusLine {
+  text: string;
+  see: { section: "rivals"; phrase: string } | null;
+}
 /** Full issue detail for the flyout: the table row plus body + analysis. */
 /** The issue page's plain-language card (issue_triage/issue_display.py). */
 export interface IssueDisplay { bug: string; fix: string }
@@ -1711,8 +1717,6 @@ export interface IssueDetail extends IssueRow {
   fix_pr?: number | null;
   /** Why the fixed attempt waits for an operator to open its PR (trust_boundary.held). */
   fix_held?: string | null;
-  /** Where the issue stands, in one plain sentence (fix_review.status_line). */
-  status_line: string;
   /** The PR going ahead as the fix in place of ours, while the choice stands. */
   fix_choice?: IssueFixChoice | null;
   /** The operator's approval of the open PR while it holds (fix_review.approval). */
