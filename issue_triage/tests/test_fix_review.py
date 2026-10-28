@@ -314,6 +314,26 @@ def test_a_defect_argued_already_handled_is_not_counted_as_addressed(store):
         "partial fix: 1 of 4 reported defects addressed, 1 already handled on the base;")
 
 
+def test_a_defect_the_claim_test_ruled_out_of_the_report_does_not_make_the_fix_partial(store):
+    """#14071: the claim tests found both leftovers deferred to companion issues."""
+    claims = [{"defect": d["defect"], "status": "unshown", "why": "left to #14070",
+               "ruling": "outside-report", "paths": [], "round": 1}
+              for d in COVERAGE_14777 if d["status"] == "not-addressed"]
+    _run(store, reviews=PARTIAL, claims=claims)
+    assert fix_review.fix_status(store.load_issue(7)) == ("review", "ok")
+    assert fix_review.partial(store.load_issue(7)) is None
+    _run(store, reviews=PARTIAL, claims=claims[:1])
+    assert fix_review.fix_status(store.load_issue(7))[1].startswith(
+        "partial fix: 1 of 3 reported defects addressed; not addressed: a session stuck")
+
+
+def test_the_distilled_run_keeps_each_claim_s_ruling():
+    claim = {"defect": "d", "fix": "f", "status": "unshown", "why": "w",
+             "ruling": "deliberate", "paths": [], "round": 2, "patch": "x"}
+    run = fix_review.distill({"ending": "fixed", "result": {"claims": [claim]}})
+    assert run["claims"] == [{k: v for k, v in claim.items() if k != "patch"}]
+
+
 def test_the_distilled_run_keeps_the_reviewer_s_coverage():
     run = fix_review.distill({"ending": "fixed", "result": {"reviews": PARTIAL}})
     assert run["reviews"][0]["coverage"] == COVERAGE_14777
@@ -330,8 +350,8 @@ def test_the_distilled_run_keeps_the_review_rounds_and_reads_an_older_round():
                "reproductions_pass": False}]
     run = fix_review.distill({"ending": "fixed", "result": {"revisions": rounds,
                                                             "claims": [claim]}})
-    assert run["claims"] == [{k: claim[k] for k in ("defect", "fix", "status", "why", "paths",
-                                                    "round")}]
+    assert run["claims"] == [{**{k: claim[k] for k in ("defect", "fix", "status", "why",
+                                                       "paths", "round")}, "ruling": None}]
     assert run["revisions"][1] == {"round": 2, "ending": "fix-rejected", "detail": "d",
                                    "answering": ["x leaks"], "claims": [], "responses": [],
                                    "required_pass": False}

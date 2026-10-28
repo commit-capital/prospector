@@ -27,9 +27,10 @@ const STATUS_LABEL: Record<IssueFixStatus, string> = {
 };
 const COVERAGE_LABEL: Record<IssueFixCoverage["status"], string> = {
   addressed: "addressed", "not-addressed": "not addressed", "already-fixed": "already handled",
+  "out-of-scope": "not asked",
 };
 const COVERAGE_TONE: Record<IssueFixCoverage["status"], string> = {
-  addressed: "green", "not-addressed": "red", "already-fixed": "muted",
+  addressed: "green", "not-addressed": "red", "already-fixed": "muted", "out-of-scope": "muted",
 };
 const STATUS_TONE: Record<IssueFixStatus, string> = {
   review: "green", question: "yellow", running: "blue", reporter: "muted",

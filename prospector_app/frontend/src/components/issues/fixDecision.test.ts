@@ -39,6 +39,17 @@ test("the send-back draft carries the reviewer's reasons and what the fix leaves
   assert.doesNotMatch(draft, /the error is swallowed/);
 });
 
+test("the draft leaves out a defect a claim test ruled out of the report", () => {
+  const draft = sendBackDraft(issue({ fix_run: {
+    reviews: [{ lens: "scope-safety", concerns: [],
+      coverage: [{ defect: "cancel is a no-op", status: "not-addressed", evidence: "" },
+                 { defect: "Retry  forever", status: "not-addressed", evidence: "" }] }],
+    claims: [{ defect: "retry forever", status: "unshown", why: "documented", ruling: "deliberate",
+               paths: [] }] } as unknown as IssueDetail["fix_run"] }));
+  assert.match(draft, /- cancel is a no-op/);
+  assert.doesNotMatch(draft, /Retry/);
+});
+
 test("a draft with nothing from the reviewer still asks for the whole report", () => {
   assert.match(sendBackDraft(issue({ analysis: null })), /every bug #14777 reports/);
 });

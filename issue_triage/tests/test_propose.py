@@ -166,6 +166,19 @@ def test_a_partial_fix_addresses_part_of_the_issue_and_lists_what_remains():
                                 issue=7, closes=True)
 
 
+def test_a_fix_whose_leftovers_the_report_does_not_ask_for_closes_and_lists_them():
+    claims = [{"defect": d["defect"], "status": "unshown", "why": "left to #9",
+               "ruling": "outside-report"}
+              for d in PARTIAL[0]["coverage"] if d["status"] == "not-addressed"]
+    body = fix_pr_body.render(issue=7, result=_result(reviews=PARTIAL, claims=claims), tests=[],
+                              base_sha="a" * 40, report_sha=REPORT, models=["opus"],
+                              test_cmd=None)
+    linked = next(part for part in body.split("\n## ") if part.startswith("Linked"))
+    assert "Fixes #7" in linked and "Addresses part" not in body
+    assert ("#7 also mentions, without asking this fix for it:\n- cancel after a restart is a "
+            "no-op that returns 200 (the host's claim test: left to #9)") in linked
+
+
 def test_a_fix_no_reviewer_checked_against_the_report_does_not_close_it():
     body = fix_pr_body.render(issue=7, result=_result(reviews=[]), tests=[], base_sha="a" * 40,
                               report_sha=REPORT, models=["opus"], test_cmd=None)

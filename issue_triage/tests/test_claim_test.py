@@ -3,6 +3,7 @@ sees fail twice with the fix applied, and the judge rates the defect, shows
 it. The agent, the sandbox and the judge are mocked; the clone is real."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -111,11 +112,35 @@ def test_the_claim_reaches_the_agent_as_bounded_data_on_a_locked_down_run(monkey
     monkeypatch.setattr(claim_test.headless_agent, "run_agent", run_agent)
     out = claim_test.author("/wt", title="t", body="b", defect="cancel " + "x" * 5000,
                             evidence="see `cancel.ts`", env={}, contributor_docs=[])
-    assert out == {"give_up": "handled at cancel.ts:12"}
+    assert out == {"give_up": "handled at cancel.ts:12", "ruling": None}
     assert '{"still_present": "cancel xxx' in seen["prompt"]
     assert "x" * (claim_test.CLAIM_MAX + 10) not in seen["prompt"]
     assert seen["allow_gh"] is False and seen["edit_root"] == seen["cwd"]
     assert seen["read_root"] == [seen["cwd"]]
+
+
+@pytest.mark.parametrize("ruling,want", [("outside-report", "outside-report"),
+                                         ("deliberate", "deliberate"), ("bogus", None)])
+def test_a_give_up_names_its_ruling_or_none(monkeypatch, ruling, want):
+    answer = json.dumps({"give_up": "the report calls it optional", "ruling": ruling})
+    monkeypatch.setattr(claim_test.headless_agent, "run_agent",
+                        lambda prompt, **kw: f"```json\n{answer}\n```")
+    out = claim_test.author("/wt", title="t", body="b", defect="d", evidence="e", env={},
+                            contributor_docs=[])
+    assert out == {"give_up": "the report calls it optional", "ruling": want}
+
+
+@pytest.mark.parametrize("change,ruling", [
+    ({"author": lambda wt, **kw: {"give_up": "the report leaves it to #2922",
+                                  "ruling": "outside-report"}}, "outside-report"),
+    ({"rating": {**RATED, "defect": {"is_defect": False, "confidence": "high",
+                                     "reasoning": "deliberate"}}}, "deliberate"),
+    ({"red": _legs(gates.SENTINEL_PASS, None)}, None),
+])
+def test_an_unshown_claim_carries_the_ruling_it_was_given_up_on(lane, change, ruling):
+    lane.update(change)
+    claim = lane["run"]()
+    assert claim["status"] == "unshown" and claim["ruling"] == ruling
 
 
 @pytest.mark.parametrize("setting,want", [("codex:gpt-x", "codex:gpt-x"), ("", None)])

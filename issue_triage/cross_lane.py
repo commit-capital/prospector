@@ -389,10 +389,12 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         shutil.rmtree(workdir / "pick", ignore_errors=True)
 
 
-def _comments(reviews: list[dict] | None, boundary: dict | None) -> tuple[bool, list[str]]:
-    """The reviews' comments (`issue_gates.review_comments`) and the
-    crossings the report did not ask for (`trust_boundary.comments`)."""
-    rejected, comments = issue_gates.review_comments(reviews)
+def _comments(reviews: list[dict] | None, boundary: dict | None,
+              claims: list[dict] | None = None) -> tuple[bool, list[str]]:
+    """The reviews' comments (`issue_gates.review_comments`, less the defects
+    `claims` ruled out of the report) and the crossings the report did not ask
+    for (`trust_boundary.comments`)."""
+    rejected, comments = issue_gates.review_comments(reviews, claims)
     return rejected, comments + trust_boundary.comments(boundary)
 
 
@@ -415,6 +417,12 @@ def _brief(comments: list[str], claims: list[claim_test.Claim]) -> str:
     return "\n".join(lines)
 
 
+# What the next reviewer reads of a claim test that ruled the defect out of
+# the report (issue_gates.OUT_OF_REPORT_RULINGS).
+_RULED = {"outside-report": "; the claim test found the report does not ask this fix for it",
+          "deliberate": "; the claim test found the code means this behavior"}
+
+
 def _history(rounds: list[dict]) -> str:
     """The earlier rounds of a review, as the next reviewer reads them."""
     lines: list[str] = []
@@ -422,7 +430,8 @@ def _history(rounds: list[dict]) -> str:
         lines += [f"Round {r['round']}, the reviewers asked:", *[f"- {c}" for c in r["answering"]]]
         lines += [f'- The host\'s test of "{c["defect"]}": '
                   + (f"fails with that version applied ({', '.join(c['paths'])})"
-                     if c["status"] == "shown" else f"not shown ({c['why']})")
+                     if c["status"] == "shown" else f"not shown ({c['why']})"
+                     + _RULED.get(c.get("ruling"), ""))
                   for c in r["claims"]]
         lines += [f'- The bot {x["answer"]} "{x["comment"]}": {x["why"]}'
                   for x in r["responses"]]
@@ -439,7 +448,8 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
     """Answer the reviews of the change on `result`, and the crossings its
     boundary record says the report did not ask for, the way an author answers
     a code review, in up to REVISIONS rounds: each defect the reviews say it
-    leaves is first put to a test (at most claim_test.MAX_CLAIMS a round), then
+    leaves is first put to a test (at most claim_test.MAX_CLAIMS a round), and
+    one the test rules out of the report is no longer a comment; then
     the pick's own model revises the change or disputes the comments, and a
     fresh review reads the earlier rounds and re-judges the boundary. A
     revision counts only while it
@@ -453,7 +463,7 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
     rounds: list[dict] = result.setdefault("revisions", [])
     claims: list[dict] = result.setdefault("claims", [])
     reviews, boundary = result["reviews"], result.get("boundary")
-    rejected, comments = _comments(reviews, boundary)
+    rejected, comments = _comments(reviews, boundary, claims)
     standing = not rejected
     patch, summary, root_cause = result["patch"], result["summary"], result["root_cause"]
     reproduction: dict | None = None
@@ -463,7 +473,7 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         if not comments:
             break
         shown_now: list[claim_test.Claim] = []
-        left = issue_gates.fix_coverage(reviews).having("not-addressed")
+        left = issue_gates.fix_coverage(reviews, claims).having("not-addressed")
         for i, defect in enumerate(left[:claim_test.MAX_CLAIMS]):
             claim = claim_test.prove_claim(spec, defect=defect, tests=required,
                                            fix=_fix_part(patch),
@@ -474,6 +484,9 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
             claims.append({**claim, "round": n})
             if claim["status"] == "shown":
                 required += claim["patch"]
+        rejected, comments = _comments(reviews, boundary, claims)
+        if not comments:
+            break
         pinned = set(diffpaths.changed_paths(required))
         on_step(f"revising the fix: round {n}")
         res = solo_lane.run(
@@ -486,7 +499,7 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         spent += res.agent_runs
         revised = res.result or {}
         record = {"round": n, "answering": comments,
-                  "claims": [{k: c[k] for k in ("defect", "status", "why", "paths")}
+                  "claims": [{k: c[k] for k in ("defect", "status", "why", "ruling", "paths")}
                              for c in shown_now],
                   "ending": res.ending, "detail": res.detail[:300],
                   "summary": revised.get("summary", ""),
@@ -520,7 +533,7 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         patch = result["patch"] if res.ending == "fixed" else revised.get("patch") or patch
         summary = revised.get("summary") or summary
         root_cause = revised.get("root_cause") or root_cause
-        rejected, comments = _comments(reviews, boundary)
+        rejected, comments = _comments(reviews, boundary, claims)
         detail = "; ".join(comments)
     if standing:
         return None, "", reproduction, spent
@@ -536,7 +549,7 @@ def _answer_review(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
     unrequested trust-boundary crossings left any comment; the reproduction
     record of the change that stands, and the agent runs the revision spent."""
     if ending not in (None, "fix-rejected") or not _comments(
-            result.get("reviews"), result.get("boundary"))[1]:
+            result.get("reviews"), result.get("boundary"), result.get("claims"))[1]:
         return ending, detail, reproduction, 0
     ending, detail, revised, spent = _revise(spec, workdir, pick, repros, result,
                                              others=others, proof_patch=proof_patch,

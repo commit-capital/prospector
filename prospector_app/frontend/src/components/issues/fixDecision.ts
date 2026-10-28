@@ -14,11 +14,19 @@ export function fixDecision(d: IssueDetail): FixDecision | null {
   return { pr: d.fix_pr, partial: !!d.fix_partial || d.analysis?.disposition === "needs-human" };
 }
 
+// The claim-test rulings that take a defect out of the report
+// (issue_gates.OUT_OF_REPORT_RULINGS).
+const OUT_OF_REPORT = new Set(["outside-report", "deliberate"]);
+const key = (s: string) => s.toLowerCase().split(/\s+/).filter(Boolean).join(" ");
+
 /** The send-back's starting words: the reviewer's reasons and the defects the
- *  reviews say the fix leaves, as the operator's comments to the fixer. */
+ *  reviews say the fix leaves, less those a claim test ruled out of the
+ *  report, as the operator's comments to the fixer. */
 export function sendBackDraft(d: IssueDetail): string {
+  const ruled = new Map((d.fix_run?.claims ?? []).map((c) => [key(c.defect), c.ruling]));
   const left = (d.fix_run?.reviews ?? []).flatMap((r) => r.coverage ?? [])
-    .filter((c) => c.status === "not-addressed").map((c) => c.defect);
+    .filter((c) => c.status === "not-addressed" && !OUT_OF_REPORT.has(ruled.get(key(c.defect)) ?? ""))
+    .map((c) => c.defect);
   return [
     `I agree with the reviewer: #${d.fix_pr} doesn't fix all of #${d.number}.`,
     d.analysis?.rationale ?? "",

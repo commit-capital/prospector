@@ -233,7 +233,8 @@ def revise(store: IssueStore, n: int, *, comments: str,
     base = _revision_base(previous)
     spec, report = _spec(store, n, base, comments or None, notes)
     review = "\n".join(f"- {c}" for c in
-                       issue_gates.review_comments(res_prev.get("reviews"))[1])
+                       issue_gates.review_comments(res_prev.get("reviews"),
+                                                   res_prev.get("claims"))[1])
     workdir = propose.result_dir(n)
     started = storekit.now()
     res = solo_lane.run(spec, workdir=workdir, on_step=on_step, start_patch=res_prev["patch"],
