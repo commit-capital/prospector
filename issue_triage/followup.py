@@ -31,9 +31,11 @@ their reviews with words, their open inline comments, their comments).
 - `revise` — CI still fails after a re-run and the sandbox traces a failing
   test file to the change; or CI still fails and the sandbox traced nothing,
   once per pull request; or an active reviewer's bar fails at this head; the
-  request's notes quote what failed, as data for the fix agent to weigh. At most MAX_REVISIONS of its own per pull request; an
-  operator's send-back, which goes onto the pull request the same way, is not
-  counted.
+  request's notes quote what failed, as data for the fix agent to weigh. At most MAX_REVISIONS of its own per pull request,
+  counted when one finishes (`count_revision`): one that ends on the
+  machine's condition, or whose request failed or was cut off mid-run, counts
+  against MAX_REVISION_FAULTS instead. An operator's send-back, which goes onto the
+  pull request the same way, is not counted.
 - `wait` — CI or a reviewer has not finished at this head.
 - `ready` — CI passes and every active reviewer's bar passes.
 
@@ -72,7 +74,9 @@ from pipeline import reviewers, settings, storekit, verify_driver
 if TYPE_CHECKING:
     from issue_triage.issue_store import IssueStore
 
-MAX_REVISIONS = 2
+MAX_REVISIONS = 6
+# Revisions that ended on the machine's condition, which spend no revision.
+MAX_REVISION_FAULTS = 3
 MAX_MAINTAINER_REVISIONS = 3
 MAX_ROUTE_MISSES = 3
 _RUN_RE = re.compile(r"/actions/runs/(\d+)/job/(\d+)")
@@ -424,8 +428,8 @@ def decide(pr: PrState, fu: dict | None, *, logs: dict[str, str] | None = None,
             return Step("hand-back", f"CI still fails after a re-run and a revision ({jobs}), "
                                      "and the sandbox traced no failure to the change",
                         outside=True, by=CI)
-        if int(fu.get("revisions") or 0) >= MAX_REVISIONS:
-            return Step("hand-back", f"{MAX_REVISIONS} revisions spent; CI still fails", by=CI)
+        if spent := _spent(fu):
+            return Step("hand-back", f"{spent}; CI still fails", by=CI)
         if caused:
             return Step("revise", "the change fails " + ", ".join(caused)
                         + " in the sandbox, which pass without it",
@@ -438,8 +442,8 @@ def decide(pr: PrState, fu: dict | None, *, logs: dict[str, str] | None = None,
     blocking = [v for v in pr.reviewers if v.status == reviewers.FAIL]
     waiting = [v for v in pr.reviewers if v.status in (reviewers.PENDING, reviewers.STALE)]
     if blocking:
-        if int(fu.get("revisions") or 0) >= MAX_REVISIONS:
-            return Step("hand-back", f"{MAX_REVISIONS} revisions spent; "
+        if spent := _spent(fu):
+            return Step("hand-back", f"{spent}; "
                                      + "; ".join(v.reason or v.label for v in blocking),
                         by=" and ".join(v.label for v in blocking))
         return Step("revise", "; ".join(v.reason or v.label for v in blocking),
@@ -447,6 +451,26 @@ def decide(pr: PrState, fu: dict | None, *, logs: dict[str, str] | None = None,
     if waiting:
         return Step("wait", "waiting on " + ", ".join(v.label for v in waiting))
     return Step("ready", "CI passes and every active reviewer's bar passes")
+
+
+def _spent(fu: dict) -> str | None:
+    """Why the follow-up's own revision budget is spent, or None."""
+    if int(fu.get("revisions") or 0) >= MAX_REVISIONS:
+        return f"{MAX_REVISIONS} revisions spent"
+    if int(fu.get("revision_faults") or 0) >= MAX_REVISION_FAULTS:
+        return f"{MAX_REVISION_FAULTS} revisions broke down on the machine"
+    return None
+
+
+def count_revision(fu: dict, *, fault: bool) -> dict:
+    """`fu` with the follow-up's own finished revision counted: one that ended
+    on the machine's condition (`fault`) against MAX_REVISION_FAULTS, any other
+    against MAX_REVISIONS. A maintainer's revision has its own budget, counted
+    when queued."""
+    if fu.get("maintainer_pending"):
+        return fu
+    key = "revision_faults" if fault else "revisions"
+    return {**fu, key: int(fu.get(key) or 0) + 1}
 
 
 def _job_log(job_id: int) -> str | None:
@@ -533,6 +557,12 @@ def poll(store: IssueStore, *, mode: str | None = None,
         fresh = fresh_feedback(state, fu) if state.state == "open" else []
         asked = _route_feedback(store, n, int(pr), fresh, fu, live=mode == "live",
                                 may_route=may_route)
+        req = issue.fix_request or {}
+        if (req.get("source") == "followup" and req.get("status") == "failed"
+                and fu.get("failed_seen") != req.get("started_at")):
+            # A revision that broke down before it finished, a restart included.
+            fu["failed_seen"] = req.get("started_at")
+            fu["revision_faults"] = int(fu.get("revision_faults") or 0) + 1
         missed = None
         pending = fu.pop("maintainer_pending", None)
         if pending and pending.get("head_sha") == state.head_sha:
@@ -623,12 +653,13 @@ def poll(store: IssueStore, *, mode: str | None = None,
             budget, cap = (("maintainer_revisions", MAX_MAINTAINER_REVISIONS) if step.maintainer
                            else ("revisions", MAX_REVISIONS))
             if ok:
-                fu[budget] = int(fu.get(budget) or 0) + 1
                 if step.maintainer:
+                    fu[budget] = int(fu.get(budget) or 0) + 1
                     fu["maintainer_pending"] = {"head_sha": state.head_sha}
                 if step.untraced:
                     fu["ci_untraced_revised"] = True
-                _note(store, n, f"Revision {fu[budget]} of {cap} queued: {step.reason}.")
+                _note(store, n, f"Revision {int(fu.get(budget) or 0) + (0 if step.maintainer else 1)}"
+                                f" of {cap} queued: {step.reason}.")
             else:
                 _note(store, n, f"Could not queue a revision: {why}.")
         _save(store, n, fu, held)

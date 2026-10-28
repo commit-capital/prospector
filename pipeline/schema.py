@@ -123,7 +123,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 40 — an issue fix's review coverage may carry the "out-of-scope" status and its
 #      claims a `ruling`; an older validator drops a review carrying the status,
 #      reads the fix as unchecked or partial, and proposes it without "Fixes #N".
-STORE_SCHEMA_VERSION = 40
+# 41 — an issue's `fix_followup` counts its `revisions` when one finishes, up to
+#      six, and `revision_faults` apart; an older worker counts them when queued
+#      and hands the pull request back after two.
+STORE_SCHEMA_VERSION = 41
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

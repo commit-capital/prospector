@@ -297,7 +297,8 @@ def host_checks(spec: fix_lane.LaneSpec, *, test_patch: str, fix_patch: str,
 def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         on_step: Callable[[str], None] = lambda step: None,
         start_patch: str | None = None, attempt: dict | None = None,
-        review: bool = False, model: str | None = None) -> fix_lane.LaneResult:
+        review: bool = False, advisory: frozenset[str] = frozenset(),
+        model: str | None = None) -> fix_lane.LaneResult:
     """One agent reproduces and fixes `spec`'s issue; the host's re-gate and
     test runs name the ending. With `start_patch` the clone opens holding an
     earlier attempt (tests and change, uncommitted) that the agent revises, told
@@ -306,7 +307,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
     host's checks through every reviewer too (`review_issue_fix.full_review`),
     which reads the review the revision answers (`_review_history`) and, under
     the design lens, the other fixes written for the report; a review that
-    rejects it ends `fix-rejected` with the reviewers' comments. `model` pins
+    rejects it ends `fix-rejected` with the reviewers' comments, except under an
+    `advisory` lens, whose comments ride on the result for the next round. `model` pins
     the agent's model. The clone is removed on the way out."""
     label = f"solo-{spec.issue}"
     clone_dir = workdir / "solo"
@@ -411,7 +413,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                 worktree_patch=patch, lane="solo", on_step=on_step)
             agent_runs += len(reviews)
             result["reviews"] = reviews
-            rejected, comments = issue_gates.review_comments(reviews)
+            rejected, comments = issue_gates.review_comments(
+                [r for r in reviews if r.get("lens") not in advisory])
             stalled = [r for r in reviews if r.get("failed")]
             if stalled and not rejected:
                 return finish("run-failed", str(stalled[0].get("reason")
