@@ -124,6 +124,29 @@ def run_claim_held_elsewhere(run: dict | None, *, host: str,
             and not _older_than(run.get("started_at"), stale_after))
 
 
+def run_failures(run: dict | None, head: str | None) -> int:
+    """How many of a `security_run` or `design_run` claim's reviews failed at
+    `head`. A released claim keeps the count until the head moves."""
+    failures = (run or {}).get("failures") or {}
+    return int(failures.get("count") or 0) if head and failures.get("head_sha") == head else 0
+
+
+def _claimed(prior: dict | None, host: str) -> dict:
+    run: dict = {"host": host, "started_at": storekit.now()}
+    if (prior or {}).get("failures"):
+        run["failures"] = (prior or {})["failures"]
+    return run
+
+
+def _released(run: dict, host: str, failed_at: str | None) -> dict | None:
+    """What a released claim leaves: nothing, or its failure count, one higher
+    when the review failed at head `failed_at`."""
+    failures = run.get("failures")
+    if failed_at:
+        failures = {"head_sha": failed_at, "count": run_failures(run, failed_at) + 1}
+    return {"host": host, "failures": failures} if failures else None
+
+
 def _older_than(stamp: object, seconds: float) -> bool:
     """Whether an ISO timestamp is further back than `seconds`. An absent or
     unparseable stamp reads as old: a claim that cannot say when it started is
@@ -1590,11 +1613,13 @@ class Store:
         section: dict = {"status": to_status, "action": req.get("action"),
                          "step": "claimed", "host": host,
                          "started_at": storekit.now()}
+        head = (rec.get("meta") or {}).get("head_sha")
         for field in ("queued_at", "source", "attempts", "base_sha", "result",
                       "guidance", "objection", "priority"):
             if req.get(field) is not None:
                 section[field] = req[field]
-        head = (rec.get("meta") or {}).get("head_sha")
+        if req.get("failures") and req.get("against_head_sha") == head:
+            section["failures"] = req["failures"]
         storekit.stamp(rec, "fix_request", section, "against_head_sha", head)
         return section if self._prs.save_if(rec, stamp) else None
 
@@ -1614,11 +1639,12 @@ class Store:
         if run_claim_held_elsewhere(rec.get("security_run"), host=host,
                                          stale_after=stale_after):
             return False
-        rec["security_run"] = {"host": host, "started_at": storekit.now()}
+        rec["security_run"] = _claimed(rec.get("security_run"), host)
         return self._prs.save_if(rec, stamp)
 
-    def release_security_run(self, n: int, *, host: str) -> None:
-        """Drop `host`'s claim on PR `n`'s security review. A claim another host
+    def release_security_run(self, n: int, *, host: str, failed_at: str | None = None) -> None:
+        """Drop `host`'s claim on PR `n`'s security review, counting a review
+        that failed at head `failed_at` (`run_failures`). A claim another host
         now holds is left alone: this one lost a reclaim race, and the winner's
         review is live."""
         row = self._prs.stamped(n)
@@ -1628,7 +1654,7 @@ class Store:
         run = rec.get("security_run") or {}
         if run.get("host") not in (None, host):
             return
-        rec["security_run"] = None
+        rec["security_run"] = _released(run, host, failed_at)
         self._prs.save_if(rec, stamp)
 
     def claim_design_run(self, n: int, *, host: str, stale_after: float) -> bool:
@@ -1640,18 +1666,20 @@ class Store:
         rec, stamp = row
         if run_claim_held_elsewhere(rec.get("design_run"), host=host, stale_after=stale_after):
             return False
-        rec["design_run"] = {"host": host, "started_at": storekit.now()}
+        rec["design_run"] = _claimed(rec.get("design_run"), host)
         return self._prs.save_if(rec, stamp)
 
-    def release_design_run(self, n: int, *, host: str) -> None:
-        """Drop `host`'s claim on PR `n`'s design review, leaving another host's."""
+    def release_design_run(self, n: int, *, host: str, failed_at: str | None = None) -> None:
+        """Drop `host`'s claim on PR `n`'s design review, leaving another host's,
+        as `release_security_run` does."""
         row = self._prs.stamped(n)
         if row is None:
             return
         rec, stamp = row
-        if (rec.get("design_run") or {}).get("host") not in (None, host):
+        run = rec.get("design_run") or {}
+        if run.get("host") not in (None, host):
             return
-        rec["design_run"] = None
+        rec["design_run"] = _released(run, host, failed_at)
         self._prs.save_if(rec, stamp)
 
     def save_design_review(self, n: int, entry: dict, *, head_sha: str) -> bool:

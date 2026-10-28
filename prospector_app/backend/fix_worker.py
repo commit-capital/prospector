@@ -273,7 +273,8 @@ def recover_orphans() -> list[int]:
                 "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
                 started_at=req.get("started_at"), finished_at=_now(), error=note,
                 source=req.get("source"), guidance=req.get("guidance"),
-                objection=req.get("objection"), host=me)
+                objection=req.get("objection"), host=me,
+                failures=int(req.get("failures") or 0) + 1)
             marked.append(n)
     return marked
 
@@ -389,7 +390,9 @@ def next_approved() -> int | None:
 # PRs whose auto-review last ended as a machine failure (a crashed or timed-out
 # reviewer, a git error), by the monotonic time it happened. Held in memory so a
 # restart — a recovered machine — retries immediately, while a live worker waits
-# TRANSIENT_RETRY_SECONDS between attempts instead of spinning on one PR.
+# TRANSIENT_RETRY_SECONDS between attempts instead of spinning on one PR. The
+# request's `result.review_failures` counts them; at MAX_ATTEMPTS the resolve
+# waits for an operator.
 _review_backoff: dict[int, float] = {}
 
 
@@ -401,7 +404,8 @@ def next_reviewable() -> int | None:
     being judged (a record naming no host keeps its worktree on an unknown
     machine, and judging it here could only cancel work another can still
     push); only ones no auto-review has stamped — a stamped verdict stands
-    until the resolve is re-authored (`_review_stands`); and none resting in
+    until the resolve is re-authored (`_review_stands`); none whose review
+    failed as a machine MAX_ATTEMPTS times; and none resting in
     _review_backoff."""
     if "resolve" not in settings.fix_autopush():
         return None
@@ -415,6 +419,8 @@ def next_reviewable() -> int | None:
         if req.get("host") != me:
             continue
         if _review_stands((req.get("result") or {}).get("auto_review")):
+            continue
+        if int((req.get("result") or {}).get("review_failures") or 0) >= MAX_ATTEMPTS:
             continue
         rested_at = _review_backoff.get(n)
         if rested_at is not None and (time.monotonic() - rested_at
@@ -630,14 +636,20 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
         lane_health.note_failure("fix", kind=kind, reason=detail or "", pr=n)
 
 
+# Failure kinds that ran nothing for the PR, so they do not count toward
+# HUNT_MAX_FAILURES.
+_NOTHING_RAN_KINDS = (capacity.PAUSED_KIND, "agent-unavailable")
+
+
 def _fail(n: int, req: dict, message: str, result: dict | None = None, *,
           kind: str = "run-failed") -> None:
+    failures = int(req.get("failures") or 0) + (kind not in _NOTHING_RAN_KINDS)
     data.store().edit_pr(n).record_fix_request(
         "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         error=message[-TAIL_CHARS:], result=result, source=req.get("source"),
         guidance=req.get("guidance"), objection=req.get("objection"), host=settings.worker_id(),
-        head_sha=req.get("against_head_sha"))
+        failures=failures or None, head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "failed", message[-TAIL_CHARS:], kind=kind)
 
@@ -1641,7 +1653,8 @@ def review_parked_resolve(n: int) -> None:
     crashed or timed-out reviewer with no judged rejection beside it, a git or
     evidence error, a related-tests sandbox that errored instead of running —
     restores the request unstamped and rests the PR in _review_backoff, so a
-    live worker retries later and a restarted one immediately."""
+    live worker retries later and a restarted one immediately, up to
+    MAX_ATTEMPTS times."""
     rec = data.store().load_pr(n)
     if rec is None:
         return
@@ -1671,9 +1684,11 @@ def review_parked_resolve(n: int) -> None:
 
     def restore(reason: str) -> None:
         _review_backoff[n] = time.monotonic()
+        result = dict(claimed.get("result") or {})
+        result["review_failures"] = int(result.get("review_failures") or 0) + 1
         data.store().edit_pr(n).record_fix_request(
             "awaiting-review", "resolve", queued_at=claimed.get("queued_at"),
-            started_at=req.get("started_at"), result=claimed.get("result"),
+            started_at=req.get("started_at"), result=result,
             source=claimed.get("source"), host=settings.worker_id(),
             base_sha=claimed.get("base_sha"), head_sha=head)
         data.refresh()
@@ -2153,8 +2168,9 @@ _VERDICT_ENDINGS = ("pushed", "refused", "cancelled")
 # answer, a worker restart mid-run, an agent that never finished, a sandbox
 # that could not run, a resubmit that crashed. The hunter may try that head
 # again once the failure is this old, so a machine that recovers picks the PR
-# back up on its own.
+# back up on its own, until the head has failed HUNT_MAX_FAILURES times.
 FAILED_RETRY_COOLDOWN_SECONDS = 3600
+HUNT_MAX_FAILURES = 3
 
 
 def _cooled_down(finished_at: str | None) -> bool:
@@ -2169,7 +2185,8 @@ def _hunt_attempted(pr: Pr, action: str) -> bool:
     A verdict ending rests it until the author pushes — a refused rebase
     re-run every sweep would pin the hunter to the same few conflicted PRs. A
     failed ending rests it for FAILED_RETRY_COOLDOWN_SECONDS only: it says
-    nothing about the code, so the PR is not rested on it. The stamp a moved
+    nothing about the code, so the PR is not rested on it, until the head has
+    failed HUNT_MAX_FAILURES times. The stamp a moved
     head no longer matches re-arms the PR either way. A hunted rebase ends
     under the action it turned into — `resolve` when it paused on conflicts,
     `update` when its history holds merge commits — so either ending rests
@@ -2187,7 +2204,8 @@ def _hunt_attempted(pr: Pr, action: str) -> bool:
     if status in _VERDICT_ENDINGS:
         return True
     if status == "failed":
-        return not _cooled_down(req.get("finished_at"))
+        return (int(req.get("failures") or 0) >= HUNT_MAX_FAILURES
+                or not _cooled_down(req.get("finished_at")))
     return False
 
 

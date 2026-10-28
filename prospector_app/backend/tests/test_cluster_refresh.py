@@ -53,6 +53,14 @@ def test_spent_today_counts_only_the_lane_s_rows_from_today():
     assert cluster_refresh.spent_today(runs, TODAY) == (50, 7)
 
 
+def test_spent_today_charges_the_prs_a_failed_assign_left_unplaced():
+    # An assign agent that keeps failing re-offers its PRs every pass; the
+    # budget is what ends that.
+    unplaced = _run("cluster:assign", 40)
+    unplaced.raw["stats"]["unplaced"] = 12
+    assert cluster_refresh.spent_today([unplaced], TODAY) == (12, 0)
+
+
 def test_has_work_reads_summaries_clusters_and_analysis(store):
     _pr(store, 1, clustered=True)
     data.refresh()

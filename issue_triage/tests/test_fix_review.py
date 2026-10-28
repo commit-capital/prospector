@@ -615,6 +615,26 @@ def test_a_send_back_that_does_not_reach_the_pull_request_leaves_it_as_it_was(
     assert fix_review.fix_status(issue)[0] == "review"
 
 
+def test_a_follow_up_revision_no_token_could_push_counts_as_a_fault(store, proposed,
+                                                                    monkeypatch):
+    from issue_triage import followup
+    from prospector_app.backend import executor
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "head_sha": "h" * 40})
+    monkeypatch.setattr(settings, "issue_fix_followup", lambda: "live")
+    monkeypatch.setattr(fix_review_runner, "revise", _revised(proposed))
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr(executor, "update_issue_fix_proposal", lambda n, pr, **kw: {
+        "status": "dry-run", "forced": True, "detail": "no bot token"})
+    for _ in range(followup.MAX_REVISION_FAULTS):
+        ok, why = fix_review.queue(store, 7, "send-back", by="followup", source="followup",
+                                   guidance="handle the empty case")
+        assert ok, why
+        fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
+    fu = store.load_issue(7).fix_followup
+    assert fu["revision_faults"] == followup.MAX_REVISION_FAULTS
+    assert followup._spent(fu)
+
+
 def test_a_failure_ends_the_request_failed_with_the_reason(store, monkeypatch):
     def boom(s, n, **kw):
         raise fix_review_runner.RequestFailed("the base this attempt was proven on is gone")

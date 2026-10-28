@@ -218,12 +218,29 @@ def judge(issue: Issue, clone: Path, *, base_sha: str, replies: Sequence[Reply] 
     return out
 
 
+# Failed triages of one report after which it is skipped until it changes.
+MAX_TRIAGE_FAILS = 3
+
+
+def failed_triage(issue: Issue, error: str) -> dict:
+    """The `fix_triage` a failed judgment leaves: a skip counting the failures
+    at the report's current content, which `current` reads as stale until
+    MAX_TRIAGE_FAILS."""
+    tri = issue.fix_triage or {}
+    prior = (int(tri.get("fails") or 0)
+             if issue_freshness.is_current(issue, "fix_triage") else 0)
+    return {"verdict": "skip", "fails": prior + 1, "asks": int(tri.get("asks") or 0),
+            "reason": f"the fixability triage failed: {error}"[:500]}
+
+
 def current(issue: Issue) -> dict | None:
     """The issue's triage while it is current, else None. A skip for another
     author's pull request reads as stale, so the issue is judged on its own, and
-    so does a `go` judged under an earlier report bar."""
+    so does a `go` judged under an earlier report bar and a failed triage with
+    tries left."""
     tri = issue.fix_triage
     if (tri is None or tri.get("rival")
+            or int(tri.get("fails") or MAX_TRIAGE_FAILS) < MAX_TRIAGE_FAILS
             or (tri.get("verdict") == "go" and tri.get("bar") != BAR)
             or not issue_freshness.is_current(issue, "fix_triage")):
         return None

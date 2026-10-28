@@ -45,6 +45,12 @@ def _keep_priority(prior: object, section: dict, live: frozenset[str]) -> None:
         section["priority"] = prior["priority"]
 
 
+def _keep_failures(prior: object, section: dict, head: str | None) -> None:
+    if (isinstance(prior, dict) and "failures" not in section and prior.get("failures")
+            and prior.get("against_head_sha") == head):
+        section["failures"] = prior["failures"]
+
+
 class Pr:
     """A store-bound, auto-saving wrapper around one PR record."""
 
@@ -519,6 +525,7 @@ class Pr:
                            base_sha: str | None = None,
                            guidance: str | None = None,
                            objection: dict | None = None,
+                           failures: int | None = None,
                            head_sha: str | None = None) -> None:
         """Record this PR's autofix queue state (the fix_request section): any app
         writes `queued`/`cancelled`/`approved`, the fix worker advances it through
@@ -536,8 +543,10 @@ class Pr:
         objection carries the machine judgment (a reviewer's rejection, a
         compile excerpt, a security finding) a continuation authors from; it
         is never human authorization. host records the machine that ran it.
-        None-valued fields are omitted, so the stored record carries only what
-        is set."""
+        failures counts the machine failures at this head and carries across
+        every request until the head moves, which is what lets the hunter stop
+        retrying a head that keeps failing. None-valued fields are omitted, so
+        the stored record carries only what is set."""
         section: dict = {"status": status, "action": action}
         for field, value in (("queued_at", queued_at), ("started_at", started_at),
                              ("finished_at", finished_at), ("step", step),
@@ -545,10 +554,12 @@ class Pr:
                              ("result", result), ("attempts", attempts),
                              ("source", source), ("host", host),
                              ("base_sha", base_sha), ("guidance", guidance),
-                             ("objection", objection)):
+                             ("objection", objection), ("failures", failures)):
             if value is not None:
                 section[field] = value
         _keep_priority(self.rec.get("fix_request"), section, _FIX_LIVE)
+        _keep_failures(self.rec.get("fix_request"), section,
+                       head_sha or self.rec["meta"]["head_sha"])
         _stamp(self.rec, "fix_request", section, head_sha)
         self._persist()
 

@@ -74,6 +74,8 @@ FAILED_RETRY_COOLDOWN = timedelta(hours=1)
 HUNT_MAX_ATTEMPTS = 3
 # How often the coordinator looks for requests a worker that is gone left running.
 RECLAIM_SECONDS = 300.0
+# Times an orphaned request is queued again before it ends `failed`.
+MAX_REQUEUES = 2
 # The request actions that run no agent: a `propose` pushes a proven patch and
 # opens its pull request.
 MECHANICAL_ACTIONS = frozenset({"propose"})
@@ -178,7 +180,9 @@ def recover_orphans(store: IssueStore) -> list[int]:
     heartbeat has been silent past worker_health.OFFLINE_AFTER_SECONDS (a host
     with no heartbeat is judged by its claim's age). A claim a live lane holds
     is its run, never touched from here, and a request that ended since it was
-    read is left as it ended. Returns the issues requeued."""
+    read is left as it ended. A request already requeued MAX_REQUEUES times
+    ends `failed` instead, so one that takes its process down with it is left
+    to its lane's retry cap. Returns the issues requeued."""
     me = settings.worker_id()
     registry = data.store().load_issue_fix_worker()
     requeued_issues: list[int] = []
@@ -194,7 +198,9 @@ def recover_orphans(store: IssueStore) -> list[int]:
             who = f"the issue-fix worker on {host} went offline"
         else:
             continue
-        note = f"requeued: {who} mid-{req.get('action')}"
+        requeues = int(req.get("requeues") or 0)
+        note = (f"requeued: {who} mid-{req.get('action')}" if requeues < MAX_REQUEUES
+                else f"failed: {who} mid-{req.get('action')} {requeues + 1} times")
         got = store.stamped_issue(n)
         if got is None:
             continue
@@ -202,10 +208,14 @@ def recover_orphans(store: IssueStore) -> list[int]:
         if current.fix_request != req:
             continue
         now = storekit.now()
-        requeued = {k: v for k, v in req.items() if k not in ("host", "started_at")}
-        current.stage_fix_request({**requeued, "status": "queued"})
+        if requeues < MAX_REQUEUES:
+            requeued = {k: v for k, v in req.items() if k not in ("host", "started_at")}
+            current.stage_fix_request({**requeued, "status": "queued", "requeues": requeues + 1})
+        else:
+            current.stage_fix_request({**req, "status": "failed", "finished_at": now,
+                                       "reason": note})
         current.stage_fix_thread({"at": now, "by": "worker", "kind": "note", "text": note})
-        if store.save_issue_if(current, stamp):
+        if store.save_issue_if(current, stamp) and requeues < MAX_REQUEUES:
             requeued_issues.append(n)
     return requeued_issues
 
@@ -276,7 +286,8 @@ def run_once(store: IssueStore) -> bool:
 
 def poll_replies(store: IssueStore) -> int:
     """Queue an `answer` for each question asked on GitHub that got one, or
-    whose default is due. Returns how many were queued."""
+    whose default is due, unless its `answer` has failed HUNT_MAX_ATTEMPTS
+    times. Returns how many were queued."""
     queued = 0
     for n, issue in store.fix_issues().items():
         run = issue.fix_run or {}
@@ -284,7 +295,11 @@ def poll_replies(store: IssueStore) -> int:
         asked = question.get("asked") or {}
         if not asked.get("at") or question.get("answered"):
             continue
-        if (issue.fix_request or {}).get("status") in fix_review.IN_FLIGHT:
+        req = issue.fix_request or {}
+        if req.get("status") in fix_review.IN_FLIGHT:
+            continue
+        if (req.get("action") == "answer" and req.get("status") == "failed"
+                and int(req.get("attempts") or 1) >= HUNT_MAX_ATTEMPTS):
             continue
         labels = [o["label"] for o in question.get("options") or []]
         got = dispute_question.read_answer(
@@ -338,7 +353,8 @@ def _huntable(issues: dict) -> list[tuple[bool, int, Issue]]:
 
 
 # Issues whose triage the agent failed this process, by when, so a run that
-# cannot finish is not retried every tick.
+# cannot finish is not retried every tick; `fixability.failed_triage` counts
+# them on the record.
 _triage_failed: dict[int, float] = {}
 TRIAGE_RETRY_SECONDS = 6 * 3600
 # Issues triaged before each hunt: above the daily intake over the day's hunts.
@@ -392,6 +408,8 @@ def _judge(store: IssueStore, issue: Issue, base: prove.PinnedBase, trigger: str
             raise
         _triage_failed[n] = time.monotonic()
         traceback.print_exc()
+        if not isinstance(e, capacity.CapacityPaused):
+            store.edit_issue(n).record_fix_triage(fixability.failed_triage(issue, str(e)))
         return False
     record["asks"] = int((issue.fix_triage or {}).get("asks") or 0)
     if record["verdict"] == "ask":

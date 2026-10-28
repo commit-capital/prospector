@@ -93,7 +93,7 @@ class _Outage:
 def _gather(futures: dict[Future[T], str], stage: Stage, wave: agent_wave.Wave,
             commit: Callable[[str, T], None]) -> None:
     """Commit each finished agent's answer on this thread, counting the ones
-    that raised and keeping the first capacity stop."""
+    that raised, agent or commit, and keeping the first capacity stop."""
     for fut in as_completed(futures):
         key = futures[fut]
         try:
@@ -109,7 +109,11 @@ def _gather(futures: dict[Future[T], str], stage: Stage, wave: agent_wave.Wave,
                 _say(stop.line)
             continue
         stage.started += 1
-        commit(key, answer)
+        try:
+            commit(key, answer)
+        except Exception as e:
+            stage.errored += 1
+            _say(f"    ! {key} could not be committed, continuing: {e}")
 
 
 def _record(store: Store, phase: str, started: str, stats: dict,
@@ -178,7 +182,8 @@ def _int(value: object) -> int | None:
 def restrict(payload: dict, unit: dict) -> dict:
     """The agent's assignment held to its unit: joins only of the unit's new
     PRs into the unit's existing clusters, new clusters only of the unit's new
-    PRs, standalone stamps only on them."""
+    PRs, and a standalone stamp on every one of them it placed nowhere else,
+    so no PR is offered again at this head."""
     mine = {int(p["pr"]) for p in unit["new_prs"]}
     targets = {int(c["id"]) for c in unit["existing_clusters"]}
     joins = []
@@ -196,7 +201,8 @@ def restrict(payload: dict, unit: dict) -> dict:
         if len(members) >= 2:
             new_clusters.append({"root_problem": str(nc.get("root_problem") or ""),
                                  "prs": members})
-    standalone = [p for p in (_int(x) for x in payload.get("standalone") or []) if p in mine]
+    placed = {j["pr"] for j in joins} | {p for nc in new_clusters for p in nc["prs"]}
+    standalone = sorted(mine - placed)
     return {"joins": joins, "new_clusters": new_clusters, "standalone": standalone}
 
 
@@ -205,7 +211,9 @@ def assign(store: Store, limit: int, concurrency: int, outage: _Outage,
     """Place up to `limit` summarized never-clustered PRs, one agent per
     subsystem chunk, in rounds: each round's units are built against the
     clusters the round before committed. A PR offered once is not offered again
-    this pass, whatever the agent made of it."""
+    this pass, whatever the agent made of it. The PRs of a unit whose agent or
+    commit failed are recorded `unplaced`, which the cluster lane's daily budget
+    counts."""
     stage = Stage()
     started = _now()
     offered: set[int] = set()
@@ -217,8 +225,13 @@ def assign(store: Store, limit: int, concurrency: int, outage: _Outage,
             return restrict(reply, unit)
         return outage.guard(ask)
 
+    placed = 0
+
     def commit(key: str, payload: dict) -> None:
+        nonlocal placed
         res = cluster_driver.commit_assignments(store, payload)
+        placed += (len(payload["joins"]) + len(payload["standalone"])
+                   + sum(len(nc["prs"]) for nc in payload["new_clusters"]))
         for k in ("joined", "created", "standalone"):
             totals[k] += res[k]
         totals["errors"] += len(res["errors"])
@@ -253,7 +266,8 @@ def assign(store: Store, limit: int, concurrency: int, outage: _Outage,
         cluster_driver.sync_bound_memberships(store)
         _say("  no summarized PR is waiting for a cluster.")
         return stage
-    _record(store, "cluster:assign", started, {**totals, "attempted": stage.attempted},
+    _record(store, "cluster:assign", started,
+            {**totals, "attempted": stage.attempted, "unplaced": stage.attempted - placed},
             trigger)
     return stage
 
