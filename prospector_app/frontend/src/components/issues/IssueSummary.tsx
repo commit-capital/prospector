@@ -332,7 +332,8 @@ function ChoosePR({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) {
 function suggestedAction(d: IssueDetail): string {
   if (d.fix_choice) return `Going with #${d.fix_choice.pr} as the fix`
     + (d.fix_choice.reason ? `: ${d.fix_choice.reason}` : "");
-  if (fixDecision(d)) return "Needs your review: approve as-is or request a full fix";
+  const decision = fixDecision(d);
+  if (decision) return `Needs your review: approve as-is or ${decision.partial ? "request a full fix" : "send it back"}`;
   if (d.fix_approved && d.fix_pr != null) return `Approved: #${d.fix_pr} is with the maintainers`;
   if (d.fix_pr == null && d.fix_held) return "Needs your review: open the fix's PR or send it back";
   const a = d.analysis;
