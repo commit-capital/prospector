@@ -328,6 +328,11 @@ def issue_fix_worker_enabled() -> bool:
     return os.environ.get("TRIAGE_ISSUE_FIX_WORKER", "") == "1"
 
 
+def feature_screen() -> bool:
+    """Whether an idle issue-fix worker screens open feature requests."""
+    return os.environ.get("TRIAGE_FEATURE_SCREEN", "") == "1"
+
+
 def cluster_worker_enabled() -> bool:
     """Whether this machine runs the clustering lane."""
     return os.environ.get("TRIAGE_CLUSTER_WORKER", "") == "1"

@@ -201,6 +201,7 @@ class RepoProfile:
     risk_tiers: RiskTiers = GENERIC_RISK_TIERS
     codeowners: CodeownersPolicy = CodeownersPolicy()
     trusted_authors: tuple[str, ...] = ()
+    feature_labels: tuple[str, ...] = ("enhancement",)
     priority_authors: tuple[str, ...] = ()
     automation_bots: tuple[str, ...] = ("dependabot[bot]",)
     dependency_manifests: tuple[str, ...] = GENERIC_DEPENDENCY_MANIFESTS
@@ -445,6 +446,7 @@ def _parse_artifact_rules(raw: object, source: str) -> tuple[ArtifactRule, ...]:
 # correspondence, so a key cannot pass validation without being built.
 _SECTIONS: tuple[str, ...] = (
     "subsystems", "risk_tiers", "codeowners", "trusted_authors",
+    "feature_labels",
     "priority_authors", "automation_bots", "dependency_manifests", "test_paths", "artifact_rules",
     "harness", "verify", "autofix", "authoring")
 
@@ -466,6 +468,8 @@ def parse_profile(payload: object, source: str) -> RepoProfile:
         if "codeowners" in doc else CodeownersPolicy(),
         trusted_authors=_parse_str_list(doc["trusted_authors"], source, "trusted_authors")
         if "trusted_authors" in doc else (),
+        feature_labels=_parse_str_list(doc["feature_labels"], source, "feature_labels")
+        if "feature_labels" in doc else ("enhancement",),
         priority_authors=_parse_str_list(doc["priority_authors"], source, "priority_authors")
         if "priority_authors" in doc else (),
         automation_bots=_parse_str_list(doc["automation_bots"], source, "automation_bots")
