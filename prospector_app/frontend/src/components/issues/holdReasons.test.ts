@@ -32,7 +32,7 @@ test("a boundary hold that names no crossing says why in the backend's words", (
 
 // #14149's rival #14150, run against our fix (vitest, with its colour codes).
 const VITEST = [
-  "\x1b[41m\x1b[1m FAIL \x1b[22m\x1b[49m \x1b[30m\x1b[46m @paperclipai/adapter-openclaw-gateway \x1b[49m\x1b[39m src/server/execute.test.ts\x1b[2m > \x1b[22mreadAssistantChunk\x1b[2m > \x1b[22mkeeps whitespace",
+  "\x1b[41m\x1b[1m FAIL \x1b[22m\x1b[49m \x1b[30m\x1b[46m @acme/gateway \x1b[49m\x1b[39m src/server/execute.test.ts\x1b[2m > \x1b[22mreadAssistantChunk\x1b[2m > \x1b[22mkeeps whitespace",
   "\x1b[31m\x1b[1mTypeError\x1b[22m: readAssistantChunk is not a function\x1b[39m",
   "    135|       readAssistantChunk({ delta }),",
   "\x1b[41m\x1b[1m FAIL \x1b[22m\x1b[49m src/server/execute.test.ts > readAssistantChunk > falls back to text",
