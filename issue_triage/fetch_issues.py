@@ -42,7 +42,7 @@ _ISSUE_FIELDS = f"""
         reactions {{ totalCount }}
         reactionGroups {{ content reactors {{ totalCount }} }}
         closedByPullRequestsReferences(first:10, includeClosedPrs:true) {{
-          nodes {{ number state isDraft }}
+          nodes {{ number state isDraft repository {{ nameWithOwner }} }}
         }}
         timelineItems(last:1, itemTypes:[RENAMED_TITLE_EVENT, REOPENED_EVENT]) {{
           nodes {{
@@ -112,12 +112,15 @@ def _thumbs_up(groups: list[dict] | None) -> int:
 
 
 def _closing_refs(node: dict) -> list[dict]:
-    """The PRs GitHub reports as closing this issue, one `{pr, state, draft}` each,
-    over the first ten the query asks for. States are lowercased to match the
-    store's PR vocabulary."""
+    """The PRs in the configured repo GitHub reports as closing this issue, one
+    `{pr, state, draft}` each, over the first ten the query asks for. GitHub also
+    reports PRs in forks that name the issue, whose numbers mean nothing here.
+    States are lowercased to match the store's PR vocabulary."""
     refs = (node.get("closedByPullRequestsReferences") or {}).get("nodes") or []
+    here = repo().lower()
     return [{"pr": ref["number"], "state": (ref.get("state") or "").lower(),
-             "draft": bool(ref.get("isDraft"))} for ref in refs]
+             "draft": bool(ref.get("isDraft"))} for ref in refs
+            if ((ref.get("repository") or {}).get("nameWithOwner") or "").lower() == here]
 
 
 def _automated(author: dict | None) -> bool:
