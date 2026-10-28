@@ -267,6 +267,23 @@ def test_a_revision_opens_on_the_earlier_attempt_with_the_guidance(solo, revise)
     assert "the reviews pass" in res.detail
 
 
+def test_a_revision_deletes_the_files_its_agent_names(solo, revise):
+    def drops_the_earlier_test(wt: str) -> dict:
+        return {**_writes_test_and_fix(wt), "deleted": ["src/bug.test.ts"], "tests": []}
+
+    solo["agent"] = drops_the_earlier_test
+    res = revise["run"]()
+    assert "src/bug.test.ts" not in res.result["patch"]
+    assert "+export const x = 2;" in res.result["patch"]
+
+
+@pytest.mark.parametrize("path", ["../outside.ts", "/etc/hosts", ".git/HEAD", "src/missing.ts"])
+def test_a_deletion_outside_the_clone_s_files_is_refused(solo, path):
+    solo["agent"] = lambda wt: {**_writes_test_and_fix(wt), "deleted": [path]}
+    res = solo["run"]()
+    assert res.ending == "fix-untrusted" and "cannot delete" in res.detail
+
+
 def test_a_revision_the_reviewer_judges_unsafe_ends_fix_rejected(solo, revise):
     revise["review"] = {"lens": "scope-safety", "verdict": "unsafe", "reason": "too wide",
                         "concerns": []}
