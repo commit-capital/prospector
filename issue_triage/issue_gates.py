@@ -16,7 +16,7 @@ review_comments reads every review into what the fixer must answer.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 from issue_triage.issue_freshness import is_current
@@ -342,13 +342,17 @@ class Coverage:
     """How much of its report a fix covers. `state` is "complete" when every
     defect the reviewer found in the report is addressed by the change or
     already handled on the base, "partial" when one is neither, and "unchecked"
-    when no review carries a usable account; only "complete" closes the issue."""
+    when no review carries a usable account. `unshown` holds the not-addressed
+    defects a claim test could not show remain (`claim_test`), which `state`
+    and `defects` leave out; only "complete" with none unshown closes the
+    issue."""
     state: Literal["complete", "partial", "unchecked"]
     defects: list[CoverageEntry]
+    unshown: list[CoverageEntry] = field(default_factory=list)
 
     @property
     def closes(self) -> bool:
-        return self.state == "complete"
+        return self.state == "complete" and not self.unshown
 
     def having(self, status: CoverageStatus) -> list[CoverageEntry]:
         return [d for d in self.defects if d["status"] == status]
@@ -370,11 +374,17 @@ def coverage_entries(raw: object) -> list[CoverageEntry] | None:
     return out
 
 
-def fix_coverage(reviews: list[dict] | None) -> Coverage:
+def _defect_key(defect: str) -> str:
+    return " ".join(defect.casefold().split())
+
+
+def fix_coverage(reviews: list[dict] | None, claims: list[dict] | None = None) -> Coverage:
     """The coverage the reviewers give the fix: each model's latest review that
     recorded an account (a revision's review comes after the one it answered),
     merged into one list of defects. Defects the models name in the same words
-    are one, with the status from _COVERAGE_RANK."""
+    are one, with the status from _COVERAGE_RANK. A not-addressed defect whose
+    latest claim in `claims` is unshown moves to `unshown`, unless that would
+    leave no defect in scope."""
     accounts: dict[object, list[CoverageEntry]] = {}
     for review in reviews or []:
         defects = coverage_entries(review.get("coverage"))
@@ -385,13 +395,20 @@ def fix_coverage(reviews: list[dict] | None) -> Coverage:
     merged: dict[str, CoverageEntry] = {}
     for defects in accounts.values():
         for d in defects:
-            key = " ".join(d["defect"].casefold().split())
+            key = _defect_key(d["defect"])
             held = merged.get(key)
             if held is None or _COVERAGE_RANK[d["status"]] < _COVERAGE_RANK[held["status"]]:
                 merged[key] = d
+    claimed = {_defect_key(str(c.get("defect") or "")): c.get("status") for c in claims or []}
     out = list(merged.values())
+    unshown = [d for d in out if d["status"] == "not-addressed"
+               and claimed.get(_defect_key(d["defect"])) == "unshown"]
+    if len(unshown) < len(out):
+        out = [d for d in out if d not in unshown]
+    else:
+        unshown = []
     partial = any(d["status"] == "not-addressed" for d in out)
-    return Coverage("partial" if partial else "complete", out)
+    return Coverage("partial" if partial else "complete", out, unshown)
 
 
 def revision_passed(round_: dict) -> bool | None:

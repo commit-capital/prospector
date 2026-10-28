@@ -322,7 +322,7 @@ def test_a_partial_fix_s_status_and_open_pull_request_say_partial(store):
     _run(store, reviews=PARTIAL)
     status, reason = fix_review.fix_status(store.load_issue(7))
     assert status == "review"
-    assert reason.startswith("partial fix: 1 of 3 reported defects addressed; not addressed: "
+    assert reason.startswith("partial fix: 1 of 3 reported defects handled; not addressed: "
                              "cancel after a restart")
     _run(store, reviews=PARTIAL, proposal={"pr": 15363})
     status, reason = fix_review.fix_status(store.load_issue(7))
@@ -333,11 +333,26 @@ def test_a_partial_fix_s_status_and_open_pull_request_say_partial(store):
     assert fix_review.partial(store.load_issue(7)) is None
 
 
-def test_a_defect_argued_already_handled_is_not_counted_as_addressed(store):
+def test_a_defect_argued_already_handled_counts_as_handled(store):
     already = {"defect": "cancel removes the row", "status": "already-fixed", "evidence": "e"}
     _run(store, reviews=[{**PARTIAL[0], "coverage": [*COVERAGE_14777, already]}])
     assert fix_review.fix_status(store.load_issue(7))[1].startswith(
-        "partial fix: 1 of 4 reported defects addressed, 1 already handled on the base;")
+        "partial fix: 2 of 4 reported defects handled, 1 of them already on the base;")
+
+
+def _claim(defect: str, status: str) -> dict:
+    return {"defect": defect, "fix": "f", "status": status, "why": "w", "paths": []}
+
+
+def test_a_defect_no_claim_test_shows_remains_is_named_apart_from_what_is_left(store):
+    cancel, stuck = (d["defect"] for d in COVERAGE_14777[1:])
+    _run(store, reviews=PARTIAL, claims=[_claim(cancel, "shown"), _claim(stuck.upper(), "unshown")])
+    assert fix_review.fix_status(store.load_issue(7))[1].startswith(
+        f"partial fix: 1 of 2 reported defects handled; not addressed: {cancel}; "
+        f"not shown to remain: {stuck}")
+    _run(store, reviews=PARTIAL, claims=[_claim(cancel, "unshown"), _claim(stuck, "unshown")])
+    assert fix_review.partial(store.load_issue(7)) is None
+    assert "only part" not in fix_review.status_line(store.load_issue(7))["text"]
 
 
 def test_the_distilled_run_keeps_the_reviewer_s_coverage():
@@ -372,7 +387,7 @@ def test_a_solve_that_fixes_part_of_the_report_says_partial_in_the_thread(store,
     fix_review.queue(store, 7, "solve", by="op")
     status, outcome = fix_review_runner.run_request(
         store, 7, store.claim_fix_request(7, host="studio"))
-    assert outcome.startswith("Solved: partial fix: 1 of 3 reported defects addressed")
+    assert outcome.startswith("Solved: partial fix: 1 of 3 reported defects handled")
     assert "Solved: fixed" not in outcome
     assert store.load_issue(7).fix_thread[-1]["text"] == outcome
 
