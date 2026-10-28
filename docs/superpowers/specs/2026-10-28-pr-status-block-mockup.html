@@ -1,0 +1,77 @@
+<h2>PR page: a status block at the top (v2)</h2>
+<p class="subtitle">One sentence that answers "why isn't this in Ready to merge, and will it get there on its own?", then the path through the stages. Three sample PRs, one per state.</p>
+
+<style>
+  .sb { border: 1px solid #d0d7de; border-radius: 8px; padding: 14px 16px; margin: 0 0 22px; background: #fff; }
+  .sb-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .pill { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; }
+  .moving { background: #ddf4ff; color: #0969da; }
+  .stalled { background: #ffebe9; color: #cf222e; }
+  .waiting { background: #fff8c5; color: #9a6700; }
+  .who { font-size: 12px; color: #57606a; }
+  .sentence { font-size: 15px; margin: 4px 0 10px; color: #1f2328; }
+  .path { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12px; margin-bottom: 10px; }
+  .st { padding: 3px 8px; border-radius: 4px; border: 1px solid #d0d7de; color: #57606a; background: #f6f8fa; }
+  .st.ok { color: #1a7f37; border-color: #aceebb; background: #dafbe1; }
+  .st.now { color: #0969da; border-color: #54aeff; background: #ddf4ff; font-weight: 600; }
+  .st.bad { color: #cf222e; border-color: #ff8182; background: #ffebe9; font-weight: 600; }
+  .arrow { color: #8c959f; }
+  .tried { font-size: 12px; color: #57606a; margin: 0 0 10px; padding-left: 14px; }
+  .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #d0d7de; background: #f6f8fa; }
+  .btn.primary { background: #1f883d; color: #fff; border-color: #1f883d; }
+  .label2 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #8c959f; margin: 0 0 4px; }
+</style>
+
+<p class="label2">1 · Moving on its own (our fix PR #17442)</p>
+<div class="sb">
+  <div class="sb-top"><span class="pill moving">Moving</span><span class="who">Prospector's move · nothing for you to do</span></div>
+  <div class="sentence">Next: <b>security review</b>, #12 in line, about 6 hours. After a GREEN, the test run.</div>
+  <div class="path">
+    <span class="st ok">✓ Threat scan</span><span class="arrow">→</span>
+    <span class="st ok">✓ CI</span><span class="arrow">→</span>
+    <span class="st ok">✓ Code review</span><span class="arrow">→</span>
+    <span class="st ok">✓ Design review</span><span class="arrow">→</span>
+    <span class="st now">⏳ Security review · #12</span><span class="arrow">→</span>
+    <span class="st">Test run</span><span class="arrow">→</span>
+    <span class="st">Ready to merge</span>
+  </div>
+  <div class="acts"><span class="btn">Run security review now</span></div>
+</div>
+
+<p class="label2">2 · Stalled, needs you (our fix PR #17534 for issue #14173)</p>
+<div class="sb">
+  <div class="sb-top"><span class="pill stalled">Stalled</span><span class="who">Your move · Prospector stopped trying</span></div>
+  <div class="sentence">Greptile still scores it <b>4/5</b> after <b>6 revisions</b>. Its last ask: merge three near-duplicate test files.</div>
+  <ul class="tried">
+    <li>Revisions 1–6 each deleted two of the files; Greptile still objected.</li>
+    <li>CI, design review and security review all pass.</li>
+  </ul>
+  <div class="path">
+    <span class="st ok">✓ Threat scan</span><span class="arrow">→</span>
+    <span class="st ok">✓ CI</span><span class="arrow">→</span>
+    <span class="st bad">✗ Code review · Greptile 4/5</span><span class="arrow">→</span>
+    <span class="st ok">✓ Design review</span><span class="arrow">→</span>
+    <span class="st ok">✓ Security review</span><span class="arrow">→</span>
+    <span class="st">Test run</span><span class="arrow">→</span>
+    <span class="st">Ready to merge</span>
+  </div>
+  <div class="acts"><span class="btn primary">🤖 Ask the agent why it's stalled</span><span class="btn">Re-attempt with my notes…</span><span class="btn">Accept Greptile 4/5 and continue</span><span class="btn">Abandon: close the PR</span></div>
+</div>
+
+<p class="label2">3 · Waiting on someone else (an outside contributor's PR)</p>
+<div class="sb">
+  <div class="sb-top"><span class="pill waiting">Waiting</span><span class="who">The author's move</span></div>
+  <div class="sentence">Waiting on <b>@contributor</b> to resolve merge conflicts. We asked <b>4 days ago</b>; it closes as stale in 26 days.</div>
+  <div class="path">
+    <span class="st ok">✓ Threat scan</span><span class="arrow">→</span>
+    <span class="st bad">✗ Merge conflicts</span><span class="arrow">→</span>
+    <span class="st">CI</span><span class="arrow">→</span>
+    <span class="st">Code review</span><span class="arrow">→</span>
+    <span class="st">Design review</span><span class="arrow">→</span>
+    <span class="st">Security review</span><span class="arrow">→</span>
+    <span class="st">Test run</span><span class="arrow">→</span>
+    <span class="st">Ready to merge</span>
+  </div>
+  <div class="acts"><span class="btn">Nudge the author</span><span class="btn">Close now</span></div>
+</div>
