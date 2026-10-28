@@ -223,6 +223,7 @@ def test_the_revision_budget_hands_it_back():
     step = _decide(_pr(views=[_greptile(reviewers.FAIL)]),
                    {**DESCRIBED, "revisions": followup.MAX_REVISIONS})
     assert step.kind == "hand-back" and "revisions spent" in step.reason
+    assert step.by == "Greptile"
 
 
 def test_pending_ci_or_a_stale_reviewer_waits():
@@ -494,6 +495,7 @@ def test_a_maintainer_revision_that_did_not_land_hands_the_pull_request_back(sto
     followup.poll(store, mode="live")
     fu = store.load_issue(7).fix_followup
     assert fu["state"] == "handed-back" and "did not land" in fu["judged"]["reason"]
+    assert fu["judged"]["by"] == followup.MAINTAINER
     assert "maintainer_pending" not in fu
 
 

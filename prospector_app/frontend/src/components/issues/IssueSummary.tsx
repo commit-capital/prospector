@@ -187,9 +187,35 @@ function IssueStory({ d }: { d: IssueDetail }) {
   );
 }
 
-/** "Prospector analysis:" — the triage verdict's chips, then its reasoning,
- *  marked as older when a fix attempt started after it. */
+/** A fix held up by Prospector itself rather than the code: a fault to fix in
+ *  Prospector, not one to retry. */
+function ProspectorFault({ d }: { d: IssueDetail }) {
+  const f = d.prospector_fault;
+  if (!f) return null;
+  return (
+    <div className="verdict-banner v-risk" role="alert">
+      <span className="vb-icon">🛠️</span>
+      <div>
+        <div className="vb-headline">{f.certain ? "Prospector broke" : "Likely a Prospector bug"}</div>
+        <div>{f.text}</div>
+        <div className="vb-detail">Fix this in Prospector; retrying the fix as it stands will likely fail the same way.</div>
+      </div>
+    </div>
+  );
+}
+
+/** What happened to our fix once there is one to tell; until then, "Prospector
+ *  analysis:" — the triage verdict's chips, then its reasoning, marked as older
+ *  when a fix attempt started after it. */
 function IssueAnalysis({ d }: { d: IssueDetail }) {
+  if (d.story) {
+    return (
+      <div className="issue-analysis">
+        <div className="analysis-label">What happened</div>
+        <div className="issue-rationale">{d.story.text}</div>
+      </div>
+    );
+  }
   const a = d.analysis;
   if (!a) return <div className="muted small">Not yet analyzed. Run Issue analysis from the Control tab.</div>;
   const started = d.fix_run?.started;
@@ -327,6 +353,7 @@ export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () =
   return (
     <section className="suggestion summary-panel issue-summary tone-yellow">
       <h3 className="summary-title">Summary</h3>
+      <ProspectorFault d={d} />
       <IssueStory d={d} />
       {d.body && (
         <Collapsible className="summary-description" summary={<>Full issue report</>}>

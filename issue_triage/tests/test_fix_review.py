@@ -73,6 +73,32 @@ def test_the_status_line_follows_the_proposal_through_review(store):
     assert _text(store) == "Prospector's fix #9 was merged."
 
 
+def test_a_hand_back_names_whose_review_the_fix_failed(store):
+    _run(store, proposal={"pr": 9, "url": "u"})
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "revisions": 2,
+        "judged": {"reason": "2 revisions spent; greptile 4/5", "by": "Greptile"}})
+    assert _text(store) == "Prospector's fix #9 failed the Greptile review, and 2 revisions didn't fix it."
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "revisions": 2,
+        "judged": {"reason": "2 revisions spent; greptile 4/5"}})
+    assert _text(store) == "Prospector's fix #9 failed the Greptile review, and 2 revisions didn't fix it."
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "revisions": 1,
+        "judged": {"reason": "2 revisions spent; CI still fails"}})
+    assert _text(store) == "Prospector's fix #9 fails CI, and 1 revision didn't fix it."
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back",
+        "judged": {"reason": "CI still fails after a re-run", "by": "CI", "outside": True}})
+    assert _text(store) == "Prospector's fix #9 fails CI for a reason outside its change."
+
+
+def test_a_failed_request_or_a_faulted_run_is_a_machine_fault(store):
+    _run(store)
+    assert fix_review.machine_fault(store.load_issue(7)) is None
+    _run(store, ending="sandbox", detail="no space left on device", fault=True)
+    assert fix_review.machine_fault(store.load_issue(7)) == "sandbox: no space left on device"
+    store.edit_issue(7).record_fix_request({"action": "send-back", "status": "failed",
+                                            "source": "followup", "reason": "the base is gone"})
+    assert fix_review.machine_fault(store.load_issue(7)) == "the base is gone"
+
+
 def test_an_issue_with_no_attempt_says_so(store):
     assert _text(store) == "Prospector hasn't tried to fix this yet."
 

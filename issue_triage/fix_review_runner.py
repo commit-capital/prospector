@@ -37,6 +37,7 @@ from issue_triage import (
     fix_lane,
     fix_review,
     intake_audit,
+    issue_display,
     issue_gates,
     propose,
     related_prs,
@@ -321,6 +322,7 @@ def run_request(store: IssueStore, n: int, req: dict, *,
         outcome, status = f"{action} failed: {e}", "failed"
     _finish(store, n, req, status, outcome)
     _note(store, n, outcome)
+    issue_display.write_story(store, n, trigger=action)
     return status, outcome
 
 
