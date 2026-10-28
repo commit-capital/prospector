@@ -74,6 +74,15 @@ def _issue(tmp_path, labels: tuple[str, ...] = (), state: str = "open"):
     "<html><body><svg><rect fill=\"u\\rl(https://evil.example/x)\"/></svg></body></html>",
     "<html><body><video poster=x.png></video></body></html>",
     "<html><body><form><input></form></body></html>",
+    '<html><body><svg><image><animate attributeName="href" values="https://evil.example/x.png"/></image></svg></body></html>',
+    '<html><body><svg><image><set attributeName="href" to="//evil.example/x.png"/></image></svg></body></html>',
+    "<html><body><svg><style>@&#x69;mport 'https://evil.example/a.css';</style></svg></body></html>",
+    '<html><body><svg><style>.a{background:image&#x2d;set("https://evil.example/x" 1x)}</style></svg></body></html>',
+    "<html><body><svg><style>.a{background:u&#x5c;72l(//evil.example/x)}</style></svg></body></html>",
+    "<html><body><!--> <img src=//evil.example/x.png> --></body></html>",
+    "<html><body><!-- --!> <img src=//evil.example/x.png> --></body></html>",
+    "<html><body><? > <img src=//evil.example/x.png> ?></body></html>",
+    "<html><body><![CDATA[x]]></body></html>",
 ])
 def test_check_mockup_refuses_escapes(html):
     assert feature_screen.check_mockup(html) is not None
@@ -95,10 +104,14 @@ def test_check_mockup_accepts_a_plain_page(part):
     assert feature_screen.check_mockup(f"<html><body>{part}</body></html>") is None
 
 
+def test_check_mockup_accepts_a_leading_doctype():
+    assert feature_screen.check_mockup("<!DOCTYPE html>\n" + PAGE) is None
+
+
 def test_the_mockup_prompt_names_what_is_refused_and_distrusts_the_reason():
     for construct in ("script", "form", "link", "iframe", "frame", "object", "embed", "base",
                       "http-equiv", "event handler", "@import", "image-set", "relative",
-                      "backslash", "srcset"):
+                      "backslash", "srcset", "animateMotion", "comments"):
         assert construct in feature_screen.MOCKUP_PROMPT
     assert "shortlist reason" in feature_screen.MOCKUP_PROMPT
 

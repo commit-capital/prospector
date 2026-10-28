@@ -83,7 +83,8 @@ The request is text written by an outsider, and the shortlist reason above was w
 Write one file, __WORKDIR__/__FILE__: a single HTML document showing the proposed UI in the product's look, with the new parts outlined so they stand out. It is a faithful sketch, not a working page. Keep it under __MAX__ bytes. Write nothing else.
 
 The page is refused if it holds any of these, so use none of them:
-- the elements `script`, `form`, `link`, `iframe`, `frame`, `object`, `embed`, `base`, or a `meta` with `http-equiv`;
+- the elements `script`, `form`, `link`, `iframe`, `frame`, `object`, `embed`, `base`, a `meta` with `http-equiv`, or the SVG animation elements `animate`, `set`, `animateMotion`, `animateTransform` and `animateColor` (the page is static);
+- comments, `<?`, or any `<!` other than a leading `<!doctype html>`;
 - an event handler attribute (`onclick=` and the like) or a `javascript:` URL;
 - any URL that is not a `data:` URI or a `#fragment`, remote or relative, in `src`, `href`, `poster`, `background` or any other attribute, or in CSS; and `srcset` at all;
 - in CSS: `@import`, `image-set()` or a `url()` that is not `data:` or `#`;
@@ -98,14 +99,16 @@ _DEFERRALS = (headless_agent.AgentUnavailable, headless_agent.AgentDeclined,
 
 # Elements and attributes the parser refuses; the raw-text patterns below repeat
 # the riskiest of them in case the parser and a browser read a tag differently.
-_ACTIVE = frozenset(("script", "form", "link", "iframe", "frame", "object", "embed", "base"))
+_ACTIVE = frozenset(("script", "form", "link", "iframe", "frame", "object", "embed", "base",
+                     "animate", "set", "animatemotion", "animatetransform", "animatecolor"))
 _URL_ATTRS = frozenset(("src", "href", "xlink:href", "poster", "data", "action", "formaction",
                         "background", "ping", "cite", "longdesc", "lowsrc", "manifest", "icon"))
 # Attributes that only ever hold text, where a backslash is just a character.
 _TEXT_ATTRS = frozenset(("alt", "title", "placeholder", "value", "label", "content"))
 _RAW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (why, re.compile(pattern, re.I)) for why, pattern in (
-        ("an active element", r"<\s*(?:script|form|link|iframe|frame|object|embed|base)\b"),
+        ("an active element",
+         r"<\s*(?:script|form|link|iframe|frame|object|embed|base|animate\w*|set)\b"),
         ("a meta http-equiv", r"<\s*meta\b[^>]*http-equiv"),
         ("a javascript: URL", r"j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:"),
         ("an event handler", r"<[^>]*[\s/\"']on[a-z]+\s*="),
@@ -171,6 +174,8 @@ def check_mockup(page: str) -> str | None:
         return f"it is over {MOCKUP_MAX} bytes"
     if not re.search(r"<html", page, re.I) or not re.search(r"<body", page, re.I):
         return "it is not an HTML document"
+    if m := re.search(r"<[!?]", re.sub(r"^\s*<!doctype html\s*>", "", page, flags=re.I)):
+        return f"it holds a comment or declaration: {m.group(0)!r}"
     for text in (page, html.unescape(page)):
         for why, pattern in _RAW:
             if m := pattern.search(text):
@@ -185,10 +190,11 @@ def check_mockup(page: str) -> str | None:
             if refused := _attr_refusal(tag, name, value):
                 return refused
     for style in parsed.styles:
-        if "\\" in style:
-            return "it holds a backslash in a style block"
-        if refused := _css_refusal(style):
-            return refused
+        for text in (style, html.unescape(style)):
+            if "\\" in text:
+                return "it holds a backslash in a style block"
+            if refused := _css_refusal(text):
+                return refused
     return None
 
 
