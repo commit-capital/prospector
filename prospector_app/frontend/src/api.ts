@@ -1,6 +1,7 @@
 // Typed client for the app backend.
 
 import { markReachable, isProxyDown } from "./health";
+import { HttpError } from "./httpError";
 import { withReadSlot } from "./readSlots";
 
 export type Safety = "GREEN" | "YELLOW" | "RED" | null;
@@ -1328,7 +1329,7 @@ async function getJson<T>(url: string): Promise<T> {
   }
   if (isProxyDown(r.status)) { markReachable(false); throw new Error(`${url} → ${r.status}`); }
   markReachable(true); // server answered, even if with an app-level error below
-  if (!r.ok) throw new Error(`${url} → ${r.status}`);
+  if (!r.ok) throw new HttpError(url, r.status);
   return r.json();
 }
 

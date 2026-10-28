@@ -29,6 +29,7 @@ import { FreshnessBar, FreshnessCallout } from "../components/Freshness";
 import { useRunState } from "../useRunState";
 import { useJobStream } from "../useJobStream";
 import { splitDiffSizes } from "../testPaths";
+import { isNotFound } from "../httpError";
 
 const LEVEL_ICON: Record<string, string> = { safe: "🛡️", caution: "⚠️", risk: "⛔", unknown: "❔" };
 const SEV_TONE: Record<string, "red" | "yellow" | "muted"> = { critical: "red", high: "red", medium: "yellow", low: "muted" };
@@ -49,16 +50,16 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const [openedCheck, setOpenedCheck] = useState<{ key: string; n: number } | null>(null);
   const [retriggering, setRetriggering] = useState<string | null>(null);
   const [clearingSecret, setClearingSecret] = useState(false);
-  const [err, setErr] = useState<string>();
+  const [err, setErr] = useState<unknown>();
   const { botLogin, dryRun, reportResult, activeReviewers, pushToast } = useExec();
-  const { meta } = useRepoMeta();
+  const { meta, prUrl } = useRepoMeta();
   // bump to re-fetch the per-PR action log after an action lands here.
   const [actLog, setActLog] = useState(0);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the detail panes before fetching the selected PR
     setPr(undefined); setDiff(null); setDiffLoading(true); setDiffMode("pr"); setErr(undefined);
-    api.pr(prNum).then(setPr).catch((e) => setErr(String(e)));
+    api.pr(prNum).then(setPr).catch((e: unknown) => setErr(e));
     api.diff(prNum).then((d) => { setDiff(d); setDiffLoading(false); }).catch(() => setDiffLoading(false));
   }, [prNum]);
 
@@ -259,7 +260,16 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     }
   };
 
-  if (err) return <div className="error">Failed: {err}</div>;
+  if (isNotFound(err)) {
+    const url = prUrl(prNum);
+    return (
+      <div className="callout">
+        #{prNum} isn't in Prospector's store yet; it appears after the next PR ingest.
+        {url && <> <a href={url} target="_blank" rel="noreferrer">Open on GitHub ↗</a></>}
+      </div>
+    );
+  }
+  if (err) return <div className="error">Failed: {String(err)}</div>;
   if (!pr) return <div className="muted pad">Loading #{prNum}…</div>;
 
   const findings = pr.security_detail?.findings ?? [];
