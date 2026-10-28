@@ -81,3 +81,53 @@ def test_refresh_with_force_rewrites_a_current_card(tmp_path, monkeypatch):
     idp.refresh(st, [5], trigger="operator")
     assert idp.refresh(st, [5], trigger="operator", force=True) == 1
     assert len(asked) == 2
+
+
+STORY = {"story": "Greptile asked to merge three near-copy test files into one. Prospector "
+                  "agreed twice to delete two of them, then never did.",
+         "prospector_fault": "The revision says it deletes files but nothing removes them."}
+
+
+def _with_thread(tmp_path) -> issue_store.IssueStore:
+    st = _seed(tmp_path)
+    st.edit_issue(5).append_fix_thread({"at": "2026-10-25T01:41:41Z", "by": "worker",
+                                        "kind": "note", "text": "opened #17534 for issue #5"})
+    return st
+
+
+def test_a_story_is_written_from_the_thread_and_kept_by_a_new_card(tmp_path, monkeypatch):
+    st = _with_thread(tmp_path)
+    monkeypatch.setattr(idp.display_pass, "ask", lambda prompt: STORY)
+    assert idp.write_story(st, 5, trigger="followup") is True
+    assert idp.current_story(st.load_issue(5))["text"].startswith("Greptile asked")
+    monkeypatch.setattr(idp.display_pass, "ask", lambda prompt: GOOD)
+    idp.refresh(st, [5], trigger="analyze")
+    assert idp.current_story(st.load_issue(5))["prospector_fault"] == STORY["prospector_fault"]
+
+
+def test_a_new_thread_turn_retires_the_story(tmp_path, monkeypatch):
+    st = _with_thread(tmp_path)
+    monkeypatch.setattr(idp.display_pass, "ask", lambda prompt: STORY)
+    idp.write_story(st, 5, trigger="followup")
+    st.edit_issue(5).append_fix_thread({"at": "2026-10-26T08:14:00Z", "by": "followup",
+                                        "kind": "note", "text": "Handed back to you."})
+    assert idp.current_story(st.load_issue(5)) is None
+
+
+def test_a_story_citing_an_unknown_number_or_running_long_is_not_stored(tmp_path, monkeypatch):
+    st = _with_thread(tmp_path)
+    src = idp.story_inputs(st.load_issue(5))
+    assert idp.check_story({**STORY, "story": "Merge #999 instead."}, src) == \
+        "it cited #999, which nothing it was given names"
+    assert idp.check_story({**STORY, "story": "word " * 100}, src) == "the story ran long"
+    assert idp.check_story({"story": "Fine.", "prospector_fault": ""}, src) == \
+        {"text": "Fine.", "prospector_fault": None}
+    monkeypatch.setattr(idp.display_pass, "ask", lambda prompt: {**STORY, "story": "Merge #999."})
+    assert idp.write_story(st, 5, trigger="followup") is False
+    assert idp.current_story(st.load_issue(5)) is None
+
+
+def test_no_story_without_a_thread_or_an_agent(tmp_path):
+    st = _seed(tmp_path)
+    assert idp.write_story(st, 5, trigger="followup") is False
+    assert idp.write_story(_with_thread(tmp_path / "t"), 5, trigger="followup") is False

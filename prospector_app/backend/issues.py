@@ -320,6 +320,13 @@ def get_issue(n: int) -> dict | None:
     row = _row(i, clusters, store_states, snapshot_loading=pr_states_loading)
     row["body"] = i.body
     row["display"] = issue_display.current(i)
+    story = issue_display.current_story(i)
+    broke = fix_review.machine_fault(i)
+    row["story"] = {"text": story["text"]} if story else None
+    row["prospector_fault"] = (
+        {"text": broke, "certain": True} if broke
+        else {"text": story["prospector_fault"], "certain": False}
+        if story and story.get("prospector_fault") else None)
     # The effective verdict, matching row["disposition"]: while the fix scan cites
     # a merged fixer it supplies the route, the rationale, and the gist.
     row["analysis"] = None if i.disposition is None else {
