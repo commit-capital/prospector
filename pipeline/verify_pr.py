@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, TypeVar, cast
 from pipeline import diff_cache
 from pipeline import gates
 from pipeline import headless_agent
+from pipeline import pr_outcomes
 from pipeline import progress
 from pipeline import settings
 from pipeline import verify_driver
@@ -775,6 +776,11 @@ def run(store: Store, pr: int, *, from_queue: bool = False) -> int:
         "phase": "verify:single", "pr": pr, "started": started, "finished": _now(),
         "stats": {"status": status, "error_kind": request.get("error_kind"),
                   "outcome": outcome}}
+    ended = pr_outcomes.verify(pr, after.head_sha if after is not None else None,
+                               status=status, error_kind=request.get("error_kind"),
+                               error=request.get("error"), outcome=outcome)
+    if ended is not None:
+        entry["outcome"] = ended
     if runnable and prior.get("source") in AUTO_REQUEST_SOURCES:
         entry["trigger"] = "autohunt"
     store.append_run(entry)

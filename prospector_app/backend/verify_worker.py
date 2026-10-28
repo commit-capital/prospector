@@ -42,6 +42,8 @@ from pipeline import design_review
 from pipeline import diff_cache
 from pipeline import gates
 from pipeline import headless_agent
+from pipeline import pr_outcomes
+from pipeline import reviewers
 from pipeline import security_review
 from pipeline import settings
 from pipeline import store
@@ -725,10 +727,12 @@ def _design_diff(st: Store, n: int, head: str) -> Path | None:
     return None
 
 
-def _book_design(st: Store, n: int, head: str, stats: dict, trigger: str) -> None:
+def _book_design(st: Store, n: int, head: str, stats: dict, trigger: str, stage: str,
+                 words: str = "") -> None:
     stamp = _now()
     st.append_run({"phase": design_review.PHASE, "pr": n, "started": stamp, "finished": stamp,
-                   "trigger": trigger, "stats": {"head_sha": head, **stats}})
+                   "trigger": trigger, "stats": {"head_sha": head, **stats},
+                   "outcome": pr_outcomes.design(n, head, stage, words)})
 
 
 def run_design(n: int, *, trigger: str = "autohunt", force: bool = False) -> bool | None:
@@ -761,7 +765,8 @@ def run_design(n: int, *, trigger: str = "autohunt", force: bool = False) -> boo
         diff = _design_diff(st, n, head)
         if diff is None:
             design_failed.add(n, "GitHub returned no diff for this head")
-            _book_design(st, n, head, {"error": "GitHub returned no diff for this head"}, trigger)
+            _book_design(st, n, head, {"error": "GitHub returned no diff for this head"}, trigger,
+                         "no-diff", "GitHub returned no diff for this head")
             return None
         measured = (coverage.measure(base[1], base_sha=base[0], tier=base[2], pr=n,
                                      head_sha=head)
@@ -778,12 +783,18 @@ def run_design(n: int, *, trigger: str = "autohunt", force: bool = False) -> boo
             counts[f["severity"]] = counts.get(f["severity"], 0) + 1
             if v := (f.get("verification") or {}).get("verdict"):
                 verdicts[v] = verdicts.get(v, 0) + 1
+        faulted = measured is not None and measured["status"] == coverage.FAULT
+        blocking = reviewers.design_standing(entry)
+        if faulted:
+            stage, words = "coverage", (measured or {}).get("reason") or ""
+        else:
+            stage = "blocking" if blocking else "reviewed"
+            words = "; ".join(str(f.get("title") or "") for f in blocking)
         _book_design(st, n, head, {"findings": counts, "verification": verdicts, "saved": saved,
-                                   "coverage": coverage.summary(measured)}, trigger)
+                                   "coverage": coverage.summary(measured)}, trigger, stage, words)
         design_failed.discard(n)
-        if measured is not None and measured["status"] == coverage.FAULT:
-            lane_health.note_failure("design", kind="coverage",
-                                     reason=measured["reason"] or "", pr=n)
+        if faulted:
+            lane_health.note_failure("design", kind="coverage", reason=words, pr=n)
         else:
             lane_health.note_success("design")
         if unattended:
@@ -791,15 +802,16 @@ def run_design(n: int, *, trigger: str = "autohunt", force: bool = False) -> boo
         return True
     except headless_agent.AgentUnavailable as e:
         lane_health.trip_agent_lanes(str(e))
+        _book_design(st, n, head, {"error": str(e)[:300]}, trigger, "agent", str(e))
         return False
     except (headless_agent.AgentDeclined, headless_agent.AgentTransient) as e:
         design_failed.add(n, str(e)[:300])
-        _book_design(st, n, head, {"error": str(e)[:300]}, trigger)
+        _book_design(st, n, head, {"error": str(e)[:300]}, trigger, "agent", str(e))
         return False
     except Exception as e:
         reason = str(e) if isinstance(e, design_review.DesignReviewFailed) else repr(e)
         design_failed.add(n, reason[:300])
-        _book_design(st, n, head, {"error": reason[:300]}, trigger)
+        _book_design(st, n, head, {"error": reason[:300]}, trigger, "error", reason)
         lane_health.note_failure("design", kind="design-run", reason=reason, pr=n)
         return False
     finally:

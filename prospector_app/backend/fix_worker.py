@@ -53,7 +53,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
 from pipeline import (author_fix, capacity, ci_signal, compile_preflight, describe_pr, diffpaths, freshness,
-                      gates, gh, headless_agent, objections, profile, resolve_conflicts,
+                      gates, gh, headless_agent, objections, pr_outcomes, profile, resolve_conflicts,
                       resolve_evidence, review_fix, review_policy, review_resolve,
                       reviewers, risktier, settings, storekit, verify_driver)
 from pipeline.storekit import now as _now
@@ -648,6 +648,10 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
         entry["stats"]["objection"] = signature
     if status == "failed":
         entry["stats"]["kind"] = kind
+    ended = pr_outcomes.autofix(n, req.get("against_head_sha"), action=req.get("action", "fix"),
+                                status=status, detail=detail, kind=kind, judged=judged)
+    if ended is not None:
+        entry["outcome"] = ended
     try:
         data.store().append_run(entry)
     except Exception:

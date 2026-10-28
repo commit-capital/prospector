@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, cast
 from pipeline import agent_wave
 from pipeline import diff_cache
 from pipeline import headless_agent
+from pipeline import pr_outcomes
 from pipeline import progress
 from pipeline import reviewers
 from pipeline import security_driver
@@ -309,6 +310,16 @@ def review_pr(pr: int, title: str, head: str,
     return item, lenses_ok
 
 
+def _book(store: Store, pr: int, head: str, started: str, trigger: str | None, stage: str,
+          words: str = "", stats: dict | None = None) -> None:
+    entry: dict = {"phase": "security:review-one", "pr": pr, "started": started,
+                   "finished": _now(), "stats": stats or {},
+                   "outcome": pr_outcomes.security(pr, head, stage, words)}
+    if trigger is not None:
+        entry["trigger"] = trigger
+    store.append_run(entry)
+
+
 def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
     """On-demand review of a single PR. Unlike the wave, this is NOT gated on
     mergeability — you can security-review any PR (e.g. to vet a close-fixed /
@@ -334,9 +345,11 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
                          bot_evidence=reviewers.evidence(rec.reviews, rec.head_sha),
                          subject=verdict_log.Subject("pr", pr))
     if reviewed is None:
+        _book(store, pr, head, started, trigger, "no-diff", "the diff could not be fetched")
         return 1
     if _outages:
         _say(f"✗ the agent CLI could not run on this machine: {_outages[-1]}")
+        _book(store, pr, head, started, trigger, "agent", str(_outages[-1]))
         return EXIT_AGENT_UNAVAILABLE
     item, lenses_ok = reviewed
 
@@ -347,6 +360,7 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
         _say("✗ commit failed:")
         for e in errs:
             _say(f"    ! {e}")
+        _book(store, pr, head, started, trigger, "error", "; ".join(map(str, errs)))
         return 1
     if held:
         cause = (f"incomplete lens coverage: {lenses_ok}/{len(LENSES)} ran"
@@ -354,6 +368,7 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
                  else "verify pass failed with flagged findings unverified")
         _say(f"⚠ verdict HELD ({cause}) — "
              f"no GREEN trusted; PR stays eligible and will re-run.")
+        _book(store, pr, head, started, trigger, "held", cause)
         return EXIT_TRANSIENT if _transients else 0
     verdict, findings = item.verdict, item.findings
     reds = sum(1 for f in findings if f["severity"] == "red")
@@ -367,13 +382,9 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
             _say(f"  ↳ RED flips PR #{pr} to {disp_after} and reopens its cluster for re-analysis.")
         else:
             _say(f"  ↳ RED recorded; PR #{pr} wasn't routed to merge, so its disposition is unchanged.")
-    entry: dict = {"phase": "security:review-one", "pr": pr,
-                   "started": started, "finished": _now(),
-                   "stats": {"verdict": verdict, "lenses_ok": lenses_ok,
-                             "findings": len(findings)}}
-    if trigger is not None:
-        entry["trigger"] = trigger
-    store.append_run(entry)
+    _book(store, pr, head, started, trigger, verdict.lower(),
+          f"{reds} red / {len(findings) - reds} yellow confirmed",
+          {"verdict": verdict, "lenses_ok": lenses_ok, "findings": len(findings)})
     return 0
 
 
