@@ -42,7 +42,7 @@ _VERIFY_QUEUE = ("queued", "running", "waiting-for-base")
 
 
 def _r(column: str, bucket: str, reason: str) -> dict:
-    return {"column": column, "bucket": bucket, "owner": OWNERS[bucket], "reason": reason[:300]}
+    return {"column": column, "bucket": bucket, "owner": OWNERS[bucket], "reason": reason[:800]}
 
 
 def bot_broke_ci(pr: Pr) -> bool:
@@ -93,8 +93,7 @@ def classify(pr: Pr) -> dict | None:
             return _r("act", "merge-ready", "every check is clear; merge it")
         return _merge_pick_gap(pr, gap)
     if req.get("status") == "awaiting-review":
-        return _r("act", "approve-parked",
-                  f"a parked {req.get('action')} awaits your approval")
+        return _r("act", "approve-parked", _parked_reason(req))
     if pr.disposition == "merge" and why == f"not clean: {gates.THREAT_SCAN_STALE}":
         return _r("auto", "waiting", "the threat scan has not judged this head yet; "
                                      "a worker scans new heads every ten minutes")
@@ -144,6 +143,25 @@ def classify(pr: Pr) -> dict | None:
                                           "continuation budget: " + what)
         return _r("auto", "hunt", f"the hunter's next pick: {what}")
     return _blocked(pr, action, why)
+
+
+def _parked_reason(req: dict) -> str:
+    """Why a parked change waits for you: the unattended bar that stopped it,
+    or the deployment not pushing that action unattended."""
+    action = str(req.get("action"))
+    base = settings.default_branch()
+    what = {"resolve": "the agent's conflict resolve", "fix": "the agent's fix",
+            "describe": "the rewritten description", "update": f"the update from {base}",
+            "rebase": f"the rebase onto {base}"}.get(action, f"the {action}")
+    result = req.get("result") or {}
+    bar = (result.get("auto_review") or {}).get("bar") or result.get("autopush_bar") or {}
+    if bar and not bar.get("ok"):
+        why = bar.get("reason") or "the unattended bar refused it"
+    elif action not in settings.fix_autopush():
+        why = f"unattended pushes are off for {action}"
+    else:
+        why = "the unattended bar has not judged it yet"
+    return f"{what} is parked for you: {why}"
 
 
 def _unclear_check(pr: Pr) -> dict | None:

@@ -1,6 +1,7 @@
 // Typed client for the app backend.
 
 import { markReachable, isProxyDown } from "./health";
+import { HttpError } from "./httpError";
 import { withReadSlot } from "./readSlots";
 
 export type Safety = "GREEN" | "YELLOW" | "RED" | null;
@@ -1328,7 +1329,7 @@ async function getJson<T>(url: string): Promise<T> {
   }
   if (isProxyDown(r.status)) { markReachable(false); throw new Error(`${url} → ${r.status}`); }
   markReachable(true); // server answered, even if with an app-level error below
-  if (!r.ok) throw new Error(`${url} → ${r.status}`);
+  if (!r.ok) throw new HttpError(url, r.status);
   return r.json();
 }
 
@@ -1490,6 +1491,27 @@ export interface IssueFixCoverage {
   status: "addressed" | "not-addressed" | "already-fixed" | "out-of-scope";
   evidence: string;
 }
+/** A defect as the issue page shows it, with the host's latest claim test of it. */
+export interface IssueFixDefect extends IssueFixCoverage {
+  claim?: Pick<IssueFixClaim, "status" | "why" | "ruling">;
+}
+/** The reviews' coverage merged into one account (issue_gates.fix_coverage).
+ *  `unshown` holds the defects left that no claim test could show remain. */
+export interface IssueFixCoverageView {
+  state: "complete" | "partial" | "unchecked";
+  defects: IssueFixDefect[];
+  unshown: IssueFixDefect[];
+  /** What a partial fix leaves, in one sentence (fix_review.partial_note). */
+  note: string | null;
+}
+/** One reason a fixed attempt waits for an operator (trust_boundary.holds):
+ *  a "rival" hold's open PRs, a "boundary" hold's crossings. */
+export interface IssueFixHold {
+  kind: "intake" | "rival" | "single" | "boundary";
+  text: string;
+  prs?: number[];
+  crossings?: IssueFixCrossing[];
+}
 /** One trust boundary a fix crosses (issue_triage/trust_boundary.py). */
 export interface IssueFixCrossing {
   kind: string;
@@ -1520,6 +1542,8 @@ export interface IssueFixRivalEntry {
   why: string;
   /** Cases the comparison judge found the fix misses. */
   missed?: string[];
+  /** The tail of its tests' run against our fix, with terminal colour codes. */
+  output?: string;
 }
 export interface IssueFixQuestion {
   question: string;
@@ -1739,7 +1763,8 @@ export interface IssueFilterSpec {
 }
 export type IssueDisposition = "not-planned" | "completed" | "fixed" | "dup";
 /** The issue pipeline's per-issue triage verdict (issue ANALYZE). */
-export type IssueTriageDisposition = "close-dup" | "close-fixed" | "request-repro" | "link-pr" | "needs-human";
+export type IssueTriageDisposition = "close-dup" | "close-fixed" | "request-changes" | "request-repro"
+  | "link-pr" | "needs-human";
 /** The stored analysis section: the verdict plus the agent's written reasons. */
 interface IssueAnalysis {
   disposition: IssueTriageDisposition;
@@ -1778,12 +1803,30 @@ export interface IssueDetail extends IssueRow {
   fix_followup?: IssueFixFollowup | null;
   /** The pull request the fix attempt is open as (fix_review.open_pr). */
   fix_pr?: number | null;
-  /** Why the fixed attempt waits for an operator to open its PR (trust_boundary.held). */
-  fix_held?: string | null;
+  /** Every reason the fixed attempt waits for an operator to open its PR,
+   *  most pressing first (trust_boundary.holds). */
+  fix_holds?: IssueFixHold[];
+  /** What the fixed attempt covers of its report, defect by defect (fix_review.coverage). */
+  fix_coverage?: IssueFixCoverageView | null;
   /** The PR going ahead as the fix in place of ours, while the choice stands. */
   fix_choice?: IssueFixChoice | null;
   /** The operator's approval of the open PR while it holds (fix_review.approval). */
   fix_approved?: IssueFixApproval | null;
+  /** The fixability triage against the report bar (issue_triage/fixability.py). */
+  fix_triage?: IssueFixTriage | null;
+}
+/** Whether an issue meets the report bar: `gaps` its author was asked to close,
+ *  `asked` what became of that comment, `current` false once a reply or edit
+ *  waits to be judged again. */
+export interface IssueFixTriage {
+  verdict: "go" | "ask" | "skip";
+  kind: string | null;
+  gaps: { kind: "several-asks" | "no-repro" | "unsettled"; ask: string }[] | null;
+  readings: string[] | null;
+  approach: string | null;
+  reason: string | null;
+  asked: string | null;
+  current: boolean;
 }
 /** An open fix PR approved as it stands and left to the maintainers. */
 export interface IssueFixApproval { by: string; at: string; partial: boolean }

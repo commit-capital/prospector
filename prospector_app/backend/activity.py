@@ -15,7 +15,7 @@ Every event carries a semantic top-level ``kind`` (#40) so aggregation is a
 
     merge | close | comment | review | line-comment | review-retrigger | pr-edit
       | resubmit | reopen | undo | handoff | reconcile | issue-close | issue-reopen
-      | issue-comment | issue-fix-rerun | …
+      | issue-comment | issue-fix-rerun | issue-fix | …
 
 PR kinds and issue kinds are disjoint, so ``summarize`` never mixes the two —
 an issue close is ``issue-close``, never a PR ``close`` or ``comment``, and an
@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import functools
 import getpass
+import logging
 import os
 import re
 import subprocess
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     from pipeline.model import Pr
 
 
+_logger = logging.getLogger(__name__)
 _TABLES_READY = False
 
 
@@ -73,7 +75,7 @@ def _engine() -> storekit.Engine:
 KINDS = ("merge", "close", "comment", "review", "line-comment", "review-retrigger", "pr-edit",
          "resubmit", "reopen", "undo", "handoff", "reconcile",
          "issue-close", "issue-reopen", "issue-comment", "alert-dismiss", "issue-propose",
-         "issue-question", "issue-fix-label", "issue-fix-comment", "issue-fix-rerun")
+         "issue-question", "issue-fix-label", "issue-fix-comment", "issue-fix-rerun", "issue-fix")
 
 # The kinds that post text on a PR as the bot — the dashboard's "comments" tally.
 COMMENT_KINDS = frozenset({"comment", "review", "line-comment", "review-retrigger"})
@@ -177,6 +179,11 @@ _REVIEW_VERB = {"APPROVE": "approved", "REQUEST-CHANGES": "requested changes",
 _RESUBMIT_VERB = {"REBASE": "rebased", "UPDATE_BRANCH": "merged the base",
                   "RESOLVE_CONFLICTS": "resolved conflicts"}
 _PROPOSE_VERB = {"PROPOSE": "opened a fix PR", "UPDATE": "updated the fix PR"}
+_FIX_VERB = {"FIX_SOLVE": "asked for a fix", "FIX_SEND_BACK": "sent the fix back",
+             "FIX_ANSWER": "answered the fix's question", "FIX_ASK_REPORTER": "asked the reporter",
+             "FIX_PROPOSE": "asked for the fix PR", "FIX_APPROVE": "approved the fix",
+             "FIX_CHOOSE": "went with another PR", "FIX_UNCHOOSE": "withdrew the chosen PR",
+             "FIX_CANCEL": "cancelled the fix request"}
 _VERB = {
     "merge": "merged", "close": "closed", "comment": "commented", "reopen": "reopened",
     "undo": "undid an action", "handoff": "handed off", "reconcile": "reconciled",
@@ -202,6 +209,8 @@ def verb(event: dict) -> str:
         return _RESUBMIT_VERB.get(action, "pushed a fix")
     if kind == "issue-propose":
         return _PROPOSE_VERB.get(action, "proposed a fix")
+    if kind == "issue-fix":
+        return _FIX_VERB.get(action, "directed the fix")
     return _VERB.get(kind, kind)
 
 
@@ -283,6 +292,17 @@ def record(kind: str, **fields) -> dict:
     if log is not None and log.engine is eng:
         log.recorded += 1
     return entry
+
+
+def record_issue_fix(n: int, action: str, detail: str, **fields: object) -> None:
+    """Log the operator's decision `action` on issue `n`'s fix (`fix_review`,
+    `fix_choice`). The decision is already saved and posts nothing upstream, so
+    its status is ``recorded`` and a failed append is logged, never raised."""
+    try:
+        record("issue-fix", issue=int(n), action=f"FIX_{action.upper().replace('-', '_')}",
+               status="recorded", dry_run=False, detail=detail, **fields)
+    except Exception:
+        _logger.exception("activity log write failed for issue #%s %s", n, action)
 
 
 def _instant(e: dict) -> datetime:

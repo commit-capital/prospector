@@ -246,7 +246,20 @@ def test_linked_prs_merged_explicit_leads(tmp_path, monkeypatch):
 def test_get_issue(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
     assert issues.get_issue(11)["canonical"] == 10
+    assert issues.get_issue(11)["fix_triage"] is None
     assert issues.get_issue(99999) is None
+
+
+def test_an_issue_below_the_report_bar_shows_what_its_author_was_asked(tmp_path, monkeypatch):
+    st = _seed(tmp_path, monkeypatch)
+    st.edit_issue(10).record_fix_triage({
+        "verdict": "ask", "kind": "defect", "asked": "posted", "reason": "two asks",
+        "gaps": [{"kind": "several-asks", "ask": "File the flag request on its own"}]})
+    row = issues.get_issue(10)
+    assert row["disposition"] == "request-changes"
+    tri = row["fix_triage"]
+    assert tri["gaps"][0]["kind"] == "several-asks" and tri["asked"] == "posted"
+    assert tri["current"] is True
 
 
 def test_get_issue_includes_default_close_comments(tmp_path, monkeypatch):

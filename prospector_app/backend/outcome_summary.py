@@ -139,11 +139,12 @@ def parked() -> list[Parked]:
         status = fix_review.fix_status(issue)
         if not status or status[0] != "review":
             continue
-        held = trust_boundary.held_kind(issue)
+        held = trust_boundary.holds(issue)
         handed = (issue.fix_followup or {}).get("state") == "handed-back"
-        kind = (held[0] if held else "handed-back" if handed
+        kind = (held[0]["kind"] if held else "handed-back" if handed
                 else "partial" if fix_review.partial(issue) else "ready")
-        out[kind].append({"issue": n, "title": issue.title, "why": held[1] if held else status[1]})
+        out[kind].append({"issue": n, "title": issue.title,
+                          "why": held[0]["text"] if held else status[1]})
     return sorted(({"kind": k, "count": len(v), "cases": v} for k, v in out.items()),
                   key=lambda p: -p["count"])
 

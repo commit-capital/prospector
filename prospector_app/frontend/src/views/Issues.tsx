@@ -44,6 +44,7 @@ const DISP_CHIP: Record<IssueTriageDisposition, { cls: string; hint: string }> =
   "link-pr": { cls: "chip-green", hint: "An open PR already addresses this issue — see its linked PRs" },
   "close-dup": { cls: "chip-purple", hint: "Duplicate of its cluster's canonical issue" },
   "close-fixed": { cls: "chip-blue", hint: "Already fixed by a merged PR — safe to close as fixed" },
+  "request-changes": { cls: "chip-yellow", hint: "Below the report bar — the reporter was asked to fix the report" },
   "request-repro": { cls: "chip-yellow", hint: "Real but under-specified — needs reporter info (see asks)" },
   "needs-human": { cls: "chip-muted", hint: "Ambiguous, a judgement call, or a feature request" },
 };
@@ -443,6 +444,7 @@ const DISP_FILTERS: { key: string; label: string }[] = [
   { key: "link-pr", label: "link-pr" },
   { key: "close-dup", label: "close-dup" },
   { key: "close-fixed", label: "close-fixed" },
+  { key: "request-changes", label: "request-changes" },
   { key: "request-repro", label: "request-repro" },
   { key: "needs-human", label: "needs-human" },
   { key: "none", label: "unanalyzed" },

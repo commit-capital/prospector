@@ -39,6 +39,7 @@ def status_md(store: IssueStore) -> str:
     confirmed = [c for c in cls if _confirmed(c)]
     dup_issues = sum(1 for i in issues.values() if i.disposition == "close-dup")
     repro_issues = sum(1 for i in issues.values() if i.disposition == "request-repro")
+    sent_back = sum(1 for i in issues.values() if i.disposition == "request-changes")
     lines = [
         f"# {settings.display_name()} Issue Triage — Status", "",
         "_Generated from the issue store. Suggested actions only; closes run through "
@@ -48,7 +49,8 @@ def status_md(store: IssueStore) -> str:
         f"| Clusters | {len(cls)} |",
         f"| Confirmed dup clusters | {len(confirmed)} |",
         f"| Issues routed close-dup | {dup_issues} |",
-        f"| Issues needing repro | {repro_issues} |", "",
+        f"| Issues needing repro | {repro_issues} |",
+        f"| Reports sent back to their authors | {sent_back} |", "",
         "## Pain leaderboard (top 25)", "",
         "| Rank | Cluster | Title | Canonical | Pain | Members | Status |",
         "|---|---|---|---|---|---|---|",

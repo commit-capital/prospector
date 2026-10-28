@@ -1346,6 +1346,7 @@ def issue_fix_request(n: int, payload: models.IssueFixBody):
                                answer=answer, dry_run=payload.dry_run)
     if not ok:
         raise HTTPException(409, why)
+    activity.record_issue_fix(n, payload.action, why)
     issue_data.refresh()
     return {"ok": True, "detail": why}
 
@@ -1360,6 +1361,7 @@ def issue_fix_approve(n: int, payload: models.IssueFixApproveBody):
                                  partial=payload.partial)
     if not ok:
         raise HTTPException(409, why)
+    activity.record_issue_fix(n, "approve", why, partial=payload.partial)
     issue_data.refresh()
     return {"ok": True, "detail": why}
 
@@ -1375,6 +1377,7 @@ def issue_fix_choose(n: int, payload: models.IssueFixChooseBody, dry_run: bool =
                                 by=activity.operator()["name"], reason=payload.reason)
     if not ok:
         raise HTTPException(409, why)
+    activity.record_issue_fix(n, "choose", why, chosen=payload.pr)
     issue_data.refresh()
     data.refresh()
     body, marker = fix_choice.comment(n, payload.pr)
@@ -1392,6 +1395,7 @@ def issue_fix_unchoose(n: int):
                               by=activity.operator()["name"])
     if not ok:
         raise HTTPException(409, why)
+    activity.record_issue_fix(n, "unchoose", why)
     issue_data.refresh()
     data.refresh()
     return {"ok": True, "detail": why}
@@ -1404,6 +1408,7 @@ def issue_fix_cancel(n: int):
     ok, why = fix_review.cancel(issue_data.store(), n, by=activity.operator()["name"])
     if not ok:
         raise HTTPException(409, why)
+    activity.record_issue_fix(n, "cancel", why)
     issue_data.refresh()
     return {"ok": True, "detail": why}
 

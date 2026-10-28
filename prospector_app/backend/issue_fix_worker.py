@@ -412,7 +412,8 @@ def fill(store: IssueStore, want: int) -> list[int]:
     fixability triage judged `go` at their current content, a maintainer's
     ahead of any other, then an easy fix, then by fixability, then the newest
     (`fixability.hunt_key`), never past the day's budget and only while the
-    lane's AI capacity is open. The triage's replies ride as notes. The issues
+    lane's AI capacity is open. The triage's replies and its read of the fix
+    (`approach`) ride as notes. The issues
     queued. Picks come from the app's issue snapshot; the day's count is read
     from the store, and each queue write re-checks the issue there."""
     from prospector_app.backend import issue_data
@@ -426,8 +427,10 @@ def fill(store: IssueStore, want: int) -> list[int]:
             break
         if _budget_spent(store) or not lane_health.capacity_open(LANE):
             break
+        approach = tri.get("approach") and f"The triage's read of the fix: {tri['approach']}"
+        notes = "\n\n".join(p for p in (tri.get("notes"), approach) if p) or None
         ok, _ = fix_review.queue(store, n, "solve", by="hunter", source="hunter",
-                                 guidance=tri.get("guidance"), notes=tri.get("notes"))
+                                 guidance=tri.get("guidance"), notes=notes)
         if ok:
             queued.append(n)
     return queued
