@@ -1862,3 +1862,8 @@ tr.row-done:hover > td { opacity: 1; }
   border-left: 3px solid var(--yellow); padding: 2px 0 4px; }
 .m3-conflict-head { font-weight: 600; font-size: 11.5px; padding: 2px 8px; }
 .m3-conflict-sub { color: var(--muted); font-size: 11px; padding: 2px 8px; }
+
+/* an issue fix's change beside the other PRs that may fix it — the PR Differ's
+   grid in its own scroll box, so headers stick inside the flyout */
+.fix-compare-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 8px; }
+.fix-compare-grid { max-height: 75vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }

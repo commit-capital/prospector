@@ -24,3 +24,11 @@ export function linkStateChip(p: IssuePR): { label: string; cls: string } | null
   if (p.state === "open" && p.draft) return { label: "draft", cls: "chip-muted" };
   return null;
 }
+
+// The PRs with evidence that they fix the issue, our own (`ours`) first — the
+// Summary's "PRs that may fix it" rows and the change comparison's toggles.
+export function referencedPrs(linked: IssuePR[], ours?: number | string | null): IssuePR[] {
+  const isOurs = (p: IssuePR) => ours != null && String(p.pr) === String(ours);
+  return linked.filter((p) => REFERENCED.has(p.how ?? ""))
+    .sort((a, b) => Number(isOurs(b)) - Number(isOurs(a)));
+}

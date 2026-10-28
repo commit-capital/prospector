@@ -3,11 +3,11 @@ import {
   api, type IssueDetail, type IssueFixBody, type IssueFixBoundary, type IssueFixCandidate, type IssueFixCoverage,
   type IssueFixFollowup, type IssueFixIntake, type IssueFixRound,
   type IssueFixQuestion, type IssueFixReview,
-  type IssueFixRun, type IssueFixStatus, type IssueFixThreadEntry,
+  type IssueFixRun, type IssueFixStatus, type IssueFixThreadEntry, type IssuePR,
 } from "../api";
 import { useExec } from "../ExecContext";
 import { useRepoMeta } from "../RepoMetaContext";
-import { DiffView } from "./DiffView";
+import { FixChangeCompare } from "./issues/FixChangeCompare";
 import { fixDecision } from "./issues/fixDecision";
 
 // How often the panel re-reads the issue while its request is queued or running.
@@ -72,7 +72,7 @@ export function IssueFixPanel({ d, onChanged }: { d: IssueDetail; onChanged: () 
     <div className="issue-fix">
       <FixBanner d={d} onChanged={onChanged} />
       <FixActions d={d} onChanged={onChanged} />
-      {run && <FixRunBody run={run} followup={followup} />}
+      {run && <FixRunBody run={run} followup={followup} linked={d.linked_prs} />}
       {(d.fix_thread?.length ?? 0) > 0 && <FixThread entries={d.fix_thread ?? []} />}
     </div>
   );
@@ -277,7 +277,9 @@ function followupLabel(f: IssueFixFollowup): string {
     : FOLLOWUP_LABEL.done;
 }
 
-function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFollowup | null }) {
+function FixRunBody({ run, followup, linked }: {
+  run: IssueFixRun; followup: IssueFixFollowup | null; linked: IssuePR[];
+}) {
   const { prUrl } = useRepoMeta();
   const proof = run.proof;
   return (
@@ -320,7 +322,7 @@ function FixRunBody({ run, followup }: { run: IssueFixRun; followup: IssueFixFol
       {run.patch && (
         <>
           <h4>The change{run.tests.length > 0 && <span className="muted small"> · tests: {run.tests.join(", ")}</span>}</h4>
-          <DiffView diffText={run.patch} />
+          <FixChangeCompare run={run} linked={linked} />
           {run.patch_truncated && <div className="muted small">… the change is longer than shown.</div>}
         </>
       )}
