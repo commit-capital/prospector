@@ -13,7 +13,7 @@ export function FixChangeCompare({ run, linked }: { run: IssueFixRun; linked: Is
   const { prUrl } = useRepoMeta();
   const ours = run.proposal?.pr ?? null;
   const others = useMemo(
-    () => referencedPrs(linked).filter((p) => ours == null || String(p.pr) !== String(ours)),
+    () => referencedPrs(linked, ours).filter((p) => ours == null || String(p.pr) !== String(ours)),
     [linked, ours]);
   const [showFix, setShowFix] = useState(true);
   const [picked, setPicked] = useState<Set<number>>(new Set());
@@ -49,8 +49,8 @@ export function FixChangeCompare({ run, linked }: { run: IssueFixRun; linked: Is
           ))}
         </div>
       </div>
-      {showFix && !prs.length
-        ? <DiffView diffText={run.patch ?? ""} />
+      {!showFix && !prs.length ? <div className="muted small">Turn on a change above to see it.</div>
+        : showFix && !prs.length ? <DiffView diffText={run.patch ?? ""} />
         : (
           <div className="fix-compare-grid">
             <DiffGrid prs={prs} patches={patches} rows={rows} onRemove={toggle} />

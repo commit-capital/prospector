@@ -27,6 +27,12 @@ function fileMap(diffText: string): Map<string, ParsedFile> {
   return files;
 }
 
+// A column's error: no diff at all, or one that parsed to no files.
+function diffError(diffText: string, files: Map<string, ParsedFile>, missing: string): string | null {
+  if (!diffText) return missing;
+  return files.size ? null : "couldn't parse this diff";
+}
+
 const MIN_COL = 300; // px per column before the grid scrolls horizontally
 
 // Group columns by what we're doing with each PR (#185): merge candidates on the
@@ -68,17 +74,18 @@ export function DiffGrid({ prs, patches = [], rows, onRemove, groupByDisposition
       started.current.add(pr);
       api.diff(pr).then((d) => {
         const files = fileMap(d.diff);
-        setDiffs((m) => new Map(m).set(pr, { pr, loading: false, error: d.diff ? null : (d.error ?? "no diff"), files }));
+        setDiffs((m) => new Map(m).set(pr, { pr, loading: false, error: diffError(d.diff, files, d.error ?? "no diff"), files }));
       }).catch((e) => {
         setDiffs((m) => new Map(m).set(pr, { pr, loading: false, error: String(e), files: new Map() }));
       });
     }
   }, [prs.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const patchCols = useMemo<Col[]>(() => patches.map((p) => ({
-    id: p.id, pr: null, label: p.label, title: p.title, files: fileMap(p.diffText),
-    loading: false, error: p.diffText ? null : "no diff",
-  })), [patches]);
+  const patchCols = useMemo<Col[]>(() => patches.map((p) => {
+    const files = fileMap(p.diffText);
+    return { id: p.id, pr: null, label: p.label, title: p.title, files, loading: false,
+             error: diffError(p.diffText, files, "no diff") };
+  }), [patches]);
 
   if (!prs.length && !patches.length) {
     return <div className="dg-empty muted">Select PRs to compare their diffs side by side.</div>;
