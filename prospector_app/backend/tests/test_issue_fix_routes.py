@@ -103,3 +103,17 @@ def test_going_with_a_pr_backs_it_and_has_the_bot_recommend_it(client, tmp_path,
     assert c.post("/api/issues/7/fix/choose", json={"pr": 99}).status_code == 409
     assert c.post("/api/issues/7/fix/unchoose").status_code == 200
     assert c.get("/api/issues/7").json()["fix_choice"] is None
+
+
+def test_fix_decisions_are_in_the_activity_log(client, temp_store):
+    c, store = client
+    c.post("/api/issues/7/fix", json={"action": "solve"})
+    c.post("/api/issues/7/fix/cancel")
+    c.post("/api/issues/7/fix/cancel")  # refused, so not logged
+    rows = activity.for_issue(7)
+    assert [(r["kind"], r["action"], r["status"], r["operator"]) for r in rows] == [
+        ("issue-fix", "FIX_CANCEL", "recorded", "Op"),
+        ("issue-fix", "FIX_SOLVE", "recorded", "Op"),
+    ]
+    assert activity.recent()[0]["issue"] == 7
+    assert activity.summarize(activity.all_events())["totals"]["issue-fix"] == 0

@@ -199,3 +199,10 @@ def test_slug_is_filesystem_safe_and_attributable():
     assert activity._slug("Alex Example") == "alex-example"
     assert activity._slug("a..b/@c") == "a-b-c"
     assert activity._slug("") == "unknown"
+
+
+def test_issue_fix_verb_follows_its_action():
+    for action, verb in [("FIX_SOLVE", "asked for a fix"), ("FIX_SEND_BACK", "sent the fix back"),
+                         ("FIX_CANCEL", "cancelled the fix request")]:
+        ev = activity.normalize({"kind": "issue-fix", "action": action, "issue": 1})
+        assert (ev["kind"], activity.verb(ev)) == ("issue-fix", verb)

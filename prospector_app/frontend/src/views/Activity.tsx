@@ -13,7 +13,7 @@ import { SkeletonRows } from "../components/SkeletonRows";
 const KIND_ICON: Record<string, string> = {
   merge: "🔀", close: "📮", comment: "💬", review: "📝", "line-comment": "💬", "review-retrigger": "🔁",
   "pr-edit": "✏️", resubmit: "🔄", reopen: "↩", undo: "⤺", handoff: "📤", reconcile: "♻️", "issue-close": "🎫",
-  "issue-fix-rerun": "🔁",
+  "issue-fix-rerun": "🔁", "issue-fix": "🛠️",
 };
 const KIND_TIP: Record<string, string> = {
   merge: "A PR was merged upstream as {bot}.",
@@ -25,6 +25,7 @@ const KIND_TIP: Record<string, string> = {
   "review-retrigger": "An automated reviewer was asked to re-review the PR's current head, as {bot}.",
   "pr-edit": "A PR's description was rewritten as {bot}.",
   "issue-fix-rerun": "The failed CI jobs on an issue-fix PR were re-run as {bot}.",
+  "issue-fix": "An operator directed an issue's fix — asked for one, sent it back, answered, approved, chose another PR, or cancelled. Recorded in Prospector; nothing posted upstream.",
   resubmit: "A contributor PR branch was pushed to (a fix, a rebase, a base merge, or a conflict resolution) through the guarded resubmit flow.",
   reopen: "A closed PR was reopened and the bot's closing comment removed.",
   undo: "A prior action was reversed.",
@@ -39,6 +40,7 @@ const STATUS_TIP: Record<string, string> = {
   blocked: "Refused by the safety gate — see Detail.",
   skipped: "Skipped — no change made.",
   started: "A live merge began — its outcome is a later event on the same PR.",
+  recorded: "A decision saved in Prospector — nothing was posted upstream.",
 };
 
 // Outcome of a live action, mirroring activity.py's DONE_STATUSES / FAILED_STATUSES
@@ -181,7 +183,7 @@ export default function Activity() {
     <div className="activity">
       <div className="detail-head">
         <h1>📋 Activity log</h1>
-        <p className="muted">Everything the team has done — posts, closes, reopens, and handoff emits. Combined audit trail; filter by teammate with “who”.</p>
+        <p className="muted">Everything the team has done on PRs and issues — posts, closes, reopens, fix decisions, and handoff emits. Combined audit trail; filter by teammate with “who”.</p>
       </div>
 
       <ActivitySummary onQuickFilter={handleQuickFilter} />
