@@ -378,7 +378,7 @@ def coverage_entries(raw: object) -> list[CoverageEntry] | None:
     return out
 
 
-def _defect_key(defect: str) -> str:
+def defect_key(defect: str) -> str:
     return " ".join(defect.casefold().split())
 
 
@@ -402,11 +402,11 @@ def fix_coverage(reviews: list[dict] | None, claims: list[dict] | None = None) -
     merged: dict[str, CoverageEntry] = {}
     for defects in accounts.values():
         for d in defects:
-            key = _defect_key(d["defect"])
+            key = defect_key(d["defect"])
             held = merged.get(key)
             if held is None or _COVERAGE_RANK[d["status"]] < _COVERAGE_RANK[held["status"]]:
                 merged[key] = d
-    ruled = {_defect_key(str(c.get("defect") or "")): c for c in claims or []}
+    ruled = {defect_key(str(c.get("defect") or "")): c for c in claims or []}
     for key, d in merged.items():
         claim = ruled.get(key)
         if (d["status"] == "not-addressed" and claim
@@ -416,7 +416,7 @@ def fix_coverage(reviews: list[dict] | None, claims: list[dict] | None = None) -
     claimed = {key: c.get("status") for key, c in ruled.items()}
     out = list(merged.values())
     unshown = [d for d in out if d["status"] == "not-addressed"
-               and claimed.get(_defect_key(d["defect"])) == "unshown"]
+               and claimed.get(defect_key(d["defect"])) == "unshown"]
     if len(unshown) < len(out):
         out = [d for d in out if d not in unshown]
     else:

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, type IssueDetail, type IssueFixFollowup, type IssueFixRivalEntry, type IssueFixTriage, type IssueFixRun, type IssuePR } from "../../api";
+import { api, type IssueDetail, type IssueFixFollowup, type IssueFixTriage, type IssueFixRun, type IssuePR } from "../../api";
 import { AnalyzeJobLink } from "../AnalyzeJobLink";
 import { Collapsible } from "../Collapsible";
 import { PRLink } from "../PRLink";
@@ -12,7 +12,9 @@ import { DispositionChip, ReproChip } from "../../views/Issues";
 import { EVIDENCE, linkStateChip, referencedPrs } from "./issueLinkChips";
 import { FixDecisionCards } from "./FixDecisionCards";
 import { fixDecision } from "./fixDecision";
-import { otherOpenPRs, rivalRows } from "./rivalComparison";
+import { otherOpenPRs } from "./rivalComparison";
+import { WhyHeld } from "./WhyHeld";
+import { holdReasons } from "./holdReasons";
 import { useExec } from "../../ExecContext";
 import { flashTo, issueSectionId } from "../pageAnchor";
 
@@ -279,42 +281,6 @@ function ReportBar({ d }: { d: IssueDetail }) {
   );
 }
 
-const RIVAL_CHIP: Record<IssueFixRivalEntry["verdict"], { tone: Tone; text: string }> = {
-  covered: { tone: "green", text: "ours covers it" },
-  "gap-closed": { tone: "green", text: "ours now covers it" },
-  gap: { tone: "red", text: "covers more than ours" },
-  "gap-open": { tone: "red", text: "covers more than ours" },
-  skipped: { tone: "muted", text: "not compared" },
-};
-
-/** Our fix against the other open PRs on the issue, in their tests' words
- *  (issue_triage/second_opinion.py). */
-function RivalComparison({ d }: { d: IssueDetail }) {
-  const rows = rivalRows(d);
-  if (!rows.length) return null;
-  return (
-    <div className="issue-analysis" id={issueSectionId("rivals")}>
-      <div className="analysis-label">Our fix vs. the other open PRs</div>
-      <ul style={{ margin: "0 0 0 18px" }}>
-        {rows.map(({ pr, entry }) => (
-          <li key={pr}>
-            <GitHubPRLink n={pr} />{entry?.author ? ` by ${entry.author}` : ""}{" "}
-            {entry ? (
-              <>
-                <span className={`chip sm chip-${RIVAL_CHIP[entry.verdict].tone}`}>{RIVAL_CHIP[entry.verdict].text}</span>{" "}
-                <span className="muted">{entry.why}</span>
-                {(entry.missed?.length ?? 0) > 0 && (
-                  <ul style={{ margin: "2px 0 0 18px" }}>{entry.missed?.map((m, i) => <li key={i}>{m}</li>)}</ul>
-                )}
-              </>
-            ) : <span className="muted">not compared: the fix hasn't been run against its tests</span>}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 /** Go with another author's open PR as the fix in place of ours, or take that
  *  back (issue_triage/fix_choice.py). The bot recommends the chosen PR on it. */
 function ChoosePR({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) {
@@ -374,7 +340,7 @@ function suggestedAction(d: IssueDetail): string {
   const decision = fixDecision(d);
   if (decision) return `Needs your review: approve as-is or ${decision.partial ? "request a full fix" : "send it back"}`;
   if (d.fix_approved && d.fix_pr != null) return `Approved: #${d.fix_pr} is with the maintainers`;
-  if (d.fix_pr == null && d.fix_held) return "Needs your review: open the fix's PR or send it back";
+  if (d.fix_pr == null && d.fix_holds?.length) return "Needs your review: open the fix's PR or send it back";
   const a = d.analysis;
   switch (a?.disposition) {
     case "close-dup": return `Close as a duplicate of #${a.canonical}`;
@@ -396,6 +362,7 @@ export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () =
       <h3 className="summary-title">Summary</h3>
       <ProspectorFault d={d} />
       <IssueStory d={d} />
+      <WhyHeld d={d} reasons={d.fix_choice ? [] : holdReasons(d)} />
       {d.body && (
         <Collapsible className="summary-description" summary={<>Full issue report</>}>
           <div className="markdown prbody-md" style={{ maxHeight: "none" }}>
@@ -409,10 +376,8 @@ export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () =
       </div>
       <IssueAnalysis d={d} />
       <ReportBar d={d} />
-      <RivalComparison d={d} />
       <div className="summary-action">
         <div className="sug-headline"><span className="analysis-label">Suggested action:</span> <b>{suggestedAction(d)}</b></div>
-        {d.fix_pr == null && d.fix_held && !d.fix_choice && <div className="muted small">Held: {d.fix_held}</div>}
         <ChoosePR d={d} onChanged={onChanged} />
         {decision ? (
           <>
