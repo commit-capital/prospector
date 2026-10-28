@@ -225,7 +225,7 @@ def _second_opinion(store: IssueStore, n: int, base: prove.PinnedBase, record: d
 
 def revise(store: IssueStore, n: int, *, comments: str,
            on_step: Callable[[str], None], trigger: str = "send-back",
-           notes: str | None = None) -> dict:
+           notes: str | None = None, advisory: frozenset[str] = frozenset()) -> dict:
     """One agent revises the last attempt's change under a maintainer's
     `comments` and anyone else's `notes`, proven on the attempt's base or, when
     this machine no longer holds it, the current pin. The revision keeps the
@@ -248,7 +248,7 @@ def revise(store: IssueStore, n: int, *, comments: str,
                                  "root_cause": res_prev.get("root_cause"),
                                  "review": review or None},
                         review=True,
-                        advisory=FOLLOWUP_ADVISORY if trigger == "followup" else frozenset())
+                        advisory=advisory)
     kept = {k: res_prev[k] for k in ("intake", "second_opinion") if res_prev.get(k) is not None}
     if (res_prev.get("agreement") or {}).get("single"):
         kept["agreement"] = {"single": True}
@@ -361,7 +361,8 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
                             live=settings.issue_fix_followup() == "live", on_step=on_step)
     if action == "send-back" and req.get("source") == "followup":
         return _revise_proposal(store, n, guidance or "", notes=notes, trigger="followup",
-                                live=settings.issue_fix_followup() == "live", on_step=on_step)
+                                live=settings.issue_fix_followup() == "live", on_step=on_step,
+                                own_round=True)
     if action == "send-back":
         issue = store.load_issue(n)
         pr = fix_review.open_pr(issue) if issue else None
@@ -394,7 +395,8 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
 
 def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, live: bool,
                      on_step: Callable[[str], None], notes: str | None = None,
-                     amend: Callable[[dict], bool] | None = None) -> str:
+                     amend: Callable[[dict], bool] | None = None,
+                     own_round: bool = False) -> str:
     """Revise the fix behind issue `n`'s open pull request under `guidance`
     and `notes` and, when the revision ends `fixed` and `amend` (given the
     revised record to complete) passes it, push it onto the same branch
@@ -402,9 +404,9 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
     new head. A revision that ends any other way, or does not reach the pull
     request, leaves the pull request, the run it shows, and the result on disk
     as they were; one that leaves the code as it was hands the pull request back
-    with the fixer's answers. The follow-up's own revision (`trigger`
-    "followup") is counted when it finishes (`followup.count_revision`), and the
-    design lens only comments on it (FOLLOWUP_ADVISORY). An operator's send-back (`trigger` "send-back") that ends
+    with the fixer's answers. The follow-up's own revision (`own_round`) is
+    counted when it finishes (`followup.count_revision`), and the design lens
+    only comments on it (FOLLOWUP_ADVISORY). An operator's send-back (`trigger` "send-back") that ends
     without a fix, or pushes one that still leaves part of the report
     (`fix_review.partial_note`), hands the pull request back to them; that hand-back
     is recorded in the store in a dry run too, like the follow-up's own. Everything
@@ -420,7 +422,8 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
     kept = result_file.read_text()
     try:
         record = revise(store, n, comments=guidance, notes=notes, on_step=on_step,
-                        trigger=trigger)
+                        trigger=trigger,
+                        advisory=FOLLOWUP_ADVISORY if own_round else frozenset())
     except BaseException:
         result_file.write_text(kept)
         raise
@@ -430,8 +433,9 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
                    f"#{pr} is unchanged")
         if trigger == "send-back":
             _hand_back(store, n, pr, outcome)
-        elif trigger == "followup":
-            _count_revision(store, n, pr, record, pushed=False)
+        elif own_round:
+            _count_revision(store, n, pr, fault=bool(record.get("fault"))
+                            or record.get("ending") in fix_review.FAULT_ENDINGS)
         return outcome
     if amend is not None and not amend(record):
         result_file.write_text(kept)
@@ -459,8 +463,8 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
     edit.record_fix_run(distilled)
     fu = fix_review.followup_for(edit.fix_followup, pr)
     if fu:
-        if trigger == "followup":
-            fu = followup.count_revision(fu, record, pushed=True)
+        if own_round:
+            fu = followup.count_revision(fu, fault=False)
         edit.record_fix_followup({**fu, "state": "watching",
                                   "reason": "revision pushed; following up the new head"})
     left = fix_review.partial_note(distilled) if trigger == "send-back" else None
@@ -470,12 +474,11 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
     return f"Revised #{pr}: {res.get('detail')}"
 
 
-def _count_revision(store: IssueStore, n: int, pr: int, record: dict, *,
-                    pushed: bool) -> None:
+def _count_revision(store: IssueStore, n: int, pr: int, *, fault: bool) -> None:
     edit = store.edit_issue(n)
     fu = fix_review.followup_for(edit.fix_followup, pr)
     if fu:
-        edit.record_fix_followup(followup.count_revision(fu, record, pushed=pushed))
+        edit.record_fix_followup(followup.count_revision(fu, fault=fault))
 
 
 def _hand_back(store: IssueStore, n: int, pr: int, reason: str, *,

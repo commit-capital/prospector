@@ -33,8 +33,8 @@ their reviews with words, their open inline comments, their comments).
   once per pull request; or an active reviewer's bar fails at this head; the
   request's notes quote what failed, as data for the fix agent to weigh. At most MAX_REVISIONS of its own per pull request,
   counted when one finishes (`count_revision`): one that ends on the
-  machine's condition counts against MAX_REVISION_FAULTS instead, and one cut
-  off mid-run counts nowhere. An operator's send-back, which goes onto the
+  machine's condition, or whose request failed or was cut off mid-run, counts
+  against MAX_REVISION_FAULTS instead. An operator's send-back, which goes onto the
   pull request the same way, is not counted.
 - `wait` — CI or a reviewer has not finished at this head.
 - `ready` — CI passes and every active reviewer's bar passes.
@@ -462,15 +462,14 @@ def _spent(fu: dict) -> str | None:
     return None
 
 
-def count_revision(fu: dict, record: dict | None, *, pushed: bool) -> dict:
-    """`fu` with the follow-up's own finished revision counted: one that was
-    pushed or that a check or reviewer stopped spends a revision; one that ended
-    on the machine's condition counts against MAX_REVISION_FAULTS. A
-    maintainer's revision has its own budget, counted when queued."""
+def count_revision(fu: dict, *, fault: bool) -> dict:
+    """`fu` with the follow-up's own finished revision counted: one that ended
+    on the machine's condition (`fault`) against MAX_REVISION_FAULTS, any other
+    against MAX_REVISIONS. A maintainer's revision has its own budget, counted
+    when queued."""
     if fu.get("maintainer_pending"):
         return fu
-    key = ("revision_faults" if not pushed and (record is None or record.get("fault"))
-           else "revisions")
+    key = "revision_faults" if fault else "revisions"
     return {**fu, key: int(fu.get(key) or 0) + 1}
 
 
@@ -558,6 +557,12 @@ def poll(store: IssueStore, *, mode: str | None = None,
         fresh = fresh_feedback(state, fu) if state.state == "open" else []
         asked = _route_feedback(store, n, int(pr), fresh, fu, live=mode == "live",
                                 may_route=may_route)
+        req = issue.fix_request or {}
+        if (req.get("source") == "followup" and req.get("status") == "failed"
+                and fu.get("failed_seen") != req.get("started_at")):
+            # A revision that broke down before it finished, a restart included.
+            fu["failed_seen"] = req.get("started_at")
+            fu["revision_faults"] = int(fu.get("revision_faults") or 0) + 1
         missed = None
         pending = fu.pop("maintainer_pending", None)
         if pending and pending.get("head_sha") == state.head_sha:

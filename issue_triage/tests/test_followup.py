@@ -2,7 +2,6 @@
 evidence a revision is handed, and a dry-run poll that writes nothing upstream."""
 from __future__ import annotations
 
-import contextlib
 import json
 
 import pytest
@@ -359,16 +358,20 @@ def test_a_follow_up_revision_is_counted_when_it_finishes(store, monkeypatch, ra
     assert int(fu.get(other) or 0) == (1 if other == "revisions" else 0)
 
 
-def test_a_follow_up_revision_that_crashes_spends_nothing(store, monkeypatch):
+def test_a_follow_up_revision_that_breaks_down_counts_once_as_a_fault(store, monkeypatch):
     def crashes(*a, **k):
         raise RuntimeError("the issue-fix worker restarted mid-send-back")
 
     monkeypatch.setattr(fix_review_runner, "revise", crashes)
-    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "revisions": 1})
-    with contextlib.suppress(RuntimeError):
-        _run_follow_up(store)
+    monkeypatch.setattr(followup, "read", lambda pr: _pr(views=[_greptile(reviewers.FAIL)]))
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "revisions": 1,
+                                             "described_head": HEAD})
+    _run_follow_up(store)
+    assert store.load_issue(7).fix_request["status"] == "failed"
+    followup.poll(store, mode="dry-run")
+    followup.poll(store, mode="dry-run")
     fu = store.load_issue(7).fix_followup
-    assert fu["revisions"] == 1 and "revision_faults" not in fu
+    assert fu["revisions"] == 1 and fu["revision_faults"] == 1
 
 
 def test_a_revision_that_leaves_the_code_alone_comes_back_with_the_fixer_s_answer(
