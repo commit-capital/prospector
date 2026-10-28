@@ -71,10 +71,21 @@ def test_normalize_gql_carries_assignees_edit_time_and_closing_references():
     node = {"number": 5, "title": "t", "state": "OPEN", "updatedAt": "u",
             "lastEditedAt": "e", "assignees": {"nodes": [{"login": "dev"}]},
             "closedByPullRequestsReferences": {"nodes": [
-                {"number": 9, "state": "OPEN", "isDraft": True}]}}
+                {"number": 9, "state": "OPEN", "isDraft": True,
+                 "repository": {"nameWithOwner": "test-owner/test-repo"}}]}}
     rec = normalize_gql(node)
     assert rec["assignees"] == ["dev"] and rec["last_edited_at"] == "e"
     assert rec["github_links"] == [{"pr": 9, "state": "open", "draft": True}]
+
+
+def test_closing_references_from_another_repository_are_left_out():
+    node = _node(closedByPullRequestsReferences={"nodes": [
+        {"number": 1, "state": "MERGED", "isDraft": False,
+         "repository": {"nameWithOwner": "someone/test-repo"}},
+        {"number": 2, "state": "OPEN", "isDraft": False,
+         "repository": {"nameWithOwner": "Test-Owner/Test-Repo"}},
+        {"number": 3, "state": "OPEN", "isDraft": False}]})
+    assert normalize_gql(node)["github_links"] == [{"pr": 2, "state": "open", "draft": False}]
 
 
 def test_the_rest_refetch_reports_closing_references_unknown():
@@ -137,7 +148,8 @@ def test_issues_query_is_read_only():
 
 def test_issues_query_asks_for_the_fields_the_normalizer_reads():
     q = fetch_issues._ISSUES_QUERY
-    for field in ("lastEditedAt", "assignees(", "closedByPullRequestsReferences("):
+    for field in ("lastEditedAt", "assignees(", "closedByPullRequestsReferences(",
+                  "nameWithOwner"):
         assert field in q
 
 
