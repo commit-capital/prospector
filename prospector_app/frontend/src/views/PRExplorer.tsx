@@ -1,11 +1,11 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { api, type FilterSpec, type PRRow, type QueryResult, type DeepResult } from "../api";
-import type { CellCtx, ColumnDef } from "../components/explorer/columns";
+import { COLUMNS, type CellCtx, type ColumnDef } from "../components/explorer/columns";
 import { reuseRows } from "../components/explorer/rowReuse";
 import { LaneChips } from "../components/explorer/LaneChips";
 import { FilterControls } from "../components/explorer/FilterControls";
-import { ColumnToggles } from "../components/explorer/ColumnToggles";
+import { ColumnToggles } from "../components/shared/ColumnToggles";
 import { ExplorerSearchBar } from "../components/explorer/ExplorerSearchBar";
 import { BulkActionBar, type BulkAction } from "../components/explorer/BulkActionBar";
 import { BulkConfirmDialog } from "../components/explorer/BulkConfirmDialog";
@@ -124,7 +124,7 @@ export default function PRExplorer() {
     const n = rowFromEvent(e);
     if (n !== null) rowOpen(n).onAuxClick(e);
   };
-  const { isOn: colOn, toggle: toggleCol, reset: resetCols, visibleColumns } = useColumnPrefs();
+  const { isOn: colOn, toggle: toggleCol, reset: resetCols, visibleColumns } = useColumnPrefs(COLUMNS, "app-explorer-columns");
   const { setVisible } = useAgentPane();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSizeState] = useState<PageSizeOption>(readPageSize);
@@ -367,7 +367,7 @@ export default function PRExplorer() {
       <LaneChips spec={spec} onChange={setSpec} />
       <div className="explorer-toolbar">
         <FilterControls spec={spec} onChange={setSpec} visibleColKeys={new Set(visibleColumns.map((c) => c.key))} />
-        <ColumnToggles isOn={colOn} toggle={toggleCol} reset={resetCols} />
+        <ColumnToggles columns={COLUMNS} isOn={colOn} toggle={toggleCol} reset={resetCols} />
       </div>
       <FilterSummary parts={buildPrFilterParts(spec, setSpec, reviewerLabels)} total={res?.total ?? null} />
       {deep && (

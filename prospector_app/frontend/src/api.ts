@@ -1429,6 +1429,8 @@ export interface IssueRow {
   fix_reason?: string | null;
   /** The attempt is a proven fix for only part of its report (fix_review.partial). */
   fix_partial?: boolean;
+  /** Where the issue stands, in one plain sentence (fix_review.status_line). */
+  status_line: string;
   /** Dup-group members folded under this row when the query collapsed dups. */
   dup_rows?: IssueRow[];
 }

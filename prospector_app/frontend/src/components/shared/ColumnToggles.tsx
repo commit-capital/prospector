@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { COLUMNS } from "./columns";
+import type { ColumnMeta } from "./columns";
 import { Term } from "../InfoTip";
 import { useExec } from "../../ExecContext";
 
 // A dropdown menu toggling which non-anchor columns show — one button in the
 // toolbar, with a checkbox per column behind it.
-export function ColumnToggles({ isOn, toggle, reset }: {
+export function ColumnToggles({ columns, isOn, toggle, reset }: {
+  columns: readonly ColumnMeta[];
   isOn: (k: string) => boolean;
   toggle: (k: string) => void;
   reset: () => void;
@@ -36,7 +37,7 @@ export function ColumnToggles({ isOn, toggle, reset }: {
       </button>
       {open && (
         <div className="col-menu-dropdown" role="menu">
-          {COLUMNS.filter((c) => !c.fixed && (!c.capability || activeReviewers(c.capability).length > 0)).map((c) => (
+          {columns.filter((c) => !c.fixed && (!c.capability || activeReviewers(c.capability).length > 0)).map((c) => (
             <label key={c.key} className="col-menu-row">
               <input type="checkbox" checked={isOn(c.key)} onChange={() => toggle(c.key)} />
               {" "}{c.label}

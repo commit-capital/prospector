@@ -1,7 +1,7 @@
 import { AuthorReturnNote } from "../AuthorReturn";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
-import type { PRRow, PRResponses, ChecksRollup, LocBreakdown, ReviewerKind } from "../../api";
+import type { PRRow, PRResponses, ChecksRollup, LocBreakdown } from "../../api";
 import { InfoTip, type InstanceWhy } from "../InfoTip";
 import { term, safetyEntry, dispositionEntry } from "../../glossary";
 import type { GlossaryEntry } from "../../glossary";
@@ -13,6 +13,7 @@ import { GitHubPRLink } from "../GitHubPRLink";
 import { DraftChip, StackedChip, TierChip, AckButton } from "../Chips";
 import { AuthorHover } from "../AuthorHover";
 import { LinkedIssues } from "../LinkedIssues";
+import type { Column } from "../shared/columns";
 
 // Visual aid: a star trails a trusted contributor's handle wherever authors
 // are shown (the profile's trusted_authors list, surfaced per-row as trusted_author).
@@ -25,18 +26,7 @@ export interface CellCtx {
   ackResponse: (pr: number) => Promise<void>;
 }
 
-export interface ColumnDef {
-  key: string;
-  label: string;            // header text + toggle-chip text
-  defaultOn: boolean;       // visible when the user has no stored override
-  fixed?: boolean;          // always shown, never in the toggle menu (anchors)
-  term?: string;            // glossary key → header InfoTip
-  numeric?: boolean;        // right-aligned (the `num` class) on header + cell
-  stopOpen?: boolean;       // cell swallows the row-open click (links)
-  cellClass?: string;       // <td> className (e.g. "mono", "muted small")
-  capability?: ReviewerKind; // shown only while a reviewer of this kind is active
-  cell: (r: PRRow, ctx: CellCtx) => ReactNode;
-}
+export type ColumnDef = Column<PRRow, CellCtx>;
 
 const NOT_ANALYZED: GlossaryEntry = {
   title: "Not analyzed yet",

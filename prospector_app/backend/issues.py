@@ -286,6 +286,7 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
         "fix_status": fix[0] if fix else None,
         "fix_reason": fix[1] if fix else None,
         "fix_partial": fix_review.partial(iss) is not None,
+        "status_line": fix_review.status_line(iss),
         "author_return": author_returns.latest(iss),
     }
 
