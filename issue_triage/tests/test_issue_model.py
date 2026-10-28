@@ -164,7 +164,7 @@ def test_a_triage_that_asks_the_author_reads_as_request_changes(tmp_path):
     st.edit_issue(5).record_fix_triage({"verdict": "ask", "kind": "defect"})
     assert st.load_issue(5).disposition == "request-changes"
     st.edit_issue(5).set_meta({"title": "t", "state": "open", "updated_at": "T2"})  # a reply
-    assert st.load_issue(5).disposition == "request-changes"
+    assert st.load_issue(5).disposition == "needs-human"  # until it is judged again
 
 
 def test_a_dup_outranks_a_triage_that_asks_the_author(tmp_path):

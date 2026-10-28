@@ -106,10 +106,10 @@ not-in-repo and already-fixed issues unattended. PR 1 only shows them.
 
 ## Calls made in review (the designer's, not the operator's)
 
-- **After the author answers.** `request-changes` reads the latest
-  `fix_triage`, not only a current one: a stale `ask` still reads
-  `request-changes`, shown as "the author replied; judging again". The hunter
-  re-triages it on its next pass, as today.
+- **After the author answers.** `request-changes` holds only while the triage
+  is current, so an issue the hunter cannot re-judge never sticks there. The
+  issue's detail still shows the stale ask as "the reporter replied or edited
+  it; judging again". The hunter re-triages it on its next pass, as today.
 - **After a split.** When the author's reply or edit says an ask moved to
   another issue, that ask no longer counts against this report (the claim
   test's sense of work "left to another issue or pull request"), so the

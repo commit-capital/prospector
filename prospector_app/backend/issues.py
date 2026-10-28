@@ -329,7 +329,9 @@ def get_issue(n: int) -> dict | None:
         if story and story.get("prospector_fault") else None)
     # The effective verdict, matching row["disposition"]: while the fix scan cites
     # a merged fixer it supplies the route, the rationale, and the gist.
-    row["analysis"] = None if i.disposition is None else {
+    # A request-changes read off the triage alone leaves the issue unanalyzed.
+    row["analysis"] = None if i.disposition is None or (
+        i.disposition == "request-changes" and i.section("analysis") is None) else {
         "disposition": i.disposition,
         "gist": i.gist,
         "rationale": i.rationale,

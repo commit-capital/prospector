@@ -132,15 +132,15 @@ class Issue:
     @property
     def disposition(self) -> str | None:
         """close-fixed while the fix scan cites a merged fixer, else the stored
-        ANALYZE verdict, read as request-changes while the latest fixability
-        triage waits on the author (`fixability`) unless ANALYZE routed it to a
-        duplicate or a linked pull request. Derived, so a staled fact heals the
-        read in place."""
+        ANALYZE verdict, read as request-changes while a current fixability
+        triage waits on the author (`fixability`) unless ANALYZE closed or
+        linked it. Derived, so a staled fact heals the read in place."""
         if self._fixed_now():
             return "close-fixed"
         routed = (self.rec.get("analysis") or {}).get("disposition")
-        if (routed not in ("close-dup", "link-pr")
-                and (self.rec.get("fix_triage") or {}).get("verdict") == "ask"):
+        if (routed not in ("close-dup", "close-fixed", "link-pr")
+                and (self.rec.get("fix_triage") or {}).get("verdict") == "ask"
+                and is_current(self, "fix_triage")):
             return "request-changes"
         return routed
 

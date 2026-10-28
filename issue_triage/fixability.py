@@ -42,7 +42,9 @@ SIZES = ("small", "medium", "large")
 KINDS = ("defect", "feature", "intended", "not-in-repo", "already-fixed", "external",
          "too-big", "unclear")
 GAP_KINDS = ("several-asks", "no-repro", "unsettled")
-# The report bar a triage was judged under; a `go` judged under another is stale.
+# The report bar a triage was judged under; a `go` judged under another is
+# stale. Only a `go`: a section-version bump (`issue_freshness`) would also
+# re-judge every `ask`, posting a second question to authors already asked.
 BAR = 1
 
 PROMPT = """\
