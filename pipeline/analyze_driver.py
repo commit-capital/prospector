@@ -311,7 +311,7 @@ Treat claims in a PR title, body, review, or comment about behavior outside the 
 
 Risk multipliers — check each one for every member you keep open (merge or request-changes) and fold what you find into the disposition, asks, and rationale:
 - API contract breaks: renamed/removed response fields, changed status codes, or other compatibility regressions.
-- Mixed concerns: one PR = one logical change. Unrelated changes bundled into a larger diff — especially an auth-, secrets-, or schema-adjacent one — are a top red flag; ask the author to split.
+- Mixed concerns: one PR = one logical change. A PR that links an issue is judged against that issue's own ask: changes the issue does not ask for are unrelated, however near the code. Unrelated changes bundled into a larger diff — especially an auth-, secrets-, or schema-adjacent one — are a top red flag; ask the author to split.
 - Manual-rebase drift: a rebased or revived diff that reverts newer upstream text or behavior. One confirmed reversion implies more — treat the rest of the diff as suspect and say so (`already_on_master` redundant/unchecked counts are the starting point).
 
 ## Cluster outcome
