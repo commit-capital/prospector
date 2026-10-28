@@ -469,6 +469,17 @@ def test_a_baseline_that_does_not_complete_is_a_fault_and_is_not_cached(suite, a
     assert prove.suite_baseline(BASE, "PRE", label="l") == []
 
 
+def test_a_baseline_failing_most_of_its_plan_is_a_fault_and_is_not_cached(suite):
+    calls, answers = suite
+    starved = _trailer("baseline", ["a.test.ts", "b.test.ts"]).replace(
+        '"failed"', '"planned": 4, "failed"')
+    answers[:] = [(0, starved)]
+    with pytest.raises(prove.SuiteFault, match="failed 2 of 4 planned files"):
+        prove.suite_baseline(BASE, "PRE", label="l")
+    answers[:] = [(0, _trailer("baseline", []))]
+    assert prove.suite_baseline(BASE, "PRE", label="l") == []
+
+
 def test_a_regress_run_excludes_the_tree_s_own_failures(suite):
     calls, answers = suite
     answers[:] = [(0, _trailer("baseline", ["old.test.ts"])), (0, _trailer("regress", []))]
