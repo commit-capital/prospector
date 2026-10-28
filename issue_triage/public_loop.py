@@ -472,7 +472,8 @@ def ask_triage(issue: Issue, record: dict) -> str:
     mode = issue_mode(issue, mode)
     key = f"triage-{asks + 1}"
     body = public_comments.triage_question(issue.number, key, record.get("question"),
-                                           list(record.get("readings") or []))
+                                           list(record.get("readings") or []),
+                                           gaps=record.get("gaps"))
     if public_comments.problems(body):
         return "refused"
     token = executor.mint_bot_token() if mode == "live" else None

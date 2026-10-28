@@ -98,7 +98,7 @@ def issue_cluster_state(cluster: IssueCluster, issues: dict[int, Issue],
                     and (i.resolution or {}).get("status") in (None, "pending")]
     if pending_dups:
         return "dup-ready"
-    if any(i.disposition == "request-repro" for i in active):
+    if any(i.disposition in ("request-repro", "request-changes") for i in active):
         return "awaiting-repro"
     if len(active) <= 1:
         return "no-dups"

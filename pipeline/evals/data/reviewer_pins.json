@@ -25,20 +25,10 @@
   },
   "fixability": {
     "model": "sonnet",
-    "prompt_sha": "ec855d2e23544b9f",
+    "prompt_sha": "f323beb6bdb680e7",
     "provisional": true,
-    "run": "2026-10-28T19:39:26+00:00",
-    "score": {
-      "cases": 0,
-      "failed": 0,
-      "must_catch": 0,
-      "over": 0,
-      "partial": 0,
-      "right": 0,
-      "should_pass": 0,
-      "under": 0,
-      "unreplayable": 0
-    }
+    "run": null,
+    "score": null
   },
   "fixer": {
     "gate_set": null,
