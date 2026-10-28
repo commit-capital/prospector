@@ -63,6 +63,17 @@ def _issue(tmp_path, labels: tuple[str, ...] = (), state: str = "open"):
     "<html><head><style>@import url(\"http://evil/a.css\");</style></head><body></body></html>",
     "<html><body><img srcset=\"HTTPS://evil/x.png 2x\"></body></html>",
     "<div>no document</div>",
+    "<html><body><img src=\"\\\\evil.example/x.png\"></body></html>",
+    "<html><body><img src=\"/\\evil.example/x.png\"></body></html>",
+    "<html><body><img src=\"ht&#9;tps://evil.example/x.png\"></body></html>",
+    "<html><body><img src=\"/api/issues\"></body></html>",
+    "<html><head><style>.a{background:u\\rl(//evil.example/x)}</style></head><body></body></html>",
+    "<html><head><style>.a{background-image:image-set(\"https://evil.example/x\" 1x)}</style></head><body></body></html>",
+    "<html><head><style>@\\69mport 'https://evil.example/a.css';</style></head><body></body></html>",
+    "<html><body><img alt=\">\" onerror=x></body></html>",
+    "<html><body><svg><rect fill=\"u\\rl(https://evil.example/x)\"/></svg></body></html>",
+    "<html><body><video poster=x.png></video></body></html>",
+    "<html><body><form><input></form></body></html>",
 ])
 def test_check_mockup_refuses_escapes(html):
     assert feature_screen.check_mockup(html) is not None
@@ -71,6 +82,25 @@ def test_check_mockup_refuses_escapes(html):
 def test_check_mockup_accepts_inline_styles_and_data_images():
     assert feature_screen.check_mockup(
         "<html><head><style>.a{color:red}</style></head><body><img src='data:image/png;base64,AA=='></body></html>") is None
+
+
+@pytest.mark.parametrize("part", [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16"><path d="M0 0"/></svg>',
+    '<input placeholder="https://hooks.example.com/abc">',
+    '<div data-onboarding="step1">x</div>',
+    '<a href="#top">Top</a><svg><rect fill="url(#g)"/></svg>',
+    '<p>C:\\Users\\me</p><input placeholder="C:\\path">',
+])
+def test_check_mockup_accepts_a_plain_page(part):
+    assert feature_screen.check_mockup(f"<html><body>{part}</body></html>") is None
+
+
+def test_the_mockup_prompt_names_what_is_refused_and_distrusts_the_reason():
+    for construct in ("script", "form", "link", "iframe", "frame", "object", "embed", "base",
+                      "http-equiv", "event handler", "@import", "image-set", "relative",
+                      "backslash", "srcset"):
+        assert construct in feature_screen.MOCKUP_PROMPT
+    assert "shortlist reason" in feature_screen.MOCKUP_PROMPT
 
 
 def test_check_mockup_refuses_oversize():
@@ -132,6 +162,40 @@ def test_screen_records_a_missing_mockup(tmp_path, roots, monkeypatch):
     _agents(monkeypatch, CONSIDER, None)
     out = feature_screen.screen(issue, *roots, base_sha="b" * 40, replies=[], subject=None)
     assert "mockup" not in out and out["mockup_refused"]
+
+
+def test_a_failed_mockup_run_keeps_the_verdict(tmp_path, roots, monkeypatch):
+    issue = _issue(tmp_path).load_issue(7)
+    _agents(monkeypatch, CONSIDER)
+    review_only = headless_agent.run_agent
+
+    def run(prompt, **kw):
+        if kw.get("edit_root"):
+            raise RuntimeError("claude exited 1")
+        return review_only(prompt, **kw)
+
+    monkeypatch.setattr(headless_agent, "run_agent", run)
+    noted: list[str] = []
+    monkeypatch.setattr(feature_screen.verdict_log, "record",
+                        lambda reviewer, subject, *, verdict, **kw: noted.append(verdict))
+    out = feature_screen.screen(issue, *roots, base_sha="b" * 40, replies=[], subject=None)
+    assert out["verdict"] == "consider" and "exited 1" in out["mockup_refused"]
+    assert noted == ["consider"]
+
+
+def test_a_mockup_outage_propagates(tmp_path, roots, monkeypatch):
+    issue = _issue(tmp_path).load_issue(7)
+    _agents(monkeypatch, CONSIDER)
+    review_only = headless_agent.run_agent
+
+    def run(prompt, **kw):
+        if kw.get("edit_root"):
+            raise headless_agent.AgentUnavailable("down")
+        return review_only(prompt, **kw)
+
+    monkeypatch.setattr(headless_agent, "run_agent", run)
+    with pytest.raises(headless_agent.AgentUnavailable):
+        feature_screen.screen(issue, *roots, base_sha="b" * 40, replies=[], subject=None)
 
 
 def test_a_screen_goes_stale_when_the_request_changes(tmp_path, roots, monkeypatch):
