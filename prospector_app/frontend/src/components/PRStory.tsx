@@ -3,19 +3,23 @@ import { AnalyzeJobLink } from "./AnalyzeJobLink";
 import { LinkedIssues } from "./LinkedIssues";
 import { closedNote, shownIssues } from "./linkedIssuesShown";
 import { useRepoMeta } from "../RepoMetaContext";
+import { statusText } from "./prStatus";
 
-/** The Summary panel's opening lines: what was wrong, what the PR changes (and
- *  the issues it fixes), and how it works. ANALYZE writes the card; until it
- *  does, the diff summary's one-liner stands in as the fix. */
+/** The Summary panel's opening lines: where the PR stands, what was wrong,
+ *  what the PR changes (and the issues it fixes), and how it works. ANALYZE
+ *  writes the card; until it does, the diff summary's one-liner stands in as
+ *  the fix. */
 export function PRStory({ pr }: { pr: PRDetail }) {
   const d = pr.display;
   const fix = d?.fix ?? pr.summary?.one_liner;
   const fixes = shownIssues(pr.issues).shown;
+  const status = statusText(pr);
 
   return (
     <>
-      {(fix || d || fixes.length > 0) && (
+      {(status || fix || d || fixes.length > 0) && (
         <dl className="pr-story">
+          {status && <><dt>Status</dt><dd><b>{status}</b></dd></>}
           {d && <><dt>Problem</dt><dd>{d.problem}</dd></>}
           {(fix || fixes.length > 0) && (
             <><dt>Fix</dt><dd>

@@ -1521,6 +1521,13 @@ tr.row-done:hover > td { opacity: 1; }
 .cfp-check-header-row { padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--border); }
 .cfp-check-header-row .cfp-check-row-label { color: var(--muted); font-size: 10.5px;
   text-transform: uppercase; letter-spacing: .3px; }
+.col-status {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  max-width: 36ch;
+  overflow: hidden;
+}
 .col-summary {
   display: inline-block;
   max-width: 22ch;
