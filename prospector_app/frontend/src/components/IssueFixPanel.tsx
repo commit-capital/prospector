@@ -161,9 +161,9 @@ function FixActions({ d, onChanged }: { d: IssueDetail; onChanged: () => void })
   if (status === "review" || (status === "failed" && pr != null)) {
     return (
       <div className="fix-composer">
-        {pr == null && d.fix_held && (
+        {pr == null && !!d.fix_holds?.length && (
           <div className="small" style={{ marginBottom: 6 }}>
-            ⚠️ Held for you: {d.fix_held}. Opening the PR is your call.
+            ⚠️ Held for you: {d.fix_holds.map((h) => h.text).join("; ")}. Opening the PR is your call.
           </div>
         )}
         {pr == null ? (

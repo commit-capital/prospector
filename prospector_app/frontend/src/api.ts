@@ -1491,6 +1491,27 @@ export interface IssueFixCoverage {
   status: "addressed" | "not-addressed" | "already-fixed" | "out-of-scope";
   evidence: string;
 }
+/** A defect as the issue page shows it, with the host's latest claim test of it. */
+export interface IssueFixDefect extends IssueFixCoverage {
+  claim?: Pick<IssueFixClaim, "status" | "why" | "ruling">;
+}
+/** The reviews' coverage merged into one account (issue_gates.fix_coverage).
+ *  `unshown` holds the defects left that no claim test could show remain. */
+export interface IssueFixCoverageView {
+  state: "complete" | "partial" | "unchecked";
+  defects: IssueFixDefect[];
+  unshown: IssueFixDefect[];
+  /** What a partial fix leaves, in one sentence (fix_review.partial_note). */
+  note: string | null;
+}
+/** One reason a fixed attempt waits for an operator (trust_boundary.holds):
+ *  a "rival" hold's open PRs, a "boundary" hold's crossings. */
+export interface IssueFixHold {
+  kind: "intake" | "rival" | "single" | "boundary";
+  text: string;
+  prs?: number[];
+  crossings?: IssueFixCrossing[];
+}
 /** One trust boundary a fix crosses (issue_triage/trust_boundary.py). */
 export interface IssueFixCrossing {
   kind: string;
@@ -1521,6 +1542,8 @@ export interface IssueFixRivalEntry {
   why: string;
   /** Cases the comparison judge found the fix misses. */
   missed?: string[];
+  /** The tail of its tests' run against our fix, with terminal colour codes. */
+  output?: string;
 }
 export interface IssueFixQuestion {
   question: string;
@@ -1725,8 +1748,11 @@ export interface IssueDetail extends IssueRow {
   fix_followup?: IssueFixFollowup | null;
   /** The pull request the fix attempt is open as (fix_review.open_pr). */
   fix_pr?: number | null;
-  /** Why the fixed attempt waits for an operator to open its PR (trust_boundary.held). */
-  fix_held?: string | null;
+  /** Every reason the fixed attempt waits for an operator to open its PR,
+   *  most pressing first (trust_boundary.holds). */
+  fix_holds?: IssueFixHold[];
+  /** What the fixed attempt covers of its report, defect by defect (fix_review.coverage). */
+  fix_coverage?: IssueFixCoverageView | null;
   /** The PR going ahead as the fix in place of ours, while the choice stands. */
   fix_choice?: IssueFixChoice | null;
   /** The operator's approval of the open PR while it holds (fix_review.approval). */

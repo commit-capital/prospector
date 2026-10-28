@@ -400,6 +400,23 @@ def test_the_distilled_run_keeps_the_review_rounds_and_reads_an_older_round():
 
 # --- the runner --------------------------------------------------------------------
 
+def test_the_page_s_coverage_carries_each_defect_s_claim_test(store):
+    claim = {"defect": "Cancel after a restart is a no-op that returns 200", "status": "unshown",
+             "why": "left to #14070", "ruling": "outside-report", "paths": [], "round": 1}
+    _run(store, reviews=PARTIAL, claims=[claim])
+    cov = fix_review.coverage(store.load_issue(7))
+    assert cov is not None and cov["state"] == "partial"
+    assert cov["note"] == "partial fix: 2 of 3 reported defects handled; not addressed: " \
+        "a session stuck in submitting is never reconciled at startup"
+    by_defect = {d["defect"]: d for d in cov["defects"]}
+    ruled = by_defect["cancel after a restart is a no-op that returns 200"]
+    assert ruled["status"] == "out-of-scope"
+    assert ruled["claim"] == {"status": "unshown", "why": "left to #14070", "ruling": "outside-report"}
+    assert "claim" not in by_defect["the reaper swallows the lease-release error"]
+    _run(store, reviews=PARTIAL, ending="fix-rejected")
+    assert fix_review.coverage(store.load_issue(7)) is None
+
+
 def test_a_solve_that_fixes_part_of_the_report_says_partial_in_the_thread(store, monkeypatch):
     record = {"ending": "fixed", "detail": "proven",
               "result": {"patch": "diff --git a/x b/x\n", "reviews": PARTIAL}}

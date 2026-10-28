@@ -349,7 +349,8 @@ def get_issue(n: int) -> dict | None:
     row["fix_followup"] = i.fix_followup
     row["fix_pr"] = fix_review.open_pr(i)
     row["fix_approved"] = fix_review.approval(i)
-    row["fix_held"] = trust_boundary.held(i)
+    row["fix_holds"] = trust_boundary.holds(i)
+    row["fix_coverage"] = fix_review.coverage(i)
     row["fix_choice"] = i.fix_choice if fix_choice.chosen(i) is not None else None
     return row
 
