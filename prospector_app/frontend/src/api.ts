@@ -1429,6 +1429,8 @@ export interface IssueRow {
   fix_reason?: string | null;
   /** The attempt is a proven fix for only part of its report (fix_review.partial). */
   fix_partial?: boolean;
+  /** Where the issue stands, in one plain sentence (fix_review.status_line). */
+  status_line: string;
   /** Dup-group members folded under this row when the query collapsed dups. */
   dup_rows?: IssueRow[];
 }
@@ -1708,8 +1710,6 @@ export interface IssueDetail extends IssueRow {
   fix_pr?: number | null;
   /** Why the fixed attempt waits for an operator to open its PR (trust_boundary.held). */
   fix_held?: string | null;
-  /** Where the issue stands, in one plain sentence (fix_review.status_line). */
-  status_line: string;
   /** The PR going ahead as the fix in place of ours, while the choice stands. */
   fix_choice?: IssueFixChoice | null;
   /** The operator's approval of the open PR while it holds (fix_review.approval). */

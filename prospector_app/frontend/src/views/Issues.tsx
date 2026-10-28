@@ -23,6 +23,9 @@ import { FixStatusChip } from "../components/IssueFixPanel";
 import { peekRead, runRead } from "../readCache";
 import { ISSUE_PAGE_SIZE as PAGE_SIZE, ISSUE_TABLE_FIRST_PAGE, issueTableRead, type IssueSortKey } from "./issueTable";
 import { Select } from "../components/Select";
+import { ColumnToggles } from "../components/shared/ColumnToggles";
+import type { Column } from "../components/shared/columns";
+import { useColumnPrefs } from "../useColumnPrefs";
 
 const ISSUE_DESC_FIRST = new Set<IssueSortKey>(["number", "pain", "repro", "dups", "prs"]);
 
@@ -451,6 +454,65 @@ const STATE_FILTERS: { key: string; label: string }[] = [
   { key: "all", label: "all" },
 ];
 
+type IssueCellCtx = {
+  sub: boolean;  // a dup-group member folded under its canonical row
+  results: Record<number, IssueExecResult>;
+  expanded: Set<number>;
+  toggleExpand: (n: number) => void;
+};
+type IssueColumn = Column<IssueRow, IssueCellCtx> & { sortKey?: IssueSortKey };
+
+const ISSUE_COLUMNS: IssueColumn[] = [
+  { key: "number", label: "#", defaultOn: true, fixed: true, sortKey: "number", cellClass: "mono",
+    cell: (r, { results }) => <>
+      <IssueLink n={r.number} />
+      {r.state === "closed" && <span className="chip sm chip-muted" title="Closed on GitHub">✓ closed</span>}
+      {results[r.number] && (
+        <span className={`chip chip-${results[r.number].status === "executed" ? "green"
+          : results[r.number].status === "error" ? "red" : "muted"} sm`}
+          title={results[r.number].detail}>{results[r.number].status}</span>
+      )}
+    </> },
+  { key: "title", label: "Title", defaultOn: true, fixed: true, sortKey: "title",
+    cell: (r) => <>
+      {r.title}{r.is_dup && r.canonical != null && <span className="muted small" title={`Duplicate of #${r.canonical}`}> · dup of <IssueLink n={r.canonical} /></span>}
+      {r.author_return && <div className="small muted"><AuthorReturnNote ret={r.author_return} /></div>}
+    </> },
+  { key: "status", label: "Status", defaultOn: false, cellClass: "small",
+    title: "Where the issue stands, in one plain sentence",
+    cell: (r) => r.status_line },
+  { key: "author", label: "Author", defaultOn: true, sortKey: "author", cellClass: "muted small",
+    cell: (r) => <>
+      <AuthorHover author={r.author} trusted={r.trusted_author} stats={r.author_stats} fallback="" />
+      {r.maintainer && <> <span className="chip chip-muted sm">maintainer</span></>}
+    </> },
+  { key: "pain", label: "Pain", defaultOn: true, sortKey: "pain", cellClass: "mono small",
+    cell: (r) => r.pain != null ? r.pain.toFixed(2) : "—" },
+  { key: "repro", label: "Repro", defaultOn: true, sortKey: "repro", cell: (r) => <ReproChip grade={r.repro_grade} /> },
+  { key: "disposition", label: "Disposition", defaultOn: true, sortKey: "disposition",
+    title: "The issue pipeline's triage verdict; sorts most-actionable first, unanalyzed last",
+    cell: (r) => <DispositionChip d={r.disposition} /> },
+  { key: "dups", label: "Dups", defaultOn: true, sortKey: "dups", cellClass: "mono small",
+    cell: (r, { sub, expanded, toggleExpand }) => <>
+      {r.duplicates.length || "—"}
+      {!sub && (r.dup_rows?.length ?? 0) > 0 && (
+        <button className="link-btn small row-expander"
+          title="Duplicate issues folded under this one — click to show them"
+          onClick={(e) => { e.stopPropagation(); toggleExpand(r.number); }}>
+          {expanded.has(r.number) ? "▾" : "▸"} +{r.dup_rows!.length}
+        </button>
+      )}
+    </> },
+  { key: "prs", label: "Linked PRs", defaultOn: true, sortKey: "prs", stopOpen: true,
+    title: "Sorts by fix evidence: merged referenced fixers first (Fixes/Closes references and PRs named in the issue text), then referenced PRs, then total linked PRs",
+    cell: (r) => <LinkedPRs prs={r.linked_prs} count={r.linked_pr_count} referencedCount={r.referenced_pr_count} /> },
+  { key: "subsystem", label: "Subsystem", defaultOn: true, sortKey: "subsystem", cellClass: "muted small",
+    cell: (r) => r.subsystem ?? "—" },
+  { key: "fix", label: "Auto-fix", defaultOn: true, sortKey: "fix",
+    title: "The auto-fix factory's status; sorts the ones waiting on you first",
+    cell: (r) => <FixStatusChip status={r.fix_status} reason={r.fix_reason} /> },
+];
+
 function AllIssuesTable({
   rows, total, page, q, sortKey, sortDir, loading, dispFilter, stateFilter, fixFilter, maintainerFilter, cameBackFilter,
   onQ, onPage, onSort, onDispFilter, onStateFilter, onFixFilter, onMaintainerFilter, onCameBackFilter, filterSpec, onFilterSpecChange,
@@ -490,15 +552,21 @@ function AllIssuesTable({
   // Which column's filter popout is open, and where to anchor it — mirrors
   // the PR Explorer's per-column filter flyout (#494).
   const [openFilter, setOpenFilter] = useState<{ key: string; rect: DOMRect } | null>(null);
-  const thProps = (key: IssueSortKey) => ({
-    className: `sortable-th ${sortKey === key ? "sorted" : ""}`,
-    onClick: () => onSort(key),
-    role: "button" as const,
-    "aria-sort": (sortKey === key ? (sortDir === "asc" ? "ascending" : "descending") : "none") as
-      "ascending" | "descending" | "none",
-    title: "Click to sort by this column",
-  });
-  const indicator = (key: IssueSortKey) => sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : "";
+  const { isOn: colOn, toggle: toggleCol, reset: resetCols, visibleColumns } =
+    useColumnPrefs(ISSUE_COLUMNS, "app-issue-columns");
+  const thProps = (col: IssueColumn) => {
+    const key = col.sortKey;
+    if (!key) return { title: col.title };
+    return {
+      className: `sortable-th ${sortKey === key ? "sorted" : ""}`,
+      onClick: () => onSort(key),
+      role: "button" as const,
+      "aria-sort": (sortKey === key ? (sortDir === "asc" ? "ascending" : "descending") : "none") as
+        "ascending" | "descending" | "none",
+      title: col.title ?? "Click to sort by this column",
+    };
+  };
+  const indicator = (key?: IssueSortKey) => key && sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : "";
   const filterBtn = (key: string) => {
     if (!ISSUE_FILTERABLE_COLS.has(key)) return null;
     const active = isIssueColFilterActive(key, filterSpec);
@@ -565,6 +633,7 @@ function AllIssuesTable({
         {filterParts.length > 0 && (
           <button className="link-btn" onClick={() => onFilterSpecChange({})}>Clear filters</button>
         )}
+        <ColumnToggles columns={ISSUE_COLUMNS} isOn={colOn} toggle={toggleCol} reset={resetCols} />
         <span className="muted small">
           {loading ? "Loading…" : total === 0 ? "No issues" : `${start}-${end} of ${total}`}
         </span>
@@ -592,21 +661,11 @@ function AllIssuesTable({
                 onChange={(e) => onToggleAll(rows.map((r) => r.number), e.target.checked)}
                 title="Select all issues on this page" />
             </th>
-            <th {...thProps("number")}>#{indicator("number")}</th>
-            <th {...thProps("title")}>Title{indicator("title")}</th>
-            <th {...thProps("author")}><span className="th-inner"><span className="th-label">Author{indicator("author")}</span>{filterBtn("author")}</span></th>
-            <th {...thProps("pain")}><span className="th-inner"><span className="th-label">Pain{indicator("pain")}</span>{filterBtn("pain")}</span></th>
-            <th {...thProps("repro")}><span className="th-inner"><span className="th-label">Repro{indicator("repro")}</span>{filterBtn("repro")}</span></th>
-            <th {...thProps("disposition")}
-                title="The issue pipeline's triage verdict; sorts most-actionable first, unanalyzed last">
-              Disposition{indicator("disposition")}</th>
-            <th {...thProps("dups")}><span className="th-inner"><span className="th-label">Dups{indicator("dups")}</span>{filterBtn("dups")}</span></th>
-            <th {...thProps("prs")}
-                title="Sorts by fix evidence: merged referenced fixers first (Fixes/Closes references and PRs named in the issue text), then referenced PRs, then total linked PRs">
-              <span className="th-inner"><span className="th-label">Linked PRs{indicator("prs")}</span>{filterBtn("prs")}</span></th>
-            <th {...thProps("subsystem")}><span className="th-inner"><span className="th-label">Subsystem{indicator("subsystem")}</span>{filterBtn("subsystem")}</span></th>
-            <th {...thProps("fix")} title="The auto-fix factory's status; sorts the ones waiting on you first">
-              Auto-fix{indicator("fix")}</th>
+            {visibleColumns.map((col) => (
+              <th key={col.key} {...thProps(col)}>
+                <span className="th-inner"><span className="th-label">{col.label}{indicator(col.sortKey)}</span>{filterBtn(col.key)}</span>
+              </th>
+            ))}
           </tr></thead>
           <tbody>
             {rows.flatMap((r) => {
@@ -617,37 +676,11 @@ function AllIssuesTable({
                     <input type="checkbox" checked={selected.has(row.number)}
                       onChange={() => onToggle(row.number)} title="Select this issue" />
                   </td>
-                  <td className="mono">
-                    <IssueLink n={row.number} />
-                    {row.state === "closed" && (
-                      <span className="chip sm chip-muted" title="Closed on GitHub">✓ closed</span>
-                    )}
-                    {results[row.number] && (
-                      <span className={`chip chip-${results[row.number].status === "executed" ? "green"
-                        : results[row.number].status === "error" ? "red" : "muted"} sm`}
-                        title={results[row.number].detail}>{results[row.number].status}</span>
-                    )}
-                  </td>
-                  <td>{row.title}{row.is_dup && row.canonical != null && <span className="muted small" title={`Duplicate of #${row.canonical}`}> · dup of <IssueLink n={row.canonical} /></span>}
-                    {row.author_return && <div className="small muted"><AuthorReturnNote ret={row.author_return} /></div>}</td>
-                  <td className="muted small"><AuthorHover author={row.author} trusted={row.trusted_author} stats={row.author_stats} fallback="" />
-                    {row.maintainer && <> <span className="chip chip-muted sm">maintainer</span></>}</td>
-                  <td className="mono small">{row.pain != null ? row.pain.toFixed(2) : "—"}</td>
-                  <td><ReproChip grade={row.repro_grade} /></td>
-                  <td><DispositionChip d={row.disposition} /></td>
-                  <td className="mono small">
-                    {row.duplicates.length || "—"}
-                    {!sub && (row.dup_rows?.length ?? 0) > 0 && (
-                      <button className="link-btn small row-expander"
-                        title="Duplicate issues folded under this one — click to show them"
-                        onClick={(e) => { e.stopPropagation(); toggleExpand(row.number); }}>
-                        {expanded.has(row.number) ? "▾" : "▸"} +{row.dup_rows!.length}
-                      </button>
-                    )}
-                  </td>
-                  <td onClick={stopRowOpen}><LinkedPRs prs={row.linked_prs} count={row.linked_pr_count} referencedCount={row.referenced_pr_count} /></td>
-                  <td className="muted small">{row.subsystem ?? "—"}</td>
-                  <td><FixStatusChip status={row.fix_status} reason={row.fix_reason} /></td>
+                  {visibleColumns.map((col) => (
+                    <td key={col.key} className={col.cellClass} onClick={col.stopOpen ? stopRowOpen : undefined}>
+                      {col.cell(row, { sub, results, expanded, toggleExpand })}
+                    </td>
+                  ))}
                 </tr>
               );
               return [
@@ -656,7 +689,7 @@ function AllIssuesTable({
               ];
             })}
             {!loading && rows.length === 0 && (
-              <tr><td colSpan={10} className="muted">No matching issues.</td></tr>
+              <tr><td colSpan={visibleColumns.length + 1} className="muted">No matching issues.</td></tr>
             )}
           </tbody>
         </table>
