@@ -25,10 +25,20 @@
   },
   "fixability": {
     "model": "sonnet",
-    "prompt_sha": "2a121dabb0841ff2",
+    "prompt_sha": "ec855d2e23544b9f",
     "provisional": true,
-    "run": null,
-    "score": null
+    "run": "2026-10-28T19:39:26+00:00",
+    "score": {
+      "cases": 0,
+      "failed": 0,
+      "must_catch": 0,
+      "over": 0,
+      "partial": 0,
+      "right": 0,
+      "should_pass": 0,
+      "under": 0,
+      "unreplayable": 0
+    }
   },
   "fixer": {
     "gate_set": null,
@@ -54,9 +64,19 @@
   },
   "trust-boundary": {
     "model": "opus",
-    "prompt_sha": "8f968234e12de58f",
+    "prompt_sha": "80d938484de38943",
     "provisional": true,
-    "run": null,
-    "score": null
+    "run": "2026-10-28T19:34:34+00:00",
+    "score": {
+      "cases": 0,
+      "failed": 0,
+      "must_catch": 0,
+      "over": 0,
+      "partial": 0,
+      "right": 0,
+      "should_pass": 0,
+      "under": 0,
+      "unreplayable": 0
+    }
   }
 }

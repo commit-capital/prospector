@@ -116,6 +116,35 @@ def test_only_a_maintainer_s_own_request_authorizes_a_crossing(boundary, maintai
     assert (trust_boundary.hold(boundary, maintainer_filed=maintainer) is not None) == held
 
 
+@pytest.mark.parametrize("kind,held", [
+    ("validation", False),
+    ("logging", False),
+    ("security-check", True),
+    ("data-exposure", True),
+    ("auth", True),
+    ("filesystem", True),  # a kind the reviewer made up
+])
+def test_only_a_low_risk_crossing_passes_on_an_outsider_s_issue(kind, held):
+    boundary = {"crossings": [{**NETWORK, "kind": kind}]}
+    assert (trust_boundary.hold(boundary, maintainer_filed=False) is not None) == held
+
+
+def test_a_low_risk_crossing_does_not_clear_a_riskier_one_beside_it():
+    boundary = {"crossings": [{**NETWORK, "kind": "logging"}, NETWORK]}
+    why = trust_boundary.hold(boundary, maintainer_filed=False) or ""
+    assert "network" in why and "logging" not in why
+
+
+def test_a_failed_or_missing_review_still_holds_an_outsider_s_fix():
+    assert trust_boundary.hold({"crossings": [], "failed": True}, maintainer_filed=False)
+    assert trust_boundary.hold(None, maintainer_filed=False)
+
+
+def test_the_reviewer_is_asked_about_every_kind():
+    assert all(f"- {k}:" in trust_boundary.PROMPT for k in trust_boundary.KINDS)
+    assert trust_boundary.LOW_RISK < trust_boundary.KINDS.keys()
+
+
 def test_only_a_fixed_unproposed_attempt_is_held(tmp_path):
     store = IssueStore(tmp_path)
     store.save_issue({"issue": 7, "meta": {"title": "t", "state": "open", "body": "b",
