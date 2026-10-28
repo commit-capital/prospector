@@ -3,6 +3,7 @@ base-image tag. The driver is the trusted half — it owns every store write and
 never lets an agent near one."""
 import contextlib
 import copy
+import fnmatch
 import io
 import json
 import os
@@ -3231,4 +3232,17 @@ class TestPlaywrightBrowsers:
             return subprocess.CompletedProcess(argv, code, b"", b"")
         monkeypatch.setattr(vd.subprocess, "run", run)
         assert vd.base_has_browser("img:t1") is expected
-        assert "--network" in seen[0] and "none" in seen[0]
+        assert seen[0][seen[0].index("--network") + 1] == "none"
+
+    def test_base_has_browser_does_not_match_the_headless_shell(self, monkeypatch):
+        seen: list[list[str]] = []
+
+        def run(argv, **kw):
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+        monkeypatch.setattr(vd.subprocess, "run", run)
+        vd.base_has_browser("img:t1")
+        pattern = seen[0][-1].split()[2]
+        assert pattern == "/work/browsers/chromium-*"
+        assert not fnmatch.fnmatch("/work/browsers/chromium_headless_shell-123", pattern)
+        assert fnmatch.fnmatch("/work/browsers/chromium-1234", pattern)

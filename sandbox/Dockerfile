@@ -1,7 +1,9 @@
 # Hardened, secretless image for dynamic PR verification. Deliberately
 # WITHOUT agent CLIs (claude/codex) and gh — this container never holds
 # credentials and never talks to a model. It only builds and runs PR code.
-FROM node:lts-trixie-slim
+# Node 24: the target's engines require >=24.11.0, and corepack ships with Node 24
+# but not with later majors.
+FROM node:24-trixie-slim
 
 # postgresql-client supplies the psql binary the target repository's backup
 # tests spawn for their COPY-fallback restore path (#3718: its absence failed

@@ -321,9 +321,10 @@ def prefetch_browsers(src: Path, dest: Path) -> None:
 
 
 def base_has_browser(image: str) -> bool:
-    """Whether `image` holds a Chromium build under /work/browsers."""
+    """Whether `image` holds the full Chromium build under /work/browsers (the
+    `chromium-<rev>` directory, not `chromium_headless_shell-<rev>`)."""
     p = subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "sh",
-                        image, "-c", "ls -d /work/browsers/chromium* >/dev/null 2>&1"],
+                        image, "-c", "ls -d /work/browsers/chromium-* >/dev/null 2>&1"],
                        capture_output=True, env=launcher_env(), timeout=120)
     return p.returncode == 0
 
