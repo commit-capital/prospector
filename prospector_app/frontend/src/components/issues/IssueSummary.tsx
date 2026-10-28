@@ -9,7 +9,7 @@ import { GitHubPRLink } from "../GitHubPRLink";
 import { FlyoutIssueLink } from "../FlyoutIssueLink";
 import { IssueActionBar } from "../IssueActionBar";
 import { DispositionChip, ReproChip } from "../../views/Issues";
-import { EVIDENCE, REFERENCED, linkStateChip } from "./issueLinkChips";
+import { EVIDENCE, linkStateChip, referencedPrs } from "./issueLinkChips";
 import { FixDecisionCards } from "./FixDecisionCards";
 import { fixDecision } from "./fixDecision";
 import { otherOpenPRs, rivalRows } from "./rivalComparison";
@@ -131,9 +131,7 @@ function FixPRRow({ p, d }: { p: IssuePR; d: IssueDetail }) {
 
 /** The PRs with evidence that they fix the issue, our own first. */
 function FixPRs({ d }: { d: IssueDetail }) {
-  const ours = d.fix_run?.proposal?.pr;
-  const strong = d.linked_prs.filter((p) => REFERENCED.has(p.how ?? ""))
-    .sort((a, b) => Number(String(b.pr) === String(ours)) - Number(String(a.pr) === String(ours)));
+  const strong = referencedPrs(d.linked_prs, d.fix_run?.proposal?.pr);
   const weak = d.linked_pr_count - strong.length;
   if (!strong.length && !weak) return <span className="muted">None yet.</span>;
   return (

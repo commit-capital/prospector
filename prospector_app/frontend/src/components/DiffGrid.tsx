@@ -1,10 +1,31 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { parseDiff, Diff, Hunk, type HunkData } from "react-diff-view";
 import "react-diff-view/style/index.css";
 import { api, type PRRow } from "../api";
 
 type ParsedFile = ReturnType<typeof parseDiff>[number];
 interface PRDiff { pr: number; loading: boolean; error: string | null; files: Map<string, ParsedFile>; }
+
+/** A column whose diff the caller already holds — an issue fix's patch, say —
+ *  rather than a PR the grid fetches. */
+export interface PatchColumn { id: string; label: string; title?: string; diffText: string; }
+
+/** What a PR column's header shows; a full PRRow fits. */
+export type DiffGridHead = Partial<Pick<PRRow, "url" | "title" | "author" | "disposition">>;
+
+// One rendered column, PR or patch alike.
+interface Col {
+  id: string; pr: number | null; label: string; url?: string | null; title?: string | null; author?: string | null;
+  loading: boolean; error: string | null; files: Map<string, ParsedFile>;
+}
+
+function fileMap(diffText: string): Map<string, ParsedFile> {
+  const files = new Map<string, ParsedFile>();
+  try {
+    for (const f of parseDiff(diffText || "")) files.set(f.newPath || f.oldPath || "?", f);
+  } catch { /* unparseable diff → no files */ }
+  return files;
+}
 
 const MIN_COL = 300; // px per column before the grid scrolls horizontally
 
@@ -25,10 +46,12 @@ function dispoGroup(d: string | null | undefined): GroupKind {
  *  showing that PR's diff of that file — or a blank when it doesn't touch it. So
  *  the same file is always horizontally aligned and the whole grid scrolls as
  *  one (no JS scroll-sync). Diffs are fetched once per PR and cached, so
- *  ticking a PR in and out is instant. */
-export function DiffGrid({ prs, rows, onRemove, groupByDisposition = false }: {
+ *  ticking a PR in and out is instant. `patches` are diffs the caller already
+ *  holds, shown as the leftmost columns and never grouped. */
+export function DiffGrid({ prs, patches = [], rows, onRemove, groupByDisposition = false }: {
   prs: number[];
-  rows?: Record<number, PRRow>;
+  patches?: PatchColumn[];
+  rows?: Record<number, DiffGridHead>;
   onRemove?: (n: number) => void;
   groupByDisposition?: boolean;
 }) {
@@ -44,10 +67,7 @@ export function DiffGrid({ prs, rows, onRemove, groupByDisposition = false }: {
       if (started.current.has(pr)) continue;
       started.current.add(pr);
       api.diff(pr).then((d) => {
-        const files = new Map<string, ParsedFile>();
-        try {
-          for (const f of parseDiff(d.diff || "")) files.set(f.newPath || f.oldPath || "?", f);
-        } catch { /* unparseable diff → no files */ }
+        const files = fileMap(d.diff);
         setDiffs((m) => new Map(m).set(pr, { pr, loading: false, error: d.diff ? null : (d.error ?? "no diff"), files }));
       }).catch((e) => {
         setDiffs((m) => new Map(m).set(pr, { pr, loading: false, error: String(e), files: new Map() }));
@@ -55,7 +75,12 @@ export function DiffGrid({ prs, rows, onRemove, groupByDisposition = false }: {
     }
   }, [prs.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!prs.length) {
+  const patchCols = useMemo<Col[]>(() => patches.map((p) => ({
+    id: p.id, pr: null, label: p.label, title: p.title, files: fileMap(p.diffText),
+    loading: false, error: p.diffText ? null : "no diff",
+  })), [patches]);
+
+  if (!prs.length && !patches.length) {
     return <div className="dg-empty muted">Select PRs to compare their diffs side by side.</div>;
   }
 
@@ -78,8 +103,13 @@ export function DiffGrid({ prs, rows, onRemove, groupByDisposition = false }: {
   const groupStart = new Set<number>();
   if (showGroups) groups.forEach((g, i) => { if (i > 0) groupStart.add(g.prs[0]); });
 
-  const cols: PRDiff[] = orderedPrs.map((pr) =>
-    diffs.get(pr) ?? { pr, loading: true, error: null, files: new Map() });
+  const cols: Col[] = [...patchCols, ...orderedPrs.map((pr): Col => {
+    const d = diffs.get(pr) ?? { loading: true, error: null, files: new Map<string, ParsedFile>() };
+    const row = rows?.[pr];
+    return { id: `pr-${pr}`, pr, label: `#${pr}`, url: row?.url, title: row?.title, author: row?.author,
+             loading: d.loading, error: d.error, files: d.files };
+  })];
+  const groupClass = (c: Col) => c.pr != null && groupStart.has(c.pr) ? " dg-group-start" : "";
 
   // union of changed files, in first-appearance order across the columns
   const fileUnion: string[] = [];
@@ -89,6 +119,9 @@ export function DiffGrid({ prs, rows, onRemove, groupByDisposition = false }: {
 
   return (
     <div className="dg" style={{ gridTemplateColumns: `repeat(${cols.length}, minmax(${MIN_COL}px, 1fr))` }}>
+      {showGroups && patchCols.length > 0 && (
+        <div className="dg-group-label" style={{ gridColumn: `span ${patchCols.length}` }} />
+      )}
       {showGroups && groups.map((g) => (
         <div key={`gl-${g.kind}`}
           className={`dg-group-label dg-group-${g.kind}${groupStart.has(g.prs[0]) ? " dg-group-start" : ""}`}
@@ -97,20 +130,20 @@ export function DiffGrid({ prs, rows, onRemove, groupByDisposition = false }: {
         </div>
       ))}
       {cols.map((c) => {
-        const row = rows?.[c.pr];
-        const grp = showGroups ? ` dg-group-${kindOf(c.pr)}${groupStart.has(c.pr) ? " dg-group-start" : ""}` : "";
+        const pr = c.pr;
+        const grp = showGroups && pr != null ? ` dg-group-${kindOf(pr)}${groupClass(c)}` : "";
         return (
-          <div className={`dg-head${grp}`} key={`h-${c.pr}`}>
+          <div className={`dg-head${grp}`} key={`h-${c.id}`}>
             <div className="dg-head-top">
-              {row?.url
-                ? <a className="mono dg-head-id" href={row.url} target="_blank" rel="noreferrer">#{c.pr} ↗</a>
-                : <span className="mono dg-head-id">#{c.pr}</span>}
-              {onRemove && <button className="dg-x" title="Remove this column" onClick={() => onRemove(c.pr)}>✕</button>}
+              {c.url
+                ? <a className="mono dg-head-id" href={c.url} target="_blank" rel="noreferrer">{c.label} ↗</a>
+                : <span className="mono dg-head-id">{c.label}</span>}
+              {onRemove && pr != null && <button className="dg-x" title="Remove this column" onClick={() => onRemove(pr)}>✕</button>}
             </div>
-            <div className="dg-head-title" title={row?.title ?? ""}>{row?.title ?? <span className="muted">#{c.pr}</span>}</div>
+            <div className="dg-head-title" title={c.title ?? ""}>{c.title ?? <span className="muted">{c.label}</span>}</div>
             <div className="dg-head-sub muted small">
               {c.loading ? "loading…" : c.error ? c.error
-                : `${c.files.size} file${c.files.size === 1 ? "" : "s"}${row?.author ? ` · @${row.author}` : ""}`}
+                : `${c.files.size} file${c.files.size === 1 ? "" : "s"}${c.author ? ` · @${c.author}` : ""}`}
             </div>
           </div>
         );
@@ -126,7 +159,7 @@ export function DiffGrid({ prs, rows, onRemove, groupByDisposition = false }: {
           {cols.map((c) => {
             const f = c.files.get(path);
             return (
-              <div className={`dg-cell ${f ? "" : "dg-blank"}${groupStart.has(c.pr) ? " dg-group-start" : ""}`} key={`${path}::${c.pr}`}>
+              <div className={`dg-cell ${f ? "" : "dg-blank"}${groupClass(c)}`} key={`${path}::${c.id}`}>
                 {f
                   ? <Diff viewType="unified" diffType={f.type} hunks={f.hunks}>
                       {(hunks: HunkData[]) => hunks.map((h) => <Hunk key={h.content} hunk={h} />)}
