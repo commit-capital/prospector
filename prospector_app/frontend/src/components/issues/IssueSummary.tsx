@@ -148,28 +148,36 @@ function FixPRs({ d }: { d: IssueDetail }) {
   );
 }
 
-/** The bug and the fix it needs, in a sentence each. ANALYZE writes the card;
- *  until it does, the analysis gist stands in for the bug. */
+/** Where the issue stands, the bug, and the fix it needs, in a sentence each.
+ *  ANALYZE writes the card; without one, the analysis gist stands in for the
+ *  bug and our fix's summary for the fix. */
 function IssueStory({ d }: { d: IssueDetail }) {
   const card = d.display;
   const bug = card?.bug ?? d.analysis?.gist;
+  const ours = d.fix_run?.ending === "fixed" ? d.fix_run.summary : null;
   return (
     <dl className="pr-story">
+      <dt>Status</dt><dd><b>{d.status_line}</b></dd>
       {bug && <><dt>The bug</dt><dd>{bug}</dd></>}
-      <dt>Suggested fix</dt>
-      <dd>{card?.fix ?? <AnalyzeJobLink kind="issue-analyze" label="Issue analysis" />}</dd>
+      {card ? <><dt>Suggested fix</dt><dd>{card.fix}</dd></>
+        : ours ? <><dt>Our fix</dt><dd>{ours}</dd></>
+        : !d.analysis && <><dt>Suggested fix</dt>
+                           <dd><AnalyzeJobLink kind="issue-analyze" label="Issue analysis" /></dd></>}
     </dl>
   );
 }
 
-/** "Prospector analysis:" — the triage verdict's chips, then its reasoning. */
+/** "Prospector analysis:" — the triage verdict's chips, then its reasoning,
+ *  marked as older when a fix attempt started after it. */
 function IssueAnalysis({ d }: { d: IssueDetail }) {
   const a = d.analysis;
   if (!a) return <div className="muted small">Not yet analyzed. Run Issue analysis from the Control tab.</div>;
+  const started = d.fix_run?.started;
+  const older = !!(a.checked_at && started && a.checked_at < started);
   return (
-    <div className="issue-analysis">
+    <div className={`issue-analysis${older ? " muted" : ""}`}>
       <div className="analysis-line">
-        <span className="analysis-label">Prospector analysis:</span>
+        <span className="analysis-label">Prospector analysis{older ? ", from before the fix attempt" : ""}:</span>
         <DispositionChip d={a.disposition} />
         <ReproChip grade={d.repro_grade} />
         {a.canonical != null && <span className="muted small">duplicate of <FlyoutIssueLink n={a.canonical} /></span>}
@@ -186,8 +194,12 @@ function IssueAnalysis({ d }: { d: IssueDetail }) {
   );
 }
 
-const RIVAL_TONE: Record<IssueFixRivalEntry["verdict"], Tone> = {
-  covered: "green", "gap-closed": "green", gap: "red", "gap-open": "red", skipped: "muted",
+const RIVAL_CHIP: Record<IssueFixRivalEntry["verdict"], { tone: Tone; text: string }> = {
+  covered: { tone: "green", text: "ours covers it" },
+  "gap-closed": { tone: "green", text: "ours now covers it" },
+  gap: { tone: "red", text: "covers more than ours" },
+  "gap-open": { tone: "red", text: "covers more than ours" },
+  skipped: { tone: "muted", text: "not compared" },
 };
 
 /** Our fix against the other open PRs on the issue, in their tests' words
@@ -204,7 +216,7 @@ function RivalComparison({ d }: { d: IssueDetail }) {
             <GitHubPRLink n={pr} />{entry?.author ? ` by ${entry.author}` : ""}{" "}
             {entry ? (
               <>
-                <span className={`chip sm chip-${RIVAL_TONE[entry.verdict]}`}>{entry.verdict}</span>{" "}
+                <span className={`chip sm chip-${RIVAL_CHIP[entry.verdict].tone}`}>{RIVAL_CHIP[entry.verdict].text}</span>{" "}
                 <span className="muted">{entry.why}</span>
                 {(entry.missed?.length ?? 0) > 0 && (
                   <ul style={{ margin: "2px 0 0 18px" }}>{entry.missed?.map((m, i) => <li key={i}>{m}</li>)}</ul>

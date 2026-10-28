@@ -136,8 +136,12 @@ def test_only_a_closed_gap_earns_credit_and_an_open_one_holds_the_fix():
     assert second_opinion.credit(entries) == [{"pr": 2, "author": "b"}]
     assert second_opinion.flag(entries) is None
     entries.append({"pr": 4, "author": "d", "verdict": "gap-open", "why": "x.test.ts fails"})
-    assert "#4" in (second_opinion.flag(entries) or "")
+    assert second_opinion.flag(entries) == (
+        "another open pull request covers what this fix misses: #4 (x.test.ts fails)")
     assert second_opinion.flag(None) is None
+    entries.append({"pr": 5, "author": "e", "verdict": "gap-open", "why": "y"})
+    assert second_opinion.held_line(entries).startswith(
+        "Prospector has a working fix but is holding it: #4 and #5 have tests our fix fails. Go with one")
 
 
 # --- the comparison judge -----------------------------------------------------------
@@ -163,6 +167,14 @@ def test_the_judge_reads_their_change_as_data_and_names_cases_in_words(monkeypat
     assert "parse('') throws" in seen["prompt"] and "s || null" in seen["prompt"]
     assert "export const x = 2;" in seen["prompt"] and "data" in seen["prompt"]
     assert (seen["allow_gh"], seen["env_allow"]) == (False, ())
+
+
+def test_a_long_case_is_cut_at_a_word_and_marked(monkeypatch):
+    case = "the setup screen " * 60
+    _answer(monkeypatch, '```json\n{"missed": ["' + case + '"], "reason": "r"}\n```')
+    [got] = COMPARE(RIVAL, OURS, title="t", body="b") or [""]
+    assert got.endswith("…") and len(got) <= second_opinion.CASE_MAX + 1
+    assert got[:-1].split()[-1] in {"the", "setup", "screen"}
 
 
 @pytest.mark.parametrize("text", ["no json", '{"missed": "x", "reason": "r"}',
