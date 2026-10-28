@@ -26,6 +26,7 @@ commands:
   security-review  3-lens adversarial security review of one PR
   activity-backfill  reconstruct missing activity-log entries for bot closes (dry-run default)
   triage-backfill  judge the fixability of every huntable issue not yet triaged, while AI capacity allows
+  feature-screen-backfill  screen every open feature request not yet screened or decided, while AI capacity allows
   drain            let this machine's worker lanes finish their runs before a restart
 
 `prospector <command> --help` shows the command's own options.
@@ -122,6 +123,27 @@ def _triage_backfill(argv: list[str]) -> int:
     return 0
 
 
+def _feature_screen_backfill(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="prospector feature-screen-backfill",
+        description="Screen the open feature requests with no current screen or decision, newest "
+                    "first, on this machine's pinned base. Stops when AI capacity closes; rerun to resume.")
+    parser.add_argument("--limit", type=int, default=None, help="screen at most this many")
+    args = parser.parse_args(argv)
+    from issue_triage.issue_store import IssueStore
+    from prospector_app.backend import issue_fix_worker
+
+    store = IssueStore()
+    screened = issue_fix_worker.screen_features(store, args.limit, trigger="backfill")
+    consider = 0
+    for n in screened:
+        issue = store.load_issue(n)
+        consider += issue is not None and (issue.feature_screen or {}).get("verdict") == "consider"
+    rate = round(100 * consider / len(screened)) if screened else 0
+    print(f"screened {len(screened)}, consider {consider} ({rate}%)")
+    return 0
+
+
 def _drain(argv: list[str]) -> int:
     from prospector_app.backend import host_drain
 
@@ -138,6 +160,7 @@ COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "security-review": _security_review,
     "activity-backfill": _activity_backfill,
     "triage-backfill": _triage_backfill,
+    "feature-screen-backfill": _feature_screen_backfill,
     "drain": _drain,
 }
 

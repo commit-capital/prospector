@@ -37,9 +37,12 @@ import threading
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from issue_triage import (
     dispute_question,
+    feature_history,
+    feature_screen,
     fix_choice,
     fix_review,
     fix_review_runner,
@@ -407,6 +410,71 @@ def _judge(store: IssueStore, issue: Issue, base: prove.PinnedBase, trigger: str
     return True
 
 
+# Feature requests whose screen the agent failed this process, by when.
+_screen_failed: dict[int, float] = {}
+# Feature requests screened per idle pass.
+SCREEN_BATCH = 3
+
+
+def screen_features(store: IssueStore, limit: int | None, *, trigger: str = "worker") -> list[int]:
+    """Screen up to `limit` (None: every) open feature requests with no current
+    screen and no maintainer decision, the newest first, over this machine's
+    pinned base and one refresh of the taste digest, each while the lane's AI
+    capacity is open. The issues screened. A base this machine lacks leaves
+    every request unscreened; an agent outage propagates."""
+    from prospector_app.backend import issue_data
+
+    if not lane_health.capacity_open(LANE):
+        return []
+    now = time.monotonic()
+    issues = issue_data.issues()
+    pending = sorted(((i.raw.get("meta") or {}).get("created_at") or "", n, i)
+                     for n, i in issues.items()
+                     if feature_screen.is_feature_request(i)
+                     and feature_screen.current(i) is None and i.feature_decision is None
+                     and now - _screen_failed.get(n, -TRIAGE_RETRY_SECONDS) >= TRIAGE_RETRY_SECONDS)
+    pending = pending[::-1][:limit]
+    if not pending:
+        return []
+    try:
+        base = prove.pinned(Store())
+    except prove.NoBase:
+        return []
+    history = feature_history.refresh(issues.values())
+    screened = []
+    for _, n, issue in pending:
+        if not lane_health.capacity_open(LANE):
+            break
+        if _screen(store, issue, base, history, trigger):
+            screened.append(n)
+    return screened
+
+
+def _screen(store: IssueStore, issue: Issue, base: prove.PinnedBase, history: Path,
+            trigger: str) -> bool:
+    """Screen one feature request and book it. Whether the agent finished."""
+    n = issue.number
+    started = storekit.now()
+    created = storekit.parse_ts((issue.raw.get("meta") or {}).get("created_at"))
+    replies = (public_loop.read_replies(issue, created) or []) if created else []
+    try:
+        with capacity.metered(LANE):
+            section = feature_screen.screen(issue, base.clone, history, base_sha=base.sha,
+                                            replies=replies, subject=verdict_log.Subject("issue", n))
+    except (ValueError, RuntimeError) as e:
+        if isinstance(e, headless_agent.AgentUnavailable):
+            raise
+        _screen_failed[n] = time.monotonic()
+        traceback.print_exc()
+        return False
+    store.edit_issue(n).record_feature_screen(section)
+    store.append_run({"phase": "feature-screen:run", "issue": n, "started": started,
+                      "finished": storekit.now(), "trigger": trigger,
+                      "stats": {"verdict": section["verdict"], "size": section.get("size"),
+                                "mockup": bool(section.get("mockup"))}})
+    return True
+
+
 def fill(store: IssueStore, want: int) -> list[int]:
     """Queue up to `want` `solve`s for the most promising huntable issues the
     fixability triage judged `go` at their current content, a maintainer's
@@ -529,6 +597,8 @@ def _drain(slots: int) -> None:
                 if (settings.issue_fix_hunt() and not _budget_spent(store)
                         and (idle := _idle(store, slots)) > 0):
                     triage(store, TRIAGE_BATCH)
+                    if settings.feature_screen():
+                        screen_features(store, SCREEN_BATCH)
                     fill(store, idle)
         except Exception:
             traceback.print_exc()

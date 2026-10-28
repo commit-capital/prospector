@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from issue_triage import dispute_question, fix_review, fix_review_runner, fixability, public_loop
+from issue_triage import dispute_question, feature_history, feature_screen, fix_review, fix_review_runner, fixability, public_loop
 from issue_triage.issue_store import IssueStore
 from pipeline import profile, prove, settings
 from pipeline import store as S
@@ -446,6 +446,81 @@ def test_the_backfill_judges_every_untriaged_issue(hunting, triaging, monkeypatc
     triggers = [r.raw.get("trigger") for r in hunting.runs()
                 if hasattr(r, "raw") and r.raw.get("phase") == "issue-triage:run"]
     assert triggers == ["backfill", "backfill"]
+
+
+@pytest.fixture
+def screening(hunting, monkeypatch, tmp_path):
+    """Issues 3-6 beside the hunter's defects: an old `enhancement`, a decided
+    one, one screened fresh, and a defect; a pinned base, a digest and a
+    screener that answers from `screened["section"]`."""
+    old = "2025-01-01T00:00:00Z"
+    _issue(hunting, 3, created=old, labels=["enhancement"])
+    _issue(hunting, 4, created=old, labels=["enhancement"])
+    _issue(hunting, 5, created=old, labels=["enhancement"])
+    _issue(hunting, 6, created=old)
+    hunting.edit_issue(4).record_feature_decision({"decision": "decline"})
+    monkeypatch.setattr(prove, "pinned", lambda st: prove.PinnedBase(
+        sha="b" * 40, tier=2, image="img", clone=tmp_path))
+    monkeypatch.setattr(public_loop, "read_replies", lambda issue, after: [])
+    monkeypatch.setattr(issue_fix_worker, "_screen_failed", {})
+    monkeypatch.setattr(feature_history, "refresh", lambda issues, *, force=False: tmp_path)
+    screened: dict = {"section": {"verdict": "consider", "size": "small", "mockup": "<html>"},
+                      "issues": []}
+
+    def screen(issue, clone, history, *, base_sha, replies, subject):
+        screened["issues"].append(issue.number)
+        if isinstance(screened["section"], Exception):
+            raise screened["section"]
+        return dict(screened["section"])
+
+    monkeypatch.setattr(feature_screen, "screen", screen)
+    hunting.edit_issue(5).record_feature_screen({"verdict": "unclear"})
+    return screened
+
+
+def test_screen_features_picks_unscreened_feature_requests_only(hunting, screening):
+    assert issue_fix_worker.screen_features(hunting, None) == [3]
+    assert screening["issues"] == [3]
+    assert hunting.load_issue(3).feature_screen["verdict"] == "consider"
+    assert issue_fix_worker.screen_features(hunting, None) == []
+
+
+def test_screen_features_books_ledger_phase(hunting, screening):
+    issue_fix_worker.screen_features(hunting, 1, trigger="backfill")
+    runs = [r.raw for r in hunting.runs() if hasattr(r, "raw")
+            and r.raw.get("phase") == "feature-screen:run"]
+    assert len(runs) == 1 and runs[0]["issue"] == 3 and runs[0]["trigger"] == "backfill"
+    assert runs[0]["stats"] == {"verdict": "consider", "size": "small", "mockup": True}
+
+
+def test_screen_features_stops_when_capacity_closes(hunting, screening, capacity, monkeypatch):
+    _issue(hunting, 7, created="2025-02-01T00:00:00Z", labels=["enhancement"])
+    section = feature_screen.screen
+
+    def screen_then_close(*a, **kw):
+        capacity["open"] = False
+        return section(*a, **kw)
+
+    monkeypatch.setattr(feature_screen, "screen", screen_then_close)
+    assert issue_fix_worker.screen_features(hunting, None) == [7]
+
+
+def test_a_failed_screen_rests_the_request(hunting, screening):
+    screening["section"] = ValueError("no JSON object found in agent output")
+    assert issue_fix_worker.screen_features(hunting, None) == []
+    assert issue_fix_worker.screen_features(hunting, None) == []
+    assert screening["issues"] == [3]
+
+
+def test_the_feature_screen_backfill_prints_yes_rate(hunting, screening, monkeypatch, capsys):
+    from issue_triage import issue_store
+    from pipeline import cli
+    _issue(hunting, 7, created="2025-02-01T00:00:00Z", labels=["enhancement"])
+    monkeypatch.setattr(issue_store, "IssueStore", lambda: hunting)
+    answers = iter([{"verdict": "consider"}, {"verdict": "not-a-fit"}])
+    monkeypatch.setattr(feature_screen, "screen", lambda *a, **kw: next(answers))
+    assert cli.main(["feature-screen-backfill"]) == 0
+    assert "screened 2, consider 1 (50%)" in capsys.readouterr().out
 
 
 def test_a_triage_write_keeps_a_request_claimed_meanwhile(store):
