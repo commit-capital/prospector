@@ -521,11 +521,21 @@ def _pinned(tmp_path, base="base1", tier=0, baseline=()) -> Store:
     return s
 
 
-def _suite_tail(failed, mode="baseline"):
-    body = json.dumps({"mode": mode, "planned": 5, "reported": 5, "excluded": 0,
+def _suite_tail(failed, mode="baseline", planned=1000):
+    body = json.dumps({"mode": mode, "planned": planned, "reported": planned, "excluded": 0,
                        "invocations": 3, "failed": failed, "anomalies": []})
     return ("vitest noise\n===VERIFY-SUITE:BEGIN===\n"
             f"{body}\n===VERIFY-SUITE:END===\n")
+
+
+def test_the_suite_config_is_written_once_under_a_name_from_its_content(tmp_path, monkeypatch):
+    monkeypatch.setattr(vd, "SCRATCH", tmp_path)
+    monkeypatch.setattr(vd.profile, "active", lambda: SUITE_PROFILE)
+    path = vd.write_suite_config()
+    inode = path.stat().st_ino
+    assert vd.write_suite_config() == path
+    assert path.stat().st_ino == inode
+    assert json.loads(path.read_text())["wrapper"] == "scripts/w.mjs"
 
 
 class TestParseSuiteTrailer:
@@ -686,13 +696,22 @@ class TestPrepareBaseBaseline:
     def test_the_capture_keeps_a_trailer_naming_hundreds_of_files(self, tmp_path, monkeypatch):
         self._quiet(tmp_path, monkeypatch)
         failing = [f"server/src/__tests__/case-{i:03d}.test.ts" for i in range(300)]
-        tail = _suite_tail(failing)
+        tail = _suite_tail(failing, planned=2000)
         assert len(tail.encode()) > vd.OUTPUT_TAIL_BYTES
         monkeypatch.setattr(vd, "run_phase", lambda phase, image, tail_bytes=vd.OUTPUT_TAIL_BYTES,
                             **kw: (0, tail.encode()[-tail_bytes:].decode()))
         s = Store(tmp_path)
         vd.prepare_base(s, base_sha="a" * 12, tier=0)
         assert vd.local_pin(s)["baseline_failing"] == failing
+
+    def test_a_baseline_failing_most_of_its_plan_is_refused(self, tmp_path, monkeypatch):
+        self._quiet(tmp_path, monkeypatch)
+        monkeypatch.setattr(vd, "run_phase", lambda phase, image, **kw: (
+            0, _suite_tail([f"t{i}.test.ts" for i in range(30)], planned=100)))
+        s = Store(tmp_path)
+        with pytest.raises(RuntimeError, match="failed 30 of 100 planned files"):
+            vd.prepare_base(s, base_sha="a" * 12, tier=0)
+        assert vd.local_pin(s).get("baseline_failing") is None
 
     def test_a_profile_without_a_suite_pins_without_a_baseline_run(self, tmp_path, monkeypatch):
         monkeypatch.setattr(vd.subprocess, "run", lambda *a, **k: _SubprocessOK())
