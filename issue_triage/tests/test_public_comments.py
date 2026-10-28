@@ -35,3 +35,14 @@ def test_an_agent_cannot_hide_text_spoof_a_marker_or_link_another_issue():
                                                "issue-fix-public v1 issue=7 key=pr9:opened -->")
     assert body.count("<!--") == 1
     assert "#4521" not in body and "repo#12" not in body
+
+
+def test_the_triage_letters_each_gap_and_nests_the_readings_under_the_unsettled_one():
+    body = public_comments.triage_question(
+        7, "triage-1", "unused", ["it should throw", "it should return null"],
+        gaps=[{"kind": "several-asks", "ask": "File the --verbose request as its own issue"},
+              {"kind": "unsettled", "ask": "Which behavior do you expect?"}])
+    assert public_comments.problems(body) == []
+    assert "**A.** File the --verbose request as its own issue." in body
+    assert "**B.** Which behavior do you expect?" in body
+    assert "  - it should throw." in body and "unused" not in body

@@ -186,10 +186,14 @@ def test_no_reply_waits_until_the_default_is_due(store, monkeypatch):
     assert store.load_issue(1).fix_request["answer"] == {"label": "A"}
 
 
+BAR = fixability.BAR
+
+
 def _triaged(store: IssueStore, n: int, verdict: str = "go", fixability: int = 50,
              **extra: object) -> None:
     store.edit_issue(n).record_fix_triage({"verdict": verdict, "kind": "defect",
-                                           "fixability": fixability, **extra})
+                                           "fixability": fixability, "bar": BAR,
+                                           **extra})
 
 
 @pytest.fixture
@@ -243,6 +247,13 @@ def test_the_hunter_carries_the_replies_the_triage_read(hunting):
     assert issue_fix_worker.hunt(hunting) == 2
     req = hunting.load_issue(2).fix_request
     assert req["guidance"] == "maint: use option B" and req["notes"] == "author: it is option B"
+
+
+def test_the_hunter_hands_the_triage_s_approach_to_the_fix(hunting):
+    _triaged(hunting, 2, notes="author: it is option B", approach="The cause is in x.ts")
+    assert issue_fix_worker.hunt(hunting) == 2
+    notes = hunting.load_issue(2).fix_request["notes"]
+    assert "author: it is option B" in notes and "The cause is in x.ts" in notes
 
 
 def test_the_hunter_keeps_to_its_daily_budget(hunting, monkeypatch):
@@ -378,7 +389,7 @@ def triaging(hunting, monkeypatch, tmp_path):
         sha="b" * 40, tier=2, image="img", clone=tmp_path))
     monkeypatch.setattr(public_loop, "read_replies", lambda issue, after: [])
     monkeypatch.setattr(issue_fix_worker, "_triage_failed", {})
-    judged: dict = {"verdict": {"verdict": "go", "kind": "defect", "fixability": 70},
+    judged: dict = {"verdict": {"verdict": "go", "kind": "defect", "fixability": 70, "bar": BAR},
                     "issues": [], "asked": []}
 
     def judge(issue, clone, *, base_sha, replies=(), subject=None):

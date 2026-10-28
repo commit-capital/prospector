@@ -83,12 +83,31 @@ def handed_back(issue: int, key: str, reason: object) -> str:
         "", "It needs a maintainer to take it from here."])
 
 
-def triage_question(issue: int, key: str, question: object, readings: list) -> str:
-    """The question on issue `issue` when its report leaves the fix open."""
+def _ask(text: object, limit: int = REASON_MAX) -> str:
+    """An agent's request to the author as one inert sentence."""
+    one = quiet(text, limit)
+    return one if one.endswith("?") else f"{one}."
+
+
+def triage_question(issue: int, key: str, question: object, readings: list,
+                    gaps: list[dict] | None = None) -> str:
+    """The comment on issue `issue` when its report falls short of the bar:
+    each of the triage's `gaps` lettered, with the `readings` under the
+    unsettled one, or, for a triage that recorded none, its one question."""
+    shown = [quiet(r, REASON_MAX) for r in readings[:5] if quiet(r, REASON_MAX)]
+    gaps = [g for g in gaps or [] if quiet(g.get("ask"))]
+    if gaps:
+        lines = ["Prospector's automated fix pipeline read this report against the current code "
+                 "and needs the following from you before it tries a fix:", ""]
+        for i, g in enumerate(gaps[:5]):
+            lines.append(f"- **{chr(65 + i)}.** {_ask(g['ask'], FRAGMENT_MAX)}")
+            if g.get("kind") == "unsettled":
+                lines += [f"  - {r}." for r in shown]
+        lines += ["", "Editing the report or replying here starts the fix again."]
+        return _finish(issue, key, lines)
     lines = ["Prospector's automated fix pipeline read this report against the current code "
              "and needs one thing from you before it tries a fix:", "",
              f"> {quiet(question)}?"]
-    shown = [quiet(r, REASON_MAX) for r in readings[:5] if quiet(r, REASON_MAX)]
     if shown:
         lines += ["", "The readings it sees:",
                   *[f"- **{chr(65 + i)}.** {r}." for i, r in enumerate(shown)]]

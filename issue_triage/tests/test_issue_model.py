@@ -155,3 +155,21 @@ def test_record_fix_scan_touches_only_fix_scan(tmp_path):
     assert got.disposition == "needs-human"  # unchanged
     assert got.fix_scan == {"status": "likely-fixed", "gist": "Looks fixed on main.",
                             "rationale": "no PR to cite"}
+
+
+def test_a_triage_that_asks_the_author_reads_as_request_changes(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    iss = st.create_issue(5, {"title": "t", "state": "open", "updated_at": "T1"})
+    iss.route_to("needs-human", "prior")
+    st.edit_issue(5).record_fix_triage({"verdict": "ask", "kind": "defect"})
+    assert st.load_issue(5).disposition == "request-changes"
+    st.edit_issue(5).set_meta({"title": "t", "state": "open", "updated_at": "T2"})  # a reply
+    assert st.load_issue(5).disposition == "request-changes"
+
+
+def test_a_dup_outranks_a_triage_that_asks_the_author(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    iss = st.create_issue(5, {"title": "t", "state": "open", "updated_at": "T1"})
+    iss.route_to("close-dup", "dup", canonical=4)
+    st.edit_issue(5).record_fix_triage({"verdict": "ask", "kind": "defect"})
+    assert st.load_issue(5).disposition == "close-dup"

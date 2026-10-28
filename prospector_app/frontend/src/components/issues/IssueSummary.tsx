@@ -1,7 +1,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, type IssueDetail, type IssueFixFollowup, type IssueFixRivalEntry, type IssueFixRun, type IssuePR } from "../../api";
+import { api, type IssueDetail, type IssueFixFollowup, type IssueFixRivalEntry, type IssueFixTriage, type IssueFixRun, type IssuePR } from "../../api";
 import { AnalyzeJobLink } from "../AnalyzeJobLink";
 import { Collapsible } from "../Collapsible";
 import { PRLink } from "../PRLink";
@@ -240,6 +240,45 @@ function IssueAnalysis({ d }: { d: IssueDetail }) {
   );
 }
 
+const GAP_LABEL: Record<NonNullable<IssueFixTriage["gaps"]>[number]["kind"], string> = {
+  "several-asks": "Several asks", "no-repro": "Missing detail", unsettled: "Unsettled behavior",
+};
+const ASKED: Record<string, string> = {
+  posted: "asked on the issue", "dry-run": "would ask (dry run)", capped: "asked as often as it may",
+  "out-of-scope": "not asked: public comments are off for this issue", refused: "not asked: the comment failed its checks",
+  error: "not asked: posting failed",
+};
+
+/** Where the issue stands against the report bar: what its author was asked,
+ *  or why it waits on you, and the triage's read of a cleaner fix. */
+function ReportBar({ d }: { d: IssueDetail }) {
+  const t = d.fix_triage;
+  if (!t) return null;
+  const yours = t.verdict === "skip" && (t.kind === "too-big" || t.kind === "intended");
+  if (t.verdict !== "ask" && !yours && !t.approach) return null;
+  return (
+    <div className="issue-analysis">
+      <div className="analysis-line">
+        <span className="analysis-label">Report bar:</span>
+        {t.verdict === "ask" ? <span>waiting on the reporter, {ASKED[t.asked ?? ""] ?? "not yet asked"}</span>
+          : yours ? <span>{t.kind === "too-big" ? "too big for one PR" : "the code means this behavior"}, needs your call</span>
+          : <span>met</span>}
+        {!t.current && <span className="muted small">the reporter replied or edited it; judging again</span>}
+      </div>
+      {t.verdict === "ask" && t.gaps && t.gaps.length > 0 && (
+        <ul className="issue-asks">{t.gaps.map((g, i) => (
+          <li key={i}><b>{GAP_LABEL[g.kind] ?? g.kind}:</b> {g.ask}
+            {g.kind === "unsettled" && t.readings && t.readings.length > 0 && (
+              <ul>{t.readings.map((r, j) => <li key={j}>{r}</li>)}</ul>)}
+          </li>))}
+        </ul>
+      )}
+      {yours && t.reason && <div className="issue-rationale">{t.reason}</div>}
+      {t.approach && <div className="muted small">Cleaner fix than the report proposes: {t.approach}</div>}
+    </div>
+  );
+}
+
 const RIVAL_CHIP: Record<IssueFixRivalEntry["verdict"], { tone: Tone; text: string }> = {
   covered: { tone: "green", text: "ours covers it" },
   "gap-closed": { tone: "green", text: "ours now covers it" },
@@ -340,6 +379,7 @@ function suggestedAction(d: IssueDetail): string {
   switch (a?.disposition) {
     case "close-dup": return `Close as a duplicate of #${a.canonical}`;
     case "close-fixed": return a.fixed_by ? `Close as already fixed by #${a.fixed_by}` : "Close as already fixed";
+    case "request-changes": return "Wait for the reporter to fix the report";
     case "request-repro": return "Ask the reporter for a reproduction";
     case "link-pr": return "Keep open: a linked PR addresses it";
     case "needs-human": return "Needs your decision";
@@ -368,6 +408,7 @@ export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () =
         <FixPRs d={d} />
       </div>
       <IssueAnalysis d={d} />
+      <ReportBar d={d} />
       <RivalComparison d={d} />
       <div className="summary-action">
         <div className="sug-headline"><span className="analysis-label">Suggested action:</span> <b>{suggestedAction(d)}</b></div>

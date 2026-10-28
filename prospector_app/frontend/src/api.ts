@@ -1685,7 +1685,8 @@ export interface IssueFilterSpec {
 }
 export type IssueDisposition = "not-planned" | "completed" | "fixed" | "dup";
 /** The issue pipeline's per-issue triage verdict (issue ANALYZE). */
-export type IssueTriageDisposition = "close-dup" | "close-fixed" | "request-repro" | "link-pr" | "needs-human";
+export type IssueTriageDisposition = "close-dup" | "close-fixed" | "request-changes" | "request-repro"
+  | "link-pr" | "needs-human";
 /** The stored analysis section: the verdict plus the agent's written reasons. */
 interface IssueAnalysis {
   disposition: IssueTriageDisposition;
@@ -1730,6 +1731,21 @@ export interface IssueDetail extends IssueRow {
   fix_choice?: IssueFixChoice | null;
   /** The operator's approval of the open PR while it holds (fix_review.approval). */
   fix_approved?: IssueFixApproval | null;
+  /** The fixability triage against the report bar (issue_triage/fixability.py). */
+  fix_triage?: IssueFixTriage | null;
+}
+/** Whether an issue meets the report bar: `gaps` its author was asked to close,
+ *  `asked` what became of that comment, `current` false once a reply or edit
+ *  waits to be judged again. */
+export interface IssueFixTriage {
+  verdict: "go" | "ask" | "skip";
+  kind: string | null;
+  gaps: { kind: "several-asks" | "no-repro" | "unsettled"; ask: string }[] | null;
+  readings: string[] | null;
+  approach: string | null;
+  reason: string | null;
+  asked: string | null;
+  current: boolean;
 }
 /** An open fix PR approved as it stands and left to the maintainers. */
 export interface IssueFixApproval { by: string; at: string; partial: boolean }

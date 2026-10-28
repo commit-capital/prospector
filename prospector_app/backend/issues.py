@@ -22,7 +22,7 @@ from issue_triage import fix_review
 from issue_triage import issue_display
 from issue_triage import issue_links
 from issue_triage import pr_index
-from issue_triage import fix_choice, trust_boundary
+from issue_triage import fix_choice, fixability, trust_boundary
 from pipeline import gates
 from pipeline import gh
 from pipeline import settings
@@ -351,12 +351,18 @@ def get_issue(n: int) -> dict | None:
     row["fix_approved"] = fix_review.approval(i)
     row["fix_held"] = trust_boundary.held(i)
     row["fix_choice"] = i.fix_choice if fix_choice.chosen(i) is not None else None
+    tri = i.fix_triage
+    row["fix_triage"] = tri and {
+        **{k: tri.get(k) for k in ("verdict", "kind", "gaps", "readings", "approach",
+                                   "reason", "asked")},
+        "current": fixability.current(i) is not None}
     return row
 
 
 _REPRO_RANK = {"A": 5, "B": 4, "C": 3, "D": 2, "E": 1, "F": 0}
 # Most actionable first; unanalyzed issues have no rank and always sort last.
-_DISP_RANK = {"link-pr": 0, "close-dup": 1, "request-repro": 2, "needs-human": 3}
+_DISP_RANK = {"link-pr": 0, "close-dup": 1, "request-changes": 2, "request-repro": 3,
+              "needs-human": 4}
 _ISSUE_SORT_KEYS = {
     "number": lambda r: r["number"],
     "title": lambda r: (r["title"] or "").lower(),

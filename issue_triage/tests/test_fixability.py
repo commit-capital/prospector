@@ -214,3 +214,67 @@ def test_the_hunter_takes_an_easy_fix_ahead_of_a_more_fixable_one(
         store.edit_issue(n).record_fix_triage(fixability.judge(issue, clone, base_sha="b" * 40))
     keys = {n: fixability.hunt_key(store.load_issue(n), maintainer=n == 3) for n in (1, 2, 3)}
     assert sorted(keys, key=keys.get, reverse=True) == [3, 2, 1]
+
+
+def test_a_report_asking_for_several_things_goes_back_to_its_author(clone, monkeypatch):
+    _agent(monkeypatch, {**GO, "requests": ["x should be 2", "add a --verbose flag"]})
+    out = fixability.review(clone, title="t", body="b")
+    assert out["verdict"] == "ask"
+    [gap] = out["gaps"]
+    assert gap["kind"] == "several-asks" and "add a --verbose flag" in gap["ask"]
+    assert out["question"]
+
+
+def test_a_go_with_an_author_gap_waits_on_the_author(clone, monkeypatch):
+    _agent(monkeypatch, {**GO, "requests": ["x should be 2"],
+                         "gaps": [{"kind": "no-repro", "ask": "Which version shows it"},
+                                  {"kind": "made-up", "ask": "drop me"}]})
+    out = fixability.review(clone, title="t", body="b")
+    assert out["verdict"] == "ask"
+    assert out["gaps"] == [{"kind": "no-repro", "ask": "Which version shows it"}]
+    assert "Which version shows it" in out["question"]
+
+
+def test_an_ask_without_gaps_reads_as_one_unsettled_gap(clone, monkeypatch):
+    _agent(monkeypatch, {**GO, "verdict": "ask", "question": "A or B?",
+                         "readings": ["A", "B"]})
+    out = fixability.review(clone, title="t", body="b")
+    assert out["gaps"] == [{"kind": "unsettled", "ask": "A or B?"}]
+    assert out["question"] == "A or B?"
+
+
+def test_a_fix_too_big_for_one_pull_request_is_skipped(clone, monkeypatch):
+    _agent(monkeypatch, {**GO, "kind": "too-big", "size": "large"})
+    out = fixability.review(clone, title="t", body="b")
+    assert (out["verdict"], out["kind"]) == ("skip", "too-big")
+
+
+def test_a_cleaner_approach_rides_with_the_triage(clone, monkeypatch):
+    _agent(monkeypatch, {**GO, "approach": "  The report patches the caller; the cause is in x.ts "})
+    out = fixability.review(clone, title="t", body="b")
+    assert out["verdict"] == "go"
+    assert out["approach"] == "The report patches the caller; the cause is in x.ts"
+
+
+def test_the_prompt_asks_for_one_concrete_ask_and_lets_a_test_stub_a_service(clone, monkeypatch):
+    prompts = _agent(monkeypatch, GO)
+    fixability.review(clone, title="t", body="b")
+    assert "several-asks" in prompts[0] and "stub" in prompts[0]
+
+
+def test_a_go_judged_before_the_bar_reads_as_stale(tmp_path, clone, search, monkeypatch):
+    _agent(monkeypatch, GO)
+    store = IssueStore(tmp_path)
+    issue = _issue(store)
+    judged = fixability.judge(issue, clone, base_sha="b" * 40)
+    assert judged["bar"] == fixability.BAR
+    store.edit_issue(7).record_fix_triage({k: v for k, v in judged.items() if k != "bar"})
+    assert fixability.current(store.load_issue(7)) is None
+
+
+def test_an_ask_judged_before_the_bar_stays_current(tmp_path):
+    store = IssueStore(tmp_path)
+    _issue(store)
+    store.edit_issue(7).record_fix_triage({"verdict": "ask", "kind": "defect",
+                                           "question": "A or B?", "asks": 1})
+    assert fixability.current(store.load_issue(7))["verdict"] == "ask"
