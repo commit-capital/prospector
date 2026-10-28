@@ -147,7 +147,7 @@ def classify(pr: Pr) -> dict | None:
 
 def _parked_reason(req: dict) -> str:
     """Why a parked change waits for you: the unattended bar that stopped it,
-    or the deployment not pushing that action unattended."""
+    or the parking worker not pushing that action unattended."""
     action = str(req.get("action"))
     base = settings.default_branch()
     what = {"resolve": "the agent's conflict resolve", "fix": "the agent's fix",
@@ -157,10 +157,12 @@ def _parked_reason(req: dict) -> str:
     bar = (result.get("auto_review") or {}).get("bar") or result.get("autopush_bar") or {}
     if bar and not bar.get("ok"):
         why = bar.get("reason") or "the unattended bar refused it"
-    elif action not in settings.fix_autopush():
-        why = f"unattended pushes are off for {action}"
-    else:
+    elif result.get("autopush") is False:
+        why = f"unattended pushes are off for {action} on {req.get('host') or 'its worker'}"
+    elif result.get("autopush"):
         why = "the unattended bar has not judged it yet"
+    else:
+        return f"{what} awaits your approval"
     return f"{what} is parked for you: {why}"
 
 

@@ -49,26 +49,32 @@ def test_a_parked_change_is_your_move(store):
     assert (out["column"], out["bucket"], out["owner"]) == ("act", "approve-parked", "you")
 
 
-def test_a_parked_change_names_the_bar_that_stopped_it(store, monkeypatch):
-    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+def test_a_parked_change_names_the_bar_that_stopped_it(store):
     rec = _rec()
     rec["fix_request"] = {"action": "resolve", "status": "awaiting-review", "source": "auto",
                           "against_head_sha": HEAD, "host": "w", "queued_at": _now(),
-                          "result": {"auto_review": {"bar": {
+                          "result": {"autopush": True, "auto_review": {"bar": {
                               "ok": False, "reason": "the behavior-lens reviewer did not clear it: x"}}}}
     out = _classify(store, rec)
     assert out["reason"] == ("the agent's conflict resolve is parked for you: "
                              "the behavior-lens reviewer did not clear it: x")
 
 
-def test_a_parked_action_autopush_skips_says_so(store, monkeypatch):
-    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "")
+@pytest.mark.parametrize("recorded, local, reason", [
+    (False, "describe", "the rewritten description is parked for you: "
+                        "unattended pushes are off for describe on studio"),
+    (True, "", "the rewritten description is parked for you: "
+               "the unattended bar has not judged it yet"),
+    (None, "", "the rewritten description awaits your approval"),
+], ids=["worker-off", "worker-on", "unrecorded"])
+def test_a_parked_change_says_what_its_worker_saw(store, monkeypatch, recorded, local, reason):
+    # The viewing machine's own TRIAGE_FIX_AUTOPUSH never decides the text.
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", local)
     rec = _rec()
     rec["fix_request"] = {"action": "describe", "status": "awaiting-review", "source": "auto",
-                          "against_head_sha": HEAD, "host": "w", "queued_at": _now()}
-    out = _classify(store, rec)
-    assert out["reason"] == ("the rewritten description is parked for you: "
-                             "unattended pushes are off for describe")
+                          "against_head_sha": HEAD, "host": "studio", "queued_at": _now(),
+                          "result": {} if recorded is None else {"autopush": recorded}}
+    assert _classify(store, rec)["reason"] == reason
 
 
 def test_a_needs_human_pick_is_handed_to_you(store):
