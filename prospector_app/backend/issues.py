@@ -328,6 +328,7 @@ def get_issue(n: int) -> dict | None:
         "asks": i.asks,
         "canonical": i.canonical,
         "fixed_by": i.fixed_by,
+        "checked_at": (i.section("analysis") or {}).get("checked_at"),
     }
     fixer, canon = i.fixed_by, i.canonical
     row["fixed_comment"] = fixed_issue_comment(int(fixer)) if fixer else None
@@ -341,6 +342,7 @@ def get_issue(n: int) -> dict | None:
     row["fix_pr"] = fix_review.open_pr(i)
     row["fix_approved"] = fix_review.approval(i)
     row["fix_held"] = trust_boundary.held(i)
+    row["status_line"] = fix_review.status_line(i)
     row["fix_choice"] = i.fix_choice if fix_choice.chosen(i) is not None else None
     return row
 

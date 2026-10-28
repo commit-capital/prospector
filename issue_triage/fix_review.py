@@ -23,7 +23,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from issue_triage import dispute_question, fix_choice, fix_pr_body, issue_gates
+from issue_triage import (
+    dispute_question,
+    fix_choice,
+    fix_pr_body,
+    issue_gates,
+    second_opinion,
+    trust_boundary,
+)
 from pipeline import diffpaths, gates, settings, storekit
 
 if TYPE_CHECKING:
@@ -47,18 +54,20 @@ def followup_for(fu: dict | None, pr: object) -> dict:
     return dict(fu)
 
 
-def _ended(proposal: dict, fu: dict) -> tuple[str, str] | None:
-    """(status, reason) for a proposal whose follow-up saw it end, or None
-    while it is open. Only `closed_as: merged` reads as merged; a record
+def _ended(proposal: dict, fu: dict) -> tuple[str, str, str] | None:
+    """(status, reason, line) for a proposal whose follow-up saw it end, or
+    None while it is open. Only `closed_as: merged` reads as merged; a record
     without `closed_as` reads as closed, in the follow-up's own words."""
     if fu.get("state") != "done":
         return None
     pr = proposal["pr"]
     if fu.get("closed_as") == "merged":
-        return "pr-merged", f"#{pr} merged"
+        return "pr-merged", f"#{pr} merged", f"Prospector's fix #{pr} was merged."
     if fu.get("closed_as") == "closed":
-        return "pr-closed", f"#{pr} was closed without merging"
-    return "pr-closed", str(fu.get("reason") or f"#{pr} is no longer open")
+        return ("pr-closed", f"#{pr} was closed without merging",
+                f"Prospector's fix #{pr} was closed without merging.")
+    return ("pr-closed", str(fu.get("reason") or f"#{pr} is no longer open"),
+            f"Prospector's fix #{pr} is no longer open.")
 
 
 def partial_note(run: dict) -> str | None:
@@ -97,19 +106,45 @@ def fix_status(issue: Issue) -> tuple[str, str] | None:
     """(status, reason) for issue's fix attempt, or None when it has none. The
     reason of a partial fix leads with what it leaves (`partial`)."""
     status = _fix_status(issue)
+    if status is None:
+        return None
     note = partial(issue)
-    return (status[0], f"{note} — {status[1]}") if status and note else status
+    return status[0], f"{note} — {status[1]}" if note else status[1]
 
 
-def _fix_status(issue: Issue) -> tuple[str, str] | None:
+def status_line(issue: Issue) -> str:
+    """Where issue stands, in the one plain sentence its page leads with."""
+    status = _fix_status(issue)
+    if status is None:
+        return ("This issue is closed." if issue.state != "open"
+                else "Prospector hasn't tried to fix this yet.")
+    return status[2] + (" It fixes only part of the report." if partial(issue) else "")
+
+
+def _held_line(issue: Issue) -> str:
+    held = trust_boundary.held(issue)
+    rivals = (issue.fix_run or {}).get("second_opinion")
+    if held is None:
+        return "Prospector has a working fix that is about to open as a PR."
+    if held == second_opinion.flag(rivals):
+        return second_opinion.held_line(rivals)
+    return f"Prospector has a working fix but is holding it: {held}."
+
+
+def _fix_status(issue: Issue) -> tuple[str, str, str] | None:
+    """(status, reason, line): the status, its terse reason, and the plain
+    sentence `status_line` gives."""
     pr = fix_choice.chosen(issue)
     if pr is not None:
-        return "chosen", f"going with #{pr}"
+        return ("chosen", f"going with #{pr}",
+                f"You chose #{pr} as the fix, so Prospector stopped its own.")
     req, run = issue.fix_request, issue.fix_run
     if req and req.get("status") in IN_FLIGHT:
-        return "running", f"{req.get('action')} {req.get('status')}"
+        return ("running", f"{req.get('action')} {req.get('status')}",
+                "Prospector is working on a fix right now.")
+    broke = "Prospector's last fix attempt broke down before it finished."
     if req and req.get("status") == "failed":
-        return "failed", str(req.get("reason") or f"{req.get('action')} failed")
+        return "failed", str(req.get("reason") or f"{req.get('action')} failed"), broke
     if not run:
         return None
     proposal = run.get("proposal") or {}
@@ -118,30 +153,38 @@ def _fix_status(issue: Issue) -> tuple[str, str] | None:
         ended = _ended(proposal, fu)
         if ended:
             return ended
+        pr = proposal["pr"]
+        why = (fu.get("judged") or {}).get("reason") or fu.get("reason") or ""
         held = approval(issue)
         if held:
-            return "pr-open", _approved_reason(proposal["pr"], held, fu)
+            return ("pr-open", _approved_reason(pr, held, fu),
+                    f"You approved Prospector's fix #{pr}; it's with the maintainers."
+                    + (f" It came back once: {why}." if fu.get("state") == "handed-back" else ""))
         if fu.get("state") == "ready":
-            return "review", f"#{proposal['pr']} is green — ready for your review"
+            return ("review", f"#{pr} is green — ready for your review",
+                    f"Prospector's fix #{pr} passes its checks and waits for your review.")
         if fu.get("state") == "handed-back":
-            why = (fu.get("judged") or {}).get("reason") or fu.get("reason") or ""
-            return "review", f"#{proposal['pr']} handed back: {why}"
+            return ("review", f"#{pr} handed back: {why}",
+                    f"Prospector's fix #{pr} came back to you: {why}.")
         if fu.get("state") == "watching" and fu.get("reason"):
-            return "pr-open", f"#{proposal['pr']}: {fu['reason']}"
-        return "pr-open", f"#{proposal['pr']}"
+            return "pr-open", f"#{pr}: {fu['reason']}", f"Prospector's fix is open as #{pr}: {fu['reason']}."
+        return "pr-open", f"#{pr}", f"Prospector's fix is open as #{pr}."
     ending, detail = run.get("ending"), str(run.get("detail") or "")
     if ending == "fixed":
-        return "review", detail
+        return "review", detail, _held_line(issue)
     if ending == "fix-disputed":
         question = run.get("question") or {}
         if question.get("asked"):
-            return "reporter", "a question is waiting on the reporter"
+            return ("reporter", "a question is waiting on the reporter",
+                    "Prospector asked the reporter what the report wants and is waiting for an answer.")
         if question.get("question"):
-            return "question", str(question["question"])
-        return "declined", "the agents disagreed and no question could be drafted"
+            return ("question", str(question["question"]),
+                    "Prospector's fix attempts disagree on what the report wants; answer their question to go on.")
+        return ("declined", "the agents disagreed and no question could be drafted",
+                "Prospector's fix attempts disagree on what the report wants and couldn't say why.")
     if ending in FAULT_ENDINGS or run.get("fault"):
-        return "failed", f"{ending}: {detail}"
-    return "declined", f"{ending}: {detail}"
+        return "failed", f"{ending}: {detail}", broke
+    return "declined", f"{ending}: {detail}", "Prospector tried to fix this and couldn't."
 
 
 def approval(issue: Issue) -> dict | None:

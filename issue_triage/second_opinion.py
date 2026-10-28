@@ -43,7 +43,7 @@ TEST_QUOTE_MAX = 6000
 OUTPUT_MAX = 2000
 COMPARE_TIMEOUT_SECONDS = 600
 CASES_MAX = 10
-CASE_MAX = 300
+CASE_MAX = 500
 
 
 @dataclass(frozen=True)
@@ -227,7 +227,7 @@ __OURS__
 __THEIRS__
 </other-change>
 
-Return ONLY a JSON object, as a ```json fenced block: {"missed": ["<one case, in words>"], "reason": "<one sentence>"}
+Return ONLY a JSON object, as a ```json fenced block: {"missed": ["<one case, in one short sentence>"], "reason": "<one sentence>"}
 An empty "missed" means the bot's change handles every case the report asks for that the other change does.
 """
 
@@ -255,7 +255,14 @@ def compare(rival: Rival, patch: str, *, title: str, body: str) -> list[str] | N
     missed = verdict.get("missed")
     if not isinstance(missed, list) or not all(isinstance(m, str) and m.strip() for m in missed):
         return None
-    return [" ".join(m.split())[:CASE_MAX] for m in missed[:CASES_MAX]]
+    return [_clip(" ".join(m.split())) for m in missed[:CASES_MAX]]
+
+
+def _clip(case: str) -> str:
+    """`case` cut to CASE_MAX at a word, marked when cut."""
+    if len(case) <= CASE_MAX:
+        return case
+    return case[:CASE_MAX].rsplit(" ", 1)[0] + "…"
 
 
 def notes(gaps: list[tuple[Rival, dict]]) -> str:
@@ -296,10 +303,28 @@ def co_authors(entries: list[dict] | None) -> list[str]:
     return [c for r in credit(entries) if (c := co_author(str(r["author"])))]
 
 
+def _gaps(entries: list[dict] | None) -> list[dict]:
+    return [e for e in entries or [] if e.get("verdict") == "gap-open"][:3]
+
+
 def flag(entries: list[dict] | None) -> str | None:
-    """Why a fix that leaves a rival's tests failing waits for an operator."""
-    open_ = [e for e in entries or [] if e.get("verdict") == "gap-open"]
-    if not open_:
+    """Why a fix another open pull request still covers more of the report than
+    waits for an operator."""
+    gaps = _gaps(entries)
+    if not gaps:
         return None
-    return "another pull request's tests fail with this fix: " + "; ".join(
-        f"#{e['pr']} ({e['why']})" for e in open_[:3])
+    return "another open pull request covers what this fix misses: " + "; ".join(
+        f"#{e['pr']} ({e['why']})" for e in gaps)
+
+
+def held_line(entries: list[dict] | None) -> str:
+    """`flag`'s hold as the plain sentence the issue page leads with."""
+    gaps = _gaps(entries)
+    refs = [f"#{e['pr']}" for e in gaps]
+    prs = refs[0] if len(refs) == 1 else f"{', '.join(refs[:-1])} and {refs[-1]}"
+    one = len(gaps) == 1
+    what = (("handles a case" if one else "handle cases") + " ours misses (listed below)"
+            if any(e.get("missed") for e in gaps)
+            else ("has tests" if one else "have tests") + " our fix fails")
+    return (f"Prospector has a working fix but is holding it: {prs} {what}. "
+            f"Go with {prs if one else 'one of them'}, or send ours back to close the gap.")

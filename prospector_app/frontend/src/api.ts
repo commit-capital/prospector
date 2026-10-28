@@ -1688,6 +1688,7 @@ interface IssueAnalysis {
   asks?: string[] | null;
   canonical?: number | null;
   fixed_by?: number | null;
+  checked_at?: string | null;
 }
 /** Full issue detail for the flyout: the table row plus body + analysis. */
 /** The issue page's plain-language card (issue_triage/issue_display.py). */
@@ -1707,6 +1708,8 @@ export interface IssueDetail extends IssueRow {
   fix_pr?: number | null;
   /** Why the fixed attempt waits for an operator to open its PR (trust_boundary.held). */
   fix_held?: string | null;
+  /** Where the issue stands, in one plain sentence (fix_review.status_line). */
+  status_line: string;
   /** The PR going ahead as the fix in place of ours, while the choice stands. */
   fix_choice?: IssueFixChoice | null;
   /** The operator's approval of the open PR while it holds (fix_review.approval). */

@@ -41,6 +41,37 @@ def test_a_fresh_issue_has_no_status_and_may_be_solved(store):
     assert issue.fix_thread[-1]["text"] == "look at x" and issue.fix_thread[-1]["by"] == "op"
 
 
+OPEN_GAP = {"pr": 14804, "author": "a", "verdict": "gap-open", "why": "w", "missed": ["the setup screen"]}
+
+
+def test_a_fix_held_for_a_rival_says_which_pr_covers_more_and_the_choice(store):
+    _run(store, intake={"verdict": "clear"}, second_opinion=[OPEN_GAP, {**OPEN_GAP, "pr": 9, "verdict": "covered"}])
+    assert fix_review.status_line(store.load_issue(7)) == (
+        "Prospector has a working fix but is holding it: #14804 handles a case ours misses "
+        "(listed below). Go with #14804, or send ours back to close the gap.")
+
+
+def test_a_hold_another_check_decides_is_given_in_its_own_words(store):
+    _run(store, intake={"verdict": "suspicious", "findings": [], "reason": "r"}, second_opinion=[OPEN_GAP])
+    line = fix_review.status_line(store.load_issue(7))
+    assert line.startswith("Prospector has a working fix but is holding it: the intake audit")
+    assert "#14804" not in line
+
+
+def test_the_status_line_follows_the_proposal_through_review(store):
+    _run(store, proposal={"pr": 9, "url": "u"})
+    assert fix_review.status_line(store.load_issue(7)) == "Prospector's fix is open as #9."
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "reason": "CI fails in x"})
+    assert fix_review.status_line(store.load_issue(7)) == (
+        "Prospector's fix #9 came back to you: CI fails in x.")
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "done", "closed_as": "merged"})
+    assert fix_review.status_line(store.load_issue(7)) == "Prospector's fix #9 was merged."
+
+
+def test_an_issue_with_no_attempt_says_so(store):
+    assert fix_review.status_line(store.load_issue(7)) == "Prospector hasn't tried to fix this yet."
+
+
 def test_one_request_at_a_time(store):
     fix_review.queue(store, 7, "solve", by="op")
     ok, why = fix_review.queue(store, 7, "solve", by="op")
