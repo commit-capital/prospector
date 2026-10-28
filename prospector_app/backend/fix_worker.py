@@ -1350,10 +1350,18 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
                    result=evidence or {"conflict_paths": paused}, kind="conflicts")
         return
     diff = _resubmit(n, "diff")
-    if diff.returncode != 0 or not (diff.stdout or "").strip():
+    if diff.returncode != 0:
         _resubmit(n, "abort")
         _fail(n, claimed, f"reading the resolved diff failed: "
                           f"{(diff.stderr or diff.stdout).strip()[:500]}")
+        return
+    if not (diff.stdout or "").strip():
+        # The resolved merge equals the base: the PR's change is already there,
+        # or the resolution kept none of it. Either way it is the PR's to answer.
+        _resubmit(n, "abort")
+        _decline(n, claimed, f"{_conflict_refusal(paused)} The resolved merge leaves no "
+                             f"change against the base, so the PR's change may already be "
+                             f"on it.", result=evidence)
         return
     patch = _diff_text(diff)
 

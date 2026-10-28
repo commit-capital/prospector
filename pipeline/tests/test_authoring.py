@@ -109,15 +109,19 @@ def test_the_design_question_asks_by_them():
 
 
 def test_both_stay_short():
-    assert len(authoring.HOUSE_STYLE.split()) < 300
-    assert len(authoring.DESIGN_QUESTION.split()) < 200
+    assert len(authoring.HOUSE_STYLE.split()) < authoring.HOUSE_STYLE_MAX_WORDS
+    assert len(authoring.DESIGN_QUESTION.split()) < authoring.DESIGN_QUESTION_MAX_WORDS
 
 
 def test_both_stay_general():
-    import re
-
-    from pipeline import settings
     for text in (authoring.HOUSE_STYLE, authoring.DESIGN_QUESTION):
-        assert settings.repo().split("/")[-1] not in text
-        assert not re.search(r"\w+/\w+\.\w+", text)
-        assert not re.search(r"#\d", text)
+        assert authoring.general(text) is None
+
+
+def test_general_refuses_a_path_an_issue_and_a_named_thing(monkeypatch):
+    monkeypatch.setenv("TRIAGE_REPO", "acme/widgets")
+    assert authoring.general("Prefer a typed query over hand-built SQL.") is None
+    assert authoring.general("Touch src/a.ts first.")
+    assert authoring.general("As in #12, check the status.")
+    assert authoring.general("Keep the widgets parser plain.")
+    assert authoring.general("Reuse NewAgentSetup's form.", names=("NewAgentSetup",))

@@ -705,9 +705,33 @@ class _Job:
     reference: str
 
 
+def plan_jobs(pr_store: Store, manifest: dict, *, refresh: bool, issues: set[int] | None,
+              only: set[str] | None, cases: bool) -> list[_Job]:
+    """The replays a run makes: each fair bug screened in today, then each
+    usable case, narrowed to `issues` (by issue number) and `only` (by case id)."""
+    fair = {i["issue"]: b["base_sha"] for b in manifest["bases"] for i in b["instances"]
+            if i["verdict"] == "fair" and (issues is None or i["issue"] in issues)
+            and (only is None or str(i["issue"]) in only)}
+    usable = [c for c in (load_cases(pr_store) if cases else [])
+              if c.oracle != "unusable" and (issues is None or c.issue in issues)
+              and (only is None or c.case in only)]
+    by_issue: dict[int, replay.Instance] = {}
+    if fair:
+        pin = prove.pinned(pr_store)
+        by_issue = {inst.issue: inst for inst in _screened(profile.active(), pin, refresh=refresh)
+                    if inst.issue in fair}
+        missing = sorted(set(fair) - set(by_issue))
+        if missing:
+            print(f"no longer screened in, left out: {missing}", flush=True)
+    return ([_Job(str(n), "history", inst, fair[n], True, inst.merge_sha)
+             for n, inst in sorted(by_issue.items())]
+            + [_Job(c.case, c.source, c.instance(), c.base_sha, c.oracle == "tests",
+                    c.merge_sha or c.head_sha) for c in usable])
+
+
 def run(*, name: str, passes: int, concurrency: int, refresh: bool,
         issues: set[int] | None, resume: bool, lane: str = "staged",
-        cases: bool = True) -> int:
+        cases: bool = True, only: set[str] | None = None) -> int:
     """Replay every fair bug of the set, and unless not `cases` every usable rival
     and case-study case, through the lane `passes` times, pass by pass, each pass
     recorded as replay run `<name>-p<k>`. Re-invoking continues a run: recorded
@@ -723,33 +747,23 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
         print(f"left out {len(manifest['stale'])} base(s) qualified under another sandbox "
               f"profile; run eval_set build to requalify: "
               f"{' '.join(sha[:12] for sha in manifest['stale'])}", flush=True)
-    fair = {i["issue"]: b["base_sha"] for b in manifest["bases"] for i in b["instances"]
-            if i["verdict"] == "fair" and (issues is None or i["issue"] in issues)}
-    usable = [c for c in (load_cases(pr_store) if cases else [])
-              if c.oracle != "unusable" and (issues is None or c.issue in issues)]
-    if not fair and not usable:
+    planned = plan_jobs(pr_store, manifest, refresh=refresh, issues=issues, only=only,
+                        cases=cases)
+    if not planned:
         print("the evaluation set holds no fair bug or usable case to run", file=sys.stderr)
         return 2
-    by_issue: dict[int, replay.Instance] = {}
-    if fair:
-        pin = prove.pinned(pr_store)
-        by_issue = {inst.issue: inst for inst in _screened(prof, pin, refresh=refresh)
-                    if inst.issue in fair}
-        missing = sorted(set(fair) - set(by_issue))
-        if missing:
-            print(f"no longer screened in, left out: {missing}", flush=True)
-    planned = [_Job(str(n), "history", inst, fair[n], True, inst.merge_sha) for n, inst in sorted(by_issue.items())]
-    bases = {sha: _held_base(sha) for sha in sorted({fair[n] for n in by_issue})}
-    for sha in sorted({c.base_sha for c in usable} - set(bases)):
-        # A case's base is its own; one that cannot be built drops its cases, not the run.
+    bases: dict[str, prove.PinnedBase] = {}
+    for sha in sorted({job.base_sha for job in planned}):
         try:
             bases[sha] = _held_base(sha)
         except (prove.NoBase, verify_driver.BuildFailure) as e:
-            dropped = [c.case for c in usable if c.base_sha == sha]
+            # A case's base is its own; one that cannot be built drops its cases, not the run.
+            if any(job.base_sha == sha and job.source == "history" for job in planned):
+                raise
+            dropped = [job.case for job in planned if job.base_sha == sha]
             print(f"base {sha[:12]} cannot be held ({e}); left out: {dropped}", flush=True)
-    planned += [_Job(c.case, c.source, c.instance(), c.base_sha, c.oracle == "tests",
-                     c.merge_sha or c.head_sha)
-                for c in usable if c.base_sha in bases]
+    planned = [job for job in planned if job.base_sha in bases]
+    n_bugs = sum(1 for job in planned if job.source == "history")
 
     out_dir = settings.verify_scratch() / "replay" / name
     started = storekit.now()
@@ -763,7 +777,7 @@ def run(*, name: str, passes: int, concurrency: int, refresh: bool,
                 results.append({**prior, "pass": k})
             else:
                 jobs.append((k, job))
-    print(f"run {name}: {len(by_issue)} bugs and {len(usable)} cases x {passes} passes; "
+    print(f"run {name}: {n_bugs} bugs and {len(planned) - n_bugs} cases x {passes} passes; "
           f"{len(jobs)} to run, {len(results)} already recorded", flush=True)
 
     # Set by the first run whose agent can serve nothing (a spent usage limit,
@@ -858,6 +872,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     r.add_argument("--passes", type=int, default=3)
     r.add_argument("--concurrency", type=int, default=3, help="instances in flight")
     r.add_argument("--issues", help="run only these issue numbers, comma-separated")
+    r.add_argument("--only", help="run only these case ids (an issue number for a history "
+                                  "bug), comma-separated")
     r.add_argument("--resume", action="store_true", help="re-run the faulted instances")
     r.add_argument("--refresh", action="store_true", help="re-harvest from GitHub")
     r.add_argument("--lane", choices=sorted(LANES), default="staged",
@@ -891,7 +907,8 @@ def main(argv: list[str]) -> int:
                       if args.issues else None)
             return run(name=args.name, passes=args.passes, concurrency=args.concurrency,
                        refresh=args.refresh, issues=issues, resume=args.resume,
-                       lane=args.lane, cases=not args.no_cases)
+                       lane=args.lane, cases=not args.no_cases,
+                       only=set(args.only.split(",")) if args.only else None)
         return build(target=args.target, min_fixes=args.min_fixes, refresh=args.refresh,
                      concurrency=args.concurrency, dry_run=args.dry_run)
     except prove.NoBase as e:

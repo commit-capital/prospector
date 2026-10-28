@@ -30,6 +30,14 @@
     "run": null,
     "score": null
   },
+  "fixer": {
+    "gate_set": null,
+    "model": "opus,sonnet,opus",
+    "prompt_sha": "aeed4cfaa83d62f8",
+    "provisional": true,
+    "run": null,
+    "score": null
+  },
   "intake": {
     "model": "opus",
     "prompt_sha": "fe7876c06481565a",
