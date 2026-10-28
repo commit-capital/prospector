@@ -311,8 +311,8 @@ def review_pr(pr: int, title: str, head: str,
 
 
 def _book(store: Store, pr: int, head: str, started: str, trigger: str | None, stage: str,
-          words: str = "", stats: dict | None = None) -> None:
-    entry: dict = {"phase": "security:review-one", "pr": pr, "started": started,
+          words: str = "", stats: dict[str, object] | None = None) -> None:
+    entry: dict[str, object] = {"phase": "security:review-one", "pr": pr, "started": started,
                    "finished": _now(), "stats": stats or {},
                    "outcome": pr_outcomes.security(pr, head, stage, words)}
     if trigger is not None:
@@ -368,7 +368,9 @@ def run(store: Store, pr: int, *, trigger: str | None = None) -> int:
                  else "verify pass failed with flagged findings unverified")
         _say(f"⚠ verdict HELD ({cause}) — "
              f"no GREEN trusted; PR stays eligible and will re-run.")
-        _book(store, pr, head, started, trigger, "held", cause)
+        _book(store, pr, head, started, trigger, "held",
+              f"{cause}; the agent service was overloaded: {_transients[-1]}" if _transients
+              else cause)
         return EXIT_TRANSIENT if _transients else 0
     verdict, findings = item.verdict, item.findings
     reds = sum(1 for f in findings if f["severity"] == "red")

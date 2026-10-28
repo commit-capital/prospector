@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, TypedDict
 
-from pipeline import gates, settings
+from pipeline import gates, pr_outcomes, settings
 from pipeline.storekit import now as _now
 from prospector_app.backend import activity, data, service, verify_queue
 
@@ -37,20 +37,28 @@ LEDGER_PHASE = "fix:single"
 
 def ledger_entry(n: int, req: dict, status: str, detail: str | None, host: str,
                  finished: str, *, trigger: str | None = None,
-                 judged: bool | None = None) -> dict:
+                 judged: bool | None = None, kind: str = "run-failed") -> dict:
     """The runs-ledger entry for one ending of PR `n`'s fix request `req`. It
     names the head the request was pinned against and, when `judged` is given,
     whether the ending is a verdict on a change the automation prepared — the
-    two facts trust_ladder counts a judgment by — and the operator's guidance,
-    which the next request would otherwise overwrite."""
+    two facts trust_ladder counts a judgment by — the operator's guidance,
+    which the next request would otherwise overwrite, a failure's `kind`, and
+    where the request stopped (`pr_outcomes.autofix`)."""
     stats: dict = {"status": status, "action": req.get("action", "fix"), "detail": detail,
                    "host": host, "head_sha": req.get("against_head_sha")}
     if judged is not None:
         stats["judged"] = judged
     if req.get("guidance"):
         stats["guidance"] = req["guidance"]
-    return {"phase": LEDGER_PHASE, "pr": n, "started": req.get("started_at"),
-            "finished": finished, "trigger": trigger, "stats": stats}
+    if status == "failed":
+        stats["kind"] = kind
+    entry = {"phase": LEDGER_PHASE, "pr": n, "started": req.get("started_at"),
+             "finished": finished, "trigger": trigger, "stats": stats}
+    ended = pr_outcomes.autofix(n, req.get("against_head_sha"), action=req.get("action", "fix"),
+                                status=status, detail=detail, kind=kind, judged=judged)
+    if ended is not None:
+        entry["outcome"] = ended
+    return entry
 
 
 def queue_pr(n: int, action: str, source: str | None = None,

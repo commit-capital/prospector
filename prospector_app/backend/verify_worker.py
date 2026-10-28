@@ -785,16 +785,18 @@ def run_design(n: int, *, trigger: str = "autohunt", force: bool = False) -> boo
                 verdicts[v] = verdicts.get(v, 0) + 1
         faulted = measured is not None and measured["status"] == coverage.FAULT
         blocking = reviewers.design_standing(entry)
-        if faulted:
-            stage, words = "coverage", (measured or {}).get("reason") or ""
+        coverage_reason = (measured or {}).get("reason") or ""
+        if blocking:
+            stage, words = "blocking", "; ".join(str(f.get("title") or "") for f in blocking)
+        elif faulted:
+            stage, words = "coverage", coverage_reason
         else:
-            stage = "blocking" if blocking else "reviewed"
-            words = "; ".join(str(f.get("title") or "") for f in blocking)
+            stage, words = "reviewed", ""
         _book_design(st, n, head, {"findings": counts, "verification": verdicts, "saved": saved,
                                    "coverage": coverage.summary(measured)}, trigger, stage, words)
         design_failed.discard(n)
         if faulted:
-            lane_health.note_failure("design", kind="coverage", reason=words, pr=n)
+            lane_health.note_failure("design", kind="coverage", reason=coverage_reason, pr=n)
         else:
             lane_health.note_success("design")
         if unattended:

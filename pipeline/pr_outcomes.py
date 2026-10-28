@@ -11,6 +11,10 @@ SECURITY = "security-review"
 VERIFY = "verify"
 AUTOFIX = "autofix"
 
+# Verify conclusions that are no verdict on the change: the PR gives the
+# sandbox nothing to run, or needs a rebase first.
+_NO_EVIDENCE = gates.VERIFY_UNVERIFIABLE_OUTCOMES | {"deps-touched", "needs-rebase"}
+
 
 def _pr(n: int, sha: str | None) -> outcomes.Subject:
     return {"kind": "pr", "number": n, "sha": sha or None}
@@ -37,27 +41,31 @@ def verify(n: int, head: str | None, *, status: str | None, error_kind: str | No
     """A verify run's ending, or None for one that reached no ending (a
     cancel)."""
     if status == "done":
-        if outcome == "verified-fix":
-            return outcomes.make(VERIFY, _pr(n, head), "verified", fault=None)
-        return outcomes.make(VERIFY, _pr(n, head), "concluded", fault="judged",
-                             words=outcome or "")
+        if outcome in ("verified-fix", "agent-verified"):
+            return outcomes.make(VERIFY, _pr(n, head), "verified", fault=None, words=outcome)
+        if not outcome or outcome not in outcomes.STAGES[VERIFY]:
+            return None
+        fault: Fault = "subject" if outcome in _NO_EVIDENCE else "judged"
+        return outcomes.make(VERIFY, _pr(n, head), outcome, fault=fault)
     if not error_kind or error_kind not in outcomes.STAGES[VERIFY]:
         return None
-    fault: Fault = "machine" if gates.VERIFY_REQUEST_FAULT.get(error_kind) == "system" else "subject"
+    fault = "machine" if gates.VERIFY_REQUEST_FAULT.get(error_kind) == "system" else "subject"
     return outcomes.make(VERIFY, _pr(n, head), error_kind, fault=fault, words=error or "")
 
 
 def autofix(n: int, head: str | None, *, action: str, status: str, detail: str | None,
             kind: str | None, judged: bool | None) -> Outcome | None:
-    """A fix request's ending, or None for a deferral until AI capacity opens."""
+    """A fix request's ending, or None for a deferral until AI capacity opens.
+    A refusal or cancel is a verdict when `judged`, else the PR's or the
+    world's (a conflict, a moved head)."""
     words = f"{action}: {detail}" if detail else action
     if status == "failed":
         if kind == capacity.PAUSED_KIND:
             return None
         stage = kind if kind in outcomes.STAGES[AUTOFIX] else "run-failed"
         return outcomes.make(AUTOFIX, _pr(n, head), stage, fault="machine", words=words)
-    if status == "refused":
-        return outcomes.make(AUTOFIX, _pr(n, head), "refused",
+    if status in ("refused", "cancelled"):
+        return outcomes.make(AUTOFIX, _pr(n, head), status,
                              fault="judged" if judged else "subject", words=words)
     stage = {"awaiting-review": "parked"}.get(status, status)
     if stage not in outcomes.STAGES[AUTOFIX]:

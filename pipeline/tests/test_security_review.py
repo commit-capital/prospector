@@ -362,7 +362,9 @@ def test_pending_stops_on_service_or_capacity_failure(
     monkeypatch.setattr(rs.headless_agent, "run_agent", fail)
     assert rs.run_pending(store, limit=2) == code
     assert fetched == [100]
-    assert all(r.raw["outcome"]["fault"] == "machine" for r in store.runs())
+    rows = [r.raw for r in store.runs()]
+    assert all(r["outcome"]["fault"] == "machine" for r in rows)
+    assert bool(rows) == (code in (rs.EXIT_AGENT_UNAVAILABLE, rs.EXIT_TRANSIENT))
     _mock_agents(monkeypatch, lens_findings=[])
     assert rs.run_pending(store, limit=2) == 0
     assert Store(tmp_path).load_pr(101).security_verdict == "GREEN"

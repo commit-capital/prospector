@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from pipeline import pr_outcomes
+from pipeline import gates, outcomes, pr_outcomes
 
 HEAD = "h" * 40
 
@@ -23,7 +23,10 @@ def test_a_security_review_s_fault_follows_its_verdict(stage, fault):
 
 @pytest.mark.parametrize("status, kind, outcome, stage, fault", [
     ("done", None, "verified-fix", "verified", None),
-    ("done", None, "not-verified", "concluded", "judged"),
+    ("done", None, "agent-verified", "verified", None),
+    ("done", None, "not-verified", "not-verified", "judged"),
+    ("done", None, "unverifiable-no-test", "unverifiable-no-test", "subject"),
+    ("done", None, "deps-touched", "deps-touched", "subject"),
     ("error", "sandbox-error", None, "sandbox-error", "machine"),
     ("queued", "fetch-error", None, "fetch-error", "machine"),
     ("error", "refused-safety", None, "refused-safety", "subject"),
@@ -45,6 +48,8 @@ def test_a_cancelled_verify_has_no_outcome():
     ("awaiting-review", None, None, "parked", None),
     ("refused", None, True, "refused", "judged"),
     ("refused", None, False, "refused", "subject"),
+    ("cancelled", None, True, "cancelled", "judged"),
+    ("cancelled", None, None, "cancelled", "subject"),
     ("failed", "run-failed", None, "run-failed", "machine"),
     ("failed", "base-compile", None, "run-failed", "machine"),
     ("failed", "agent-unavailable", None, "agent-unavailable", "machine"),
@@ -59,3 +64,9 @@ def test_an_autofix_ending_maps_to_a_stage(status, kind, judged, stage, fault):
 def test_a_capacity_deferral_is_no_outcome():
     assert pr_outcomes.autofix(7, HEAD, action="fix", status="failed", detail=None,
                                kind="capacity-paused", judged=None) is None
+
+
+def test_every_verify_ending_has_a_stage():
+    assert set(gates.VERIFY_OUTCOMES) - {"verified-fix", "agent-verified"} <= set(
+        outcomes.STAGES["verify"])
+    assert set(gates.VERIFY_REQUEST_FAULT) <= set(outcomes.STAGES["verify"])
