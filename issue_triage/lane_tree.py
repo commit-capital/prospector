@@ -50,6 +50,25 @@ def materialize(base_clone: Path, dest: Path, files: Sequence[VerifyAuthoredFile
     return Path(os.path.realpath(dest))
 
 
+def remove(worktree: Path, paths: Sequence[str]) -> None:
+    """Delete each of `paths`, repo-relative files in `worktree`, for an agent
+    whose tools edit and write but cannot delete. A symlink is removed, never
+    followed. Raises ValueError, deleting nothing, when a path is absolute,
+    climbs out, enters `.git`, crosses a symlinked directory, or names no file."""
+    root = Path(os.path.realpath(worktree))
+    targets: list[Path] = []
+    for p in paths:
+        parts = Path(p).parts
+        target = root / p
+        if (Path(p).is_absolute() or ".." in parts or ".git" in parts
+                or Path(os.path.realpath(target.parent)) != target.parent
+                or not (target.is_file() or target.is_symlink())):
+            raise ValueError(f"cannot delete {p!r}: not a file inside the clone")
+        targets.append(target)
+    for target in targets:
+        target.unlink()
+
+
 def apply_patch(worktree: Path, patch: str) -> None:
     """Apply `patch` to `worktree`'s files. Raises ValueError when it does not apply."""
     if not patch.strip():

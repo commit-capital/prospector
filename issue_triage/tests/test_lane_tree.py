@@ -257,3 +257,32 @@ def test_additive_test_edits_accepts_widening_a_python_parenthesized_import(tmp_
     (repo / "test_y.py").write_text(
         "from pkg.mod import (\n    a,\n    c,\n)\n\n\ndef test_a():\n    assert a() == 1\n")
     assert lane_tree.additive_test_edits(repo, ["test_y.py"]) == []
+
+
+def test_remove_drops_an_added_file_from_the_authored_patch(tmp_path):
+    repo = lane_tree.materialize(_base(tmp_path), tmp_path / "w")
+    (repo / "src" / "dup.test.ts").write_text("t\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-N", "."],
+                   check=True, capture_output=True, text=True)
+    lane_tree.remove(repo, ["src/dup.test.ts"])
+    assert "dup.test.ts" not in lane_tree.authored_patch(repo)
+
+
+def test_remove_deletes_a_symlink_itself_never_its_target(tmp_path):
+    repo = lane_tree.materialize(_base(tmp_path), tmp_path / "w")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep me\n")
+    (repo / "src" / "link").symlink_to(outside)
+    lane_tree.remove(repo, ["src/link"])
+    assert outside.read_text() == "keep me\n" and not (repo / "src" / "link").is_symlink()
+
+
+def test_remove_refuses_a_path_through_a_symlinked_directory_and_deletes_nothing(tmp_path):
+    repo = lane_tree.materialize(_base(tmp_path), tmp_path / "w")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "f.ts").write_text("keep me\n")
+    (repo / "out").symlink_to(elsewhere)
+    with pytest.raises(ValueError):
+        lane_tree.remove(repo, ["src/x.ts", "out/f.ts"])
+    assert (elsewhere / "f.ts").exists() and (repo / "src" / "x.ts").exists()
