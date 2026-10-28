@@ -87,6 +87,8 @@ class LaneSpec:
     notes: str | None = None
     # The subject the run's reviews are recorded under; None records nothing.
     verdict_subject: verdict_log.Subject | None = None
+    # A maintainer-approved feature request: a give-up as no defect reads `no-fix`.
+    feature: bool = False
 
 
 @dataclass

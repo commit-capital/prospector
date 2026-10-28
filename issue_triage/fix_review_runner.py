@@ -32,8 +32,10 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from issue_triage import (
+    config,
     cross_lane,
     dispute_question,
+    feature_screen,
     fix_lane,
     fix_review,
     followup,
@@ -84,13 +86,23 @@ def route(comments: str) -> str:
 
 
 def _spec(store: IssueStore, n: int, base: prove.PinnedBase, guidance: str | None,
-          notes: str | None = None) -> tuple[fix_lane.LaneSpec, str]:
+          notes: str | None = None, *, feature: bool = False) -> tuple[fix_lane.LaneSpec, str]:
+    """The lane's spec for issue `n` and its report's sha. The run is a feature
+    run when the request says so or a maintainer chose to implement the issue;
+    its body then carries the approved spec (`feature_screen.approved_report`)."""
     reported = fix_lane.reported_text(store, n)
     if reported is None:
         raise RequestFailed(f"issue #{n} is not in the store and could not be fetched")
     title, body = reported
-    return (fix_lane.LaneSpec(issue=n, title=title, body=body, base=base, guidance=guidance,
-                              notes=notes, verdict_subject=verdict_log.Subject("issue", n)),
+    issue = store.load_issue(n)
+    decision = issue.feature_decision if issue else None
+    feature = feature or (decision or {}).get("decision") == "implement"
+    lane_body = feature_screen.approved_report(
+        body, issue.feature_screen if issue else None, decision,
+        repo=config.repo_name()) if feature else body
+    return (fix_lane.LaneSpec(issue=n, title=title, body=lane_body, base=base,
+                              guidance=guidance, notes=notes, feature=feature,
+                              verdict_subject=verdict_log.Subject("issue", n)),
             fix_lane.report_sha(title, body))
 
 
@@ -138,15 +150,16 @@ def _intake(store: IssueStore, n: int, spec: fix_lane.LaneSpec,
 
 def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
           on_step: Callable[[str], None], notes: str | None = None,
-          unattended: bool = False) -> tuple[dict, dict | None]:
+          unattended: bool = False, feature: bool = False) -> tuple[dict, dict | None]:
     """The cross-tested lane on issue `n`; its record and, for a dispute, the
     drafted question. An `unattended` solve of a report the intake audit reads
-    as malicious ends `refused` without running the lane."""
+    as malicious ends `refused` without running the lane. A `feature` solve
+    builds an approved feature request (`_spec`)."""
     try:
         base = prove.pinned(Store())
     except prove.NoBase as e:
         raise RequestFailed(str(e)) from e
-    spec, report = _spec(store, n, base, guidance, notes)
+    spec, report = _spec(store, n, base, guidance, notes, feature=feature)
     workdir = propose.result_dir(n)
     started = storekit.now()
     intake = _intake(store, n, spec, on_step)
@@ -351,9 +364,10 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
     notes = req.get("notes")
     trigger = "hunter" if req.get("source") == "hunter" else "operator"
     unattended = req.get("source") in ("hunter", "public")
+    feature = bool(req.get("feature"))
     if action == "solve":
         record, question = solve(store, n, guidance=guidance, notes=notes, trigger=trigger,
-                                 on_step=on_step, unattended=unattended)
+                                 on_step=on_step, unattended=unattended, feature=feature)
         _write_run(store, n, record, question)
         return f"Solved: {fix_review.outcome(record)}"
     if action == "send-back" and req.get("rivals"):
@@ -377,7 +391,7 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
                                     live=not req.get("dry_run"), on_step=on_step)
         if mode == "restart":
             record, question = solve(store, n, guidance=guidance, notes=notes,
-                                     trigger="send-back", on_step=on_step)
+                                     trigger="send-back", on_step=on_step, feature=feature)
             _write_run(store, n, record, question)
             return f"Started over: {fix_review.outcome(record)}"
         record = revise(store, n, comments=guidance or "", notes=notes, on_step=on_step)

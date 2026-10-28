@@ -93,6 +93,13 @@ The page is refused if it holds any of these, so use none of them:
 Use inline `<style>` and inline SVG for styling and icons; draw a form's fields without a `form` element.
 """
 
+APPROVED = """
+
+## Approved as a feature by a __REPO__ maintainer
+
+This is a request for new behavior, and a maintainer approved it. Where a prompt speaks of the reported defect, read the behavior this request asks for that the code lacks. A test must show that behavior missing before the change and present after it. Changes the approved spec calls for are requested.
+"""
+
 PROMPT_SHA = verdict_log.prompt_sha(PROMPT, MOCKUP_PROMPT, fixability.REPLIES, logic=2)
 _DEFERRALS = (headless_agent.AgentUnavailable, headless_agent.AgentDeclined,
               headless_agent.AgentTransient, capacity.CapacityPaused)
@@ -290,6 +297,24 @@ def screen(issue: Issue, clone: Path, history: Path, *, base_sha: str,
         out.update({"mockup": page} if page is not None else {"mockup_refused": refused})
     out.update(model=MODEL, base_sha=base_sha)
     note(out["verdict"], {k: v for k, v in out.items() if k != "mockup"})
+    return out
+
+
+def approved_report(body: str, screen: dict | None, decision: dict | None, *,
+                    repo: str) -> str:
+    """The issue's `body` and the approved spec: the screener's reason, the
+    maintainer's guidance, and the mockup last, cut to fit REPORT_MAX. The body
+    is cut only when it leaves no room for the rest of the spec."""
+    section = APPROVED.replace("__REPO__", repo)
+    if why := (screen or {}).get("why"):
+        section += f"\n### Why it fits\n\n{why}\n"
+    if guidance := (decision or {}).get("guidance"):
+        section += f"\n### The maintainer's guidance\n\n{guidance}\n"
+    out = body[:max(0, reproduce_issue.REPORT_MAX - len(section))] + section
+    heading = "\n### Mockup of the approved UI\n\n"
+    room = reproduce_issue.REPORT_MAX - len(out) - len(heading)
+    if (page := (screen or {}).get("mockup")) and room > 0:
+        out += heading + page[:room]
     return out
 
 

@@ -141,7 +141,8 @@ def _author(spec: fix_lane.LaneSpec, workdir: Path, cand: Candidate,
             cand.ending, cand.detail = "sandbox", fault
             return cand
         if "give_up" in verdict:
-            cand.ending = "not-a-defect" if verdict["kind"] == "not-a-defect" else "no-fix"
+            no_defect = verdict["kind"] == "not-a-defect" and not spec.feature
+            cand.ending = "not-a-defect" if no_defect else "no-fix"
             cand.detail = verdict["give_up"]
             return cand
         cand.verdict = verdict

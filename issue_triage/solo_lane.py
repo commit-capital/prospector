@@ -352,8 +352,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         if fault:
             return finish("sandbox", fault)
         if "give_up" in verdict:
-            return finish("not-a-defect" if verdict["kind"] == "not-a-defect" else "no-fix",
-                          verdict["give_up"])
+            no_defect = verdict["kind"] == "not-a-defect" and not spec.feature
+            return finish("not-a-defect" if no_defect else "no-fix", verdict["give_up"])
 
         try:
             lane_tree.remove(clone, verdict.get("deleted") or [])
