@@ -355,6 +355,7 @@ def get_issue(n: int) -> dict | None:
     row["fix_coverage"] = fix_review.coverage(i)
     row["fix_choice"] = i.fix_choice if fix_choice.chosen(i) is not None else None
     tri = i.fix_triage
+    row["fix_closed"] = i.fix_public.get("closed")
     row["fix_triage"] = tri and {
         **{k: tri.get(k) for k in ("verdict", "kind", "gaps", "readings", "approach",
                                    "reason", "asked")},
@@ -364,7 +365,7 @@ def get_issue(n: int) -> dict | None:
 
 _REPRO_RANK = {"A": 5, "B": 4, "C": 3, "D": 2, "E": 1, "F": 0}
 # Most actionable first; unanalyzed issues have no rank and always sort last.
-_DISP_RANK = {"link-pr": 0, "close-dup": 1, "request-changes": 2, "request-repro": 3,
+_DISP_RANK = {"close-disputed": -1, "link-pr": 0, "close-dup": 1, "request-changes": 2, "request-repro": 3,
               "needs-human": 4}
 _ISSUE_SORT_KEYS = {
     "number": lambda r: r["number"],

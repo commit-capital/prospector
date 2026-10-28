@@ -99,3 +99,86 @@ def test_a_marker_quoted_inside_another_bot_comment_does_not_count(gh, monkeypat
     res = executor.post_fix_comment(7, "B\n<!-- m -->", marker="<!-- m -->", issue=7,
                                     comment_kind="no-fix", token="tok", dry_run=False)
     assert res["status"] == "executed"
+
+
+# --- the unattended close ------------------------------------------------------
+
+OUTSIDER = {"state": "open", "user": {"login": "drive-by"}, "author_association": "NONE"}
+
+
+@pytest.fixture
+def closing(gh, monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triagebot")
+    gh["live"] = dict(OUTSIDER)
+    gh["closes"] = []
+    monkeypatch.setattr("pipeline.gh.gh_json", lambda path, timeout=60: gh["live"])
+
+    def close_bot_run(number, reason, token):
+        gh["closes"].append((number, reason))
+        code, err = gh["fail"].get("close", (0, ""))
+        return subprocess.CompletedProcess([], code, "", err)
+
+    monkeypatch.setattr(safety_guard, "close_bot_run", close_bot_run)
+    monkeypatch.setattr("prospector_app.backend.issues.reflect_issue_state",
+                        lambda n, state, reason=None: gh.setdefault("reflected", []).append(
+                            (n, state, reason)))
+    return gh
+
+
+def _auto_close(**over) -> dict:
+    return executor.auto_close_issue(**{"n": 7, "kind": "not-in-repo", "reason": "not_planned",
+                                        "body": "Body\n<!-- m -->", "marker": "<!-- m -->",
+                                        "token": "tok", "dry_run": False, **over})
+
+
+def test_an_unattended_close_comments_then_closes_as_the_bot(closing):
+    res = _auto_close()
+    assert res["status"] == "executed"
+    [argv] = closing["posts"]
+    assert argv[-1] == "body=Body\n<!-- m -->"
+    assert closing["closes"] == [(7, "not_planned")]
+    assert closing["reflected"] == [(7, "closed", "not planned")]
+    [(kind, event)] = closing["events"]
+    assert kind == "issue-close" and event["action"] == "CLOSE_ISSUE_AUTO"
+    assert event["reason"] == "not-in-repo"
+
+
+def test_an_unattended_close_posts_its_comment_once(closing):
+    closing["comments"].append({"login": "triagebot[bot]", "body": "Body\n<!-- m -->"})
+    assert _auto_close()["status"] == "executed"
+    assert closing["posts"] == [] and closing["closes"] == [(7, "not_planned")]
+
+
+@pytest.mark.parametrize(("live", "why"), [
+    ({**OUTSIDER, "pull_request": {"url": "u"}}, "a pull request"),
+    ({**OUTSIDER, "state": "closed"}, "not open"),
+    ({**OUTSIDER, "author_association": "MEMBER"}, "a maintainer's issue"),
+    ({**OUTSIDER, "author_association": "OWNER"}, "a maintainer's issue"),
+])
+def test_an_unattended_close_is_refused_live_without_writing(closing, live, why):
+    closing["live"] = live
+    for dry in (False, True):
+        res = _auto_close(dry_run=dry)
+        assert res["status"] == "blocked" and why in res["detail"]
+    assert closing["posts"] == [] and closing["closes"] == []
+
+
+def test_an_unanswered_live_read_is_an_error_to_retry(closing):
+    closing["live"] = None
+    res = _auto_close()
+    assert res["status"] == "error" and "did not answer" in res["detail"]
+    assert closing["posts"] == [] and closing["closes"] == []
+
+
+def test_an_unattended_close_without_a_token_is_a_logged_dry_run(closing):
+    res = _auto_close(token=None)
+    assert res["status"] == "dry-run" and res["forced"] is True
+    assert closing["posts"] == [] and closing["closes"] == []
+    assert closing["events"][0][1]["dry_run"] is True
+
+
+def test_a_failed_unattended_close_is_an_error_and_not_reflected(closing):
+    closing["fail"]["close"] = (1, "HTTP 403")
+    res = _auto_close()
+    assert res["status"] == "error" and res["detail"].startswith("close failed")
+    assert "reflected" not in closing

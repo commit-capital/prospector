@@ -134,7 +134,12 @@ class Issue:
         """close-fixed while the fix scan cites a merged fixer, else the stored
         ANALYZE verdict, read as request-changes while a current fixability
         triage waits on the author (`fixability`) unless ANALYZE closed or
-        linked it. Derived, so a staled fact heals the read in place."""
+        linked it, and as close-disputed while an issue Prospector closed
+        stays closed after its author replied (`close_out`). Derived, so a
+        staled fact heals the read in place."""
+        if (self.state == "closed"
+                and ((self.rec.get("fix_public") or {}).get("closed") or {}).get("disputed")):
+            return "close-disputed"
         if self._fixed_now():
             return "close-fixed"
         routed = (self.rec.get("analysis") or {}).get("disposition")

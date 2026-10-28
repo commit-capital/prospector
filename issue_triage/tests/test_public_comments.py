@@ -46,3 +46,18 @@ def test_the_triage_letters_each_gap_and_nests_the_readings_under_the_unsettled_
     assert "**A.** File the --verbose request as its own issue." in body
     assert "**B.** Which behavior do you expect?" in body
     assert "  - it should throw." in body and "unused" not in body
+
+
+@pytest.mark.parametrize(("kind", "says"), [
+    ("not-in-repo", "does not appear to relate to this repository. Closing it as not planned"),
+    ("external", "the cause looks to lie outside it. Closing it as not planned"),
+    ("already-fixed", "appears to be fixed there already"),
+])
+def test_a_close_comment_says_why_and_invites_a_reply(kind, says):
+    body = public_comments.closed_out(9, "closed-out", kind, "fixed by #12; closes #4 <!-- x -->",
+                                      ["test/a.test.ts"] if kind == "already-fixed" else [])
+    assert says in body and "please reply here" in body
+    assert public_comments.problems(body) == []
+    assert body.rstrip().endswith(public_comments.marker(9, "closed-out"))
+    assert "#12" not in body and "closes #4" not in body.lower()
+    assert ("`test/a.test.ts`" in body) == (kind == "already-fixed")

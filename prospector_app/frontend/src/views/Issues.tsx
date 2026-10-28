@@ -47,6 +47,7 @@ const DISP_CHIP: Record<IssueTriageDisposition, { cls: string; hint: string }> =
   "request-changes": { cls: "chip-yellow", hint: "Below the report bar — the reporter was asked to fix the report" },
   "request-repro": { cls: "chip-yellow", hint: "Real but under-specified — needs reporter info (see asks)" },
   "needs-human": { cls: "chip-muted", hint: "Ambiguous, a judgement call, or a feature request" },
+  "close-disputed": { cls: "chip-red", hint: "Prospector closed it and its author replied that it was wrong" },
 };
 
 // The issue pipeline's triage verdict as a chip; unanalyzed issues render a dash.
@@ -447,6 +448,7 @@ const DISP_FILTERS: { key: string; label: string }[] = [
   { key: "request-changes", label: "request-changes" },
   { key: "request-repro", label: "request-repro" },
   { key: "needs-human", label: "needs-human" },
+  { key: "close-disputed", label: "close-disputed" },
   { key: "none", label: "unanalyzed" },
 ];
 

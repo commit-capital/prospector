@@ -261,3 +261,53 @@ def test_any_other_label_write_is_refused(monkeypatch, op, label, number):
 def test_a_label_write_needs_a_bot_token():
     with pytest.raises(sg.WriteAttemptBlocked):
         sg.label_bot_run("add", "needs answer", "", number=12)
+
+
+# --- the unattended issue close ------------------------------------------------
+
+def test_an_unattended_close_patches_one_issue_closed_and_nothing_else(monkeypatch):
+    import json
+    seen = _label_runs(monkeypatch)
+    sg.close_bot_run(12, "not_planned", "tok")
+    sg.close_bot_run(13, "completed", "tok")
+    (argv, payload), (_, done) = seen
+    assert argv == ["gh", "api", "--method", "PATCH", f"repos/{sg.settings.repo()}/issues/12",
+                    "--input", "-"]
+    assert json.loads(payload or "") == {"state": "closed", "state_reason": "not_planned"}
+    assert json.loads(done or "")["state_reason"] == "completed"
+
+
+@pytest.mark.parametrize(("number", "reason"), [
+    (12, "duplicate"),
+    (12, "reopened"),
+    (12, "not planned"),
+    (0, "completed"),
+    (-3, "completed"),
+    (True, "completed"),
+    ("12", "completed"),
+    ("12; gh repo delete", "completed"),
+])
+def test_any_other_close_is_refused(monkeypatch, number, reason):
+    seen = _label_runs(monkeypatch)
+    with pytest.raises(sg.WriteAttemptBlocked):
+        sg.close_bot_run(number, reason, "tok")
+    assert seen == []
+
+
+def test_an_unattended_close_needs_a_bot_token(monkeypatch):
+    seen = _label_runs(monkeypatch)
+    with pytest.raises(sg.WriteAttemptBlocked):
+        sg.close_bot_run(12, "completed", "")
+    assert seen == []
+
+
+def test_an_unattended_close_refuses_a_store_ahead_of_this_checkout(monkeypatch):
+    seen = _label_runs(monkeypatch)
+
+    def ahead() -> None:
+        raise sg.WriteAttemptBlocked("store ahead")
+
+    monkeypatch.setattr(sg, "assert_store_writes_safe", ahead)
+    with pytest.raises(sg.WriteAttemptBlocked):
+        sg.close_bot_run(12, "completed", "tok")
+    assert seen == []

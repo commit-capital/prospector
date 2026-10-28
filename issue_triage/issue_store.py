@@ -272,6 +272,14 @@ class IssueStore:
             data[("fix_request", "source")].as_string() == "hunter",
             data[("fix_request", "queued_at")].as_string() >= since))
 
+    def closed_out_since(self, since: str, *, dry: bool) -> int:
+        """How many issues Prospector closed unattended at or after `since`
+        (`close_out`), or with `dry` would have in a dry run, counted
+        server-side."""
+        data = schema.issues.c.data
+        path = ("fix_public", "dry", "closed", "at") if dry else ("fix_public", "closed", "at")
+        return self._issues.count(data[path].as_string() >= since)
+
     def issue_ids(self) -> set[int]:
         return self._issues.ids()
 

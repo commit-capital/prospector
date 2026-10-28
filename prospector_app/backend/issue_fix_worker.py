@@ -12,7 +12,9 @@ hour (`poll_replies`); every ten minutes it follows up its open pull requests
 (`issue_triage.followup`, as `TRIAGE_ISSUE_FIX_FOLLOWUP` allows), then ingests
 the in-scope issues updated since, starts another attempt where a reply or an
 edited report calls for one, and brings GitHub in line with their attempts
-(`issue_triage.public_loop`, as `TRIAGE_ISSUE_FIX_PUBLIC` allows); and, with
+(`issue_triage.public_loop`, as `TRIAGE_ISSUE_FIX_PUBLIC` allows), closing the
+issues the triage found not here or already fixed (`issue_triage.close_out`);
+and, with
 `TRIAGE_ISSUE_FIX_HUNT=1` and a slot free, it queues one `solve` for a fresh
 issue (`hunt`) within `settings.issue_fix_hunt_budget()` a UTC day, from the
 issues the triage judged fixable (`triage`, TRIAGE_BATCH of the newest before
@@ -39,6 +41,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 
 from issue_triage import (
+    close_out,
     dispute_question,
     fix_choice,
     fix_review,
@@ -456,12 +459,25 @@ def _answer_replies(store: IssueStore) -> None:
         public_loop.answer_replies(store, may_route=lambda: lane_health.capacity_open(LANE))
 
 
+def _close_out(store: IssueStore) -> None:
+    """`close_out.run` over the app's issue snapshot, its checks running only
+    while the lane's AI capacity is open."""
+    from prospector_app.backend import issue_data
+
+    with capacity.metered(LANE):
+        close_out.run(store, issue_data.issues(),
+                      may_run=lambda: lane_health.capacity_open(LANE))
+
+
 def _every_ten_minutes(store: IssueStore) -> None:
     """Follow up the open proposals, then refresh the in-scope issues, answer
-    the replies, and bring GitHub in line with them; one step failing leaves the
-    others to run, and an agent outage trips the lanes and ends the pass."""
+    the replies, read the replies on issues Prospector closed, bring GitHub in
+    line with them, and close the issues the triage found not here or already
+    fixed; one step failing leaves the others to run, and an agent outage trips
+    the lanes and ends the pass."""
     try:
-        for step in (_follow_up, public_loop.refresh, _answer_replies, public_loop.sync):
+        for step in (_follow_up, public_loop.refresh, _answer_replies, close_out.watch,
+                     public_loop.sync, _close_out):
             try:
                 step(store)
             except headless_agent.AgentUnavailable as e:

@@ -145,14 +145,16 @@ def _held_to_the_bar(out: dict) -> dict:
 
 
 def review(clone: Path, *, title: str, body: str,
-           replies: Sequence[Reply] = ()) -> dict:
+           replies: Sequence[Reply] = (), model: str | None = MODEL) -> dict:
     """The agent's verdict on the report over `clone`, held to what the clone
     shows: cited paths that do not exist are dropped, and a `go` citing none
     reads `ask`. A reply that fails to parse twice raises ValueError."""
-    return review_rendered(clone, title=title, body=body, replies_block=_replies_block(replies))
+    return review_rendered(clone, title=title, body=body, replies_block=_replies_block(replies),
+                           model=model)
 
 
-def review_rendered(clone: Path, *, title: str, body: str, replies_block: str) -> dict:
+def review_rendered(clone: Path, *, title: str, body: str, replies_block: str,
+                    model: str | None = MODEL) -> dict:
     """`review` with the replies already rendered, as `judge` records them."""
     clone = Path(clone).resolve()
     prompt = headless_agent.fill(PROMPT, {
@@ -160,7 +162,7 @@ def review_rendered(clone: Path, *, title: str, body: str, replies_block: str) -
         "__REPLIES__": replies_block})
     verdict, _ = headless_agent.json_reply(lambda: headless_agent.run_agent(
         prompt, allow_gh=False, cwd=str(clone), read_root=[str(clone)], env_allow=(),
-        model=MODEL, timeout=AGENT_TIMEOUT_SECONDS))
+        model=model, timeout=AGENT_TIMEOUT_SECONDS))
     kind = str(verdict.get("kind") or "unclear")
     code = list(dict.fromkeys(p for p in (str(c).strip().lstrip("/")
                                           for c in verdict.get("code") or [])

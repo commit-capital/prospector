@@ -115,6 +115,29 @@ def triage_question(issue: int, key: str, question: object, readings: list,
     return _finish(issue, key, lines)
 
 
+def closed_out(issue: int, key: str, kind: str, reason: object, tests: list[str]) -> str:
+    """The comment when Prospector closes issue `issue` unattended
+    (`close_out`): its triage `kind` and `reason`, and for an already-fixed
+    issue the `tests` that pass on the default branch."""
+    why = quiet(reason, REASON_MAX)
+    if kind == "already-fixed":
+        lines = ["Prospector's automated fix pipeline read this report against the current "
+                 "default branch, and it appears to be fixed there already. A test that "
+                 "checks the behavior this report asks for passes on it"
+                 + (f" ({', '.join(f'`{quiet(t, 200)}`' for t in tests[:3])})" if tests else "")
+                 + ". Closing it as completed."]
+    else:
+        lines = ["Prospector's automated fix pipeline read this report against the current "
+                 "code, and it does not appear to relate to this repository"
+                 + (": the cause looks to lie outside it." if kind == "external" else ".")
+                 + " Closing it as not planned."]
+    if why:
+        lines += ["", f"What it found: {why}."]
+    lines += ["", "If this is wrong, please reply here saying so, and a maintainer will take "
+                  "another look."]
+    return _finish(issue, key, lines)
+
+
 def problems(body: str) -> list[str]:
     """Why a rendered comment may not be posted; empty when it may."""
     return dispute_question.problems(body)
