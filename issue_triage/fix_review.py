@@ -98,10 +98,11 @@ def outcome(record: dict) -> str:
 
 def partial(issue: Issue) -> str | None:
     """`partial_note` while the attempt waits on a review or an open pull
-    request, the statuses that present it as a fix."""
+    request, the statuses that present it as a fix, or while a request runs
+    against it."""
     status = _fix_status(issue)
-    return partial_note(issue.fix_run or {}) if status and status[0] in ("review",
-                                                                          "pr-open") else None
+    return partial_note(issue.fix_run or {}) if status and status[0] in ("review", "pr-open",
+                                                                          "running") else None
 
 
 def fix_status(issue: Issue) -> tuple[str, str] | None:
@@ -184,8 +185,12 @@ def _fix_status(issue: Issue) -> tuple[str, str, str | StatusLine] | None:
                 f"You chose #{pr} as the fix, so Prospector stopped its own.")
     req, run = issue.fix_request, issue.fix_run
     if req and req.get("status") in IN_FLIGHT:
-        return ("running", f"{req.get('action')} {req.get('status')}",
-                "Prospector is working on a fix right now.")
+        working: str | StatusLine = "Prospector is working on a fix right now."
+        if trust_boundary.held(issue):
+            line = _held_line(issue)
+            working = (StatusLine(text=f"{line['text']} {working}", see=line["see"])
+                       if isinstance(line, dict) else f"{line} {working}")
+        return "running", f"{req.get('action')} {req.get('status')}", working
     broke = "Prospector's last fix attempt broke down before it finished."
     if req and req.get("status") == "failed":
         return "failed", str(req.get("reason") or f"{req.get('action')} failed"), broke

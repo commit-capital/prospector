@@ -1014,3 +1014,15 @@ def test_a_queued_request_names_its_source_in_the_thread(tmp_path):
     assert ok, why
     issue = store.load_issue(5)
     assert issue is not None and issue.fix_thread[-1]["source"] == "public"
+
+
+def test_a_request_queued_on_a_held_partial_fix_keeps_the_hold_and_the_partial_note(store):
+    _run(store, intake={"verdict": "clear"}, second_opinion=[OPEN_GAP], reviews=PARTIAL)
+    held = _text(store)
+    assert fix_review.queue(store, 7, "propose", by="op")[0]
+    line = fix_review.status_line(store.load_issue(7))
+    assert line["see"] == {"section": "rivals", "phrase": "a case ours misses"}
+    assert line["text"] == held.replace(" It fixes only part", " Prospector is working on a fix "
+                                        "right now. It fixes only part")
+    status, reason = fix_review.fix_status(store.load_issue(7))
+    assert status == "running" and reason.startswith("partial fix: 1 of 3")
