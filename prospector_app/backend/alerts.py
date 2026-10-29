@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pipeline import bot_token
 from alert_triage import config as alert_config
 from alert_triage.alert_gates import DISMISS_REASONS
 from alert_triage.alert_store import alert_id
@@ -202,8 +203,7 @@ def sources_available() -> dict[str, bool]:
     ⇒ all False."""
     global _sources_cache
     if _sources_cache is None:
-        from prospector_app.backend import executor
-        token = executor.mint_bot_token()
+        token = bot_token.get()
         probed: dict[str, bool] = {}
         paths = {
             "code-scanning": f"repos/{alert_config.repo()}/code-scanning/alerts",

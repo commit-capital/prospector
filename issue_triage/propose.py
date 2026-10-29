@@ -284,8 +284,7 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     from prospector_app.backend import executor
 
-    token = executor.mint_bot_token() if args.live else None
-    res = executor.propose_issue_fix(args.issue, token=token, dry_run=not args.live)
+    res = executor.propose_issue_fix(args.issue, dry_run=not args.live)
     print(json.dumps(res, indent=2))
     return 0 if res["status"] in ("executed", "dry-run", "exists") else 1
 

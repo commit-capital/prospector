@@ -67,10 +67,9 @@ def test_retrigger_records_its_initiator():
     """The executor's re-trigger stamps who asked, so the hunter's mentions read
     as the automation's own and an operator's click does not."""
     from prospector_app.backend import executor
-    res = executor.retrigger_review(1, "nonexistent-reviewer", token=None,
-                                    dry_run=True, initiator="worker")
+    res = executor.retrigger_review(1, "nonexistent-reviewer", dry_run=True, initiator="worker")
     assert res["initiator"] == "worker"
-    default = executor.retrigger_review(1, "nonexistent-reviewer", token=None, dry_run=True)
+    default = executor.retrigger_review(1, "nonexistent-reviewer", dry_run=True)
     assert default["initiator"] == "operator"
 
 

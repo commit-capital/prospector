@@ -117,7 +117,7 @@ def test_close_issue_with_comment_dry_run(tmp_path, monkeypatch):
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     res = executor.close_issue_with_comment(
         10, models.IssueCloseBody(disposition="not-planned", comment="stale, closing"),
-        token=None, dry_run=True)
+        dry_run=True)
     assert res["status"] == "dry-run"
     assert res["action"] == "CLOSE_ISSUE"
     assert "close issue #10" in res["detail"] and "not planned" in res["detail"]
@@ -128,11 +128,12 @@ def test_close_issue_with_comment_blocked_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     res = executor.close_issue_with_comment(
         10, models.IssueCloseBody(disposition="completed", comment="  "),
-        token=None, dry_run=True)
+        dry_run=True)
     assert res["status"] == "blocked" and "comment" in res["detail"]
 
 
 def test_close_issue_with_comment_live_posts_and_closes(tmp_path, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
@@ -142,14 +143,14 @@ def test_close_issue_with_comment_live_posts_and_closes(tmp_path, monkeypatch):
         returncode = 0
         stderr = ""
 
-    def _fake_bot_run(argv, token, **kw):
+    def _fake_bot_run(argv, **kw):
         calls.append(argv)
         return _Ok()
 
     monkeypatch.setattr(executor, "bot_run", _fake_bot_run)
     res = executor.close_issue_with_comment(
         10, models.IssueCloseBody(disposition="completed", comment="closing as done"),
-        token="tok", dry_run=False)
+        dry_run=False)
     assert res["status"] == "executed"
     assert ["gh", "issue", "comment", "10", "--repo", settings.repo(), "--body", "closing as done"] in calls
     assert ["gh", "issue", "close", "10", "--repo", settings.repo(), "--reason", "completed"] in calls
@@ -164,7 +165,7 @@ def test_close_issue_fixed_attributes_and_templates(tmp_path, monkeypatch):
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     res = executor.close_issue_with_comment(
         10, models.IssueCloseBody(disposition="fixed", fixed_by=123),
-        token=None, dry_run=True)
+        dry_run=True)
     assert res["status"] == "dry-run"
     assert res["action"] == "CLOSE_ISSUE_FIXED" and res["reason"] == "completed"
     assert res["fixed_by"] == 123 and "#123" in res["detail"]
@@ -177,7 +178,7 @@ def test_close_issue_dup_attributes_and_templates(tmp_path, monkeypatch):
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     res = executor.close_issue_with_comment(
         10, models.IssueCloseBody(disposition="dup", canonical=20),
-        token=None, dry_run=True)
+        dry_run=True)
     assert res["status"] == "dry-run"
     assert res["action"] == "CLOSE_ISSUE_DUP" and res["reason"] == "duplicate"
     assert res["canonical"] == 20 and "#20" in res["detail"]
@@ -193,16 +194,17 @@ def _capture_bot_run(monkeypatch):
         returncode = 0
         stderr = ""
 
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: (calls.append(argv), _Ok())[1])
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: (calls.append(argv), _Ok())[1])
     return calls
 
 
 def test_close_issue_fixed_live_posts_template_and_closes_completed(tmp_path, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     _seed(tmp_path, monkeypatch)  # _live_pr_states stub reports #123 merged
     calls = _capture_bot_run(monkeypatch)
     res = executor.close_issue_with_comment(
         10, models.IssueCloseBody(disposition="fixed", fixed_by=123),
-        token="tok", dry_run=False)
+        dry_run=False)
     assert res["status"] == "executed"
     comment_argv = next(c for c in calls if c[2] == "comment")
     assert "#123" in comment_argv[-1]  # templated "fixed by #123" body
@@ -212,11 +214,12 @@ def test_close_issue_fixed_live_posts_template_and_closes_completed(tmp_path, mo
 def test_close_issue_dup_live_posts_template_and_closes_duplicate_of(tmp_path, monkeypatch):
     """A dup close carries --duplicate-of, so GitHub records the marked_as_duplicate
     link on the canonical issue rather than a bare state_reason."""
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     _seed(tmp_path, monkeypatch)
     calls = _capture_bot_run(monkeypatch)
     res = executor.close_issue_with_comment(
         10, models.IssueCloseBody(disposition="dup", canonical=20),
-        token="tok", dry_run=False)
+        dry_run=False)
     assert res["status"] == "executed"
     comment_argv = next(c for c in calls if c[2] == "comment")
     assert "#20" in comment_argv[-1]  # templated "duplicate of #20" body
@@ -235,11 +238,12 @@ def test_issue_close_argv_keys_duplicate_of_on_the_reason():
 
 def test_close_issue_fixed_carries_no_duplicate_of(tmp_path, monkeypatch):
     """--duplicate-of is scoped to the dup disposition; a 'fixed' close never carries it."""
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     _seed(tmp_path, monkeypatch)
     calls = _capture_bot_run(monkeypatch)
     executor.close_issue_with_comment(
         10, models.IssueCloseBody(disposition="fixed", fixed_by=123),
-        token="tok", dry_run=False)
+        dry_run=False)
     close_argv = next(c for c in calls if c[2] == "close")
     assert "--duplicate-of" not in close_argv
 
@@ -247,6 +251,7 @@ def test_close_issue_fixed_carries_no_duplicate_of(tmp_path, monkeypatch):
 def test_close_issue_with_comment_logs_on_write_failure(tmp_path, monkeypatch):
     """A live write that exits non-zero (rate limit, transient error) still lands in
     the activity log — the trust model requires every upstream write attempt logged."""
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     _seed(tmp_path, monkeypatch)
     recorded = []
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: recorded.append((a, k)))
@@ -256,9 +261,9 @@ def test_close_issue_with_comment_logs_on_write_failure(tmp_path, monkeypatch):
         returncode = 1
         stderr = "rate limited"
 
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Fail())
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: _Fail())
     res = executor.close_issue_with_comment(
         10, models.IssueCloseBody(disposition="not-planned", comment="closing"),
-        token="tok", dry_run=False)
+        dry_run=False)
     assert res["status"] == "error" and "comment failed" in res["detail"]
     assert recorded, "a failed upstream write must still be logged"

@@ -89,36 +89,28 @@ def test_body_file_must_exist():
         cli.build_gh_argv(["pr", "comment", "12", "--body-file", "/no/such/file.md"])
 
 
-def test_mints_for_each_invocation(monkeypatch, capsys):
+def test_writes_as_the_bot_not_the_inherited_token(monkeypatch, capsys):
     cli = _load()
     monkeypatch.setenv("GH_TOKEN", "expired-session-token")
-    minted = []
-    calls = []
+    envs = []
 
-    def mint():
-        token = f"fresh-{len(minted) + 1}"
-        minted.append(token)
-        return token
-
-    def run(argv, token):
-        calls.append((argv, token))
+    def run(argv, **kw):
+        envs.append(kw["env"])
         return SimpleNamespace(returncode=0, stdout="https://github.com/x/y/issues/1\n", stderr="")
 
-    monkeypatch.setattr(cli.executor, "mint_bot_token", mint)
-    monkeypatch.setattr(cli.safety_guard, "chat_bot_run", run)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "fresh")
+    monkeypatch.setattr(cli.safety_guard, "assert_store_writes_safe", lambda: None)
+    monkeypatch.setattr(cli.safety_guard.subprocess, "run", run)
 
-    args = ["issue", "create", "--title", "Bug", "--body", "Body"]
-    assert cli.main(args) == 0
-    assert cli.main(args) == 0
-    assert [token for _, token in calls] == ["fresh-1", "fresh-2"]
-    assert "expired-session-token" not in str(calls)
+    assert cli.main(["issue", "create", "--title", "Bug", "--body", "Body"]) == 0
+    assert [e["GH_TOKEN"] for e in envs] == ["fresh"]
     assert "https://github.com/x/y/issues/1" in capsys.readouterr().out
 
 
 def test_refuses_when_mint_fails(monkeypatch, capsys):
     cli = _load()
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: None)
-    monkeypatch.setattr(cli.executor, "mint_error", lambda: "key missing")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.last_error", lambda: "key missing")
     monkeypatch.setattr(
         cli.safety_guard,
         "chat_bot_run",
@@ -130,7 +122,7 @@ def test_refuses_when_mint_fails(monkeypatch, capsys):
 
 def test_401_is_actionable(monkeypatch, capsys):
     cli = _load()
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "fresh")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "fresh")
     monkeypatch.setattr(
         cli.safety_guard,
         "chat_bot_run",

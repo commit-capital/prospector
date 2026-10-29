@@ -100,8 +100,7 @@ def main(argv: list[str]) -> int:
         return resume(args.issue)
     from prospector_app.backend import executor
 
-    token = executor.mint_bot_token() if args.live else None
-    res = executor.ask_issue_question(args.issue, token=token, dry_run=not args.live)
+    res = executor.ask_issue_question(args.issue, dry_run=not args.live)
     print(json.dumps(res, indent=2))
     return 0 if res["status"] in ("executed", "dry-run", "exists") else 1
 

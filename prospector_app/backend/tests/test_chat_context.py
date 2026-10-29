@@ -288,7 +288,7 @@ def test_visible_prs_context_over_cap_lists_every_matching_number(monkeypatch):
 def test_visible_prs_context_rides_alongside_a_pr_subject(temp_store, tmp_path, monkeypatch):
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
     monkeypatch.setattr(chat, "_pr_context", lambda *a, **k: "SUBJECT-CONTEXT-PR-101")
     monkeypatch.setattr(chat.service, "pr_row", lambda n: _ROWS.get(n))
@@ -329,7 +329,7 @@ def test_visible_prs_context_rides_alongside_a_pr_subject(temp_store, tmp_path, 
 def test_spec_alone_grounds_the_session(temp_store, tmp_path, monkeypatch):
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
     monkeypatch.setattr(chat.service, "pr_row", lambda n: _ROWS.get(n))
     monkeypatch.setattr(chat.service, "query_prs",
@@ -365,7 +365,7 @@ def test_spec_alone_grounds_the_session(temp_store, tmp_path, monkeypatch):
 def test_visible_prs_context_omitted_when_nothing_is_currently_filtered(temp_store, tmp_path, monkeypatch):
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
     monkeypatch.setattr(chat, "_pr_context", lambda *a, **k: "SUBJECT-CONTEXT-PR-101")
 
@@ -400,7 +400,7 @@ def test_visible_prs_context_omitted_when_nothing_is_currently_filtered(temp_sto
 def test_writable_chat_process_uses_operator_environment(temp_store, tmp_path, monkeypatch):
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat.executor, "mint_bot_token", lambda: "capability-probe-token")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "capability-probe-token")
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
     monkeypatch.setenv("GH_TOKEN", "expired-session-token")
     monkeypatch.setenv("GITHUB_TOKEN", "other-expired-session-token")
@@ -482,7 +482,7 @@ def test_a_session_gets_each_new_items_context_once(temp_store, tmp_path, monkey
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat.service, "pr_detail", lambda n: {"github_state": "open"})
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
     monkeypatch.setattr(chat, "_pr_context", lambda pr, *a, **k: f"CTX-PR-{pr}")
 
@@ -523,7 +523,7 @@ def test_a_session_gets_each_new_items_context_once(temp_store, tmp_path, monkey
 def test_staying_on_one_item_sends_no_context_again(temp_store, tmp_path, monkeypatch):
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
     monkeypatch.setattr(chat, "_pr_context", lambda pr, *a, **k: f"CTX-PR-{pr}")
 

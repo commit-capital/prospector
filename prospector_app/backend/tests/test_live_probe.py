@@ -1,15 +1,12 @@
 """Whether this machine can mint a configured bot token is probed once and
 cached for the backend process's whole lifetime (executor.live_possible) —
 a key file added, an app installed, or a network blip cleared after that
-first probe otherwise never takes effect without a restart. mint_error()
-records *why* the last mint failed (get-bot-token.sh's stderr, or a local
-reason) instead of discarding it; /api/identities/refresh is what actually
-re-probes on demand ("retry live mode" in the app UI)."""
-import os
-import subprocess
-
+first probe otherwise never takes effect without a restart.
+/api/identities/refresh is what actually re-probes on demand ("retry live
+mode" in the app UI)."""
 from fastapi.testclient import TestClient
 
+from pipeline import bot_token
 from prospector_app.backend import app as appmod
 from prospector_app.backend import caps
 from prospector_app.backend import executor
@@ -17,175 +14,10 @@ from prospector_app.backend import executor
 
 def _reset_caches():
     executor._live_possible = None
-    executor._last_mint_error = None
+    bot_token._last_error = None
     executor._bot_permissions = None
     executor._bot_permissions_probed = False
     caps._cache = None
-
-
-def test_token_script_reads_generic_key_path_config(tmp_path):
-    missing = tmp_path / "missing-key.pem"
-    env = {
-        **os.environ,
-        "TRIAGE_REPO": "example/repo",
-        "TRIAGE_BOT_APP_ID": "123",
-        "TRIAGE_BOT_KEY_FILE": str(missing),
-    }
-    r = subprocess.run(["bash", str(executor.GET_TOKEN)], capture_output=True,
-                       text=True, timeout=10, env=env)
-    assert r.returncode != 0
-    assert f"TRIAGE_BOT_KEY_FILE is not readable: {missing}" in r.stderr
-
-
-def test_token_script_permissions_mode_returns_metadata_without_token(tmp_path):
-    key = tmp_path / "private-key.pem"
-    key.write_text("test-key")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    node = bin_dir / "node"
-    node.write_text("#!/bin/sh\nprintf 'test-jwt\\n'\n")
-    node.chmod(0o755)
-    curl = bin_dir / "curl"
-    curl.write_text("""#!/bin/sh
-for arg in "$@"; do
-  case "$arg" in
-    */access_tokens)
-      printf '%s\\n' '{"token":"installation-secret","permissions":{"actions":"write","issues":"write"}}'
-      exit 0
-      ;;
-  esac
-done
-printf '%s\\n' '[{"id":42,"account":{"login":"example"}}]'
-""")
-    curl.chmod(0o755)
-    env = {
-        **os.environ,
-        "PATH": f"{bin_dir}:{os.environ['PATH']}",
-        "TRIAGE_REPO": "example/repo",
-        "TRIAGE_BOT_APP_ID": "123",
-        "TRIAGE_BOT_KEY_FILE": str(key),
-    }
-
-    result = subprocess.run(
-        ["bash", str(executor.GET_TOKEN), "--permissions"],
-        capture_output=True, text=True, timeout=10, env=env,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == '{"actions":"write","issues":"write"}'
-    assert "installation-secret" not in result.stdout
-
-
-def test_mint_bot_token_surfaces_missing_key_from_script(monkeypatch):
-    _reset_caches()
-
-    class FakeResult:
-        stdout = ""
-        stderr = "ERROR: TRIAGE_BOT_KEY_FILE is required. Set it in .env.\n"
-        returncode = 1
-    monkeypatch.setattr(executor.subprocess, "run", lambda *a, **k: FakeResult())
-    assert executor.mint_bot_token() is None
-    assert "TRIAGE_BOT_KEY_FILE" in executor.mint_error()
-
-
-def test_mint_bot_token_records_reason_when_script_missing(monkeypatch):
-    _reset_caches()
-    monkeypatch.setattr(executor, "GET_TOKEN", executor.REPO_ROOT / "nonexistent-script.sh")
-    assert executor.mint_bot_token() is None
-    assert "not found" in executor.mint_error()
-
-
-def test_mint_bot_token_surfaces_script_stderr_on_empty_output(monkeypatch):
-    """The actual diagnostic (bad app id, no installation, …) lives in
-    get-bot-token.sh's stderr — it must reach the operator, not be discarded."""
-    _reset_caches()
-    class FakeResult:
-        stdout = ""
-        stderr = "ERROR: GitHub App 123 has no installation on test-owner.\n"
-        returncode = 1
-    monkeypatch.setattr(executor.subprocess, "run", lambda *a, **k: FakeResult())
-    assert executor.mint_bot_token() is None
-    assert "no installation on test-owner" in executor.mint_error()
-
-
-def test_mint_bot_token_falls_back_to_generic_reason_with_no_stderr(monkeypatch):
-    _reset_caches()
-    class FakeResult:
-        stdout = ""
-        stderr = ""
-        returncode = 7
-    monkeypatch.setattr(executor.subprocess, "run", lambda *a, **k: FakeResult())
-    assert executor.mint_bot_token() is None
-    assert "exited 7" in executor.mint_error()
-
-
-def test_mint_bot_token_records_subprocess_exception(monkeypatch):
-    _reset_caches()
-    def boom(*a, **k):
-        raise subprocess.TimeoutExpired(cmd="get-bot-token.sh", timeout=30)
-    monkeypatch.setattr(executor.subprocess, "run", boom)
-    assert executor.mint_bot_token() is None
-    assert executor.mint_error() == "token helper failed unexpectedly; see server logs"
-
-
-def test_mint_bot_token_success_clears_prior_error(monkeypatch):
-    _reset_caches()
-    executor._last_mint_error = "stale reason from a previous failed probe"
-
-    class FakeResult:
-        stdout = "ghs_realtoken\n"
-        stderr = ""
-        returncode = 0
-    monkeypatch.setattr(executor.subprocess, "run", lambda *a, **k: FakeResult())
-    assert executor.mint_bot_token() == "ghs_realtoken"
-    assert executor.mint_error() is None
-
-
-def _counting_mint(monkeypatch, stdout: str) -> list[list[str]]:
-    calls: list[list[str]] = []
-
-    class FakeResult:
-        stderr = ""
-        returncode = 0
-
-    def fake_run(command, **kwargs):
-        calls.append(command)
-        r = FakeResult()
-        r.stdout = stdout
-        return r
-    monkeypatch.setattr(executor.subprocess, "run", fake_run)
-    return calls
-
-
-def test_mint_bot_token_reuses_a_token_until_its_reuse_window_ends(monkeypatch):
-    _reset_caches()
-    calls = _counting_mint(monkeypatch, "ghs_first\n")
-    now = [1000.0]
-    monkeypatch.setattr(executor.time, "monotonic", lambda: now[0])
-    assert executor.mint_bot_token() == "ghs_first"
-    assert executor.mint_bot_token() == "ghs_first"
-    assert len(calls) == 1
-
-    now[0] += executor.TOKEN_REUSE_SECONDS
-    assert executor.mint_bot_token() == "ghs_first"
-    assert len(calls) == 2
-
-
-def test_refresh_live_drops_the_reused_token(monkeypatch):
-    _reset_caches()
-    calls = _counting_mint(monkeypatch, "ghs_tok\n")
-    executor.mint_bot_token()
-    executor.refresh_live()
-    executor.mint_bot_token()
-    assert len(calls) == 2
-
-
-def test_a_failed_mint_is_retried_on_the_next_call(monkeypatch):
-    _reset_caches()
-    calls = _counting_mint(monkeypatch, "")
-    assert executor.mint_bot_token() is None
-    assert executor.mint_bot_token() is None
-    assert len(calls) == 2
 
 
 def test_bot_permissions_uses_nonsecret_token_helper_mode_and_caches(monkeypatch):
@@ -204,7 +36,7 @@ def test_bot_permissions_uses_nonsecret_token_helper_mode_and_caches(monkeypatch
     monkeypatch.setattr(executor.subprocess, "run", fake_run)
     assert executor.bot_permissions() == {"actions": "write", "issues": "write"}
     assert executor.bot_permissions() == {"actions": "write", "issues": "write"}
-    assert calls == [["bash", str(executor.GET_TOKEN), "--permissions"]]
+    assert calls == [["bash", str(bot_token.GET_TOKEN), "--permissions"]]
 
 
 def test_bot_permissions_fails_closed_on_malformed_output(monkeypatch):
@@ -229,7 +61,7 @@ def test_live_possible_probes_once_and_caches(monkeypatch):
     def fake_mint():
         calls["n"] += 1
         return None
-    monkeypatch.setattr(executor, "mint_bot_token", fake_mint)
+    monkeypatch.setattr("pipeline.bot_token.get", fake_mint)
 
     assert executor.live_possible() is False
     assert executor.live_possible() is False  # second call: still cached, no re-probe
@@ -237,7 +69,7 @@ def test_live_possible_probes_once_and_caches(monkeypatch):
 
     # Simulate the underlying problem being fixed — live_possible() alone
     # doesn't notice.
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     assert executor.live_possible() is False  # stale — still the cached False
 
     executor.refresh_live()
@@ -246,10 +78,10 @@ def test_live_possible_probes_once_and_caches(monkeypatch):
 
 def test_identities_reports_live_error_alongside_live_possible(monkeypatch):
     _reset_caches()
-    monkeypatch.setattr(executor, "mint_bot_token",
+    monkeypatch.setattr(bot_token, "get",
                         lambda: (_ for _ in ()).throw(AssertionError("should use cache")))
     executor._live_possible = False
-    executor._last_mint_error = "TRIAGE_BOT_KEY_FILE is required. Set it in .env."
+    bot_token._last_error = "TRIAGE_BOT_KEY_FILE is required. Set it in .env."
 
     out = executor.identities()
     assert out["live_possible"] is False
@@ -294,8 +126,8 @@ def test_refresh_route_reprobes_and_returns_fresh_identities(monkeypatch):
     operator hits the retry action, which is this route."""
     _reset_caches()
     executor._live_possible = False
-    executor._last_mint_error = "stale"
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "ghs_realtoken")
+    bot_token._last_error = "stale"
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "ghs_realtoken")
 
     c = TestClient(appmod.app)
     r = c.post("/api/identities/refresh")

@@ -15,9 +15,9 @@ Upstream writes go out only through the sanctioned bot paths below —
 (validated embedded-agent edits / comments / issue writes / workflow reruns),
 `alert_bot_run` (alert dismissals), `propose_bot_run` (an issue-fix pull request
 opened from the push user's lane branch), and `bot_merge_run` (squash-merge).
-All require a non-empty installation token and
-a server checkout compatible with the shared store, then inject the token via
-GH_TOKEN for that one subprocess.
+Each fetches the bot's installation token (`pipeline.bot_token`) as it runs,
+refuses without one, requires a server checkout compatible with the shared
+store, and injects the token via GH_TOKEN for that one subprocess.
 """
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ import re
 import subprocess
 from typing import TypedDict
 
+from pipeline import bot_token
 from pipeline import settings
 from pipeline import schema
 from pipeline import storekit
@@ -240,10 +241,9 @@ def assert_propose_write(payload: dict) -> None:
         raise WriteAttemptBlocked("a proposal's title and body are text")
 
 
-def propose_bot_run(payload: dict, token: str, *,
-                    timeout: int = 60) -> subprocess.CompletedProcess:
+def propose_bot_run(payload: dict, *, timeout: int = 60) -> subprocess.CompletedProcess:
     """Open a pull request on TRIAGE_REPO as the configured bot."""
-    token = _require_bot_token(token, "open a pull request")
+    token = _require_bot_token("open a pull request")
     assert_propose_write(payload)
     assert_store_writes_safe()
     argv = ["gh", "api", "--method", "POST", f"repos/{settings.repo()}/pulls", "--input", "-"]
@@ -271,7 +271,7 @@ def assert_label_write(op: str, label: str, number: int | None) -> None:
         raise WriteAttemptBlocked(f"a label {op} names an issue or pull request number")
 
 
-def label_bot_run(op: str, label: str, token: str, *, number: int | None = None,
+def label_bot_run(op: str, label: str, *, number: int | None = None,
                   timeout: int = 60) -> subprocess.CompletedProcess:
     """Add, remove, or create one issue-fix status label on TRIAGE_REPO as the
     configured bot. The command is built here from the checked operation, so
@@ -280,7 +280,7 @@ def label_bot_run(op: str, label: str, token: str, *, number: int | None = None,
 
     from issue_triage.public_loop import LABELS
 
-    token = _require_bot_token(token, "write a label")
+    token = _require_bot_token("write a label")
     assert_label_write(op, label, number)
     assert_store_writes_safe()
     repo = settings.repo()
@@ -313,12 +313,11 @@ def assert_close_write(number: int, reason: str) -> None:
         raise WriteAttemptBlocked(f"not an unattended close reason: {reason!r}")
 
 
-def close_bot_run(number: int, reason: str, token: str, *,
-                  timeout: int = 60) -> subprocess.CompletedProcess:
+def close_bot_run(number: int, reason: str, *, timeout: int = 60) -> subprocess.CompletedProcess:
     """Close issue `number` on TRIAGE_REPO as the configured bot. The command
     is built here from the checked arguments, so nothing but that one PATCH of
     the issue's state can run."""
-    token = _require_bot_token(token, "close an issue")
+    token = _require_bot_token("close an issue")
     assert_close_write(number, reason)
     assert_store_writes_safe()
     argv = ["gh", "api", "--method", "PATCH", f"repos/{settings.repo()}/issues/{number}",
@@ -340,45 +339,46 @@ def _require_bot_identity(action: str) -> str:
     return login
 
 
-def _require_bot_token(token: str | None, action: str) -> str:
+def _require_bot_token(action: str) -> str:
     login = _require_bot_identity(action)
-    if not token or not token.strip():
+    token = bot_token.get()
+    if not token:
         raise WriteAttemptBlocked(
             f"refusing to {action} without a {login} token (would fall back to default login)"
         )
     return token
 
 
-def bot_run(argv: list[str], token: str, *, timeout: int = 60) -> subprocess.CompletedProcess:
+def bot_run(argv: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess:
     """Run a sanctioned bot write as the configured bot via GH_TOKEN."""
-    token = _require_bot_token(token, "write")
+    token = _require_bot_token("write")
     assert_bot_write(argv)
     assert_store_writes_safe()
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
 
 
-def chat_bot_run(argv: list[str], token: str, *, timeout: int = 60) -> subprocess.CompletedProcess:
-    """Run a validated embedded-agent write with a non-empty bot token."""
-    token = _require_bot_token(token, "write")
+def chat_bot_run(argv: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess:
+    """Run a validated embedded-agent write as the configured bot."""
+    token = _require_bot_token("write")
     assert_chat_bot_write(argv)
     assert_store_writes_safe()
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
 
 
-def alert_bot_run(argv: list[str], token: str, *, timeout: int = 60) -> subprocess.CompletedProcess:
+def alert_bot_run(argv: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess:
     """Run a sanctioned alert dismissal/resolution as the configured bot."""
-    token = _require_bot_token(token, "dismiss an alert")
+    token = _require_bot_token("dismiss an alert")
     assert_alert_bot_write(argv)
     assert_store_writes_safe()
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
 
 
-def bot_merge_run(argv: list[str], token: str, *, timeout: int = 120) -> subprocess.CompletedProcess:
+def bot_merge_run(argv: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess:
     """Run a gated upstream squash-merge as the configured bot.
 
     The command shape is limited to ``gh pr merge <n>``.
     """
-    token = _require_bot_token(token, "merge")
+    token = _require_bot_token("merge")
     if not argv or argv[0].rsplit("/", 1)[-1] != "gh":
         raise WriteAttemptBlocked("merge must use gh")
     if not _MERGE_RE.match(" ".join(argv)):

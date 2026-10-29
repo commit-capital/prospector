@@ -26,11 +26,11 @@ def test_close_pr_uses_executor_with_full_disposition(monkeypatch, capsys):
     cli = _load("close-pr")
     seen = {}
 
-    def close(pr, action, *, token, dry_run):
-        seen.update(pr=pr, action=action, token=token, dry_run=dry_run)
+    def close(pr, action, *, dry_run):
+        seen.update(pr=pr, action=action, dry_run=dry_run)
         return {"pr": pr, "status": "executed", "action": "CLOSE_DUP"}
 
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "bot-token")
     monkeypatch.setattr(cli.executor, "execute_pr", close)
     rc = cli.main([
         "2857", "--disposition", "dup", "--canonical", "2800",
@@ -39,7 +39,7 @@ def test_close_pr_uses_executor_with_full_disposition(monkeypatch, capsys):
 
     assert rc == 0
     assert seen["pr"] == 2857
-    assert seen["token"] == "bot-token" and seen["dry_run"] is False
+    assert seen["dry_run"] is False
     assert seen["action"] == models.CloseAction(
         action="CLOSE_DUP",
         canonical=2800,
@@ -53,11 +53,11 @@ def test_close_pr_wontfix_records_its_own_action(monkeypatch, capsys):
     cli = _load("close-pr")
     seen = {}
 
-    def close(pr, action, *, token, dry_run):
+    def close(pr, action, *, dry_run):
         seen.update(pr=pr, action=action)
         return {"pr": pr, "status": "executed", "action": action.action}
 
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "bot-token")
     monkeypatch.setattr(cli.executor, "execute_pr", close)
     assert cli.main(["13385", "--disposition", "wontfix", "--comment", "Wrong approach."]) == 0
     assert seen["action"] == models.CloseAction(action="CLOSE_WONTFIX", comment="Wrong approach.")
@@ -78,13 +78,12 @@ def test_close_pr_reads_multiline_comment_from_file(
         pr: int,
         action: models.CloseAction,
         *,
-        token: str,
         dry_run: bool,
     ) -> dict[str, object]:
-        seen.update(pr=pr, action=action, token=token, dry_run=dry_run)
+        seen.update(pr=pr, action=action, dry_run=dry_run)
         return {"pr": pr, "status": "executed", "action": "CLOSE_FIXED"}
 
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "bot-token")
     monkeypatch.setattr(cli.executor, "execute_pr", close)
 
     assert cli.main([
@@ -118,8 +117,7 @@ def test_close_pr_comment_file_must_be_readable(
     cli = _load("close-pr")
     missing = tmp_path / "missing.md"
     monkeypatch.setattr(
-        cli.executor,
-        "mint_bot_token",
+        "pipeline.bot_token.get",
         lambda: (_ for _ in ()).throw(AssertionError("token mint attempted")),
     )
 
@@ -131,8 +129,8 @@ def test_close_pr_comment_file_must_be_readable(
 
 def test_close_pr_refuses_when_a_fresh_bot_token_cannot_be_minted(monkeypatch, capsys):
     cli = _load("close-pr")
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: None)
-    monkeypatch.setattr(cli.executor, "mint_error", lambda: "key missing")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.last_error", lambda: "key missing")
     monkeypatch.setattr(
         cli.executor,
         "execute_pr",
@@ -147,15 +145,15 @@ def test_reopen_pr_uses_executor(monkeypatch, capsys):
     cli = _load("reopen-pr")
     seen = {}
 
-    def reopen(pr, *, token, dry_run):
-        seen.update(pr=pr, token=token, dry_run=dry_run)
+    def reopen(pr, *, dry_run):
+        seen.update(pr=pr, dry_run=dry_run)
         return {"pr": pr, "status": "reopened", "action": "REOPEN"}
 
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "bot-token")
     monkeypatch.setattr(cli.executor, "reopen_pr", reopen)
 
     assert cli.main(["2857"]) == 0
-    assert seen == {"pr": 2857, "token": "bot-token", "dry_run": False}
+    assert seen == {"pr": 2857, "dry_run": False}
     assert json.loads(capsys.readouterr().out)["status"] == "reopened"
 
 
@@ -163,11 +161,11 @@ def test_submit_review_uses_executor(monkeypatch, capsys):
     cli = _load("submit-review")
     seen = {}
 
-    def review(pr, event, body, *, token, dry_run):
-        seen.update(pr=pr, event=event, body=body, token=token, dry_run=dry_run)
+    def review(pr, event, body, *, dry_run):
+        seen.update(pr=pr, event=event, body=body, dry_run=dry_run)
         return {"pr": pr, "status": "executed", "action": f"REVIEW:{event}"}
 
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "bot-token")
     monkeypatch.setattr(cli.executor, "submit_review", review)
 
     assert cli.main([
@@ -177,7 +175,6 @@ def test_submit_review_uses_executor(monkeypatch, capsys):
         "pr": 2857,
         "event": "request-changes",
         "body": "Please add a test.",
-        "token": "bot-token",
         "dry_run": False,
     }
     assert json.loads(capsys.readouterr().out)["status"] == "executed"
@@ -192,12 +189,12 @@ def test_submit_review_reads_multiline_body_from_file(
     body_file.write_text("First finding.\n\nSecond finding.\n")
     seen: dict[str, object] = {}
 
-    def review(pr: int, event: str, body: str, *, token: str,
+    def review(pr: int, event: str, body: str, *,
                dry_run: bool) -> dict[str, object]:
         seen["body"] = body
         return {"pr": pr, "status": "executed", "action": f"REVIEW:{event}"}
 
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "bot-token")
     monkeypatch.setattr(cli.executor, "submit_review", review)
 
     assert cli.main([
@@ -220,7 +217,7 @@ def test_submit_review_body_inputs_are_mutually_exclusive(tmp_path: Path) -> Non
 
 def test_executor_rejection_returns_failure_and_prints_result(monkeypatch, capsys):
     cli = _load("submit-review")
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "bot-token")
     monkeypatch.setattr(
         cli.executor,
         "submit_review",

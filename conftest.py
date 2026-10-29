@@ -84,11 +84,11 @@ def _no_real_ai_account(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_cached_bot_token(monkeypatch):
-    """`executor.mint_bot_token` reuses a token for half an hour; one test's
-    token must never answer the next test's mint."""
-    from prospector_app.backend import executor
-    monkeypatch.setattr(executor, "_cached_token", None)
+def _no_bot_token(monkeypatch):
+    """No test mints a real bot token: `get-bot-token.sh` reads the checkout's
+    own .env. A test that needs a live write sets one."""
+    from pipeline import bot_token
+    monkeypatch.setattr(bot_token, "get", lambda: None)
 
 
 @pytest.fixture(autouse=True)

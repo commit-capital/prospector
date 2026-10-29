@@ -14,10 +14,9 @@ import subprocess
 from pathlib import Path
 
 from pipeline import settings
-from pipeline.settings import REPO_ROOT
 
 ROOT = Path(__file__).resolve().parent
-GET_TOKEN = REPO_ROOT / "pipeline" / "get-bot-token.sh"
+
 
 def repo() -> str:
     return settings.repo()
@@ -40,20 +39,6 @@ class SourceUnavailable(RuntimeError):
         super().__init__(f"{source}: {detail}")
         self.source = source
         self.detail = detail
-
-
-def mint_token() -> str | None:
-    """Mint a 1-hour bot installation token via pipeline/get-bot-token.sh, or
-    None when minting is unavailable (missing script, key, or configuration).
-    The helper reads the PEM only inside its short-lived subprocess."""
-    if not GET_TOKEN.exists():
-        return None
-    try:
-        r = subprocess.run(["bash", str(GET_TOKEN)], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    tok = (r.stdout or "").strip()
-    return tok or None
 
 
 def _token_env(token: str) -> dict[str, str]:

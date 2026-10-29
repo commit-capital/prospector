@@ -70,10 +70,10 @@ def test_capture_reads_the_live_entry_version(monkeypatch):
 
 def test_retrigger_route_schedules_backend_refresh_after_post_lands(monkeypatch):
     baseline = _baseline()
-    monkeypatch.setattr(appmod.executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     monkeypatch.setattr(appmod.review_refresh, "capture", lambda n, rid: baseline)
     monkeypatch.setattr(appmod.executor, "retrigger_review",
-                        lambda n, rid, *, token, dry_run: {"pr": n, "reviewer": rid, "status": "executed"})
+                        lambda n, rid, *, dry_run: {"pr": n, "reviewer": rid, "status": "executed"})
     scheduled = []
     monkeypatch.setattr(appmod.review_refresh, "schedule",
                         lambda n, rid, captured: scheduled.append((n, rid, captured)))
@@ -85,7 +85,7 @@ def test_retrigger_route_schedules_backend_refresh_after_post_lands(monkeypatch)
 
 def test_retrigger_route_does_not_schedule_dry_run(monkeypatch):
     monkeypatch.setattr(appmod.executor, "retrigger_review",
-                        lambda n, rid, *, token, dry_run: {"pr": n, "reviewer": rid, "status": "dry-run"})
+                        lambda n, rid, *, dry_run: {"pr": n, "reviewer": rid, "status": "dry-run"})
     monkeypatch.setattr(appmod.review_refresh, "capture",
                         lambda n, rid: (_ for _ in ()).throw(AssertionError("must not capture")))
     scheduled = []

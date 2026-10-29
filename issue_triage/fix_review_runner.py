@@ -456,8 +456,7 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
         _hand_back(store, n, pr, outcome)
         return outcome
     on_step("pushing the revision")
-    token = executor.mint_bot_token() if live else None
-    res = executor.update_issue_fix_proposal(n, pr, push=True, token=token, dry_run=not live)
+    res = executor.update_issue_fix_proposal(n, pr, push=True, dry_run=not live)
     if res.get("status") in ("blocked", "error"):
         result_file.write_text(kept)
         raise RequestFailed(f"the revision could not go onto #{pr}: {res.get('detail')}")
@@ -575,11 +574,10 @@ def _late_rivals(store: IssueStore, n: int, prs: list[int], *, live: bool,
 def _bot_action(store: IssueStore, n: int, action: str, *, dry_run: bool) -> str:
     from prospector_app.backend import executor
 
-    token = None if dry_run else executor.mint_bot_token()
     if action == "ask-reporter":
-        res = executor.ask_issue_question(n, token=token, dry_run=dry_run)
+        res = executor.ask_issue_question(n, dry_run=dry_run)
     else:
-        res = executor.propose_issue_fix(n, token=token, dry_run=dry_run)
+        res = executor.propose_issue_fix(n, dry_run=dry_run)
     status = res.get("status")
     if status in ("blocked", "error"):
         raise RequestFailed(str(res.get("detail")))

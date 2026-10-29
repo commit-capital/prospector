@@ -32,8 +32,6 @@ def test_refuses_other_verbs_and_endpoints():
         assert_alert_bot_write(["curl", "-X", "PATCH", "repos/o/r/dependabot/alerts/3"])
 
 
-def test_alert_bot_run_refuses_empty_token():
+def test_alert_bot_run_refuses_without_a_token():
     with pytest.raises(WriteAttemptBlocked, match="token"):
-        safety_guard.alert_bot_run(_argv("repos/o/r/dependabot/alerts/3"), "")
-    with pytest.raises(WriteAttemptBlocked, match="token"):
-        safety_guard.alert_bot_run(_argv("repos/o/r/dependabot/alerts/3"), "   ")
+        safety_guard.alert_bot_run(_argv("repos/o/r/dependabot/alerts/3"))

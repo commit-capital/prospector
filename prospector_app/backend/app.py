@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
+from pipeline import bot_token
 from prospector_app.backend import activity
 from prospector_app.backend import author_returns
 from prospector_app.backend import advisories as advisories_mod
@@ -1236,9 +1237,7 @@ def merge_pr(n: int, method: str = "squash", dry_run: bool = True, reason: str |
 
 @app.post("/api/execute/pr/{n}")
 def execute_pr(n: int, payload: models.CloseAction = Body(...), dry_run: bool = True):
-    # token minted per-call; None when no key → execute_pr forces dry-run.
-    token = None if dry_run else executor.mint_bot_token()
-    res = executor.execute_pr(n, payload, token=token, dry_run=dry_run)
+    res = executor.execute_pr(n, payload, dry_run=dry_run)
     training.capture(n, res.get("action", "?"), reason=payload.reason, tags=payload.tags,
                      public_body=payload.comment, dry_run=dry_run, result=res)
     return res
@@ -1275,8 +1274,7 @@ async def execute_cluster(payload: models.ClusterExecuteBody = Body(...)):
 
 @app.post("/api/reopen/pr/{n}")
 def reopen_pr(n: int, dry_run: bool = True):
-    token = None if dry_run else executor.mint_bot_token()
-    res = executor.reopen_pr(n, token=token, dry_run=dry_run)
+    res = executor.reopen_pr(n, dry_run=dry_run)
     training.capture(n, "REOPEN", dry_run=dry_run, result=res)
     return res
 
@@ -1399,9 +1397,8 @@ def issue_fix_choose(n: int, payload: models.IssueFixChooseBody, dry_run: bool =
     issue_data.refresh()
     data.refresh()
     body, marker = fix_choice.comment(n, payload.pr)
-    token = None if dry_run else executor.mint_bot_token()
     posted = executor.post_fix_comment(payload.pr, body, marker=marker, issue=n,
-                                       comment_kind="recommend", token=token, dry_run=dry_run)
+                                       comment_kind="recommend", dry_run=dry_run)
     return {"ok": True, "detail": why, "comment": posted}
 
 
@@ -1436,16 +1433,14 @@ def close_issue_dup(n: int, payload: models.IssueCloseDupBody = Body(default_fac
                     dry_run: bool = True):
     """Close issue #n as a duplicate of `canonical`, as the configured bot (gated +
     logged). Body: {canonical?, comment?}."""
-    token = None if dry_run else executor.mint_bot_token()
-    return executor.close_issue(n, payload, token=token, dry_run=dry_run)
+    return executor.close_issue(n, payload, dry_run=dry_run)
 
 
 @app.post("/api/execute/issue/{n}/close-fixed")
 def close_issue_fixed(n: int, payload: models.IssueCloseFixedBody, dry_run: bool = True):
     """Close issue #n as fixed by merged PR `fixed_by`, as the configured bot (gated on a
     live merged-state re-verify + logged). Body: {fixed_by, comment?}."""
-    token = None if dry_run else executor.mint_bot_token()
-    return executor.close_issue_fixed(n, payload, token=token, dry_run=dry_run)
+    return executor.close_issue_fixed(n, payload, dry_run=dry_run)
 
 
 @app.post("/api/execute/issue/{n}/close")
@@ -1453,8 +1448,7 @@ def close_issue(n: int, payload: models.IssueCloseBody = Body(default_factory=mo
                 dry_run: bool = True):
     """Close issue #n as directed by the operator, as the configured bot (gated on
     issues.close_gate + logged). Body: {disposition, comment, fixed_by?, canonical?}."""
-    token = None if dry_run else executor.mint_bot_token()
-    return executor.close_issue_with_comment(n, payload, token=token, dry_run=dry_run)
+    return executor.close_issue_with_comment(n, payload, dry_run=dry_run)
 
 
 @app.post("/api/execute/issue/{n}/comment")
@@ -1462,16 +1456,14 @@ def comment_issue(n: int, payload: models.IssueCommentBody = Body(default_factor
                   dry_run: bool = True):
     """Post a comment on issue #n as the configured bot, without closing (gated +
     logged). Body: {comment}."""
-    token = None if dry_run else executor.mint_bot_token()
-    return executor.comment_issue(n, payload, token=token, dry_run=dry_run)
+    return executor.comment_issue(n, payload, dry_run=dry_run)
 
 
 @app.post("/api/reopen/issue/{n}")
 def reopen_issue(n: int, dry_run: bool = True):
     """Undo an issue close: reopen #n and delete the bot's closing comment(s), as
     the configured bot (gated + logged). The inverse of the issue-close endpoints."""
-    token = None if dry_run else executor.mint_bot_token()
-    return executor.reopen_issue(n, token=token, dry_run=dry_run)
+    return executor.reopen_issue(n, dry_run=dry_run)
 
 
 # --- GitHub security alerts (code scanning / Dependabot / secret scanning) ---
@@ -1571,15 +1563,13 @@ def dismiss_alert(source: str, n: int, payload: models.AlertDismissBody = Body(.
                   dry_run: bool = True):
     """Dismiss/resolve alert {source}#{n} upstream as the configured bot (gated
     by alert_gates.dismiss_eligibility + logged). Body: {reason, comment?}."""
-    token = None if dry_run else executor.mint_bot_token()
     return executor.dismiss_alert(source, n, payload.reason, payload.comment or "",
-                                  token=token, dry_run=dry_run)
+                                  dry_run=dry_run)
 
 
 @app.post("/api/review/pr/{n}")
 def submit_review(n: int, payload: models.ReviewBody = Body(...), dry_run: bool = True):
-    token = None if dry_run else executor.mint_bot_token()
-    res = executor.submit_review(n, payload.event, payload.body, token=token, dry_run=dry_run,
+    res = executor.submit_review(n, payload.event, payload.body, dry_run=dry_run,
                                  override_stale=payload.override_stale)
     training.capture(n, f"REVIEW:{payload.event}", reason=payload.reason, tags=payload.tags,
                      public_body=payload.body, dry_run=dry_run, result=res)
@@ -1588,9 +1578,8 @@ def submit_review(n: int, payload: models.ReviewBody = Body(...), dry_run: bool 
 
 @app.post("/api/comment/pr/{n}")
 def comment_line(n: int, payload: models.LineCommentBody = Body(...), dry_run: bool = True):
-    token = None if dry_run else executor.mint_bot_token()
     res = executor.comment_line(n, payload.file, payload.line, payload.body,
-                                token=token, dry_run=dry_run,
+                                dry_run=dry_run,
                                 override_stale=payload.override_stale)
     training.capture(n, "LINE_COMMENT", reason=payload.reason, public_body=payload.body,
                      dry_run=dry_run, result=res)
@@ -1607,9 +1596,8 @@ def retrigger_review(reviewer: str, n: int, dry_run: bool = True):
     known = next((r for r in reviewers.REVIEWERS.values() if r.id == reviewer), None)
     if known is None:
         raise HTTPException(status_code=404, detail="unknown reviewer")
-    token = None if dry_run else executor.mint_bot_token()
-    baseline = review_refresh.capture(n, known.id) if token is not None else None
-    result = executor.retrigger_review(n, known.id, token=token, dry_run=dry_run)
+    baseline = review_refresh.capture(n, known.id) if not dry_run and bot_token.available() else None
+    result = executor.retrigger_review(n, known.id, dry_run=dry_run)
     if result.get("status") == "executed" and baseline is not None:
         review_refresh.schedule(n, known.id, baseline)
     return result

@@ -1353,7 +1353,7 @@ def test_describe_parks_the_new_body_and_posts_nothing(store, monkeypatch, tmp_p
                                               "## Original description\nAdds a paragraph.\n"})
     posted = []
     monkeypatch.setattr(fix_worker.safety_guard, "chat_bot_run",
-                        lambda argv, token: posted.append(argv))
+                        lambda argv, **kw: posted.append(argv))
 
     fix_worker.run_one(5)
 
@@ -1376,9 +1376,9 @@ def test_approved_describe_posts_as_the_bot_and_retriggers(store, monkeypatch, t
     fix_queue.approve_pr(5, dry_run=False)
 
     posted = []
-    monkeypatch.setattr(fix_worker.executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     monkeypatch.setattr(fix_worker.safety_guard, "chat_bot_run",
-                        lambda argv, token: (posted.append((argv, token)),
+                        lambda argv, **kw: (posted.append(argv),
                                              type("R", (), {"returncode": 0, "stdout": "ok",
                                                             "stderr": ""})())[1])
     logged = []
@@ -1390,8 +1390,8 @@ def test_approved_describe_posts_as_the_bot_and_retriggers(store, monkeypatch, t
 
     req = store.load_pr(5).fix_request
     assert req["status"] == "pushed"
-    argv, token = posted[0]
-    assert argv[:4] == ["gh", "pr", "edit", "5"] and "--body-file" in argv and token == "tok"
+    argv = posted[0]
+    assert argv[:4] == ["gh", "pr", "edit", "5"] and "--body-file" in argv
     assert logged and logged[0][0] == "pr-edit" and logged[0][1]["pr"] == 5
     assert retriggered == [5]
 
@@ -1406,10 +1406,10 @@ def test_approved_describe_without_a_bot_token_fails_and_posts_nothing(
                         lambda **kw: {"body": "## What Changed\n- a\n"})
     fix_worker.run_one(5)
     fix_queue.approve_pr(5, dry_run=False)
-    monkeypatch.setattr(fix_worker.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     posted = []
     monkeypatch.setattr(fix_worker.safety_guard, "chat_bot_run",
-                        lambda argv, token: posted.append(argv))
+                        lambda argv, **kw: posted.append(argv))
 
     fix_worker.push_approved(5)
 
@@ -1552,7 +1552,7 @@ def test_hunt_order_fix_first_then_nits_then_tiers(store, fix_profile, monkeypat
 def retriggers(monkeypatch) -> list[int]:
     """The PRs a push asked the reviewers to look at again."""
     asked: list[int] = []
-    monkeypatch.setattr(fix_worker.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(fix_worker.executor, "retrigger_review",
                         lambda n, rid, **kw: asked.append(n) or {"status": "dry-run"})
     return asked
@@ -1577,8 +1577,11 @@ def test_authored_fix_pushes_when_autopush_names_fix(store, monkeypatch, retrigg
 
 def test_a_failed_retrigger_leaves_the_push_standing(store, monkeypatch):
     monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "fix")
-    monkeypatch.setattr(fix_worker.executor, "mint_bot_token",
-                        lambda: (_ for _ in ()).throw(RuntimeError("no network")))
+    attempts = []
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
+    monkeypatch.setattr(fix_worker.executor, "retrigger_review",
+                        lambda *a, **k: attempts.append(a) or (_ for _ in ()).throw(
+                            RuntimeError("no network")))
     _queue_fix()
     monkeypatch.setattr(fix_worker, "_resubmit", _fix_probe())
     _authored(monkeypatch)
@@ -1586,6 +1589,7 @@ def test_a_failed_retrigger_leaves_the_push_standing(store, monkeypatch):
 
     fix_worker.run_one(1)
 
+    assert attempts
     assert store.load_pr(1).fix_request["status"] == "pushed"
 
 
@@ -1969,7 +1973,7 @@ def handback_live(monkeypatch):
     monkeypatch.setattr(handback, "live_state", lambda n: {
         "state": "open", "head": HEAD, "author": "contrib",
         "last_active": datetime.now(timezone.utc) - timedelta(days=state["days_ago"])})
-    monkeypatch.setattr(handback.executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     monkeypatch.setattr(handback.executor, "hand_back_comment",
                         lambda n, body, **kw: state["writes"].append(("comment", n, body))
                         or {"status": "executed"})

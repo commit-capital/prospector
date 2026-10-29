@@ -38,6 +38,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from pipeline import bot_token
 from issue_triage import fixability, fixed_test, public_comments, public_loop
 from pipeline import gates, gh, headless_agent, prove, settings, storekit, verify_driver
 
@@ -124,7 +125,7 @@ def _failed(store: IssueStore, n: int, mode: str, check: dict, why: str) -> None
 
 
 def close_one(store: IssueStore, issue: Issue, *, mode: str, base: prove.PinnedBase,
-              token: str | None, now: datetime) -> bool:
+              now: datetime) -> bool:
     """Check and close issue `issue` under `mode`. Whether it acted."""
     from prospector_app.backend import executor
 
@@ -165,8 +166,7 @@ def close_one(store: IssueStore, issue: Issue, *, mode: str, base: prove.PinnedB
             _note(store, n, f"Did not post the close comment: {'; '.join(problems)}.")
             return True
         res = executor.auto_close_issue(n, kind=kind, reason=REASONS[kind], body=body,
-                                        marker=public_comments.marker(n, KEY), token=token,
-                                        dry_run=mode != "live")
+                                        marker=public_comments.marker(n, KEY), dry_run=mode != "live")
         status = res.get("status")
         if status == "executed" or (status == "dry-run" and mode != "live"):
             public_loop.record_view(store, n, mode, closed={
@@ -192,7 +192,6 @@ def run(store: IssueStore, issues: dict[int, Issue], *, may_run: Callable[[], bo
     DAILY_CAP a UTC day for each of live and dry-run, each while `may_run` says
     the AI capacity is open. A live pass that cannot mint the bot's token
     closes nothing. The issues acted on. An agent outage propagates."""
-    from prospector_app.backend import executor
     from pipeline.store import Store
 
     mode = mode or settings.issue_fix_public()
@@ -211,8 +210,8 @@ def run(store: IssueStore, issues: dict[int, Issue], *, may_run: Callable[[], bo
         if room[pick[2]] >= 0:
             kept.append(pick)
     picks = kept[:BATCH]
-    token = executor.mint_bot_token() if any(m == "live" for *_, m in picks) else None
-    picks = [p for p in picks if p[2] != "live" or token]
+    if any(m == "live" for *_, m in picks) and not bot_token.available():
+        picks = [p for p in picks if p[2] != "live"]
     if not picks:
         return []
     try:
@@ -224,8 +223,7 @@ def run(store: IssueStore, issues: dict[int, Issue], *, may_run: Callable[[], bo
         if not may_run():
             break
         try:
-            if close_one(store, issue, mode=m, base=base, token=token,
-                         now=now or datetime.now(timezone.utc)):
+            if close_one(store, issue, mode=m, base=base, now=now or datetime.now(timezone.utc)):
                 acted.append(n)
         except headless_agent.AgentUnavailable:
             raise

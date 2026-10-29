@@ -27,7 +27,7 @@ def test_the_batch_agent_reads_only_its_private_bundle_directory(monkeypatch):
 def test_a_pass_with_nothing_to_scan_is_timed_in_the_ledger(tmp_path, monkeypatch):
     from alert_triage.alert_store import AlertStore
     from pipeline import storekit
-    monkeypatch.setattr(find_fixed.config, "mint_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     assert find_fixed.main(["--store", str(tmp_path)]) == 0
     passes = [r for r in AlertStore(tmp_path).runs()
               if isinstance(r, storekit.PhaseRun) and r.phase == "alert-find-fixed"]
@@ -54,7 +54,7 @@ def test_main_stops_at_the_first_usage_limit_hit(tmp_path, monkeypatch, capsys):
         calls.append([e["number"] for e in entries])
         raise headless_agent.CapacityExhausted("usage limit reached", resets_at=reset)
 
-    monkeypatch.setattr(find_fixed.config, "mint_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(find_fixed, "run_batch_agent", fake_batch)
     rc = find_fixed.main(["--batch", "1", "--concurrency", "1", "--store", str(tmp_path)])
     out = capsys.readouterr().out

@@ -71,7 +71,7 @@ def test_chat_orchestration_consumes_normalized_backend_events(
     monkeypatch.setattr(chat, "_BACKENDS", {"claude": backend})
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "AGENT-MANUAL")
     monkeypatch.setattr(chat, "_build_context", lambda *a, **k: "PR-CONTEXT")
 
@@ -101,7 +101,7 @@ def test_a_turn_starts_with_the_body_directory_in_place(temp_store, tmp_path, mo
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(agent_backend, "BODY_DIR", tmp_path / "cache" / "chat-bodies")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "AGENT-MANUAL")
     monkeypatch.setattr(chat, "_build_context", lambda *a, **k: "PR-CONTEXT")
 

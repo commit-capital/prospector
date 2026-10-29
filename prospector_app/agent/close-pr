@@ -20,6 +20,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
+from pipeline import bot_token  # noqa: E402
 from prospector_app.backend import executor  # noqa: E402
 from prospector_app.backend import models  # noqa: E402
 
@@ -74,9 +75,8 @@ def main(argv: list[str] | None = None) -> int:
         except OSError as e:
             p.error(f"cannot read comment file {args.comment_file}: {e}")
 
-    token = executor.mint_bot_token()
-    if not token:
-        detail = executor.mint_error() or "bot token mint returned no token"
+    if not bot_token.available():
+        detail = bot_token.last_error() or "bot token mint returned no token"
         print(f"close-pr: bot installation token unavailable: {detail}", file=sys.stderr)
         return 2
 
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         dup_reason=args.dup_reason,
         comment=comment_text,
     )
-    result = executor.execute_pr(args.pr, action, token=token, dry_run=False)
+    result = executor.execute_pr(args.pr, action, dry_run=False)
     print(json.dumps(result, sort_keys=True))
     return 0 if result.get("status") == "executed" else 1
 

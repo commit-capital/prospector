@@ -31,6 +31,7 @@ def gh_fake(tmp_path, monkeypatch):
                 "security": {"verdict": "GREEN", "against_head_sha": HEAD, "findings": [],
                              "checked_at": "2026-08-16T23:00:00+00:00"}})
     monkeypatch.setattr(data, "_store", st)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     data.refresh()
     bot = settings.bot_login() + "[bot]"
     g = SimpleNamespace(
@@ -44,7 +45,7 @@ def gh_fake(tmp_path, monkeypatch):
     monkeypatch.setattr(executor.gh, "issue_comments", lambda n, **k: g.comments)
     monkeypatch.setattr(executor.gh, "pr_reviews", lambda n, **k: g.reviews)
 
-    def bot_run(argv, token, **kw):
+    def bot_run(argv, **kw):
         g.runs.append(argv)
         out = COMMENT_URL if argv[:3] == ["gh", "pr", "comment"] else ""
         return SimpleNamespace(returncode=0, stdout=out, stderr="")
@@ -56,7 +57,7 @@ def gh_fake(tmp_path, monkeypatch):
 
 def _close(**kw):
     return executor.execute_pr(5, models.CloseAction(action="CLOSE_STALE", comment="going stale",
-                                                     **kw), token="tok", dry_run=False)
+                                                     **kw), dry_run=False)
 
 
 def test_a_close_comments_closes_and_reflects_closed(gh_fake):
@@ -75,7 +76,7 @@ def test_a_close_does_not_repeat_its_own_comment(gh_fake):
 
 
 def test_a_dry_run_close_writes_nothing(gh_fake):
-    res = executor.execute_pr(5, models.CloseAction(action="CLOSE"), token=None, dry_run=True)
+    res = executor.execute_pr(5, models.CloseAction(action="CLOSE"), dry_run=True)
     assert res["status"] == "dry-run"
     assert gh_fake.runs == [] and gh_fake.store.load_pr(5).state == "open"
 
@@ -83,7 +84,7 @@ def test_a_dry_run_close_writes_nothing(gh_fake):
 def test_a_reopen_withdraws_the_bots_comments_and_change_requests(gh_fake):
     gh_fake.store.edit_pr(5).record_live_state(state="closed")
     gh_fake.comments.append({"id": 12, "user": {"login": gh_fake.bot}, "body": "closing"})
-    res = executor.reopen_pr(5, token="tok", dry_run=False)
+    res = executor.reopen_pr(5, dry_run=False)
     assert res["status"] == "reopened"
     runs = [" ".join(a) for a in gh_fake.runs]
     assert any("DELETE" in r and r.endswith("comments/12") for r in runs)
@@ -93,19 +94,18 @@ def test_a_reopen_withdraws_the_bots_comments_and_change_requests(gh_fake):
 
 
 def test_a_request_changes_review_needs_a_body_and_links_its_review(gh_fake):
-    assert executor.submit_review(5, "request-changes", "  ", token="tok",
-                                  dry_run=False)["status"] == "error"
-    res = executor.submit_review(5, "request-changes", "fix X", token="tok", dry_run=False)
+    assert executor.submit_review(5, "request-changes", "  ", dry_run=False)["status"] == "error"
+    res = executor.submit_review(5, "request-changes", "fix X", dry_run=False)
     assert res["status"] == "executed" and res["event_url"] == REVIEW_URL
 
 
 EVIDENCE_WRITES = {
     "close": lambda **kw: _close(**kw),
     "review": lambda override_stale=False: executor.submit_review(
-        5, "request-changes", "fix the sentinel", token="tok", dry_run=False,
+        5, "request-changes", "fix the sentinel", dry_run=False,
         override_stale=override_stale),
     "line comment": lambda override_stale=False: executor.comment_line(
-        5, "src/a.ts", 12, "this line is wrong", token="tok", dry_run=False,
+        5, "src/a.ts", 12, "this line is wrong", dry_run=False,
         override_stale=override_stale),
 }
 
@@ -156,6 +156,6 @@ def test_an_unreachable_github_does_not_wedge_a_comment(gh_fake):
 
 def test_a_review_retrigger_targets_the_current_head_so_is_not_held(gh_fake):
     gh_fake.live["head"] = {"sha": NEWHEAD}
-    res = executor.retrigger_review(5, "greptile", token="tok", dry_run=False)
+    res = executor.retrigger_review(5, "greptile", dry_run=False)
     assert res["status"] == "executed" and res["reviewer"] == "greptile"
-    assert executor.retrigger_review(5, "socket", token="tok", dry_run=False)["status"] == "skipped"
+    assert executor.retrigger_review(5, "socket", dry_run=False)["status"] == "skipped"

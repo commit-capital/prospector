@@ -185,18 +185,18 @@ def writes(monkeypatch):
 
     calls: list[tuple] = []
 
-    def set_fix_label(number, *, add, remove, issue, token, dry_run):
+    def set_fix_label(number, *, add, remove, issue, dry_run):
         calls.append(("label", number, add, remove, dry_run))
         return {"status": "dry-run" if dry_run else "executed"}
 
-    def post_fix_comment(number, body, *, marker, issue, comment_kind, token, dry_run):
+    def post_fix_comment(number, body, *, marker, issue, comment_kind, dry_run):
         assert marker in body
         calls.append(("comment", number, comment_kind, dry_run))
         return {"status": "dry-run" if dry_run else "executed", "url": f"u{number}"}
 
     monkeypatch.setattr(executor, "set_fix_label", set_fix_label)
     monkeypatch.setattr(executor, "post_fix_comment", post_fix_comment)
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "t")
     return calls
 
 
@@ -447,7 +447,7 @@ def test_a_failed_write_backs_off_then_retries(store, writes, monkeypatch):
     monkeypatch.setattr(settings, "worker_id", lambda: "studio")
     monkeypatch.setattr(executor, "set_fix_label", lambda *a, **k: {"status": "executed"})
     monkeypatch.setattr(executor, "post_fix_comment", lambda *a, **k: {"status": "executed"})
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "t")
     assert public_loop.sync(store, mode="live", now=NOW + timedelta(minutes=31)) == 1
     assert "error" not in store.load_issue(1).fix_public
 
@@ -463,10 +463,8 @@ def test_a_comment_that_fails_its_problems_is_recorded_and_not_posted(store, wri
 
 
 def test_live_without_a_bot_token_writes_nothing(store, writes, monkeypatch):
-    from prospector_app.backend import executor
-
     store.edit_issue(1).record_fix_run(_run(**ASKED))
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     assert public_loop.sync(store, mode="live", now=NOW) == 0
     assert writes == []
 
@@ -750,10 +748,11 @@ def test_an_issue_that_leaves_scope_has_its_labels_taken_off_and_nothing_more(st
 
 
 def test_a_pass_decides_from_the_issue_as_its_lease_found_it(store, writes, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "t")
     store.edit_issue(1).record_fix_run(_run(**ASKED))
     stale = store.load_issue(1)
     store.edit_issue(1).record_fix_run(_run(ending="cancelled"))
-    public_loop.sync_issue(store, stale, mode="live", token="t", host="studio", now=NOW)
+    public_loop.sync_issue(store, stale, mode="live", host="studio", now=NOW)
     assert writes == []
 
 

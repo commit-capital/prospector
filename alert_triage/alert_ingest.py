@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 
+from pipeline import bot_token
 from alert_triage import alert_model
 from alert_triage import config
 from alert_triage import fetch_alerts
@@ -66,7 +67,7 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
     store = AlertStore(args.store) if args.store else AlertStore()
     started = _now()
-    token = config.mint_token()
+    token = bot_token.get()
     if token is None:
         raise SystemExit("alert ingest needs a bot token; minting failed "
                          "(check TRIAGE_BOT_APP_ID / TRIAGE_BOT_KEY_FILE)")

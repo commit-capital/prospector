@@ -344,7 +344,7 @@ def test_close_issue_dry_run(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(issues, "_live_state", lambda n: "open")
-    res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), token=None, dry_run=True)
+    res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), dry_run=True)
     assert res["status"] == "dry-run"
     assert "close issue #11" in res["detail"] and "#10" in res["detail"]
 
@@ -355,7 +355,7 @@ def test_close_issue_dry_run_blocked_when_dup_closed_upstream(tmp_path, monkeypa
     _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(issues, "_live_state", lambda n: "closed" if n == 11 else "open")
-    res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), token=None, dry_run=True)
+    res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), dry_run=True)
     assert res["status"] == "blocked"
     assert "already closed" in res["detail"]
 
@@ -366,7 +366,7 @@ def test_close_issue_dry_run_allows_canonical_closed_not_planned(tmp_path, monke
     _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(issues, "_live_state", lambda n: "open" if n == 11 else "closed")
-    res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), token=None, dry_run=True)
+    res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), dry_run=True)
     assert res["status"] == "dry-run"
 
 
@@ -376,7 +376,7 @@ def test_close_issue_dry_run_allows_canonical_fixed_upstream(tmp_path, monkeypat
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(issues, "_live_state", lambda n: "open" if n == 11 else "closed")
     res = executor.close_issue(
-        11, models.IssueCloseDupBody(canonical=10), token=None, dry_run=True)
+        11, models.IssueCloseDupBody(canonical=10), dry_run=True)
     assert res["status"] == "dry-run"
 
 
@@ -388,7 +388,7 @@ def test_close_issue_blocked_when_not_eligible(tmp_path, monkeypatch):
     st.create_issue(10, {"title": "c", "state": "open", "updated_at": "T"})
     dup = st.create_issue(11, {"title": "d", "state": "open", "updated_at": "T"})
     dup.route_to("close-dup", "dup", canonical=10)          # no confirmed cluster
-    res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), token=None, dry_run=True)
+    res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), dry_run=True)
     assert res["status"] == "blocked"
     assert "gate" in res["detail"].lower()
 
@@ -398,6 +398,7 @@ def test_close_issue_closes_as_duplicate_and_reflects_closed_state(tmp_path, mon
     """The dup close carries --duplicate-of, so GitHub records the
     marked_as_duplicate link, and the store row is stamped closed at once, so the
     dup worklist drops it without waiting for the next INGEST (#192)."""
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     st = _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(executor.gh, "issue_comments", lambda n, **k: [])
@@ -407,9 +408,9 @@ def test_close_issue_closes_as_duplicate_and_reflects_closed_state(tmp_path, mon
         returncode = 0
         stderr = ""
 
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: (calls.append(argv), _Ok())[1])
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: (calls.append(argv), _Ok())[1])
     assert st.load_issue(11).state == "open"
-    res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), token="tok", dry_run=False)
+    res = executor.close_issue(11, models.IssueCloseDupBody(canonical=10), dry_run=False)
     assert res["status"] == "executed"
     assert ["gh", "issue", "close", "11", "--repo", settings.repo(),
             "--reason", "duplicate", "--duplicate-of", "10"] in calls
@@ -422,6 +423,7 @@ def test_close_issue_closes_as_duplicate_and_reflects_closed_state(tmp_path, mon
 def test_close_issue_with_comment_reflects_closed_state(tmp_path, monkeypatch):
     """An operator-directed issue close likewise stamps the store row closed on
     success, so every issue-close executor path shares the write-back."""
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(executor.gh, "issue_comments", lambda n, **k: [])
@@ -430,10 +432,10 @@ def test_close_issue_with_comment_reflects_closed_state(tmp_path, monkeypatch):
         returncode = 0
         stderr = ""
 
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Ok())
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: _Ok())
     res = executor.close_issue_with_comment(
         10, models.IssueCloseBody(disposition="not-planned", comment="stale, closing"),
-        token="tok", dry_run=False)
+        dry_run=False)
     assert res["status"] == "executed"
     assert issue_store.IssueStore(tmp_path).load_issue(10).state == "closed"
 
@@ -441,7 +443,7 @@ def test_close_issue_with_comment_reflects_closed_state(tmp_path, monkeypatch):
 def test_reopen_issue_dry_run(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
-    res = executor.reopen_issue(11, token=None, dry_run=True)
+    res = executor.reopen_issue(11, dry_run=True)
     assert res["status"] == "dry-run"
     assert "reopen" in res["detail"] and res["forced"] is False
 
@@ -450,6 +452,7 @@ def test_reopen_issue_live_reopens_deletes_comment_and_reflects_open(tmp_path, m
     """The undo of an issue close: reopen upstream, delete the bot's closing
     comment(s), and stamp the store row back to open so the Issues view restores it
     immediately (the inverse of reflect_issue_state on close)."""
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     st = _seed(tmp_path, monkeypatch)
     st.edit_issue(11).record_live_state("closed")   # as our close would have left it
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
@@ -461,8 +464,8 @@ def test_reopen_issue_live_reopens_deletes_comment_and_reflects_open(tmp_path, m
         returncode = 0
         stderr = ""
 
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: (calls.append(argv), _Ok())[1])
-    res = executor.reopen_issue(11, token="tok", dry_run=False)
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: (calls.append(argv), _Ok())[1])
+    res = executor.reopen_issue(11, dry_run=False)
     assert res["status"] == "reopened"
     assert ["gh", "issue", "reopen", "11", "--repo", settings.repo()] in calls
     assert any("comments/555" in " ".join(c) for c in calls)          # bot comment removed
@@ -472,6 +475,7 @@ def test_reopen_issue_live_reopens_deletes_comment_and_reflects_open(tmp_path, m
 def test_reopen_issue_records_on_reopen_failure(tmp_path, monkeypatch):
     """A failed reopen still lands in the activity log — the trust model requires
     every upstream write attempt recorded — and does not touch the store."""
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     st = _seed(tmp_path, monkeypatch)
     st.edit_issue(11).record_live_state("closed")
     recorded = []
@@ -481,8 +485,8 @@ def test_reopen_issue_records_on_reopen_failure(tmp_path, monkeypatch):
         returncode = 1
         stderr = "rate limited"
 
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Fail())
-    res = executor.reopen_issue(11, token="tok", dry_run=False)
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: _Fail())
+    res = executor.reopen_issue(11, dry_run=False)
     assert res["status"] == "error" and "reopen failed" in res["detail"]
     assert recorded, "a failed upstream write must still be logged"
     assert issue_store.IssueStore(tmp_path).load_issue(11).state == "closed"  # unchanged
@@ -523,7 +527,7 @@ def test_close_issue_fixed_dry_run(tmp_path, monkeypatch):
     _seed_explicit_fixer(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {900: "merged"})
-    res = executor.close_issue_fixed(10, models.IssueCloseFixedBody(fixed_by=900), token=None, dry_run=True)
+    res = executor.close_issue_fixed(10, models.IssueCloseFixedBody(fixed_by=900), dry_run=True)
     assert res["status"] == "dry-run"
     assert "close issue #10" in res["detail"] and "#900" in res["detail"]
 
@@ -535,7 +539,7 @@ def test_close_issue_fixed_blocked_when_pr_not_a_candidate(tmp_path, monkeypatch
     _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {555: "merged"})
-    res = executor.close_issue_fixed(10, models.IssueCloseFixedBody(fixed_by=555), token=None, dry_run=True)
+    res = executor.close_issue_fixed(10, models.IssueCloseFixedBody(fixed_by=555), dry_run=True)
     assert res["status"] == "blocked" and "not a fix candidate" in res["detail"]
 
 
@@ -545,7 +549,7 @@ def test_close_issue_fixed_blocked_when_pr_only_subsystem_matched(tmp_path, monk
     _seed(tmp_path, monkeypatch)  # PR 900 is linked to #10 with how="subsystem"
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {900: "merged"})
-    res = executor.close_issue_fixed(10, models.IssueCloseFixedBody(fixed_by=900), token=None, dry_run=True)
+    res = executor.close_issue_fixed(10, models.IssueCloseFixedBody(fixed_by=900), dry_run=True)
     assert res["status"] == "blocked" and "not a fix candidate" in res["detail"]
 
 
@@ -555,7 +559,7 @@ def test_close_issue_fixed_blocked_when_pr_not_merged(tmp_path, monkeypatch):
     _seed_explicit_fixer(tmp_path, monkeypatch)
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {900: "open"})
-    res = executor.close_issue_fixed(10, models.IssueCloseFixedBody(fixed_by=900), token=None, dry_run=True)
+    res = executor.close_issue_fixed(10, models.IssueCloseFixedBody(fixed_by=900), dry_run=True)
     assert res["status"] == "blocked" and "not merged" in res["detail"]
 
 
@@ -566,7 +570,7 @@ def test_close_issue_fixed_blocked_when_issue_already_closed(tmp_path, monkeypat
     monkeypatch.setattr(executor.activity, "record", lambda *a, **k: None)
     monkeypatch.setattr(issues, "_live_pr_states", lambda nums: {900: "merged"})
     monkeypatch.setattr(issues, "_live_state", lambda n: "closed")
-    res = executor.close_issue_fixed(10, models.IssueCloseFixedBody(fixed_by=900), token=None, dry_run=True)
+    res = executor.close_issue_fixed(10, models.IssueCloseFixedBody(fixed_by=900), dry_run=True)
     assert res["status"] == "blocked" and "no action needed" in res["detail"]
 
 

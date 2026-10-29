@@ -562,7 +562,7 @@ def _revised(result_file, ending: str = "fixed"):
 def test_an_operator_send_back_on_an_open_pull_request_goes_onto_it(store, proposed, monkeypatch):
     from prospector_app.backend import executor
     monkeypatch.setattr(fix_review_runner, "revise", _revised(proposed))
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "t")
     calls = []
     monkeypatch.setattr(executor, "update_issue_fix_proposal",
                         lambda n, pr, **kw: calls.append((n, pr, kw)) or {
@@ -571,7 +571,7 @@ def test_an_operator_send_back_on_an_open_pull_request_goes_onto_it(store, propo
     status, outcome = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
     issue = store.load_issue(7)
     assert status == "done" and outcome.startswith("Revised #9")
-    assert calls == [(7, 9, {"push": True, "token": "t", "dry_run": False})]
+    assert calls == [(7, 9, {"push": True, "dry_run": False})]
     assert issue.fix_run["proposal"] == {"pr": 9, "url": "u"}
     assert issue.fix_run["patch"].endswith("+y\n")
     assert issue.fix_followup["state"] == "watching" and issue.fix_followup["revisions"] == 2
@@ -599,7 +599,7 @@ def test_a_send_back_that_does_not_reach_the_pull_request_leaves_it_as_it_was(
     from prospector_app.backend import executor
     kept = proposed.read_text()
     monkeypatch.setattr(fix_review_runner, "revise", _revised(proposed, ending))
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: pytest.fail("minted on a dry run"))
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: pytest.fail("minted on a dry run"))
     seen = {}
     monkeypatch.setattr(executor, "update_issue_fix_proposal",
                         lambda n, pr, **kw: seen.update(kw) or res)
@@ -607,7 +607,7 @@ def test_a_send_back_that_does_not_reach_the_pull_request_leaves_it_as_it_was(
     status, outcome = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
     issue = store.load_issue(7)
     assert status == "done" and want in outcome
-    assert seen == ({"push": True, "token": None, "dry_run": True} if res else {})
+    assert seen == ({"push": True, "dry_run": True} if res else {})
     assert proposed.read_text() == kept
     assert issue.fix_run["proposal"] == {"pr": 9, "url": "u"} and issue.fix_run["patch"] == (
         "diff --git a/x b/x\n")
@@ -622,7 +622,7 @@ def test_a_follow_up_revision_no_token_could_push_counts_as_a_fault(store, propo
     store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "head_sha": "h" * 40})
     monkeypatch.setattr(settings, "issue_fix_followup", lambda: "live")
     monkeypatch.setattr(fix_review_runner, "revise", _revised(proposed))
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(executor, "update_issue_fix_proposal", lambda n, pr, **kw: {
         "status": "dry-run", "forced": True, "detail": "no bot token"})
     for _ in range(followup.MAX_REVISION_FAULTS):
@@ -664,7 +664,7 @@ def test_a_request_runs_whatever_other_pull_requests_name_the_issue(store, monke
 def test_a_proposal_that_opens_records_the_pull_request(store, monkeypatch):
     from prospector_app.backend import executor
     _run(store)
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     monkeypatch.setattr(executor, "propose_issue_fix", lambda n, **kw: {
         "status": "executed", "detail": "opened #9", "pr": 9, "url": "u"})
     fix_review.queue(store, 7, "propose", by="op")
@@ -680,7 +680,7 @@ def test_a_new_proposal_after_a_closed_one_reads_open(store, monkeypatch):
     _run(store)
     store.edit_issue(7).record_fix_followup({"pr": 14589, "state": "done", "closed_as": "closed"})
     assert fix_review.fix_status(store.load_issue(7))[0] == "review"
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     monkeypatch.setattr(executor, "propose_issue_fix", lambda n, **kw: {
         "status": "executed", "detail": "opened #15000", "pr": 15000, "url": "u"})
     fix_review.queue(store, 7, "propose", by="op")
@@ -698,7 +698,7 @@ def test_a_dry_run_proposal_opens_nothing(store, monkeypatch):
     fix_review.queue(store, 7, "propose", by="op", dry_run=True)
     req = store.claim_fix_request(7, host="studio")
     _, outcome = fix_review_runner.run_request(store, 7, req)
-    assert seen == {"token": None, "dry_run": True} and outcome == "Dry run: would open it"
+    assert seen == {"dry_run": True} and outcome == "Dry run: would open it"
     assert fix_review.fix_status(store.load_issue(7))[0] == "review"
 
 
@@ -922,7 +922,7 @@ def late_rival(store, proposed, monkeypatch):
     monkeypatch.setattr(fix_review_runner, "_revision_base", lambda record: prove.PinnedBase(
         sha="a" * 40, tier=2, image="img", clone=proposed.parent))
     monkeypatch.setattr(fix_review_runner, "revise", _revised(proposed))
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "t")
     monkeypatch.setattr(executor, "update_issue_fix_proposal",
                         lambda n, pr, **kw: state["pushes"].append(kw) or {
                             "status": "executed", "detail": "Pushed a revision on #9"})

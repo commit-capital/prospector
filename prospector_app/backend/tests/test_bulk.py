@@ -27,11 +27,11 @@ def test_per_pr_comments_override_shared(monkeypatch):
     """#182: each PR can carry its own suggested comment; a PR missing from the
     map falls back to the shared `comment`."""
     seen = {}
-    def fake_exec(n, action, *, token, dry_run):
+    def fake_exec(n, action, *, dry_run):
         seen[n] = action.comment
         return {"pr": n, "action": action.action, "status": "dry-run", "detail": "ok"}
     monkeypatch.setattr(executor, "execute_pr", fake_exec)
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
 
     _drain(bulk.run_bulk([1, 2, 3], "CLOSE_DUP", comment="shared",
                          comments={1: "dup of #11", 2: "dup of #22"}, dry_run=True))
@@ -44,7 +44,7 @@ def test_per_pr_comments_override_shared(monkeypatch):
 def test_a_bulk_merge_goes_through_the_gated_merge(monkeypatch):
     monkeypatch.setattr(executor, "merge_pr", lambda n, method, *, dry_run, reason=None: {
         "pr": n, "action": "MERGE", "status": "blocked" if n == 2 else "merged"})
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     evs = _drain(bulk.run_bulk([1, 2], "MERGE", dry_run=False))
     assert done_summary([e for e in evs if e["event"] == "done"][0]) == {
         "merged": 1, "blocked": 1}
@@ -54,10 +54,10 @@ def test_review_retrigger_routes_and_schedules_refresh(monkeypatch):
     baselines = {1: object(), 2: object()}
     seen = []
     scheduled = []
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     monkeypatch.setattr(bulk.review_refresh, "capture", lambda n, rid: baselines[n])
     monkeypatch.setattr(executor, "retrigger_review",
-                        lambda n, rid, *, token, dry_run: seen.append((n, rid, token, dry_run)) or
+                        lambda n, rid, *, dry_run: seen.append((n, rid, dry_run)) or
                         {"pr": n, "action": "REVIEW_RETRIGGER", "status": "executed"})
     monkeypatch.setattr(bulk.review_refresh, "schedule",
                         lambda n, rid, baseline: scheduled.append((n, rid, baseline)))
@@ -66,14 +66,14 @@ def test_review_retrigger_routes_and_schedules_refresh(monkeypatch):
 
     # No reviewer named: the first active review reviewer with a mention (Greptile
     # under the pinned profile) is the one re-triggered.
-    assert seen == [(1, "greptile", "tok", False), (2, "greptile", "tok", False)]
+    assert seen == [(1, "greptile", False), (2, "greptile", False)]
     assert scheduled == [(1, "greptile", baselines[1]), (2, "greptile", baselines[2])]
     done = [e for e in evs if e["event"] == "done"][0]
     assert done_summary(done) == {"executed": 2}
 
 
 def test_review_retrigger_dry_run_does_not_capture_or_schedule(monkeypatch):
-    monkeypatch.setattr(executor, "mint_bot_token",
+    monkeypatch.setattr("pipeline.bot_token.get",
                         lambda: (_ for _ in ()).throw(AssertionError("must not mint")))
     monkeypatch.setattr(bulk.review_refresh, "capture",
                         lambda n, rid: (_ for _ in ()).throw(AssertionError("must not capture")))
@@ -81,19 +81,19 @@ def test_review_retrigger_dry_run_does_not_capture_or_schedule(monkeypatch):
                         lambda *args: (_ for _ in ()).throw(AssertionError("must not schedule")))
     seen = []
     monkeypatch.setattr(executor, "retrigger_review",
-                        lambda n, rid, *, token, dry_run: seen.append((n, rid, token, dry_run)) or
+                        lambda n, rid, *, dry_run: seen.append((n, rid, dry_run)) or
                         {"pr": n, "action": "REVIEW_RETRIGGER", "status": "dry-run"})
 
     _drain(bulk.run_bulk([1], "REVIEW_RETRIGGER", reviewer="coderabbit", dry_run=True))
 
-    assert seen == [(1, "coderabbit", None, True)]
+    assert seen == [(1, "coderabbit", True)]
 
 
 def test_queue_verify_routes_to_the_verify_queue_without_a_token(monkeypatch):
-    # Queueing for verification is a local store write: no bot token is minted
+    # Queueing for verification is a local store write: no bot token is fetched
     # even on a live run, and a pre-check refusal (already in flight, closed,
     # threat-flagged) reads as skipped, not error.
-    monkeypatch.setattr(executor, "mint_bot_token",
+    monkeypatch.setattr("pipeline.bot_token.get",
                         lambda: (_ for _ in ()).throw(AssertionError("must not mint")))
     queued = []
     def fake_queue(n, source=None):
@@ -138,7 +138,7 @@ def test_run_security_schedules_background_jobs_in_the_per_pr_dispatch(monkeypat
 
     monkeypatch.setattr(bulk.jobs, "start_job", fake_start)
     monkeypatch.setattr(bulk.jobs, "schedule_job", scheduled.append)
-    monkeypatch.setattr(executor, "mint_bot_token",
+    monkeypatch.setattr("pipeline.bot_token.get",
                         lambda: (_ for _ in ()).throw(AssertionError("must not mint")))
 
     evs = _drain(bulk.run_bulk([1, 2, 3], "RUN_SECURITY", dry_run=False))
@@ -172,9 +172,9 @@ def test_bulk_route_streams(monkeypatch):
     from fastapi.testclient import TestClient
     from prospector_app.backend import app as appmod
     monkeypatch.setattr(appmod.executor, "execute_pr",
-                        lambda n, a, *, token, dry_run: {"pr": n, "action": a.action,
+                        lambda n, a, *, dry_run: {"pr": n, "action": a.action,
                                                          "status": "dry-run", "detail": "ok"})
-    monkeypatch.setattr(appmod.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     c = TestClient(appmod.app)
     r = c.post("/api/execute/bulk",
                json={"prs": [1, 2], "action": "CLOSE", "dry_run": True})
@@ -187,12 +187,12 @@ def test_bulk_done_frame_warns_on_bookkeeping_errors(monkeypatch):
     executed in the summary, and the done frame carries a warning naming the
     failure — so a batch-wide deterministic store failure is visible once,
     loudly, instead of read off 39 identical per-row details."""
-    def fake_exec(n, action, *, token, dry_run):
+    def fake_exec(n, action, *, dry_run):
         return {"pr": n, "action": action.action, "status": "executed",
                 "detail": "commented + closed; bookkeeping failed",
                 "bookkeeping_error": "StaleSchemaError: store schema is v9 but this code is v8"}
     monkeypatch.setattr(executor, "execute_pr", fake_exec)
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
 
     evs = _drain(bulk.run_bulk([1, 2, 3], "CLOSE_STALE", dry_run=False))
     done = json.loads([e for e in evs if e["event"] == "done"][0]["data"])
@@ -204,9 +204,9 @@ def test_bulk_done_frame_warns_on_bookkeeping_errors(monkeypatch):
 
 def test_run_cluster_done_frame_warns_on_bookkeeping_errors(monkeypatch):
     monkeypatch.setattr(executor, "execute_pr",
-                        lambda n, a, *, token, dry_run: {"pr": n, "action": a.action, "status": "executed",
+                        lambda n, a, *, dry_run: {"pr": n, "action": a.action, "status": "executed",
                                                          "bookkeeping_error": "StaleSchemaError: v9 vs v8"})
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     monkeypatch.setattr(bulk.training, "capture", lambda *a, **k: None)
     evs = _drain(bulk.run_cluster([models.ClusterItem(pr=1, action="close-dup", canonical=9)],
                                   dry_run=False))
@@ -219,10 +219,10 @@ def test_run_cluster_routes_each_disposition(monkeypatch):
     monkeypatch.setattr(executor, "merge_pr",
                         lambda n, method, *, dry_run, reason=None: {"pr": n, "action": "MERGE", "status": "dry-run"})
     monkeypatch.setattr(executor, "submit_review",
-                        lambda n, ev, body, *, token, dry_run: {"pr": n, "action": f"REVIEW:{ev}", "status": "dry-run"})
+                        lambda n, ev, body, *, dry_run: {"pr": n, "action": f"REVIEW:{ev}", "status": "dry-run"})
     monkeypatch.setattr(executor, "execute_pr",
-                        lambda n, a, *, token, dry_run: {"pr": n, "action": a.action, "status": "dry-run"})
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
+                        lambda n, a, *, dry_run: {"pr": n, "action": a.action, "status": "dry-run"})
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(bulk.training, "capture", lambda *a, **k: None)
     items = [
         models.ClusterItem(pr=1, action="merge", method="squash"),
@@ -237,7 +237,7 @@ def test_run_cluster_routes_each_disposition(monkeypatch):
 
 def test_run_cluster_unknown_disposition_is_skipped(monkeypatch):
     monkeypatch.setattr(bulk.training, "capture", lambda *a, **k: None)
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     evs = _drain(bulk.run_cluster([models.ClusterItem(pr=1, action="needs-human")], dry_run=True))
     [res] = [json.loads(e["data"]) for e in evs if e["event"] == "result"]
     assert res["status"] == "skipped"
@@ -250,8 +250,8 @@ def test_run_cluster_skips_closes_when_a_merge_fails(monkeypatch):
     monkeypatch.setattr(executor, "merge_pr",
                         lambda n, method, *, dry_run, reason=None: {"pr": n, "action": "MERGE", "status": "error", "detail": "boom"})
     monkeypatch.setattr(executor, "execute_pr",
-                        lambda n, a, *, token, dry_run: closed.append(n) or {"pr": n, "action": a.action, "status": "dry-run"})
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
+                        lambda n, a, *, dry_run: closed.append(n) or {"pr": n, "action": a.action, "status": "dry-run"})
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(bulk.training, "capture", lambda *a, **k: None)
     items = [models.ClusterItem(pr=1, action="merge"), models.ClusterItem(pr=2, action="close-dup", canonical=1)]
     evs = _drain(bulk.run_cluster(items, dry_run=False))
@@ -267,8 +267,8 @@ def test_run_cluster_runs_closes_when_merge_succeeds(monkeypatch):
     monkeypatch.setattr(executor, "merge_pr",
                         lambda n, method, *, dry_run, reason=None: {"pr": n, "action": "MERGE", "status": "merged"})
     monkeypatch.setattr(executor, "execute_pr",
-                        lambda n, a, *, token, dry_run: closed.append(n) or {"pr": n, "action": a.action, "status": "closed"})
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+                        lambda n, a, *, dry_run: closed.append(n) or {"pr": n, "action": a.action, "status": "closed"})
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     monkeypatch.setattr(bulk.training, "capture", lambda *a, **k: None)
     items = [models.ClusterItem(pr=2, action="close-dup", canonical=1), models.ClusterItem(pr=1, action="merge")]
     evs = _drain(bulk.run_cluster(items, dry_run=False))
@@ -283,9 +283,9 @@ def test_cluster_route_streams(monkeypatch):
     from fastapi.testclient import TestClient
     from prospector_app.backend import app as appmod
     monkeypatch.setattr(appmod.executor, "execute_pr",
-                        lambda n, a, *, token, dry_run: {"pr": n, "action": a.action,
+                        lambda n, a, *, dry_run: {"pr": n, "action": a.action,
                                                          "status": "dry-run", "detail": "ok"})
-    monkeypatch.setattr(appmod.executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(appmod.bulk.training, "capture", lambda *a, **k: None)
     c = TestClient(appmod.app)
     r = c.post("/api/execute/cluster",
@@ -312,11 +312,11 @@ def _loop_ticks_while(gen) -> int:
 
 
 def test_bulk_executor_calls_leave_the_event_loop_free(monkeypatch):
-    def slow_exec(n, action, *, token, dry_run):
+    def slow_exec(n, action, *, dry_run):
         time.sleep(0.2)
         return {"pr": n, "action": action.action, "status": "dry-run"}
     monkeypatch.setattr(executor, "execute_pr", slow_exec)
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
 
     assert _loop_ticks_while(bulk.run_bulk([1, 2], "CLOSE", dry_run=True)) >= 10
 
@@ -326,7 +326,7 @@ def test_cluster_executor_calls_leave_the_event_loop_free(monkeypatch):
         time.sleep(0.2)
         return {"pr": n, "action": "MERGE", "status": "merged"}
     monkeypatch.setattr(executor, "merge_pr", slow_merge)
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     monkeypatch.setattr(bulk.training, "capture", lambda *a, **k: None)
     items = [models.ClusterItem(pr=1, action="merge"), models.ClusterItem(pr=2, action="merge")]
 

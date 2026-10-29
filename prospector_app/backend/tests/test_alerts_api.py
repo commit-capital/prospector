@@ -165,11 +165,12 @@ def logged(monkeypatch):
 
 
 def test_dismiss_gate_blocked_never_runs_gh(seeded, logged, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     calls: list[list[str]] = []
     monkeypatch.setattr("prospector_app.backend.safety_guard.alert_bot_run",
-                        lambda argv, token: calls.append(argv))
+                        lambda argv, **kw: calls.append(argv))
     res = executor.dismiss_alert("code-scanning", 1, "won't fix", "",
-                                 token="tok", dry_run=False)
+                                 dry_run=False)
     assert res["status"] == "blocked" and "note" in res["detail"]
     assert calls == []
     assert logged[-1]["kind"] == "alert-dismiss"
@@ -177,15 +178,16 @@ def test_dismiss_gate_blocked_never_runs_gh(seeded, logged, monkeypatch):
 
 def test_dismiss_dry_run_and_forced_dry_run(seeded, logged):
     res = executor.dismiss_alert("code-scanning", 1, "won't fix", "accepted risk",
-                                 token="tok", dry_run=True)
+                                 dry_run=True)
     assert res["status"] == "dry-run"
     assert logged[-1]["dry_run"] is True
     res = executor.dismiss_alert("code-scanning", 1, "won't fix", "accepted risk",
-                                 token=None, dry_run=False)
+                                 dry_run=False)
     assert res["status"] == "dry-run" and res["forced"] is True
 
 
 def test_dismiss_live_success_persists_state(seeded, logged, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     store, _, _ = seeded
 
     class Ok:
@@ -194,16 +196,15 @@ def test_dismiss_live_success_persists_state(seeded, logged, monkeypatch):
 
     seen: dict = {}
 
-    def fake_run(argv, token):
+    def fake_run(argv, **kw):
         seen["argv"] = argv
-        seen["token"] = token
         return Ok()
 
     monkeypatch.setattr("prospector_app.backend.executor.alert_bot_run", fake_run,
                         raising=False)
     monkeypatch.setattr("prospector_app.backend.safety_guard.alert_bot_run", fake_run)
     res = executor.dismiss_alert("dependabot", 2, "fix_started", "",
-                                 token="tok", dry_run=False)
+                                 dry_run=False)
     assert res["status"] == "executed", res["detail"]
     joined = " ".join(seen["argv"])
     assert "repos/test-owner/test-repo/dependabot/alerts/2" in joined
@@ -233,14 +234,15 @@ def test_routes_list_query_detail_and_dismiss(seeded, logged):
 
 
 def test_dismiss_live_failure_reports_error(seeded, logged, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     class Fail:
         returncode = 1
         stderr = "HTTP 422 boom"
 
     monkeypatch.setattr("prospector_app.backend.safety_guard.alert_bot_run",
-                        lambda argv, token: Fail())
+                        lambda argv, **kw: Fail())
     res = executor.dismiss_alert("dependabot", 2, "fix_started", "",
-                                 token="tok", dry_run=False)
+                                 dry_run=False)
     assert res["status"] == "error" and "422" in res["detail"]
     store, _, dep = seeded
     a = store.load_alert(alert_id("dependabot", 2))
