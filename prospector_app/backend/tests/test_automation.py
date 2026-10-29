@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import pytest
 
+from issue_triage import fix_review
+from issue_triage.issue_model import Issue
 from pipeline import reviewers
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from pipeline.testsupport import bump_section, greptile_entry, reviews_section
-from prospector_app.backend import automation, data, service
+from prospector_app.backend import automation, data, issue_data, service
 
 HEAD = "a" * 40
 
@@ -402,3 +404,59 @@ def test_a_fork_branch_of_the_same_name_is_not_the_base(store):
     out = _classify(store, _layer(11, "layer-2", "layer-1"))
     assert out["bucket"] == "stacked"
     assert out["reason"].startswith("stacked on branch layer-1")
+
+
+def _fix_issue(pr: int, followup: dict) -> Issue:
+    return Issue(None, {"issue": 50, "meta": {"title": "a bug", "state": "open",
+                                              "author": "reporter"},
+                        "fix_run": {"ending": "fixed", "proposal": {"pr": pr}},
+                        "fix_followup": {"pr": pr, **followup}})
+
+
+@pytest.fixture
+def ours(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "commitperclip")
+    rec = _rec()
+    rec["meta"]["author"] = "app/commitperclip"
+    store.save_pr(rec)
+    data.refresh()
+
+    def classify(followup: dict | None) -> tuple[dict, Issue | None]:
+        issue = _fix_issue(1, followup) if followup is not None else None
+        monkeypatch.setattr(issue_data, "issues", lambda: {50: issue} if issue else {})
+        out = automation.classify(store.load_pr(1))
+        assert out is not None
+        return out, issue
+    return classify
+
+
+def test_a_handed_back_fix_pr_is_stalled_on_you(ours):
+    out, issue = ours({"state": "handed-back", "revisions": 2,
+                       "judged": {"reason": "2 revisions spent; greptile 4/5", "by": "Greptile"}})
+    assert (out["bucket"], out["state"], out["owner"]) == ("handed-back", "stalled", "you")
+    assert issue is not None and out["reason"] == fix_review.status_line(issue)["text"]
+
+
+def test_a_green_fix_pr_waits_on_the_maintainers(ours):
+    out, _ = ours({"state": "ready"})
+    assert (out["bucket"], out["state"], out["owner"]) == (
+        "with-maintainers", "waiting", "maintainers")
+
+
+def test_a_watching_fix_pr_is_moving(ours):
+    out, _ = ours({"state": "watching", "reason": "waiting on CI"})
+    assert (out["bucket"], out["state"]) == ("followup", "moving")
+
+
+def test_a_fix_pr_whose_issue_is_missing_reads_as_any_pr(ours):
+    out, _ = ours(None)
+    assert out["bucket"] not in ("handed-back", "with-maintainers", "followup")
+
+
+def test_an_outsiders_pr_never_scans_issues(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "commitperclip")
+
+    def boom() -> dict:
+        raise AssertionError("an outsider's PR read the issues")
+    monkeypatch.setattr(issue_data, "issues", boom)
+    assert _classify(store, _rec())["bucket"] != "handed-back"

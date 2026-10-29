@@ -23,7 +23,8 @@ if TYPE_CHECKING:
 COLUMNS = ("act", "auto", "handed")
 
 # bucket -> owner. `you` is the operator, `author` the contributor, `worker`
-# the automation itself.
+# the automation itself, `maintainers` the repository's own (who merge
+# Prospector's fix PRs).
 OWNERS: dict[str, str] = {
     "malicious": "you", "merge-ready": "you", "approve-parked": "you", "approve-ci": "you",
     "rerun-ci": "you",
@@ -34,6 +35,7 @@ OWNERS: dict[str, str] = {
     "stacked": "author",
     "needs-human": "you", "security-red": "you", "security-yellow": "you", "asks": "you",
     "gated": "you", "other": "you",
+    "followup": "worker", "handed-back": "you", "with-maintainers": "maintainers",
 }
 
 # bucket -> the state a PR's status leads with: `moving` (a worker moves it),
@@ -43,11 +45,12 @@ OWNERS: dict[str, str] = {
 _NEEDS_YOU = ("malicious", "approve-parked", "approve-ci", "rerun-ci")
 STATES: dict[str, str] = {
     b: ("ready" if b == "merge-ready" else "needs-you" if b in _NEEDS_YOU
-        else {"worker": "moving", "author": "waiting"}.get(o, "stalled"))
+        else {"worker": "moving", "author": "waiting", "maintainers": "waiting"}.get(o, "stalled"))
     for b, o in OWNERS.items()}
 
 AUTHOR_BUCKETS = tuple(b for b, o in OWNERS.items() if o == "author")
-YOU_HANDED_BUCKETS = ("needs-human", "security-red", "security-yellow", "asks", "gated", "other")
+YOU_HANDED_BUCKETS = ("needs-human", "security-red", "security-yellow", "asks", "gated", "other",
+                      "handed-back")
 
 _VERIFY_QUEUE = ("queued", "running", "waiting-for-base")
 
@@ -81,6 +84,8 @@ def classify(pr: Pr) -> dict | None:
         on = f"#{base} ({pr.base_ref})" if base is not None else f"branch {pr.base_ref}"
         return _r("handed", "stacked", f"stacked on {on} — waits for its base to merge "
                                        f"and GitHub to retarget it onto {settings.default_branch()}")
+    if (ours := _followup_standing(pr)) is not None:
+        return ours
     if gates.bump_exempt(pr):
         return _r("handed", "other", "a dependency bump, outside the automation's scope; "
                                      "merge it once CI and the scanners pass")
@@ -155,6 +160,27 @@ def classify(pr: Pr) -> dict | None:
                                           "continuation budget: " + what)
         return _r("auto", "hunt", f"the hunter's next pick: {what}")
     return _blocked(pr, action, why)
+
+
+def _followup_standing(pr: Pr) -> dict | None:
+    """A Prospector fix PR's standing, from its issue's follow-up: handed back
+    to you, green and with the maintainers, or still being followed up. None
+    for anyone else's PR, or one whose issue the snapshot does not hold."""
+    if not gates.opened_by_bot(pr):
+        return None
+    from issue_triage import fix_review
+    from prospector_app.backend import issue_data
+    issue = next((i for i in issue_data.issues().values()
+                  if i.state == "open" and fix_review.open_pr(i) == pr.number), None)
+    if issue is None:
+        return None
+    fu = fix_review.followup_for(issue.fix_followup, pr.number)
+    line = fix_review.status_line(issue)["text"]
+    if fu.get("state") == "handed-back" and fix_review.approval(issue) is None:
+        return _r("handed", "handed-back", line)
+    if fu.get("state") == "ready" or fix_review.approval(issue) is not None:
+        return _r("handed", "with-maintainers", line)
+    return _r("auto", "followup", line)
 
 
 def _parked_reason(req: dict) -> str:
