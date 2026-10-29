@@ -14,12 +14,15 @@ author to rebase when that cannot work:
   likely to handle, so a `rebase` is queued; its pause escalates to `resolve`.
 - `author`: an agent may not or likely cannot resolve it, so the author is
   asked. A queued request that ends on its conflicts lands here too.
+- `close`: the author was asked CLOSE_AFTER_DAYS ago and has neither pushed
+  nor been active on the PR since, so it closes as won't-fix with a note that
+  it can come back once it is current.
 - `ineligible`: `gates.fix_eligibility` keeps the bot off the branch.
 
 The classification is local git only: the base and every PR head are fetched
 into a gitignored bare repository and tested with `git merge-tree`, pushing nothing. Every action is one runs-ledger entry (PHASE),
 which is both the per-PR record that a head was already queued or asked (so the
-sweep acts on a head at most once each way) and the count the daily cap
+sweep queues, asks and closes a head at most once each) and the count the daily cap
 `TRIAGE_BACKLOG_SWEEP_DAILY` is spent against. The cap is 0 by default, which
 keeps the sweep a dry run.
 
@@ -37,20 +40,22 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal
 
 from pipeline import gates, review_policy, reviewers, settings, storekit
-from prospector_app.backend import data, executor, fix_queue, handback
+from prospector_app.backend import data, executor, fix_queue, handback, models
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
 
 PHASE = "backlog-sweep"
 QUIET_DAYS = 60
+# How long an author has to answer the rebase ask before the PR closes.
+CLOSE_AFTER_DAYS = 14
 # The most conflicted files a queued agent resolve is expected to handle; more
 # reads as a drift only the author can untangle.
 RESOLVE_MAX_PATHS = 5
 REPO_DIR = settings.REPO_ROOT / "prospector_app" / "cache" / "backlog-sweep.git"
 FETCH_CHUNK = 200
 
-Bucket = Literal["clean", "resolvable", "author", "ineligible", "waiting", "done", "skip"]
+Bucket = Literal["clean", "resolvable", "author", "close", "ineligible", "waiting", "done", "skip"]
 Kind = Literal["greptile-bar", "unreviewed-push"]
 
 
@@ -72,18 +77,20 @@ class Plan:
     why: str
     action: str | None = None  # the request to queue, for clean and resolvable
     ask: bool = False
+    close: bool = False
     conflicts: list[str] = field(default_factory=list)
     quiet_since: str | None = None
     kind: Kind | None = None
 
 
-def population_kind(rec: Pr, now: datetime) -> Kind | None:
-    """Why `rec` belongs to the backlog, from stored facts, or None. The head
-    commit's own date is checked later, from git."""
+def population_kind(rec: Pr, now: datetime, *, acted: bool = False) -> Kind | None:
+    """Why `rec` belongs to the backlog, from stored facts, or None. A PR the
+    sweep already acted on at its head stays in, however recently its own
+    comment moved it. The head commit's own date is checked later, from git."""
     updated = _when(rec.updated_at)
     if rec.state != "open" or rec.draft or updated is None:
         return None
-    if now - updated < timedelta(days=QUIET_DAYS):
+    if not acted and now - updated < timedelta(days=QUIET_DAYS):
         return None
     reviewed = rec.greptile_reviewed_sha
     if reviewed and reviewed != rec.head_sha:
@@ -215,12 +222,19 @@ def _ended_on_conflicts(req: dict[str, object], head: str | None) -> bool:
             and handback.parked_judged(result))
 
 
-def plan_one(rec: Pr, steps: set[str], pr_probe: Probe | str) -> Plan:
-    """PR `rec`'s next step, given the sweep `steps` already taken at its head."""
+def plan_one(rec: Pr, steps: dict[str, str], pr_probe: Probe | str) -> Plan:
+    """PR `rec`'s next step, given the sweep `steps` already taken at its head
+    and when each was taken."""
     n = rec.number
     req = rec.fix_request or {}
+    if "closed" in steps:
+        return Plan(n, "done", "closed after the author did not answer")
     if "asked" in steps:
-        return Plan(n, "done", "the author was asked")
+        asked = _when(steps["asked"]) or datetime.now(timezone.utc)
+        if datetime.now(timezone.utc) - asked < timedelta(days=CLOSE_AFTER_DAYS):
+            return Plan(n, "waiting", f"the author was asked on {steps['asked'][:10]}")
+        return Plan(n, "close", f"the author has not answered in {CLOSE_AFTER_DAYS} days",
+                    close=True)
     if "queued" in steps:
         if _ended_on_conflicts(req, rec.head_sha):
             paths = [str(p) for p in (req.get("result") or {}).get("conflict_paths") or []]
@@ -239,15 +253,17 @@ def plan_one(rec: Pr, steps: set[str], pr_probe: Probe | str) -> Plan:
     return classify(rec, pr_probe)
 
 
-def _steps_by_pr(prs: list[int]) -> dict[int, dict[str, set[str]]]:
-    """The sweep steps already taken on `prs`, as {pr: {head_sha: {step}}}."""
-    out: dict[int, dict[str, set[str]]] = {}
+def _steps_by_pr(prs: list[int] | None = None) -> dict[int, dict[str, dict[str, str]]]:
+    """The sweep steps already taken (on `prs`, or on every PR), as
+    {pr: {head_sha: {step: when}}}. One row per action, and each head is acted
+    on at most three times, so this stays as small as the backlog."""
+    out: dict[int, dict[str, dict[str, str]]] = {}
     for run in data.store().runs(phase=PHASE, prs=prs):
         if not isinstance(run, storekit.PhaseRun) or not isinstance(run.raw.get("pr"), int):
             continue
         stats = run.raw.get("stats") or {}
         out.setdefault(int(run.raw["pr"]), {}).setdefault(
-            str(stats.get("head_sha")), set()).add(str(stats.get("step")))
+            str(stats.get("head_sha")), {})[str(stats.get("step"))] = str(run.finished)
     return out
 
 
@@ -261,18 +277,17 @@ def plans() -> list[Plan]:
     active first: their authors are likeliest to answer, and their drift the
     smallest."""
     now = datetime.now(timezone.utc)
+    taken = _steps_by_pr()
     members: list[tuple[Pr, Kind]] = []
     for rec in data.prs().values():
-        kind = population_kind(rec, now)
+        kind = population_kind(rec, now, acted=str(rec.head_sha) in taken.get(rec.number, {}))
         if kind is not None:
             members.append((rec, kind))
     members.sort(key=lambda m: m[0].updated_at or "", reverse=True)
-    numbers = [rec.number for rec, _ in members]
-    fetch(numbers)
-    taken = _steps_by_pr(numbers)
+    fetch([rec.number for rec, _ in members])
     out: list[Plan] = []
     for rec, kind in members:
-        steps = taken.get(rec.number, {}).get(str(rec.head_sha), set())
+        steps = taken.get(rec.number, {}).get(str(rec.head_sha), {})
         plan = plan_one(rec, steps, probe(rec.number, rec.head_sha))
         plan.kind, plan.quiet_since = kind, rec.updated_at
         out.append(plan)
@@ -282,27 +297,43 @@ def plans() -> list[Plan]:
 def act(plan: Plan, rec: Pr) -> str:
     """Carry out `plan` live and record it in the ledger. Returns the outcome."""
     head = str(rec.head_sha or "")
-    if plan.ask:
+    if plan.close:
+        live = handback.live_state(rec.number)
+        if live is None or live["state"] != "open" or live["head"] != head:
+            return "not closed: GitHub did not answer, or the PR changed"
+        asked = _when(_steps_by_pr([rec.number]).get(rec.number, {}).get(head, {}).get("asked"))
+        if asked is None or (live["last_active"] is not None and live["last_active"] > asked):
+            return "not closed: the author was active after the ask; a person decides"
+        res = executor.execute_pr(
+            rec.number, models.CloseAction(action="CLOSE_WONTFIX",
+                                           comment=handback.rebase_close_body(rec.author),
+                                           reason="backlog sweep: no answer to the rebase ask"),
+            dry_run=False)
+        status = str(res.get("status"))
+        if status != "executed":
+            return f"close failed: {res.get('detail') or status}"
+        step = "closed"
+    elif plan.ask:
         res = executor.hand_back_comment(
             rec.number, handback.rebase_ask_body(rec.author, plan.conflicts, head),
             marker=handback.rebase_ask_marker(head), dry_run=False)
         status = str(res.get("status"))
         if status not in ("executed", "exists"):
             return f"ask failed: {res.get('detail')}"
-        step = "asked" if status == "executed" else "already asked"
+        step = "asked"
     else:
         assert plan.action is not None
         try:
             fix_queue.queue_pr(rec.number, plan.action)
         except ValueError as e:
             return f"not queued: {e}"
-        status, step = "queued", "queued"
+        status = step = "queued"
     now = storekit.now()
     data.store().append_run({"phase": PHASE, "pr": rec.number, "started": now, "finished": now,
                              "trigger": "operator",
-                             "stats": {"step": "asked" if plan.ask else "queued", "bucket": plan.bucket, "action": plan.action,
+                             "stats": {"step": step, "bucket": plan.bucket, "action": plan.action,
                                        "head_sha": head, "status": status}})
-    return step
+    return step if status != "exists" else "already asked"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -311,7 +342,8 @@ def main(argv: list[str] | None = None) -> int:
         description="Bring the stale, author-finished PR backlog current with the base branch, "
                     "or ask its authors to rebase. Dry run unless --live.")
     p.add_argument("--live", action="store_true",
-                   help="queue requests and post asks, up to TRIAGE_BACKLOG_SWEEP_DAILY today")
+                   help="queue requests, post asks and close unanswered PRs, up to "
+                        "TRIAGE_BACKLOG_SWEEP_DAILY today")
     p.add_argument("--json", help="also write every PR's plan to this file")
     args = p.parse_args(argv)
     every = plans()
@@ -323,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dump([asdict(plan) for plan in every], f, indent=1)
     if not args.live:
         for plan in every:
-            print(f"#{plan.pr:<6} {plan.bucket:<10} {plan.action or ('ask' if plan.ask else '-'):<7} "
+            print(f"#{plan.pr:<6} {plan.bucket:<10} {plan.action or ('ask' if plan.ask else 'close' if plan.close else '-'):<7} "
                   f"{plan.kind:<15} quiet since {(plan.quiet_since or '?')[:10]}  {plan.why}")
         print(json.dumps({"population": len(every), **counts}))
         return 0
@@ -335,9 +367,9 @@ def main(argv: list[str] | None = None) -> int:
     for plan in every:
         if left <= 0:
             break
-        if plan.action is None and not plan.ask:
+        if plan.action is None and not plan.ask and not plan.close:
             continue
         outcome = act(plan, prs[plan.pr])
         print(f"#{plan.pr} {plan.bucket}: {outcome}")
-        left -= outcome in ("queued", "asked")
+        left -= outcome in ("queued", "asked", "closed")
     return 0

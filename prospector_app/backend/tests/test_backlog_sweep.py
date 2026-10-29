@@ -185,3 +185,35 @@ def test_an_ask_already_on_the_pr_is_recorded_without_spending_the_cap(store, re
     repo.advance_base({f"f{i}.txt": "base\n" for i in range(7)} | {"z.txt": "z\n"})
     backlog_sweep.main(["--live"])
     assert [r.raw["stats"]["step"] for r in store.runs(phase=backlog_sweep.PHASE)] == ["asked", "queued"]
+
+
+def _asked(st: S.Store, n: int, head: str, days_ago: int) -> None:
+    at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+    st.append_run({"phase": backlog_sweep.PHASE, "pr": n, "started": at, "finished": at,
+                   "stats": {"step": "asked", "head_sha": head, "status": "executed"}})
+
+
+def test_an_unanswered_ask_closes_after_two_weeks_once(store, repo, monkeypatch):
+    from prospector_app.backend import handback
+    closes: list[tuple[int, str, str | None]] = []
+    monkeypatch.setattr(executor, "execute_pr", lambda n, action, *, dry_run:
+                        closes.append((n, action.action, action.comment)) or {"status": "executed"})
+    monkeypatch.setenv("TRIAGE_BACKLOG_SWEEP_DAILY", "10")
+    heads = {n: repo.pr(n, {f"f{n}.txt": "x\n"}) for n in (1, 2, 3)}
+    for n, head in heads.items():
+        _save(store, n, head, updated_at=RECENT)  # the ask itself updated the PR
+    _asked(store, 1, heads[1], 15)
+    _asked(store, 2, heads[2], 15)
+    _asked(store, 3, heads[3], 5)
+    asked_at = datetime.now(timezone.utc) - timedelta(days=15)
+    monkeypatch.setattr(handback, "live_state", lambda n: {
+        "state": "open", "head": heads[n], "author": f"dev{n}",
+        "last_active": asked_at + timedelta(days=3) if n == 2 else asked_at - timedelta(days=90)})
+    plans = _plans()
+    assert (plans[1].bucket, plans[2].bucket, plans[3].bucket) == ("close", "close", "waiting")
+    backlog_sweep.main(["--live"])
+    assert [(n, a) for n, a, _ in closes] == [(1, "CLOSE_WONTFIX")]
+    assert "reopen" in (closes[0][2] or "")
+    data.refresh()
+    backlog_sweep.main(["--live"])
+    assert len(closes) == 1

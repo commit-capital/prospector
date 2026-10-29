@@ -188,6 +188,16 @@ def rebase_ask_body(author: str | None, paths: list[str], head: str) -> str:
             f"{rebase_ask_marker(head)}")
 
 
+def rebase_close_body(author: str | None) -> str:
+    """The backlog sweep's close of a PR whose author did not answer its ask."""
+    base = settings.default_branch()
+    who = f"@{author}" if author else "there"
+    return (f"Hi {who}, thanks for this PR. We're closing it for now: it still conflicts "
+            f"with `{base}`, and we haven't heard back in the two weeks since we asked for a "
+            f"rebase. If it's still relevant, bring the branch up to date with `{base}` and "
+            f"reopen it (or comment here and we'll reopen it), and we'll pick it up promptly.")
+
+
 def close_body(kind: str, author: str | None, paths: list[str]) -> str:
     base = settings.default_branch()
     who = f"@{author}" if author else "there"
