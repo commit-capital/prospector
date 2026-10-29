@@ -32,12 +32,14 @@ import threading
 import time
 import tomllib
 from collections.abc import Callable
-from datetime import datetime
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from pipeline import diffpaths
 from pipeline import e2e_artifacts
+from pipeline import e2e_coverage
 from pipeline import e2e_report
 from pipeline import gates
 from pipeline import gh
@@ -2384,15 +2386,57 @@ def build_image() -> str:
     return tag
 
 
+def e2e_coverage_cmd(store: Store, *, runs: int) -> int:
+    """Run the e2e suite `runs` times on the pinned base and write the coverage
+    report and the failing specs' screenshots under SCRATCH. Non-zero only when
+    no run booted."""
+    if runs < 1:
+        print("--runs must be at least 1", file=sys.stderr)
+        return 2
+    try:
+        base_sha, tier = pinned_base(store), pinned_tier(store)
+        image = base_image_tag(base_sha, tier)
+        results = [run_e2e(image, tier=tier, base_sha=base_sha) for _ in range(runs)]
+    except RuntimeError as e:
+        print(e, file=sys.stderr)
+        return 2
+    e2e_runs = [r[1] for r in results]
+    cov = e2e_coverage.classify(e2e_runs)
+    out_dir = SCRATCH / "e2e-coverage" / f"{base_sha[:12]}-{datetime.now(UTC):%Y%m%dT%H%M%SZ}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    root = out_dir.resolve()
+    shown: list[e2e_coverage.SpecCoverage] = []
+    for c in cov:
+        key = c.screenshot
+        png = next((r[2].pngs[key] for r in results if key in r[2].pngs), None) if key else None
+        if key is None or png is None:
+            shown.append(replace(c, screenshot=None))
+            continue
+        target = (root / "shots" / key).resolve()
+        assert target.is_relative_to(root), key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(png)
+        shown.append(replace(c, screenshot=f"shots/{key}"))
+    failures = e2e_coverage.boot_failures(e2e_runs)
+    report = out_dir / "report.md"
+    report.write_text(e2e_coverage.render(
+        shown, base_sha=base_sha[:12], boot_failures=failures,
+        skipped=e2e_coverage.skipped_count(e2e_runs)))
+    print(report.resolve())
+    return 1 if len(failures) == len(e2e_runs) else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("cmd", choices=["prepare-base", "build-image", "gc", "teardown"])
+    ap.add_argument("cmd", choices=["prepare-base", "build-image", "gc", "teardown", "e2e-coverage"])
     ap.add_argument("--base-sha", default=None)
     ap.add_argument("--tier", type=int, default=0, choices=[0, 1],
                     help="the tier to build the base image at. verify_pr reads it "
                          "back from the pin.")
     ap.add_argument("--dry-run", action="store_true",
                     help="gc and teardown: report what would go, remove nothing")
+    ap.add_argument("--runs", type=int, default=3,
+                    help="e2e-coverage: how many times to run the suite")
     ap.add_argument("--store", default=None)
     args = ap.parse_args(argv)
 
@@ -2426,6 +2470,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"keeping {', '.join(result['keep']) or 'nothing'}; "
               f"{verb} {', '.join(gone) or 'nothing'}")
         return 0 if result["ok"] else 1
+
+    if args.cmd == "e2e-coverage":
+        return e2e_coverage_cmd(store, runs=args.runs)
 
     tag = prepare_base(store, base_sha=args.base_sha, tier=args.tier)
     print(f"base image ready: {tag}")
