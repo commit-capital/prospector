@@ -1207,9 +1207,6 @@ export interface SystemHealthItem {
   host?: string | null;
 }
 
-/** Systemwide health across every machine on this store: worker lanes down
- *  and stale ingests. `workers_stalled` means every known worker lane is
- *  down, so nothing "in motion" is actually moving. */
 /** A worker lane the trip banner names: tripped now, or open but tripped
  *  repeatedly in the last day. `at`, `kind` and `reason` are its latest trip's. */
 export interface TripAlert {
@@ -1223,6 +1220,9 @@ export interface TripAlert {
   trips_24h: number;
 }
 
+/** Systemwide health across every machine on this store: worker lanes down
+ *  and stale ingests. `workers_stalled` means every known worker lane is
+ *  down, so nothing "in motion" is actually moving. */
 export interface SystemHealth {
   severity: "ok" | "amber" | "red";
   items: SystemHealthItem[];

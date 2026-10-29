@@ -546,7 +546,7 @@ function TripRow({ a }: { a: TripAlert }) {
   return (
     <div className="trip-banner-row" title={[a.reason, a.remedy].filter(Boolean).join("\n\n")}>
       <span aria-hidden="true">{a.tripped ? "⛔" : "↻"}</span>
-      <span>{tripHeadline(a)} · {a.tripped ? "since" : "last"} {timeAgo(a.at)} ago</span>
+      <span>{tripHeadline(a)}{a.at && ` · ${a.tripped ? "since" : "last"} ${timeAgo(a.at)} ago`}</span>
       {a.reason && <span className="trip-banner-reason">{tripReason(a)}</span>}
       {err && <span className="trip-banner-reason">{err}</span>}
       {a.tripped
@@ -559,7 +559,8 @@ function TripRow({ a }: { a: TripAlert }) {
 // The red trip banner on every page, inside the sticky header: each worker
 // lane tripped on any machine, with when, why and a Resume, and each open lane
 // that keeps reopening onto the same fault. Hover shows the full reason and
-// what clears it. It clears itself when the lane reopens.
+// what clears it. A tripped row clears when its lane reopens; a retripping row
+// once its trips age out of the day.
 function TripBanner() {
   const alerts = useSystemHealth()?.trip_alerts ?? [];
   if (!alerts.length) return null;

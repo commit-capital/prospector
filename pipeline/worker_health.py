@@ -52,6 +52,7 @@ RECENT_KEEP = 5
 # reopening onto the same fault.
 RETRIP_ALERT = 3
 RETRIP_WINDOW_SECONDS = 24 * 3600
+# Trips kept on the record to count them.
 TRIPS_KEEP = 10
 
 _lock = threading.Lock()
