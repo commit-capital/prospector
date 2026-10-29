@@ -135,9 +135,9 @@ def test_review_and_scans_rows_aggregate_every_active_reviewer(monkeypatch, acti
                     "findings": [{"severity": "P1", "resolved": False, "outdated": False}]}))
     c = pr_checks.checks_for_record(rec)
     rows = {x["key"]: x for x in c["checks"]}
-    assert rows["review"]["status"] == "warn"           # CodeRabbit pending
+    assert rows["review"]["status"] == "warn" and rows["review"]["pending"]   # CodeRabbit pending
     assert "CodeRabbit pending" in rows["review"]["detail"]
-    assert rows["scans"]["status"] == "fail"            # Superagent P1; Socket na is ignored
+    assert rows["scans"]["status"] == "fail" and not rows["scans"]["pending"]  # Superagent P1; Socket na is ignored
     assert "Superagent 1 P1" in rows["scans"]["detail"]
 
 
@@ -307,7 +307,7 @@ def test_gating_design_row_waits_for_its_review(monkeypatch):
     monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "gate")
     review_policy.reset()
     chk = _design_check(_pr())
-    assert chk["status"] == "warn" and "advisory" not in chk["detail"]
+    assert chk["status"] == "warn" and chk["pending"] and "advisory" not in chk["detail"]
     assert "Design" not in _review_check(_pr())["detail"]
 
 

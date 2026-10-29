@@ -391,6 +391,12 @@ def test_checks_clause_warn_counts_as_fail():
     assert not filters.matches(r, {"checks": [{"key": "verify", "status": "pass"}]})
 
 
+def test_checks_clause_pending_review_is_never_ran():
+    r = _row(checks={"checks": [{"key": "design", "status": "warn", "pending": True}]})
+    assert filters.matches(r, {"checks": [{"key": "design", "status": "never_ran"}]})
+    assert not filters.matches(r, {"checks": [{"key": "design", "status": "fail"}]})
+
+
 def test_checks_clause_na_status_is_never_ran():
     r = _checks_row(("ci", "na"))
     assert filters.matches(r, {"checks": [{"key": "ci", "status": "never_ran"}]})
