@@ -21,7 +21,8 @@ COMMENT_MAX = 1500
 _MAINTAINER = {"OWNER", "MEMBER", "COLLABORATOR"}
 _FETCHED = ".fetched"
 _DECISIONS = "decisions.md"
-# Each closed-<n>.md file's issue number and the updated_at it was written at.
+# `files`: each closed-<n>.md file's issue number and the updated_at it was
+# written at; `since`: the updated_at the next listing starts from.
 _INDEX = ".index.json"
 
 
@@ -80,26 +81,32 @@ def _write_if_changed(path: Path, text: str) -> None:
 
 def _sync_closed(d: Path) -> bool:
     """Bring the closed-<n>.md files up to date: list only what was updated
-    since the newest file, fetch comments only for an issue whose updated_at
-    moved since its file was written, and keep the newest HISTORY_MAX.
-    Whether the listing succeeded."""
+    since the last pass, fetch comments only for an issue whose updated_at
+    moved since its file was written, and keep the newest HISTORY_MAX. An
+    issue whose comments could not be fetched holds the cursor at its
+    updated_at, so the next pass lists it again. Whether the listing
+    succeeded."""
     index_path = d / _INDEX
     try:
-        index: dict[str, str] = json.loads(index_path.read_text())
-    except (OSError, ValueError):
-        index = {}
-    rows = _fetch_closed(max(index.values(), default=None))
+        saved = json.loads(index_path.read_text())
+        index: dict[str, str] = dict(saved["files"])
+        since: str | None = saved["since"]
+    except (OSError, ValueError, KeyError, TypeError):
+        index, since = {}, None
+    rows = _fetch_closed(since)
     if rows is None:
         return False
     listed = {str(r["number"]): r for r in rows}
     updated = {**index, **{n: str(r.get("updated_at") or "") for n, r in listed.items()}}
     keep = dict(sorted(updated.items(), key=lambda kv: kv[1], reverse=True)[:HISTORY_MAX])
+    failed: list[str] = []
     for n, row in listed.items():
         path = d / f"closed-{n}.md"
         if n not in keep or (index.get(n) == keep[n] and path.exists()):
             continue
         comments = gh.issue_comments(int(n))
         if comments is None:
+            failed.append(keep[n])
             if n in index:
                 keep[n] = index[n]
             else:
@@ -109,7 +116,8 @@ def _sync_closed(d: Path) -> bool:
     for old in d.glob("closed-*.md"):
         if old.name.removeprefix("closed-").removesuffix(".md") not in keep:
             old.unlink()
-    index_path.write_text(json.dumps(keep))
+    cursor = min(failed) if failed else max(updated.values(), default=since)
+    index_path.write_text(json.dumps({"since": cursor, "files": keep}))
     return True
 
 

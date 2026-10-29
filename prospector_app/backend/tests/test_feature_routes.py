@@ -86,6 +86,15 @@ def test_a_placeholder_screen_is_no_verdict(client, placeholder):
     assert d["feature_screen"] is None and d["is_feature_request"] is True
 
 
+def test_the_card_holds_a_screen_to_its_section_version(client, monkeypatch):
+    from issue_triage import issue_freshness
+    c, store = client
+    monkeypatch.setitem(issue_freshness.SECTION_SCHEMA_VERSION, "feature_screen", 2)
+    _issue(store, 2, screen={**SCREEN, "schema_version": 2})
+    _issue(store, 3, screen={**SCREEN, "schema_version": 1})
+    assert _card(c) == [2]
+
+
 def test_a_stale_screen_is_off_the_card(client):
     c, store = client
     _issue(store)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -107,6 +108,27 @@ def test_a_changed_issue_refetches_its_comments(monkeypatch: pytest.MonkeyPatch)
     rows = [_raw(5, updated_at="2026-01-09T00:00:00Z")]
     feature_history.refresh([])
     assert comments == [5, 5] and "call 2" in (d / "closed-5.md").read_text()
+
+
+def test_a_failed_comment_fetch_holds_the_cursor_until_it_lands(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [_raw(5, updated_at="2026-01-05T00:00:00Z"), _raw(6, updated_at="2026-01-06T00:00:00Z")]
+
+    def listing(path: str, **kw: object) -> list[dict]:
+        since = urllib.parse.unquote(path.split("since=")[1]) if "since=" in path else ""
+        return [r for r in rows if r["updated_at"] >= since]
+
+    fail = {5}
+    calls: list[int] = []
+    monkeypatch.setattr(gh, "gh_list", listing)
+    monkeypatch.setattr(gh, "issue_comments",
+                        lambda n, **kw: calls.append(n) or (None if n in fail else []))
+    d = feature_history.refresh([])
+    assert not (d / "closed-5.md").exists() and (d / "closed-6.md").exists()
+    fail.clear()
+    _expire(d)
+    feature_history.refresh([])
+    assert (d / "closed-5.md").exists() and sorted(calls) == [5, 5, 6]
 
 
 def test_an_incremental_refresh_keeps_the_newest(monkeypatch: pytest.MonkeyPatch) -> None:

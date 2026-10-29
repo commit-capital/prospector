@@ -374,7 +374,8 @@ def get_issue(n: int) -> dict | None:
 _SIZE_RANK = {"small": 0, "medium": 1, "large": 2}
 
 
-_SCREEN_FIELDS = ("verdict", "why", "size", "precedents", "checked_at", "against_updated_at")
+_SCREEN_FIELDS = ("verdict", "why", "size", "precedents", "checked_at", "against_updated_at",
+                  "schema_version")
 _FEATURE_PATHS = [("meta", "content_updated_at"), ("feature_decision",),
                   *(("feature_screen", f) for f in _SCREEN_FIELDS)]
 

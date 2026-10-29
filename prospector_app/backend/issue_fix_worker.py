@@ -495,6 +495,19 @@ def _claim_screen(store: IssueStore, n: int) -> tuple[Issue, dict | None] | None
     return (issue, prior) if store.save_issue_if(issue, stamp) else None
 
 
+def _release_screen(store: IssueStore, n: int, claim: dict | None, prior: dict | None) -> None:
+    """Put back the section `claim` replaced, while `claim` is still the one on
+    the record, under a compare-and-swap."""
+    got = store.stamped_issue(n)
+    if got is None or got[0].section("feature_screen") != claim:
+        return
+    issue, stamp = got
+    issue.raw.pop("feature_screen", None)
+    if prior is not None:
+        issue.raw["feature_screen"] = prior
+    store.save_issue_if(issue, stamp)
+
+
 def _screen(store: IssueStore, n: int, base: prove.PinnedBase, history: Path,
             trigger: str) -> bool:
     """Claim, screen and book one feature request. Whether the agent finished.
@@ -504,6 +517,7 @@ def _screen(store: IssueStore, n: int, base: prove.PinnedBase, history: Path,
     if claimed is None:
         return False
     issue, prior = claimed
+    claim = issue.section("feature_screen")
     started = storekit.now()
     created = storekit.parse_ts((issue.raw.get("meta") or {}).get("created_at"))
     replies = (public_loop.read_replies(issue, created) or []) if created else []
@@ -513,7 +527,7 @@ def _screen(store: IssueStore, n: int, base: prove.PinnedBase, history: Path,
                                             replies=replies, subject=verdict_log.Subject("issue", n))
     except (ValueError, RuntimeError) as e:
         if isinstance(e, headless_agent.AgentUnavailable):
-            store.set_issue_section(n, "feature_screen", prior)
+            _release_screen(store, n, claim, prior)
             raise
         traceback.print_exc()
         issue.record_feature_screen({"verdict": "failed", "error": str(e)[:300]})

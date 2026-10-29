@@ -641,6 +641,17 @@ def test_an_agent_outage_releases_the_claim(hunting, screening):
     assert hunting.load_issue(3).feature_screen is None
 
 
+def test_an_outage_leaves_another_worker_s_newer_claim(hunting, screening, monkeypatch):
+    def screen(issue, *a, **kw):
+        hunting.edit_issue(3).record_feature_screen({"verdict": "screening", "by": "other"})
+        raise headless_agent.AgentUnavailable("down")
+
+    monkeypatch.setattr(feature_screen, "screen", screen)
+    with pytest.raises(headless_agent.AgentUnavailable):
+        issue_fix_worker.screen_features(hunting, None)
+    assert hunting.load_issue(3).feature_screen["by"] == "other"
+
+
 def test_the_feature_screen_backfill_prints_yes_rate(hunting, screening, monkeypatch, capsys):
     from issue_triage import issue_store
     from pipeline import cli
