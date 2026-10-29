@@ -5,11 +5,12 @@ manifest names. GitHub, the base build and R6 are mocked; the epoch walk runs
 over a real git history."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -191,6 +192,15 @@ def test_the_stamp_follows_the_verify_section():
     other_tiers = replace(base, trusted_authors=("someone",))
     assert eval_set.sandbox_stamp(other_cmd) != eval_set.sandbox_stamp(base)
     assert eval_set.sandbox_stamp(other_tiers) == eval_set.sandbox_stamp(base)
+
+
+def test_the_stamp_ignores_e2e_and_matches_bases_qualified_before_it():
+    base = profile.RepoProfile()
+    with_e2e = replace(base, verify=replace(base.verify, e2e=profile.E2eConfig(config="e2e/p.ts")))
+    assert eval_set.sandbox_stamp(with_e2e) == eval_set.sandbox_stamp(base)
+    pre_e2e = {k: v for k, v in asdict(base.verify).items() if k != "e2e"}
+    assert eval_set.sandbox_stamp(base) == hashlib.sha256(
+        json.dumps(pre_e2e, sort_keys=True).encode()).hexdigest()[:12]
 
 
 def test_an_import_replaces_a_stale_row_with_a_current_one(ledger, tmp_path):

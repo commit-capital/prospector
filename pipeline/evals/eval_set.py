@@ -211,9 +211,12 @@ def epoch(clone: Path, members: list[replay.Instance], key: frozenset[tuple[str,
 
 
 def sandbox_stamp(prof: RepoProfile) -> str:
-    """A hash of the sandbox commands `prof` runs a base under: the whole
-    `verify` section, so any edit there sends every base back to `build`."""
-    raw = json.dumps(asdict(prof.verify), sort_keys=True)
+    """A hash of the sandbox commands `prof` runs a base under: the `verify`
+    section but `e2e`, which no replay runs, so any other edit there sends every
+    base back to `build`."""
+    verify = asdict(prof.verify)
+    del verify["e2e"]
+    raw = json.dumps(verify, sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
