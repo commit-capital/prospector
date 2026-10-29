@@ -512,6 +512,7 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
         base = verify_driver.pinned_base(store)
         tier = verify_driver.pinned_tier(store)
         baseline = verify_driver.pinned_baseline(store)
+        e2e_baseline = verify_driver.pinned_e2e_baseline(store)
     except RuntimeError as e:
         return _no_base(req, str(e))
     image = verify_driver.base_image_tag(base, tier)
@@ -620,7 +621,7 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
 
     # Signal 2 — the sandbox phases, host-observed. A live-agent-only bug
     # spends no sandbox time: the blind verdict settles its outcome.
-    _say(f"③ Sandbox run (apply → red → green → regress; one container per phase, "
+    _say(f"③ Sandbox run (apply → red → green → regress → e2e; one container per phase, "
          f"each up to {progress.duration(verify_driver.PHASE_TIMEOUT_SECONDS)})…")
     req.running("sandbox")
     sandbox_started = time.monotonic()
@@ -630,7 +631,8 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
             ev = _no_run_evidence(rec2, base, tier)
         else:
             ev = verify_driver.verify_pr(rec2, image, base, tier, baseline,
-                                         suite_config=suite_config)
+                                         suite_config=suite_config,
+                                         e2e_baseline=e2e_baseline)
     except verify_driver.DiffTooLarge as e:
         return _fail(req, "fetch-error", str(e))
     except verify_driver.FetchFailure as e:
@@ -666,6 +668,8 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
         signals["authored_test"] = authored_result
     if lane_results := ev.get("lanes"):
         signals["lanes"] = lane_results
+    if e2e_result := ev.get("e2e"):
+        signals["e2e"] = e2e_result
     store.edit_pr(n).record_verify(None, signals, tier=tier, base_sha=base,
                                    head_sha=rec2.head_sha)
 

@@ -7,6 +7,8 @@ import fnmatch
 import io
 import json
 import os
+import re
+import shlex
 import socket
 import subprocess
 import tarfile
@@ -20,6 +22,8 @@ from typing import Self
 import pytest
 
 from pipeline import analyze_driver as ad
+from pipeline import e2e_artifacts
+from pipeline import e2e_report
 from pipeline import gates
 from pipeline import profile
 from pipeline import progress
@@ -757,6 +761,125 @@ class TestPrepareBaseBaseline:
                             lambda *a, **kw: (0, _suite_tail([], mode="regress")))
         with pytest.raises(RuntimeError, match="refusing to pin"):
             vd.prepare_base(Store(tmp_path), base_sha="a" * 12, tier=0)
+
+
+def _e2e_run(*results: tuple[str, str, str], booted: bool = True,
+             problem: str | None = None) -> e2e_report.E2eRun:
+    return e2e_report.E2eRun(booted=booted, problem=problem, results=[
+        e2e_report.SpecResult(file=f, title=t, status=st,  # pyright: ignore[reportArgumentType]
+                              error=None if st == "passed" else "boom", attachments=[])
+        for f, t, st in results])
+
+
+class TestCaptureE2eBaseline:
+    """A pin's e2e baseline is the tests that passed in every one of three
+    full runs on the base; the pin is refused when the suite cannot be
+    trusted to judge a PR."""
+
+    def _setup(self, monkeypatch, runs: list[e2e_report.E2eRun], *, version: str | None = "1.62.1"):
+        calls: list[dict] = []
+        monkeypatch.setattr(vd.profile, "active", _profile_with_e2e)
+        monkeypatch.setattr(vd, "playwright_version", lambda src: version)
+        monkeypatch.setattr(vd, "e2e_config", lambda image: _cfg())
+        monkeypatch.setattr(vd, "e2e_specs", lambda src, cfg: [
+            f"tests/e2e/{n}.spec.ts" for n in ("a", "b", "c0", "c1", "c2")])
+        it = iter(runs)
+
+        def run_e2e(image, **kw):
+            calls.append(kw)
+            return 0, next(it), e2e_artifacts.Artifacts(report=None, pngs={}, skipped=[])
+        monkeypatch.setattr(vd, "run_e2e", run_e2e)
+        return calls
+
+    def test_tests_passing_every_run_form_the_baseline(self, monkeypatch):
+        ok = ("a.spec.ts", "boots", "passed")
+        rest = [("b.spec.ts", "s", "skipped"), *[(f"c{i}.spec.ts", "t", "passed") for i in range(3)]]
+        runs = [_e2e_run(ok, ("a.spec.ts", "chat", st), *rest)
+                for st in ("passed", "passed", "failed")]
+        calls = self._setup(monkeypatch, runs)
+        reliable, uncovered, skipped = vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
+        assert len(calls) == 3 and all(len(c["specs"]) == 5 for c in calls)
+        assert all(c.get("patch") is None for c in calls)
+        assert reliable == {"tests/e2e/a.spec.ts": ["boots"], "tests/e2e/c0.spec.ts": ["t"],
+                            "tests/e2e/c1.spec.ts": ["t"], "tests/e2e/c2.spec.ts": ["t"]}
+        assert uncovered == [{"file": "tests/e2e/a.spec.ts", "title": "chat", "verdict": "flaky",
+                              "cause": "unknown", "evidence": "boom"}]
+        assert skipped == 1
+
+    def test_a_test_in_no_listed_spec_stays_out_of_the_baseline(self, monkeypatch):
+        tests = [(f"c{i}.spec.ts", "t", "passed") for i in range(3)]
+        self._setup(monkeypatch, [_e2e_run(("a.spec.ts", "t", "passed"), ("z.spec.ts", "t", "passed"),
+                                           *tests)] * 3)
+        reliable, uncovered, _ = vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
+        assert "z.spec.ts" not in reliable and "tests/e2e/a.spec.ts" in reliable
+        assert [(u["file"], u["verdict"]) for u in uncovered] == [("z.spec.ts", "unlocated")]
+
+    def test_a_baseline_with_no_located_test_is_refused(self, monkeypatch):
+        self._setup(monkeypatch, [_e2e_run(*[(f"z{i}.spec.ts", "t", "passed")
+                                             for i in range(4)])] * 3)
+        with pytest.raises(RuntimeError, match="empty e2e baseline"):
+            vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
+
+    def test_a_run_that_did_not_boot_refuses_the_pin(self, monkeypatch):
+        ok = _e2e_run(("a.spec.ts", "boots", "passed"))
+        self._setup(monkeypatch, [ok, _e2e_run(booted=False, problem="webServer timed out"), ok])
+        with pytest.raises(RuntimeError, match="run 2 did not boot .webServer timed out."):
+            vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
+
+    def test_a_baseline_leaving_out_over_a_quarter_is_refused(self, monkeypatch):
+        tests = [(f"t{i}.spec.ts", "x", "failed" if i < 3 else "passed") for i in range(10)]
+        self._setup(monkeypatch, [_e2e_run(*tests)] * 3)
+        with pytest.raises(RuntimeError, match="3 of 10 e2e tests were flaky or failing"):
+            vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
+
+    def test_an_all_skipped_suite_is_refused(self, monkeypatch):
+        self._setup(monkeypatch, [_e2e_run(("a.spec.ts", "s", "skipped"))] * 3)
+        with pytest.raises(RuntimeError, match="no e2e test ran"):
+            vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
+
+    @pytest.mark.parametrize("tier, version, e2e", [(0, "1.62.1", True), (1, None, True),
+                                                    (1, "1.62.1", False)])
+    def test_a_base_without_an_e2e_lane_runs_nothing(self, monkeypatch, tier, version, e2e):
+        calls = self._setup(monkeypatch, [], version=version)
+        if not e2e:
+            monkeypatch.setattr(vd.profile, "active", lambda: profile.GENERIC)
+        assert vd.capture_e2e_baseline("img", tier=tier, sha="a" * 12) == (None, [], 0)
+        assert calls == []
+
+    def test_prepare_base_pins_the_e2e_baseline(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
+        monkeypatch.setattr(vd, "build_base_image", lambda sha, tier: "img")
+        monkeypatch.setattr(vd.verify_gc, "collect", lambda pinned, **kw: {"ok": True})
+        self._setup(monkeypatch, [_e2e_run(("a.spec.ts", "boots", "passed"))] * 3)
+        s = Store(tmp_path)
+        vd.prepare_base(s, base_sha="a" * 12, tier=1)
+        assert vd.pinned_e2e_baseline(s) == {"tests/e2e/a.spec.ts": ["boots"]}
+        assert vd.local_pin(s).get("e2e_skipped") == 0
+
+    def test_prepare_base_refuses_the_pin_when_the_capture_does(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
+        monkeypatch.setattr(vd, "build_base_image", lambda sha, tier: "img")
+        monkeypatch.setattr(vd.verify_gc, "collect", lambda pinned, **kw: {"ok": True})
+        self._setup(monkeypatch, [_e2e_run(booted=False, problem="x")])
+        s = Store(tmp_path)
+        with pytest.raises(RuntimeError, match="did not boot"):
+            vd.prepare_base(s, base_sha="a" * 12, tier=1)
+        assert vd.local_pin(s)["base_sha"] is None
+
+    def test_a_pin_without_an_e2e_baseline_reads_as_none(self, tmp_path):
+        s = Store(tmp_path)
+        s.save_verify_base({"host": socket.gethostname(), "base_sha": "b" * 12,
+                            "tier": 0, "pinned_at": NOW,
+                            "baseline_failing": [], "baseline_captured_at": NOW})
+        assert vd.pinned_e2e_baseline(s) is None
+
+    @pytest.mark.parametrize("bad", [["a.spec.ts"], {"a.spec.ts": "boots"}, {"a.spec.ts": [1]}])
+    def test_the_store_refuses_a_malformed_e2e_baseline(self, tmp_path, bad):
+        from pipeline.storekit import ValidationError
+        with pytest.raises(ValidationError, match="e2e_baseline"):
+            Store(tmp_path).save_verify_base({
+                "host": "h", "base_sha": "b" * 12, "tier": 1, "pinned_at": NOW,
+                "baseline_failing": [], "baseline_captured_at": NOW, "e2e_baseline": bad})
 
 
 class TestPrepareBaseGarbageCollection:
@@ -2541,6 +2664,220 @@ class TestAuthoredPatches:
         assert "a.test.ts" in text
 
 
+_BASELINE = {"tests/e2e/a.spec.ts": ["boots", "chat"], "tests/e2e/b.spec.ts": ["settings"]}
+
+
+class TestE2eLeg:
+    """The PR's in-app leg runs only the base's reliable tests, confirms a
+    failure with one re-run of the failing files, and records what failed both
+    times. The host decides from the parsed report and exits alone."""
+
+    def _runs(self, monkeypatch, *runs: tuple[int, e2e_report.E2eRun]):
+        calls: list[dict] = []
+        it = iter(runs)
+
+        def run_e2e(image, **kw):
+            calls.append(kw)
+            rc, run = next(it)
+            return rc, run, e2e_artifacts.Artifacts(report=None, pngs={}, skipped=[])
+        monkeypatch.setattr(vd, "run_e2e", run_e2e)
+        return calls
+
+    def _leg(self, changed=("ui/src/App.tsx",)):
+        return vd.e2e_leg("img:t1", tier=1, base_sha="b", head_sha="h", patch=Path("/tmp/e.patch"),
+                          baseline=_BASELINE, changed_paths=list(changed))
+
+    @staticmethod
+    def _all(status_of: dict[tuple[str, str], str]) -> e2e_report.E2eRun:
+        # Playwright names files relative to its test directory.
+        return _e2e_run(*[(f.removeprefix("tests/e2e/"), t, status_of.get((f, t), "passed"))
+                          for f, ts in _BASELINE.items() for t in ts])
+
+    def test_a_clean_run_runs_once_over_the_baseline_files(self, monkeypatch):
+        calls = self._runs(monkeypatch, (0, self._all({})))
+        sig = self._leg()
+        assert [c["specs"] for c in calls] == [["tests/e2e/a.spec.ts", "tests/e2e/b.spec.ts"]]
+        assert calls[0]["patch"] == Path("/tmp/e.patch")
+        assert sig["ran"] is True and sig["baseline_tests"] == 3
+        assert sig["failing_first"] == [] and sig["regression_count"] == 0
+        assert gates.e2e_verdict(sig) is None
+
+    def test_a_failure_that_passes_on_confirm_is_a_flake(self, monkeypatch):
+        calls = self._runs(monkeypatch, (20, self._all({("tests/e2e/a.spec.ts", "chat"): "failed"})),
+                           (0, _e2e_run(("a.spec.ts", "boots", "passed"), ("a.spec.ts", "chat", "passed"))))
+        sig = self._leg()
+        assert calls[1]["specs"] == ["tests/e2e/a.spec.ts"]
+        assert sig["failing_first"] == ["tests/e2e/a.spec.ts › chat"]
+        assert sig["exit_confirm"] == 0 and sig["regressions"] == []
+        assert gates.e2e_verdict(sig) is None
+
+    def test_a_failure_in_both_runs_is_a_regression(self, monkeypatch):
+        bad = {("tests/e2e/b.spec.ts", "settings"): "timedOut"}
+        self._runs(monkeypatch, (20, self._all(bad)),
+                   (20, _e2e_run(("b.spec.ts", "settings", "failed"))))
+        sig = self._leg()
+        assert sig["regressions"] == ["tests/e2e/b.spec.ts › settings"]
+        assert sig["regression_count"] == 1 and sig["edited"] == []
+        assert gates.e2e_verdict(sig) == "regressed"
+
+    def test_a_regression_in_a_spec_the_pr_edits_escalates(self, monkeypatch):
+        bad = {("tests/e2e/b.spec.ts", "settings"): "failed"}
+        self._runs(monkeypatch, (20, self._all(bad)),
+                   (20, _e2e_run(("b.spec.ts", "settings", "failed"))))
+        sig = self._leg(changed=("ui/src/App.tsx", "tests/e2e/b.spec.ts"))
+        assert sig["edited"] == ["tests/e2e/b.spec.ts"]
+        assert gates.e2e_verdict(sig) == "escalate"
+
+    def test_an_app_that_does_not_boot_twice_holds_the_run(self, monkeypatch):
+        # No report is the harness's word (run-phase exits 1), so the record
+        # names every test and the gate holds instead of blaming the PR.
+        down = _e2e_run(booted=False, problem="Error: Timed out waiting for config.webServer")
+        self._runs(monkeypatch, (1, down), (1, down))
+        sig = self._leg()
+        assert sig["regression_count"] == 3
+        assert sig["problem"] == "Error: Timed out waiting for config.webServer"
+        assert gates._e2e_incomplete(sig) is True
+
+    def test_a_missing_baseline_test_counts_as_failed(self, monkeypatch):
+        partial = _e2e_run(("a.spec.ts", "boots", "passed"), ("b.spec.ts", "settings", "passed"))
+        self._runs(monkeypatch, (0, partial), (0, partial))
+        sig = self._leg()
+        assert sig["regressions"] == ["tests/e2e/a.spec.ts › chat"]
+
+    def test_a_failing_exit_whose_report_shows_no_failure_fails_every_test(self, monkeypatch):
+        rc = gates.SENTINEL_TEST_FAIL
+        self._runs(monkeypatch, (rc, self._all({})), (rc, self._all({})))
+        sig = self._leg()
+        assert sig["regression_count"] == 3 and gates.e2e_verdict(sig) == "regressed"
+        assert gates._e2e_incomplete(sig) is False
+
+    def test_a_test_passing_only_on_retry_is_not_a_failure(self, monkeypatch):
+        self._runs(monkeypatch, (0, self._all({("tests/e2e/a.spec.ts", "chat"): "flaky"})))
+        assert self._leg()["failing_first"] == []
+
+    def test_a_non_baseline_test_failing_is_ignored(self, monkeypatch):
+        run = self._all({})
+        run = e2e_report.E2eRun(booted=True, problem=None, results=[
+            *run.results, *_e2e_run(("a.spec.ts", "not in baseline", "failed")).results])
+        calls = self._runs(monkeypatch, (20, run))
+        assert self._leg()["failing_first"] == [] and len(calls) == 1
+
+    def test_a_duplicate_title_counts_any_failing_copy(self, monkeypatch):
+        run = self._all({})
+        run = e2e_report.E2eRun(booted=True, problem=None, results=[
+            *run.results, *_e2e_run(("a.spec.ts", "boots", "failed")).results])
+        self._runs(monkeypatch, (20, run), (20, run))
+        assert self._leg()["regressions"] == ["tests/e2e/a.spec.ts › boots"]
+
+    def test_an_unproven_sandbox_aborts(self, monkeypatch):
+        self._runs(monkeypatch, (gates.SENTINEL_PROBE_FAIL, _e2e_run(booted=False)))
+        with pytest.raises(vd.ProbeFailure):
+            self._leg()
+
+    def test_a_patch_conflict_is_recorded_and_does_not_gate(self, monkeypatch):
+        self._runs(monkeypatch, (gates.SENTINEL_PATCH_CONFLICT, _e2e_run(booted=False)))
+        sig = self._leg()
+        assert sig == {"ran": False, "skipped_reason": "e2e-patch-conflict"}
+        assert gates.e2e_verdict(sig) == "escalate"
+
+    def test_the_lists_are_capped_and_the_count_is_not(self, monkeypatch):
+        many = {f"tests/e2e/m{i:02d}.spec.ts": ["t"] for i in range(30)}
+        down = _e2e_run(booted=False, problem="x")
+        self._runs(monkeypatch, (1, down), (1, down))
+        sig = vd.e2e_leg("img", tier=1, base_sha="b", head_sha="h", patch=Path("/p"),
+                         baseline=many, changed_paths=[])
+        assert len(sig["regressions"]) == vd.E2E_MAX_LISTED == len(sig["failing_first"])
+        assert sig["regression_count"] == 30
+
+
+def test_e2e_patch_keeps_the_bases_suite(tmp_path, monkeypatch):
+    monkeypatch.setattr(vd, "SCRATCH", tmp_path)
+    full = tmp_path / "full.patch"
+    full.write_text("".join(f"diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n@@ -1 +1,2 @@\n+x\n"
+                            for p in ("ui/src/App.tsx", "tests/e2e/a.spec.ts",
+                                      "tests/e2e/playwright.config.ts", "tests/e2e/fixtures/f.mjs")))
+    out = vd.e2e_patch("h1", full, _cfg())
+    assert out is not None
+    assert "ui/src/App.tsx" in out.read_text() and "tests/e2e/" not in out.read_text()
+    only_suite = tmp_path / "suite.patch"
+    only_suite.write_text("diff --git a/tests/e2e/a.spec.ts b/tests/e2e/a.spec.ts\n"
+                          "--- a/tests/e2e/a.spec.ts\n+++ b/tests/e2e/a.spec.ts\n@@ -1 +1,2 @@\n+x\n")
+    assert vd.e2e_patch("h2", only_suite, _cfg()) is None
+
+
+def test_e2e_rooted_maps_report_files_to_listed_specs():
+    run = _e2e_run(("a.spec.ts", "t", "passed"), ("sub/c.spec.ts", "t", "passed"),
+                   ("x.spec.ts", "t", "passed"), ("dup.spec.ts", "t", "passed"))
+    specs = ["tests/e2e/a.spec.ts", "tests/e2e/sub/c.spec.ts",
+             "tests/e2e/one/dup.spec.ts", "tests/e2e/two/dup.spec.ts"]
+    assert [r.file for r in vd.e2e_rooted(run, specs).results] == [
+        "tests/e2e/a.spec.ts", "tests/e2e/sub/c.spec.ts", "x.spec.ts", "dup.spec.ts"]
+
+
+class TestVerifyPrE2e:
+    """verify_pr runs the e2e leg after a confirmed red->green and passing
+    lanes, only on app-touching PRs with a pinned e2e baseline."""
+
+    _blind = TestVerifyPr._blind
+    _phases = TestVerifyPr._phases
+
+    def _e2e(self, monkeypatch, *, profile_e2e: bool = True):
+        legs: list[dict] = []
+        monkeypatch.setattr(vd.profile, "active",
+                            _profile_with_e2e if profile_e2e else lambda: profile.GENERIC)
+        monkeypatch.setattr(vd, "e2e_patch", lambda head, patch, cfg: Path("/tmp/e2e.patch"))
+        monkeypatch.setattr(vd, "e2e_leg", lambda image, **kw: legs.append(kw) or {
+            "ran": True, "regression_count": 0})
+        return legs
+
+    def _run(self, s, **kw):
+        return vd.verify_pr(s.load_pr(1), "img:t1", "base1", 1, [], suite_config=SUITE_CFG, **kw)
+
+    def test_runs_after_regress_on_an_app_touching_pr(self, tmp_path, diffs, monkeypatch):
+        s = _pinned(tmp_path)
+        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts", "ui/src/App.tsx")
+        self._blind(s)
+        self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
+        legs = self._e2e(monkeypatch)
+        ev = self._run(s, e2e_baseline=_BASELINE)
+        assert ev["e2e"] == {"ran": True, "regression_count": 0}
+        assert legs[0]["patch"] == Path("/tmp/e2e.patch") and legs[0]["baseline"] == _BASELINE
+        assert legs[0]["changed_paths"] == ["src/a.test.ts", "ui/src/App.tsx"]
+
+    def test_runs_without_a_suite_contract_too(self, tmp_path, diffs, monkeypatch):
+        s = _pinned(tmp_path)
+        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts", "ui/src/App.tsx")
+        self._blind(s)
+        self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
+        legs = self._e2e(monkeypatch)
+        ev = vd.verify_pr(s.load_pr(1), "img:t1", "base1", 1, [], suite_config=None,
+                          e2e_baseline=_BASELINE)
+        assert ev["regress"]["skipped_reason"] == "no-suite-config" and len(legs) == 1
+
+    @pytest.mark.parametrize("paths, baseline, profile_e2e, reason", [
+        (("src/a.test.ts", "docs/x.md"), _BASELINE, True, "not-app-touching"),
+        (("src/a.test.ts", "ui/src/App.tsx"), None, True, "no-e2e-baseline"),
+        (("src/a.test.ts", "ui/src/App.tsx"), _BASELINE, False, "no-e2e-baseline")])
+    def test_skips_with_its_reason(self, tmp_path, diffs, monkeypatch, paths, baseline,
+                                   profile_e2e, reason):
+        s = _pinned(tmp_path)
+        _pr(s, 1); _diff(diffs, "h1", *paths)
+        self._blind(s)
+        self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
+        legs = self._e2e(monkeypatch, profile_e2e=profile_e2e)
+        ev = self._run(s, e2e_baseline=baseline)
+        assert ev["e2e"] == {"ran": False, "skipped_reason": reason} and legs == []
+
+    def test_a_reproduction_that_did_not_hold_runs_no_e2e(self, tmp_path, diffs, monkeypatch):
+        s = _pinned(tmp_path)
+        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts", "ui/src/App.tsx")
+        self._blind(s)
+        self._phases(monkeypatch, **{"apply-check": 0, "red": 0, "green": 0})
+        legs = self._e2e(monkeypatch)
+        ev = self._run(s, e2e_baseline=_BASELINE)
+        assert ev["e2e"] == {"ran": False, "skipped_reason": "red-green-not-clean"} and legs == []
+
+
 class TestVerifyPrAuthoredLane:
     def _rec_with_authored(self, store):
         # A PR whose blind verdict has no test_cmd and whose authored_test
@@ -3243,9 +3580,18 @@ class TestPlaywrightBrowsers:
         monkeypatch.setattr(profile, "active", _profile_with_e2e)
         vd.prefetch_browsers(tmp_path / "src", tmp_path / "browsers")
         script = calls[0][-1]
-        assert "playwright@1.62.1 install chromium" in script
+        assert "playwright@1.62.1 install chromium --no-shell" in script
         assert "PLAYWRIGHT_BROWSERS_PATH=/work/browsers" in script
         assert "install-deps" not in script and "--with-deps" not in script
+
+    def test_prefetch_keeps_the_shell_flag_off_before_playwright_1_49(self, tmp_path,
+                                                                       monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(vd, "_run_build_step", lambda what, argv, env: calls.append(argv))
+        monkeypatch.setattr(vd, "playwright_version", lambda src: "1.48.2")
+        monkeypatch.setattr(profile, "active", _profile_with_e2e)
+        vd.prefetch_browsers(tmp_path / "src", tmp_path / "browsers")
+        assert calls[0][-1].endswith("install chromium")
 
     def test_prefetch_is_a_noop_without_playwright(self, tmp_path, monkeypatch):
         monkeypatch.setattr(vd, "playwright_version", lambda src: None)
@@ -3289,102 +3635,63 @@ def _cfg(**kw) -> profile.E2eConfig:
 
 
 def test_e2e_test_cmd_is_built_from_the_profile_only():
-    cfg = profile.E2eConfig(config="tests/e2e/playwright.config.ts", exclude=("tests/e2e/x.spec.ts",))
-    cmd = vd.e2e_test_cmd(cfg)
-    # The listing builds the spec array first; the Playwright run follows it.
-    assert cmd.startswith("mapfile -t specs < <(")
-    assert "; PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/e2e-out/report.json npx playwright test" in cmd
+    cmd = vd.e2e_test_cmd(_cfg(), ["tests/e2e/a.spec.ts"])
+    assert cmd.startswith("PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/e2e-out/report.json npx playwright test")
     assert "--config tests/e2e/playwright.config.ts" in cmd
     assert "--reporter=line,json" in cmd and "--output /tmp/e2e-out" in cmd
-    assert "--grep-invert" not in cmd                      # excludes are by file, not title
-    assert "grep -vxF -e tests/e2e/x.spec.ts" in cmd
-    assert "find tests/e2e " in cmd
+    assert cmd.endswith(" '/(?:^|/)tests/e2e/a\\.spec\\.ts$/'")
 
 
 @pytest.mark.parametrize("boot_timeout_s, ms", [(600, 480_000), (3600, 3_480_000),
                                                 (150, 60_000), (1, 60_000)])
 def test_e2e_test_cmd_stops_playwright_before_the_host_does(boot_timeout_s, ms):
-    cfg = _cfg(boot_timeout_s=boot_timeout_s)
-    for cmd in (vd.e2e_test_cmd(cfg), vd.e2e_test_cmd(cfg, specs=["a.spec.ts"])):
-        assert f" --global-timeout={ms} " in cmd
-
-
-def test_e2e_test_cmd_without_excludes_has_no_grep_stage():
-    assert "grep" not in vd.e2e_test_cmd(_cfg())
+    assert f" --global-timeout={ms} " in vd.e2e_test_cmd(_cfg(boot_timeout_s=boot_timeout_s),
+                                                         ["a.spec.ts"])
 
 
 def test_e2e_test_cmd_selects_full_chromium_when_the_repo_reads_a_channel():
     cfg = profile.E2eConfig(config="c.ts", channel_env="APP_PLAYWRIGHT_CHANNEL")
-    assert vd.e2e_test_cmd(cfg, specs=["a.spec.ts"]).startswith(
+    assert vd.e2e_test_cmd(cfg, ["a.spec.ts"]).startswith(
         "APP_PLAYWRIGHT_CHANNEL=chromium PLAYWRIGHT_JSON_OUTPUT_NAME=")
-    assert "; APP_PLAYWRIGHT_CHANNEL=chromium PLAYWRIGHT_JSON_OUTPUT_NAME=" in (
-        vd.e2e_test_cmd(cfg))
-
-
-def test_e2e_test_cmd_at_the_repo_root_matches_finds_dot_slash_paths():
-    cmd = vd.e2e_test_cmd(profile.E2eConfig(config="c.ts", exclude=("x.spec.ts",)))
-    assert "find . " in cmd and "grep -vxF -e ./x.spec.ts" in cmd
 
 
 def test_e2e_test_cmd_quotes_spec_names():
-    cmd = vd.e2e_test_cmd(_cfg(exclude=("tests/e2e/x.spec.ts",)), specs=["tests/e2e/a b.spec.ts"])
-    assert cmd.endswith("--output /tmp/e2e-out 'tests/e2e/a b.spec.ts'")
-    assert "find" not in cmd and "grep" not in cmd
+    cmd = vd.e2e_test_cmd(_cfg(), ["tests/e2e/a b'$(x).spec.ts"])
+    assert shlex.split(cmd)[-1] == vd.e2e_file_filter("tests/e2e/a b'$(x).spec.ts")
 
 
 def test_e2e_test_cmd_refuses_an_empty_spec_list():
     with pytest.raises(ValueError, match="no e2e specs selected"):
-        vd.e2e_test_cmd(_cfg(), specs=[])
+        vd.e2e_test_cmd(_cfg(), [])
 
 
-def test_e2e_test_cmd_refuses_a_spec_that_reads_as_a_flag():
-    with pytest.raises(ValueError, match="may not start with '-'"):
-        vd.e2e_test_cmd(_cfg(), specs=["a.spec.ts", "--grep=x"])
+def _js_filter(spec: str) -> re.Pattern[str]:
+    """The filter as Playwright compiles it (forceRegExp: `/body/flags`)."""
+    m = re.fullmatch(r"/(.*)/([gi]*)", vd.e2e_file_filter(spec))
+    assert m is not None and m.group(2) == ""
+    return re.compile(m.group(1))
 
 
-def _bash_with_mapfile() -> str | None:
-    import shutil
-    bash = shutil.which("bash")
-    if bash is None or subprocess.run([bash, "-c", "mapfile -t x < /dev/null"],
-                                      capture_output=True).returncode != 0:
-        return None
-    return bash
+@pytest.mark.parametrize("spec, other", [
+    ("tests/e2e/a.spec.ts", "/work/src/tests/e2e/xa.spec.ts"),
+    ("tests/e2e/a.spec.ts", "/work/src/tests/e2e/a.spec.tsx"),
+    ("tests/e2e/a.spec.ts", "/work/src/tests/e2e/aXspec.ts"),
+    ("tests/e2e/a.spec.ts", "/work/src/other/tests/e2e/b/a.spec.ts"),
+    ("tests/e2e/a+(1).spec.ts", "/work/src/tests/e2e/aa(1).spec.ts"),
+    ("tests/e2e/A.spec.ts", "/work/src/tests/e2e/a.spec.ts")])
+def test_an_e2e_file_filter_matches_its_file_alone(spec, other):
+    assert _js_filter(spec).search(f"/work/src/{spec}")
+    assert not _js_filter(spec).search(other)
 
 
-_HOSTILE_DIR = "e$(touch pwned);'q'"
-
-
-def _run_listing(tmp_path, cfg: profile.E2eConfig) -> subprocess.CompletedProcess[str]:
-    bash = _bash_with_mapfile()
-    if bash is None:
-        pytest.skip("needs bash 4+ (mapfile)")
-    stub = "npx() { printf '%s\\n' \"$@\"; }; "
-    return subprocess.run([bash, "-c", stub + vd.e2e_test_cmd(cfg)], cwd=tmp_path,
-                          capture_output=True, text=True)
-
-
-def test_e2e_listing_quotes_hostile_names_and_never_globs(tmp_path):
-    d = tmp_path / _HOSTILE_DIR
-    d.mkdir()
-    for name in ("a.spec.ts", "b *.spec.ts", "x$(touch pwned2);'y'.spec.ts"):
-        (d / name).write_text("")
-    cfg = profile.E2eConfig(config=f"{_HOSTILE_DIR}/p.config.ts",
-                            exclude=(f"{_HOSTILE_DIR}/x$(touch pwned2);'y'.spec.ts",))
-    p = _run_listing(tmp_path, cfg)
-    assert p.returncode == 0, p.stderr
-    args = p.stdout.splitlines()
-    assert args[args.index("--config") + 1] == f"{_HOSTILE_DIR}/p.config.ts"
-    assert "--" not in args
-    assert args[-2:] == [f"{_HOSTILE_DIR}/a.spec.ts", f"{_HOSTILE_DIR}/b *.spec.ts"]
-    assert not (tmp_path / "pwned").exists() and not (tmp_path / "pwned2").exists()
-
-
-def test_e2e_listing_refuses_an_empty_selection(tmp_path):
-    (tmp_path / "e2e").mkdir()
-    (tmp_path / "e2e" / "x.spec.ts").write_text("")
-    p = _run_listing(tmp_path, profile.E2eConfig(config="e2e/p.ts", exclude=("e2e/x.spec.ts",)))
-    assert p.returncode == 1
-    assert "no e2e specs selected" in p.stderr and p.stdout == ""
+def test_e2e_specs_lists_the_config_dir_less_excludes(tmp_path):
+    e2e = tmp_path / "tests" / "e2e"
+    (e2e / "sub").mkdir(parents=True)
+    for name in ("b.spec.ts", "a.spec.ts", "sub/c.spec.ts", "x.spec.ts", "helper.ts"):
+        (e2e / name).write_text("")
+    (tmp_path / "other.spec.ts").write_text("")
+    assert vd.e2e_specs(tmp_path, _cfg(exclude=("tests/e2e/x.spec.ts",))) == [
+        "tests/e2e/a.spec.ts", "tests/e2e/b.spec.ts", "tests/e2e/sub/c.spec.ts"]
 
 
 def _e2e_tar(report: bytes) -> bytes:
@@ -3443,12 +3750,12 @@ class TestRunE2e:
 
     def test_run_e2e_collects_then_removes_the_container(self, monkeypatch):
         docker, phase = self._setup(monkeypatch, cp_out=_e2e_tar(_REPORT))
-        rc, run, artifacts = vd.run_e2e("img:t1", tier=1, base_sha="b", head_sha="h")
+        rc, run, artifacts = vd.run_e2e("img:t1", tier=1, specs=["a.spec.ts"], base_sha="b", head_sha="h")
         name = phase["container"]
         assert vd.container_owner(name) == os.getpid()
         assert phase["name"] == "e2e" and phase["keep"] is True and phase["runs_tests"] is True
         assert phase["timeout"] == 600
-        assert phase["test_cmd"] == vd.e2e_test_cmd(_cfg())
+        assert phase["test_cmd"] == vd.e2e_test_cmd(_cfg(), ["a.spec.ts"])
         assert docker == [["docker", "cp", f"{name}:/tmp/e2e-out", "-"],
                           ["docker", "rm", "-f", name]]
         assert rc == 20 and artifacts.report == _REPORT
@@ -3457,12 +3764,12 @@ class TestRunE2e:
     def test_run_e2e_removes_the_container_when_cp_raises(self, monkeypatch):
         docker, phase = self._setup(monkeypatch, cp_raises=RuntimeError("boom"))
         with pytest.raises(RuntimeError, match="boom"):
-            vd.run_e2e("img:t1", tier=1)
+            vd.run_e2e("img:t1", tier=1, specs=["a.spec.ts"])
         assert docker[-1] == ["docker", "rm", "-f", phase["container"]]
 
     def test_run_e2e_timeout_still_removes_the_container(self, monkeypatch):
         docker, phase = self._setup(monkeypatch, phase_rc=vd._TIMEOUT_EXIT)
-        rc, run, artifacts = vd.run_e2e("img:t1", tier=1)
+        rc, run, artifacts = vd.run_e2e("img:t1", tier=1, specs=["a.spec.ts"])
         assert rc == vd._TIMEOUT_EXIT and not run.booted
         assert artifacts.report is None
         assert docker[-1] == ["docker", "rm", "-f", phase["container"]]
@@ -3471,7 +3778,7 @@ class TestRunE2e:
                                          {"cp_raises": FileNotFoundError("docker")}])
     def test_a_failed_copy_is_an_empty_collection(self, monkeypatch, failure):
         docker, phase = self._setup(monkeypatch, **failure)
-        rc, run, artifacts = vd.run_e2e("img:t1", tier=1)
+        rc, run, artifacts = vd.run_e2e("img:t1", tier=1, specs=["a.spec.ts"])
         assert artifacts.report is None and artifacts.pngs == {}
         assert not run.booted
         assert docker[-1] == ["docker", "rm", "-f", phase["container"]]
@@ -3480,14 +3787,14 @@ class TestRunE2e:
         docker, _ = self._setup(monkeypatch)
         monkeypatch.setattr(vd, "base_has_browser", lambda image: False)
         with pytest.raises(RuntimeError, match="no browser in this base.*re-run prepare-base"):
-            vd.run_e2e("img:t1", tier=1)
+            vd.run_e2e("img:t1", tier=1, specs=["a.spec.ts"])
         assert docker == []
 
     def test_run_e2e_refuses_a_profile_without_e2e(self, monkeypatch):
         self._setup(monkeypatch)
         monkeypatch.setattr(profile, "active", lambda: profile.parse_profile({"version": 1}, "t"))
         with pytest.raises(RuntimeError, match="no verify.e2e in the profile"):
-            vd.run_e2e("img:t1", tier=1)
+            vd.run_e2e("img:t1", tier=1, specs=["a.spec.ts"])
 
 
 def test_run_phase_keeps_the_named_container_only_when_asked(monkeypatch):
@@ -3552,7 +3859,7 @@ class TestE2eCopyBounds:
         stream = _CpStream()
         monkeypatch.setattr(vd, "E2E_COPY_TIMEOUT_S", 0.05)
         docker, phase = self._setup(monkeypatch, cp_stream=stream)
-        rc, run, artifacts = vd.run_e2e("img:t1", tier=1)
+        rc, run, artifacts = vd.run_e2e("img:t1", tier=1, specs=["a.spec.ts"])
         assert stream.dead.is_set()
         assert artifacts.report is None and not run.booted
         assert docker[-1] == ["docker", "rm", "-f", phase["container"]]
@@ -3561,7 +3868,7 @@ class TestE2eCopyBounds:
         stream = _CpStream(_e2e_tar(_REPORT), endless=True)
         monkeypatch.setattr(vd, "E2E_DRAIN_CAP_BYTES", 1024 * 1024)
         docker, phase = self._setup(monkeypatch, cp_stream=stream)
-        _, _, artifacts = vd.run_e2e("img:t1", tier=1)
+        _, _, artifacts = vd.run_e2e("img:t1", tier=1, specs=["a.spec.ts"])
         assert stream.dead.is_set()
         assert stream.read_after_head < 2 * 1024 * 1024
         assert artifacts.report is None
@@ -3570,17 +3877,17 @@ class TestE2eCopyBounds:
     def test_a_read_error_while_draining_is_a_failed_copy(self, monkeypatch):
         stream = _CpStream(_e2e_tar(_REPORT), fail=True)
         docker, phase = self._setup(monkeypatch, cp_stream=stream)
-        _, run, artifacts = vd.run_e2e("img:t1", tier=1)
+        _, run, artifacts = vd.run_e2e("img:t1", tier=1, specs=["a.spec.ts"])
         assert artifacts.report is None and not run.booted
         assert docker[-1] == ["docker", "rm", "-f", phase["container"]]
 
     def test_a_failed_removal_is_reported(self, monkeypatch, capsys):
         _, phase = self._setup(monkeypatch, rm_rc=1, rm_err="Error: device busy\n")
-        vd.run_e2e("img:t1", tier=1)
+        vd.run_e2e("img:t1", tier=1, specs=["a.spec.ts"])
         err = capsys.readouterr().err
         assert phase["container"] in err and "device busy" in err
 
     def test_a_container_already_gone_is_not_reported(self, monkeypatch, capsys):
         self._setup(monkeypatch, rm_rc=1, rm_err="Error: No such container: x\n")
-        vd.run_e2e("img:t1", tier=1)
+        vd.run_e2e("img:t1", tier=1, specs=["a.spec.ts"])
         assert "could not remove" not in capsys.readouterr().err

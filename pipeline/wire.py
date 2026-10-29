@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -170,6 +170,19 @@ class VerifyRegressSignal(TypedDict, total=False):
     new_failures: list[str]
 
 
+class VerifyE2eSignal(TypedDict, total=False):
+    ran: bool
+    skipped_reason: str
+    baseline_tests: int
+    exit_first: int | None
+    exit_confirm: int | None
+    failing_first: list[str]
+    regressions: list[str]
+    regression_count: int
+    edited: list[str]
+    problem: str | None
+
+
 class VerifyAuthoredFile(TypedDict):
     path: str
     contents: str
@@ -205,6 +218,7 @@ class VerifySignals(TypedDict, total=False):
     red_reason_match: VerifyReasonMatch
     repro_reason_match: VerifyReasonMatch
     lanes: dict[str, VerifyLaneSignal]
+    e2e: VerifyE2eSignal
 
 
 class VerifyEvidence(TypedDict):
@@ -218,6 +232,7 @@ class VerifyEvidence(TypedDict):
     regress: VerifyRegressSignal
     authored_test: NotRequired[VerifyAuthoredSignal]
     lanes: NotRequired[dict[str, VerifyLaneSignal]]
+    e2e: NotRequired[VerifyE2eSignal]
 
 
 class VerifyRequest(TypedDict):
@@ -238,6 +253,14 @@ class VerifyRequest(TypedDict):
     priority: NotRequired[float]
 
 
+class VerifyE2eUncovered(TypedDict):
+    file: str
+    title: str
+    verdict: Literal["flaky", "failing", "unlocated"]
+    cause: str | None
+    evidence: str | None
+
+
 class VerifyPin(TypedDict):
     base_sha: str | None
     tier: int | None
@@ -252,6 +275,9 @@ class VerifyPin(TypedDict):
     refresh_error: NotRequired[str | None]
     refresh_failures: NotRequired[int]
     confirmed_at: NotRequired[str]
+    e2e_baseline: NotRequired[dict[str, list[str]] | None]
+    e2e_uncovered: NotRequired[list[VerifyE2eUncovered]]
+    e2e_skipped: NotRequired[int]
 
 
 VERIFY_CONFIDENCES = frozenset({"high", "medium", "low"})

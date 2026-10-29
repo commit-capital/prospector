@@ -761,6 +761,16 @@ export interface VerifySignals {
     error_excerpt?: string;
     skipped?: string;
   }>;
+  e2e?: {
+    ran?: boolean;
+    skipped_reason?: string;
+    baseline_tests?: number;
+    failing_first?: string[];
+    regressions?: string[];
+    regression_count?: number;
+    edited?: string[];
+    problem?: string | null;
+  };
 }
 
 interface VerifyFinding {

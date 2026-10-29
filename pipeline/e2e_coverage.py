@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from pipeline import wire
 from pipeline.e2e_report import E2eRun, SpecResult
 
 Verdict = Literal["reliable", "flaky", "failing"]
@@ -84,8 +85,10 @@ def classify(runs: list[E2eRun]) -> list[SpecCoverage]:
     keys = sorted(_non_skipped(counted))
     out: list[SpecCoverage] = []
     for key in keys:
+        # A test id reported twice in one run counts as its worst result.
         seen: list[SpecResult | None] = [
-            next((r for r in run.results if (r.file, r.title) == key), None)
+            min((r for r in run.results if (r.file, r.title) == key),
+                key=lambda r: r.status == "passed", default=None)
             for run in counted]
         passes = sum(1 for r in seen if r is not None and r.status == "passed")
         any_flaky = any(r is not None and r.status == "flaky" for r in seen)
@@ -104,6 +107,21 @@ def classify(runs: list[E2eRun]) -> list[SpecCoverage]:
         out.append(SpecCoverage(key[0], key[1], verdict, passes, len(counted),
                                 cause, evidence, screenshot))
     return out
+
+
+def baseline(cov: list[SpecCoverage]) -> tuple[dict[str, list[str]], list[wire.VerifyE2eUncovered]]:
+    """The reliable tests as {spec file: titles}, and every other test with
+    its verdict and cause."""
+    reliable: dict[str, list[str]] = {}
+    uncovered: list[wire.VerifyE2eUncovered] = []
+    for c in cov:
+        if c.verdict == "reliable":
+            reliable.setdefault(c.file, []).append(c.title)
+        else:
+            uncovered.append({"file": c.file, "title": c.title,
+                              "verdict": "flaky" if c.verdict == "flaky" else "failing",
+                              "cause": c.cause, "evidence": c.evidence})
+    return reliable, uncovered
 
 
 def _cell(text: str | None) -> str:

@@ -317,11 +317,15 @@ def prefetch_browsers(src: Path, dest: Path) -> None:
     version = playwright_version(src)
     if profile.active().verify.e2e is None or version is None:
         return
+    # From 1.49 Chromium ships a separate headless shell the phases never use.
+    major, minor = (int(n) for n in version.split(".")[:2])
+    no_shell = " --no-shell" if (major, minor) >= (1, 49) else ""
     _run_build_step(
         "prefetching Chromium",
         ["docker", "run", "--rm", "-v", f"{dest}:/work/browsers", sandbox_image(),
          "bash", "-lc",
-         f"PLAYWRIGHT_BROWSERS_PATH=/work/browsers npx -y playwright@{version} install chromium"],
+         f"PLAYWRIGHT_BROWSERS_PATH=/work/browsers npx -y playwright@{version} "
+         f"install chromium{no_shell}"],
         env=launcher_env())
 
 
@@ -654,7 +658,8 @@ def _build_base_image(sha: str, tier: int, ctx: Path, tag: str) -> None:
 def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) -> str:
     """Clone and build the base image for the resolved base commit
     (build_base_image), capture the pinned base's own failing-test set by
-    running the baseline phase against it, and save the pin. Returns the image
+    running the baseline phase against it and its e2e baseline
+    (capture_e2e_baseline), and save the pin. Returns the image
     tag.
 
     Reclaims superseded base artifacts on both sides of the build. The first
@@ -695,12 +700,16 @@ def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) ->
             print(f"baseline anomalies (nonzero vitest exit with no failing test): {anomalies}",
                   file=sys.stderr)
 
+    e2e_baseline, e2e_uncovered, e2e_skipped = capture_e2e_baseline(tag, tier=tier, sha=sha)
     store.save_verify_base({"host": settings.worker_id(), "base_sha": sha,
                             "tier": tier, "pinned_at": _now(),
                             "baseline_failing": failed,
                             "baseline_captured_at": _now(),
                             "suite": suite is not None,
-                            "arch": platform.machine()})
+                            "arch": platform.machine(),
+                            "e2e_baseline": e2e_baseline,
+                            "e2e_uncovered": e2e_uncovered,
+                            "e2e_skipped": e2e_skipped})
     collect_garbage(sha)
     return tag
 
@@ -833,6 +842,76 @@ def implausible_baseline(trailer: dict) -> str:
     if isinstance(planned, int) and len(failed) > planned * BASELINE_MAX_FAILING_SHARE:
         return f"the baseline failed {len(failed)} of {planned} planned files"
     return ""
+
+
+def implausible_e2e_baseline(cov: list[e2e_coverage.SpecCoverage]) -> str:
+    """Why an e2e baseline leaves out too many of the tests that ran, or ""."""
+    if not cov:
+        return "no e2e test ran on the base"
+    left_out = sum(1 for c in cov if c.verdict != "reliable")
+    if left_out > len(cov) * BASELINE_MAX_FAILING_SHARE:
+        return f"{left_out} of {len(cov)} e2e tests were flaky or failing on the base"
+    return ""
+
+
+# A test joins the e2e baseline only when it passes in every one of these runs.
+E2E_BASELINE_RUNS = 3
+
+
+def capture_e2e_baseline(tag: str, *, tier: int, sha: str
+                         ) -> tuple[dict[str, list[str]] | None, list[wire.VerifyE2eUncovered], int]:
+    """The pinned base's e2e baseline: the tests that passed in all
+    E2E_BASELINE_RUNS full runs as {spec file: titles}, the rest with their
+    reason, and how many skipped themselves. (None, [], 0) when this base has
+    no e2e lane: no verify.e2e, a tier-0 image (no browser) or a clone that
+    pins no Playwright. Raises RuntimeError on a run that did not boot or an
+    implausible baseline, so prepare_base refuses the pin."""
+    src = base_clone_dir(sha)
+    if profile.active().verify.e2e is None or tier != 1 or playwright_version(src) is None:
+        return None, [], 0
+    specs = e2e_specs(src, e2e_config(tag))
+    if not specs:
+        raise RuntimeError("the e2e baseline found no spec files — refusing to pin")
+    runs: list[e2e_report.E2eRun] = []
+    for i in range(1, E2E_BASELINE_RUNS + 1):
+        progress.say(f"  e2e baseline run {i} of {E2E_BASELINE_RUNS} ({len(specs)} spec files)…")
+        _, run, _ = run_e2e(tag, tier=tier, specs=specs, base_sha=sha)
+        if not run.booted:
+            raise RuntimeError(f"e2e baseline run {i} did not boot ({run.problem}) — "
+                               f"refusing to pin a base whose app cannot be checked")
+        runs.append(run)
+    runs = [e2e_rooted(run, specs) for run in runs]
+    cov = e2e_coverage.classify(runs)
+    if why := implausible_e2e_baseline(cov):
+        raise RuntimeError(f"{why} — refusing to pin an e2e baseline that thin")
+    reliable, uncovered = e2e_coverage.baseline(cov)
+    for file in [f for f in reliable if f not in specs]:
+        for title in reliable.pop(file):
+            uncovered.append({"file": file, "title": title, "verdict": "unlocated", "cause": None,
+                              "evidence": "the report names a file the spec listing does not hold"})
+    if not reliable:
+        raise RuntimeError("no e2e test passed reliably in a listed spec file — "
+                           "refusing to pin an empty e2e baseline")
+    return reliable, uncovered, e2e_coverage.skipped_count(runs)
+
+
+def e2e_rooted(run: e2e_report.E2eRun, specs: list[str]) -> e2e_report.E2eRun:
+    """`run` with each result's file as the repo-relative spec it names.
+    Playwright reports files relative to its test directory; a file that ends
+    no listed spec, or more than one, stays as reported."""
+    def rooted(file: str) -> str:
+        found = [s for s in specs if s == file or s.endswith("/" + file)]
+        return found[0] if len(found) == 1 else file
+    return replace(run, results=[replace(r, file=rooted(r.file)) for r in run.results])
+
+
+def pinned_e2e_baseline(store: Store) -> dict[str, list[str]] | None:
+    """The pinned base's e2e baseline, or None when the pin has none."""
+    raw = local_pin(store).get("e2e_baseline")
+    if not isinstance(raw, dict):
+        return None
+    return {str(f): [str(t) for t in titles] for f, titles in raw.items()
+            if isinstance(titles, list) and titles}
 
 
 def write_exclude_file(base_sha: str, baseline: list[str]) -> Path:
@@ -1514,17 +1593,28 @@ E2E_COPY_TIMEOUT_S = 120
 E2E_DRAIN_CAP_BYTES = 64 * 1024 * 1024
 
 
-def e2e_test_cmd(cfg: profile.E2eConfig, specs: list[str] | None = None) -> str:
-    """The e2e phase's bash command, built from the profile alone. With no
-    `specs` it runs every `*.spec.ts` under the config's directory but the
-    profile's excludes, listed into an array inside the container; an empty
-    selection exits 1. The line reporter's progress goes to stdout and the
-    JSON report to the file PLAYWRIGHT_JSON_OUTPUT_NAME names. Playwright drops
-    file filters after `--`, so a spec may not start with `-`."""
-    if specs == []:
+def e2e_specs(src: Path, cfg: profile.E2eConfig) -> list[str]:
+    """The repo-relative `*.spec.ts` files under the config's directory in the
+    checkout `src`, less the profile's excludes."""
+    root = posixpath.dirname(cfg.config)
+    found = sorted(p.relative_to(src).as_posix()
+                   for p in (src / root).rglob("*.spec.ts") if p.is_file())
+    return [f for f in found if f not in cfg.exclude]
+
+
+def e2e_file_filter(spec: str) -> str:
+    """`spec` as the Playwright file filter that matches that file alone.
+    Playwright reads a filter as a case-insensitive unanchored regex over the
+    absolute path, so a bare `a.spec.ts` also matches `xa.spec.tsx`."""
+    return f"/(?:^|/){re.escape(spec)}$/"
+
+
+def e2e_test_cmd(cfg: profile.E2eConfig, specs: list[str]) -> str:
+    """The e2e phase's bash command for `specs`, built from the profile alone.
+    The line reporter's progress goes to stdout and the JSON report to the
+    file PLAYWRIGHT_JSON_OUTPUT_NAME names."""
+    if not specs:
         raise ValueError("no e2e specs selected")
-    if specs and any(s.startswith("-") for s in specs):
-        raise ValueError("an e2e spec may not start with '-'")
     global_timeout_ms = max(_E2E_MIN_GLOBAL_TIMEOUT_MS,
                             (cfg.boot_timeout_s - E2E_STOP_MARGIN_S) * 1000)
     run = f"PLAYWRIGHT_JSON_OUTPUT_NAME={E2E_OUT}/report.json"
@@ -1533,17 +1623,7 @@ def e2e_test_cmd(cfg: profile.E2eConfig, specs: list[str] | None = None) -> str:
     run += (f" npx playwright test --config {shlex.quote(cfg.config)}"
             f" --reporter=line,json --global-timeout={global_timeout_ms}"
             f" --output {E2E_OUT}")
-    if specs is not None:
-        return f"{run} {' '.join(shlex.quote(s) for s in specs)}"
-    root = posixpath.dirname(cfg.config) or "."
-    prefix = "./" if root == "." else ""
-    listing = f"find {shlex.quote(root)} -type f -name '*.spec.ts' | sort"
-    if cfg.exclude:
-        listing += " | grep -vxF" + "".join(
-            f" -e {shlex.quote(prefix + e)}" for e in cfg.exclude)
-    return (f"mapfile -t specs < <({listing}); "
-            '[ ${#specs[@]} -gt 0 ] || { echo "no e2e specs selected" >&2; exit 1; }; '
-            f'{run} "${{specs[@]}}"')
+    return f"{run} {' '.join(shlex.quote(e2e_file_filter(s)) for s in specs)}"
 
 
 def _copy_e2e_out(container: str, env: dict[str, str]) -> e2e_artifacts.Artifacts:
@@ -1614,11 +1694,11 @@ def e2e_config(image: str) -> profile.E2eConfig:
     return cfg
 
 
-def run_e2e(image: str, *, tier: int, patch: Path | None = None,
-            specs: list[str] | None = None, base_sha: str = "",
+def run_e2e(image: str, *, tier: int, specs: list[str], patch: Path | None = None,
+            base_sha: str = "",
             head_sha: str = "") -> tuple[int, e2e_report.E2eRun, e2e_artifacts.Artifacts]:
-    """Run the profile's e2e suite in `image` (the PR's `patch` applied, or the
-    base as pinned) and return the phase's exit code, the parsed run and the
+    """Run the e2e `specs` in `image` (the PR's `patch` applied, or the base as
+    pinned) and return the phase's exit code, the parsed run and the
     collected artifacts. The container is kept for the copy and always
     removed after."""
     cfg = e2e_config(image)
@@ -1634,6 +1714,88 @@ def run_e2e(image: str, *, tier: int, patch: Path | None = None,
     finally:
         _remove_container(container, env)
     return rc, e2e_report.parse_report(artifacts.report, output_tail=tail), artifacts
+
+
+def e2e_patch(head_sha: str, full_patch: Path, cfg: profile.E2eConfig) -> Path | None:
+    """`full_patch` without its hunks in the e2e suite (gates.e2e_owned), so the
+    base's specs, config and fixtures judge the PR's app code. None when
+    nothing else is left."""
+    text = diffpaths.filter_diff(full_patch.read_text(), lambda p: not gates.e2e_owned(p, cfg))
+    if not text.strip():
+        return None
+    out = SCRATCH / "patches"
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{head_sha}.e2e.patch"
+    path.write_text(text)
+    return path
+
+
+# Most test ids an e2e record lists per field; the count carries the rest.
+E2E_MAX_LISTED = 20
+
+
+def _e2e_failing(baseline: dict[str, list[str]], files: list[str], rc: int,
+                 run: e2e_report.E2eRun) -> list[tuple[str, str]]:
+    """The baseline tests in `files` that `run` did not pass: missing from its
+    results, or any result neither passed nor flaky. The report is the
+    sandbox's word, so a failing exit whose report shows nothing failed fails
+    every test."""
+    passing = ("passed", "flaky")
+    if rc != gates.SENTINEL_PASS and all(r.status in (*passing, "skipped") for r in run.results):
+        return [(f, t) for f in files for t in baseline.get(f, [])]
+    seen: dict[tuple[str, str], list[str]] = {}
+    for r in run.results:
+        seen.setdefault((r.file, r.title), []).append(r.status)
+    return [(f, t) for f in files for t in baseline.get(f, [])
+            if not (statuses := seen.get((f, t)))
+            or any(st not in passing for st in statuses)]
+
+
+def _e2e_id(test: tuple[str, str]) -> str:
+    return f"{test[0]}{e2e_report.SEP}{test[1]}"
+
+
+def e2e_leg(image: str, *, tier: int, base_sha: str, head_sha: str, patch: Path,
+            baseline: dict[str, list[str]], changed_paths: list[str]
+            ) -> wire.VerifyE2eSignal:
+    """Run the baseline's tests over the PR's build and re-run the files of any
+    that fail once. A regression is a baseline test that failed both times; a
+    run that does not boot fails every test it was asked for. `edited` names
+    the regressions' spec files the PR changes. Raises ProbeFailure on an
+    unproven sandbox."""
+    def run(files: list[str]) -> tuple[int, e2e_report.E2eRun]:
+        rc, e2e_run, _ = run_e2e(image, tier=tier, specs=files, patch=patch,
+                                 base_sha=base_sha, head_sha=head_sha)
+        if rc == gates.SENTINEL_PROBE_FAIL:
+            raise ProbeFailure("sandbox isolation could not be proven (phase e2e) — "
+                               "aborting the batch; no PR code runs on an unproven sandbox")
+        return rc, e2e_rooted(e2e_run, files)
+
+    files = sorted(baseline)
+    sig: wire.VerifyE2eSignal = {
+        "ran": True, "baseline_tests": sum(len(t) for t in baseline.values()),
+        "exit_first": None, "exit_confirm": None, "failing_first": [],
+        "regressions": [], "regression_count": 0, "edited": [], "problem": None}
+    rc1, run1 = run(files)
+    if rc1 == gates.SENTINEL_PATCH_CONFLICT:
+        return {"ran": False, "skipped_reason": "e2e-patch-conflict"}
+    failing = _e2e_failing(baseline, files, rc1, run1)
+    sig.update(exit_first=rc1, problem=run1.problem,
+               failing_first=[_e2e_id(t) for t in failing[:E2E_MAX_LISTED]])
+    if not failing:
+        return sig
+    again = sorted({f for f, _ in failing})
+    rc2, run2 = run(again)
+    if rc2 == gates.SENTINEL_PATCH_CONFLICT:
+        return {"ran": False, "skipped_reason": "e2e-patch-conflict"}
+    still = set(_e2e_failing(baseline, again, rc2, run2))
+    regressions = [t for t in failing if t in still]
+    changed = set(changed_paths)
+    sig.update(exit_confirm=rc2, problem=run2.problem or run1.problem,
+               regressions=[_e2e_id(t) for t in regressions[:E2E_MAX_LISTED]],
+               regression_count=len(regressions),
+               edited=sorted({f for f, _ in regressions if f in changed}))
+    return sig
 
 
 class FetchFailure(RuntimeError):
@@ -1921,7 +2083,8 @@ def run_canaries(image: str, base: str, tier: int) -> list[str]:
 
 
 def verify_pr(rec: Pr, image: str, base: str, tier: int,
-              baseline: list[str], *, suite_config: Path | None
+              baseline: list[str], *, suite_config: Path | None,
+              e2e_baseline: dict[str, list[str]] | None = None
               ) -> wire.VerifyEvidence | None:
     """Run the sandbox phases for one PR and return the evidence the judge reads.
     Returns None when the PR has no committed blind verdict.
@@ -1946,6 +2109,10 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
     `lanes`; a failing lane skips the regress leg (`lane-<name>-failed`), a
     deliberate skip the outcome reads as the lane's own verdict.
 
+    After the regress leg, an app-touching PR (gates.e2e_relevant) runs the
+    pin's `e2e_baseline` tests over its build (e2e_leg) and records `e2e`; a
+    failing lane or a pin with no e2e baseline records why it did not.
+
     Raises ProbeFailure on a probe failure: isolation is unproven, so no PR code
     runs.
 
@@ -1968,6 +2135,7 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
                               "from_linked_issue": bool(blind.get("from_linked_issue")),
                               "output_tail": ""},
         "regress": {"ran": False, "skipped_reason": "red-green-not-clean"},
+        "e2e": {"ran": False, "skipped_reason": "red-green-not-clean"},
     }
     red_green = ev["red_green"]
     test_cmd = blind.get("test_cmd")
@@ -2119,37 +2287,57 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
         if lane_fail is not None:
             ev["regress"] = {"ran": False,
                              "skipped_reason": f"lane-{lane_fail}-failed"}
+            ev["e2e"] = {"ran": False, "skipped_reason": f"lane-{lane_fail}-failed"}
             return ev
         if suite_config is None:
             ev["regress"] = {"ran": False, "skipped_reason": "no-suite-config"}
-            return ev
-        excl = write_exclude_file(base, baseline)
-        r1, t1 = phase("regress", patch=patch, test_cmd="true",
-                       exclude_file=excl, suite_config=suite_config,
-                       timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES,
-                       what="regress: the full suite over the patched tree"
-                            + (f", less the base's {len(baseline)} known failure(s)"
-                               if baseline else "")
-                            + f" (up to {progress.duration(SUITE_TIMEOUT_SECONDS)})")
-        regress: wire.VerifyRegressSignal = {
-            "ran": True, "exit_first": r1, "exit_confirm": None,
-            "confirmed": False, "flake": False,
-            "excluded_count": len(baseline), "new_failures": []}
-        if r1 == gates.SENTINEL_TEST_FAIL:
-            regress["new_failures"] = _advisory_failures(t1)
-            r2, t2 = phase("regress", patch=patch, test_cmd="true",
+        else:
+            excl = write_exclude_file(base, baseline)
+            r1, t1 = phase("regress", patch=patch, test_cmd="true",
                            exclude_file=excl, suite_config=suite_config,
                            timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES,
-                           what=f"regress: confirming the suite failure in a fresh "
-                                f"container (up to {progress.duration(SUITE_TIMEOUT_SECONDS)})")
-            regress["exit_confirm"] = r2
-            regress["confirmed"] = r2 == gates.SENTINEL_TEST_FAIL
-            regress["flake"] = r2 == gates.SENTINEL_PASS
-            if regress["confirmed"]:
-                regress["new_failures"] = sorted(
-                    set(regress["new_failures"]) | set(_advisory_failures(t2)))
-        ev["regress"] = regress
+                           what="regress: the full suite over the patched tree"
+                                + (f", less the base's {len(baseline)} known failure(s)"
+                                   if baseline else "")
+                                + f" (up to {progress.duration(SUITE_TIMEOUT_SECONDS)})")
+            regress: wire.VerifyRegressSignal = {
+                "ran": True, "exit_first": r1, "exit_confirm": None,
+                "confirmed": False, "flake": False,
+                "excluded_count": len(baseline), "new_failures": []}
+            if r1 == gates.SENTINEL_TEST_FAIL:
+                regress["new_failures"] = _advisory_failures(t1)
+                r2, t2 = phase("regress", patch=patch, test_cmd="true",
+                               exclude_file=excl, suite_config=suite_config,
+                               timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES,
+                               what=f"regress: confirming the suite failure in a fresh "
+                                    f"container (up to {progress.duration(SUITE_TIMEOUT_SECONDS)})")
+                regress["exit_confirm"] = r2
+                regress["confirmed"] = r2 == gates.SENTINEL_TEST_FAIL
+                regress["flake"] = r2 == gates.SENTINEL_PASS
+                if regress["confirmed"]:
+                    regress["new_failures"] = sorted(
+                        set(regress["new_failures"]) | set(_advisory_failures(t2)))
+            ev["regress"] = regress
+        ev["e2e"] = _e2e_for(rec, image, tier, base, patch, e2e_baseline, note)
     return ev
+
+
+def _e2e_for(rec: Pr, image: str, tier: int, base: str, patch: Path,
+             baseline: dict[str, list[str]] | None,
+             note: Callable[[str], None]) -> wire.VerifyE2eSignal:
+    cfg = profile.active().verify.e2e
+    if cfg is None or not baseline:
+        return {"ran": False, "skipped_reason": "no-e2e-baseline"}
+    paths = changed_paths_for(rec)
+    head = rec.head_sha or ""
+    patched = e2e_patch(head, patch, cfg) if gates.e2e_relevant(paths, cfg) else None
+    if patched is None:
+        return {"ran": False, "skipped_reason": "not-app-touching"}
+    count = sum(len(t) for t in baseline.values())
+    note(f"e2e: the base's {count} reliable in-app test(s) over the PR's build "
+         f"(up to {progress.duration(cfg.boot_timeout_s)} a run)")
+    return e2e_leg(image, tier=tier, base_sha=base, head_sha=head, patch=patched,
+                   baseline=baseline, changed_paths=paths)
 
 
 # The ONE copy of the judgment prompt. verify_pr imports it and fills its
@@ -2276,13 +2464,14 @@ def commit_outcomes(store: Store, items: list[JudgeItem]) -> tuple[int, list[int
             regress = signals.get("regress")
             authored = signals.get("authored_test")
             lanes = signals.get("lanes")
+            e2e = signals.get("e2e")
             judgment: wire.VerifyJudgment = {
                 "red_reason_match": it.red_reason_match,
                 "repro_reason_match": it.repro_reason_match}
             outcome = gates.verify_outcome(blind, host, judgment, regress=regress,
-                authored=authored, lanes=lanes)
+                authored=authored, lanes=lanes, e2e=e2e)
             if outcome is None:
-                if gates.verify_run_errored(blind, host, regress=regress):
+                if gates.verify_run_errored(blind, host, regress=regress, e2e=e2e):
                     held.append(it.pr)
                 else:
                     errs.append(f"pr {it.pr}: the judge rated no usable red-reason "
@@ -2361,6 +2550,20 @@ def commit_outcomes(store: Store, items: list[JudgeItem]) -> tuple[int, list[int
                         "note": "the full suite failed once and passed the confirming "
                                 "re-run — recorded as a flake, not a regression",
                         "tests": regress.get("new_failures", [])})
+            if gates.e2e_verdict(e2e) is not None:
+                findings.append({
+                    "signal": "e2e",
+                    "note": "in-app tests that pass reliably on the pinned base failed "
+                            "twice with this PR applied"
+                            + (f" (Playwright reported: {e2e.get('problem')})"
+                               if e2e and e2e.get("problem") else ""),
+                    "tests": list((e2e or {}).get("regressions") or [])})
+            elif e2e and e2e.get("failing_first"):
+                findings.append({
+                    "signal": "e2e",
+                    "note": "in-app tests failed once and passed the confirming "
+                            "re-run — recorded as a flake, not a regression",
+                    "tests": list(e2e.get("failing_first") or [])})
             for lane_name, lane in (lanes or {}).items():
                 if not isinstance(lane, dict):
                     continue
@@ -2426,7 +2629,7 @@ def e2e_coverage_cmd(store: Store, *, runs: int) -> int:
     try:
         base_sha, tier = pinned_base(store), pinned_tier(store)
         image = base_image_tag(base_sha, tier)
-        e2e_config(image)
+        specs = e2e_specs(base_clone_dir(base_sha), e2e_config(image))
     except RuntimeError as e:
         print(e, file=sys.stderr)
         return 2
@@ -2434,7 +2637,7 @@ def e2e_coverage_cmd(store: Store, *, runs: int) -> int:
     results: list[tuple[int, e2e_report.E2eRun, e2e_artifacts.Artifacts]] = []
     for i in range(1, runs + 1):
         try:
-            results.append(run_e2e(image, tier=tier, base_sha=base_sha))
+            results.append(run_e2e(image, tier=tier, specs=specs, base_sha=base_sha))
         except (OSError, subprocess.SubprocessError, RuntimeError) as e:
             problem = f"run {i} raised {type(e).__name__}: {e}"[:e2e_report.MAX_TEXT]
             results.append((-1, e2e_report.E2eRun(booted=False, results=[], problem=problem),
@@ -2445,7 +2648,8 @@ def e2e_coverage_cmd(store: Store, *, runs: int) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     root = out_dir.resolve()
     shown: list[e2e_coverage.SpecCoverage] = []
-    notes: list[str] = []
+    notes = [f"run {i}: {run.problem}" for i, run in enumerate(e2e_runs, 1)
+             if run.booted and run.problem]
     for c in cov:
         key = c.screenshot
         png = next((r[2].pngs[key] for r in results if key in r[2].pngs), None) if key else None

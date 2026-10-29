@@ -25,7 +25,7 @@ import re
 import shlex
 from typing import TYPE_CHECKING, NamedTuple
 
-from pipeline import actions, codeowners, describe_pr, diffpaths, profile, review_policy, reviewers, risktier, settings, wire
+from pipeline import actions, codeowners, describe_pr, diffpaths, e2e_report, profile, review_policy, reviewers, risktier, settings, wire
 from pipeline.freshness import currency_failure, is_current
 
 if TYPE_CHECKING:
@@ -1225,6 +1225,24 @@ def deps_touched(changed_paths: list[str]) -> bool:
     return any(_is_manifest(p) for p in changed_paths)
 
 
+def e2e_owned(path: str, cfg: profile.E2eConfig) -> bool:
+    """Whether `path` belongs to the e2e suite: under the Playwright config's
+    directory, or the config or a spec file when that directory is the repo
+    root. The base's copy of these judges every PR."""
+    root = posixpath.dirname(cfg.config)
+    if root:
+        return path == root or path.startswith(root + "/")
+    return path == cfg.config or path.endswith(".spec.ts")
+
+
+def e2e_relevant(changed_paths: list[str], cfg: profile.E2eConfig) -> bool:
+    """Whether a PR changes app code the e2e suite could see: a path that is
+    not docs, CI, a test or the e2e suite itself."""
+    return any(not (p.endswith(".md") or p.startswith(("docs/", ".github/"))
+                    or diffpaths.is_test_path(p) or e2e_owned(p, cfg))
+               for p in changed_paths)
+
+
 # Test-runner name-filter flags: vitest/jest `-t` / `--testNamePattern`,
 # mocha `-g` / `--grep`, node:test `--test-name-pattern`. Matched as a whole
 # whitespace-delimited token (value attached by `=` or space), so `pnpm -s test`
@@ -1576,14 +1594,15 @@ def shared_load_error(host: wire.VerifyRedGreenSignal) -> str | None:
 
 def verify_run_errored(blind: wire.VerifyBlindSignal,
                        host: wire.VerifyRedGreenSignal, *,
-                       regress: wire.VerifyRegressSignal | None) -> bool:
+                       regress: wire.VerifyRegressSignal | None,
+                       e2e: wire.VerifyE2eSignal | None = None) -> bool:
     """True iff a PR's committed signals record a run that errored: the host saw a
     phase exit outside its sentinel set (a killed container, an OOM, a timeout, an
     image fault, a test setup that failed), red and green both failed on the same
     test-file load error (`shared_load_error` — neither reached the code under
-    test), or a clean red->green's confirm re-run or regress leg is
-    incomplete — missing, not run, a non-sentinel exit, or a first failure whose
-    confirming run never concluded. Nothing follows from such a run however the
+    test), or a clean red->green's confirm re-run, regress leg or e2e leg is
+    incomplete — missing, not run, a non-sentinel exit, or a first failure
+    whose confirming run never concluded. The e2e record is optional. Nothing follows from such a run however the
     judge rates the output, because the exit code it reported carries no meaning.
 
     A blind verdict that settles the outcome by itself — no test to run, or a live
@@ -1622,6 +1641,8 @@ def verify_run_errored(blind: wire.VerifyBlindSignal,
     if not (host.get("red_exit_confirm") == SENTINEL_TEST_FAIL
             and green_confirm_accepted(host)):
         return False
+    if _e2e_incomplete(e2e):
+        return True
     # An accepted red->green must carry a completed regress leg. The full-suite
     # run is part of the run itself, so a record without one — or with a
     # non-sentinel exit, or a first failure whose confirming run never
@@ -1646,10 +1667,59 @@ def verify_run_errored(blind: wire.VerifyBlindSignal,
     return False
 
 
+def e2e_verdict(e2e: wire.VerifyE2eSignal | None) -> str | None:
+    """What the e2e regression leg says about the outcome: `regressed` when a
+    baseline test failed in both runs in a spec file the PR does not edit,
+    `escalate` when every such test is in a spec the PR edits (a deliberate UI
+    change a human must read) or when the PR's app code would not apply
+    without its suite changes, else None. Either the names or the count
+    gates."""
+    if not e2e:
+        return None
+    if e2e.get("skipped_reason") == "e2e-patch-conflict":
+        return "escalate"
+    if not e2e.get("ran"):
+        return None
+    regressions = [str(t) for t in e2e.get("regressions") or []]
+    count = e2e.get("regression_count")
+    if not regressions and not (isinstance(count, int) and count > 0):
+        return None
+    edited = {str(f) for f in e2e.get("edited") or []}
+    if regressions and count == len(regressions) and all(
+            t.split(e2e_report.SEP, 1)[0] in edited for t in regressions):
+        return "escalate"
+    return "regressed"
+
+
+def _e2e_incomplete(e2e: wire.VerifyE2eSignal | None) -> bool:
+    """An e2e leg whose first run failed and whose confirm never concluded, or
+    whose regressions rest on a run that exited outside the sentinel set (a
+    timeout, a container fault, no report): the harness's word, not the PR's."""
+    if not e2e or not e2e.get("ran") or not e2e.get("failing_first"):
+        return False
+    exits = (e2e.get("exit_first"), e2e.get("exit_confirm"))
+    if exits[1] is None:
+        return True
+    return e2e_verdict(e2e) is not None and any(
+        x not in (SENTINEL_PASS, SENTINEL_TEST_FAIL) for x in exits)
+
+
+def e2e_escalated(signals: wire.VerifySignals) -> bool:
+    """Whether the e2e leg is what escalated this record: it says escalate and
+    none of verify_outcome's earlier escalate reasons hold."""
+    rg = signals.get("red_green") or {}
+    return (e2e_verdict(signals.get("e2e")) == "escalate"
+            and (signals.get("blind_adequacy") or {}).get("faithful") is not False
+            and (signals.get("red_reason_match") or {}).get("confidence") != "low"
+            and rg.get("red_exit_confirm") == SENTINEL_TEST_FAIL
+            and green_confirm_accepted(rg))
+
+
 def _authored_lane_outcome(authored: wire.VerifyAuthoredSignal | None,
                            judge: wire.VerifyJudgment | None, *,
                            regress: wire.VerifyRegressSignal | None,
-                           lanes: dict[str, wire.VerifyLaneSignal] | None = None) -> str:
+                           lanes: dict[str, wire.VerifyLaneSignal] | None = None,
+                           e2e: wire.VerifyE2eSignal | None = None) -> str:
     """The no-test lane's outcome, from the agent-authored test's committed
     record and host-observed exits.
 
@@ -1660,8 +1730,9 @@ def _authored_lane_outcome(authored: wire.VerifyAuthoredSignal | None,
     low-confidence red — settles to unverifiable-no-test with the attempt on
     record. The lane never holds (a broken run is re-queued by the operator,
     not automatically) and never escalates: an agent-authored artifact moves
-    no policy state. A confirmed full-suite regression is host-observed
-    evidence about the PR itself, so it keeps `regressed`.
+    no policy state. A confirmed full-suite or e2e regression is host-observed
+    evidence about the PR itself, so it keeps `regressed` (e2e_verdict's
+    `escalate` too).
 
     Merge-gate lanes are host policy (the profile's commands over the patched
     tree), not agent artifacts, so a lane result moves the outcome here
@@ -1679,9 +1750,14 @@ def _authored_lane_outcome(authored: wire.VerifyAuthoredSignal | None,
         return "unverifiable-no-test"
     if regress is not None and regress.get("confirmed"):
         return "regressed"
+    e2e_says = e2e_verdict(e2e)
+    if e2e_says == "regressed":
+        return "regressed"
     lane_verdict = _lanes_verdict(lanes)
     if lane_verdict is not None:
         return lane_verdict
+    if e2e_says == "escalate":
+        return "escalate"
     return "agent-verified"
 
 
@@ -1690,7 +1766,8 @@ def verify_outcome(blind: wire.VerifyBlindSignal,
                    judge: wire.VerifyJudgment | None, *,
                    regress: wire.VerifyRegressSignal | None,
                    authored: wire.VerifyAuthoredSignal | None = None,
-                   lanes: dict[str, wire.VerifyLaneSignal] | None = None) -> str | None:
+                   lanes: dict[str, wire.VerifyLaneSignal] | None = None,
+                   e2e: wire.VerifyE2eSignal | None = None) -> str | None:
     """The ONE VERIFY outcome policy, computed from the four signals.
 
     `blind` is the adequacy verdict committed BEFORE any run; `host` is the
@@ -1721,13 +1798,17 @@ def verify_outcome(blind: wire.VerifyBlindSignal,
     `lanes` is the per-lane merge-gate record (compile/build commands over the
     patched tree); `_lanes_verdict` owns its mapping — a failed lane is
     `regressed`, an infra-broken lane `escalate`, and a record with no lanes is
-    gated only by the signals above."""
+    gated only by the signals above.
+
+    `e2e` is the in-app regression leg; e2e_verdict owns its reading. Its
+    `regressed` ranks with the suite's, ahead of the lanes; its `escalate`
+    comes after them, so it never masks a regression."""
     if blind.get("requires_live_agent"):
         return "unverifiable-needs-live-agent"
     if not blind.get("test_cmd"):
         if host.get("apply_exit") == SENTINEL_PATCH_CONFLICT:
             return "needs-rebase"
-        return _authored_lane_outcome(authored, judge, regress=regress, lanes=lanes)
+        return _authored_lane_outcome(authored, judge, regress=regress, lanes=lanes, e2e=e2e)
     if host.get("no_test_hunks"):
         # has_test claimed a PR-authored test, but the diff carried no test hunk
         # to apply for red — no legitimate red was ever possible here.
@@ -1735,7 +1816,7 @@ def verify_outcome(blind: wire.VerifyBlindSignal,
 
     if host.get("apply_exit") == SENTINEL_PATCH_CONFLICT:
         return "needs-rebase"
-    if verify_run_errored(blind, host, regress=regress):
+    if verify_run_errored(blind, host, regress=regress, e2e=e2e):
         return None
     if not (host.get("red_exit") == SENTINEL_TEST_FAIL and green_accepted(host)):
         return "not-verified"
@@ -1762,9 +1843,14 @@ def verify_outcome(blind: wire.VerifyBlindSignal,
         return "escalate"
     if regress is not None and regress.get("confirmed"):
         return "regressed"
+    e2e_says = e2e_verdict(e2e)
+    if e2e_says == "regressed":
+        return "regressed"
     lane_verdict = _lanes_verdict(lanes)
     if lane_verdict is not None:
         return lane_verdict
+    if e2e_says == "escalate":
+        return "escalate"
     return "verified-fix"
 
 
@@ -1888,6 +1974,11 @@ def verify_disposition(pr: Pr) -> tuple[str, str] | None:
                     f"Dynamic verification escalated — the {lane} merge-gate lane "
                     "could not run to a verdict (infrastructure exit, not "
                     "evidence about the PR). A human must decide or re-queue.")
+        if e2e_escalated(pr.verify_signals):
+            return ("needs-human",
+                    "Dynamic verification escalated — in-app tests that pass on "
+                    "pinned main fail only in spec files this PR edits, likely a "
+                    "deliberate UI change. A human must read the spec changes.")
         return ("needs-human",
                 "Dynamic verification escalated — the blind adequacy verdict says this "
                 "test does not faithfully reproduce the claimed defect, yet it goes "
@@ -1914,7 +2005,7 @@ def verify_disposition(pr: Pr) -> tuple[str, str] | None:
                     "against current main.")
         return ("request-changes",
                 "Dynamic verification found a regression — with this PR applied, "
-                "tests that pass on the pinned main fail, confirmed on a second "
+                "tests (unit or in-app) that pass on the pinned main fail, confirmed on a second "
                 "run. The failing tests are in verify.findings. Update the PR "
                 "against current main.")
     return None
