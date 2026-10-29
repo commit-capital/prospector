@@ -1,0 +1,371 @@
+{
+  "config": {
+    "argv": [
+      "node",
+      "cli.js",
+      "test",
+      "--config",
+      "playwright.config.ts",
+      "--retries=1",
+      "--reporter=json"
+    ],
+    "configFile": "playwright.config.ts",
+    "rootDir": "/redacted",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/tmp/e2e-out",
+        "repeatEach": 1,
+        "retries": 1,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "",
+        "name": "",
+        "testDir": ".",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.62.1",
+    "workers": 4,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "x.spec.ts",
+      "file": "x.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "suite A",
+          "file": "x.spec.ts",
+          "line": 2,
+          "column": 6,
+          "specs": [
+            {
+              "title": "passes",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "",
+                  "projectName": "",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 10,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-29T00:08:56.514Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "5ecc84104dc43a6b1dcb-90ec996cbbb496c24671",
+              "file": "x.spec.ts",
+              "line": 3,
+              "column": 7
+            },
+            {
+              "title": "fails with long message",
+              "ok": false,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "",
+                  "projectName": "",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 1,
+                      "error": {
+                        "message": "Error: first line of failure\nsecond line\nthird line",
+                        "stack": "Error: first line of failure\nsecond line\nthird line\n    at /redacted/x.spec.ts:6:11",
+                        "location": {
+                          "file": "/redacted/x.spec.ts",
+                          "column": 11,
+                          "line": 6
+                        },
+                        "snippet": "  4 |   test('fails with long message', async ({}, testInfo) => {\n  5 |     testInfo.attachments.push({name:'screenshot', contentType:'image/png', path:'/tmp/e2e-out/x-chromium/test-failed-1.png'});\n> 6 |     throw new Error('first line of failure\\nsecond line\\nthird line');\n    |           ^\n  7 |   });\n  8 |   test('flaky one', async ({}, testInfo) => { if (testInfo.retry === 0) throw new Error('flake'); });\n  9 |   test.skip('skipped one', async () => {});"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/redacted/x.spec.ts",
+                            "column": 11,
+                            "line": 6
+                          },
+                          "message": "Error: first line of failure\nsecond line\nthird line\n\n  4 |   test('fails with long message', async ({}, testInfo) => {\n  5 |     testInfo.attachments.push({name:'screenshot', contentType:'image/png', path:'/tmp/e2e-out/x-chromium/test-failed-1.png'});\n> 6 |     throw new Error('first line of failure\\nsecond line\\nthird line');\n    |           ^\n  7 |   });\n  8 |   test('flaky one', async ({}, testInfo) => { if (testInfo.retry === 0) throw new Error('flake'); });\n  9 |   test.skip('skipped one', async () => {});\n    at /redacted/x.spec.ts:6:11"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-29T00:08:56.608Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "screenshot",
+                          "contentType": "image/png",
+                          "path": "/tmp/e2e-out/x-chromium/test-failed-1.png"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/tmp/e2e-out/x-suite-A-fails-with-long-message/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/redacted/x.spec.ts",
+                        "column": 11,
+                        "line": 6
+                      }
+                    },
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 1,
+                      "error": {
+                        "message": "Error: first line of failure\nsecond line\nthird line",
+                        "stack": "Error: first line of failure\nsecond line\nthird line\n    at /redacted/x.spec.ts:6:11",
+                        "location": {
+                          "file": "/redacted/x.spec.ts",
+                          "column": 11,
+                          "line": 6
+                        },
+                        "snippet": "  4 |   test('fails with long message', async ({}, testInfo) => {\n  5 |     testInfo.attachments.push({name:'screenshot', contentType:'image/png', path:'/tmp/e2e-out/x-chromium/test-failed-1.png'});\n> 6 |     throw new Error('first line of failure\\nsecond line\\nthird line');\n    |           ^\n  7 |   });\n  8 |   test('flaky one', async ({}, testInfo) => { if (testInfo.retry === 0) throw new Error('flake'); });\n  9 |   test.skip('skipped one', async () => {});"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/redacted/x.spec.ts",
+                            "column": 11,
+                            "line": 6
+                          },
+                          "message": "Error: first line of failure\nsecond line\nthird line\n\n  4 |   test('fails with long message', async ({}, testInfo) => {\n  5 |     testInfo.attachments.push({name:'screenshot', contentType:'image/png', path:'/tmp/e2e-out/x-chromium/test-failed-1.png'});\n> 6 |     throw new Error('first line of failure\\nsecond line\\nthird line');\n    |           ^\n  7 |   });\n  8 |   test('flaky one', async ({}, testInfo) => { if (testInfo.retry === 0) throw new Error('flake'); });\n  9 |   test.skip('skipped one', async () => {});\n    at /redacted/x.spec.ts:6:11"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 1,
+                      "startTime": "2026-10-29T00:08:57.071Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "screenshot",
+                          "contentType": "image/png",
+                          "path": "/tmp/e2e-out/x-chromium/test-failed-1.png"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/tmp/e2e-out/x-suite-A-fails-with-long-message-retry1/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/redacted/x.spec.ts",
+                        "column": 11,
+                        "line": 6
+                      }
+                    }
+                  ],
+                  "status": "unexpected"
+                }
+              ],
+              "id": "5ecc84104dc43a6b1dcb-2d6f8a0181d93b61d8d2",
+              "file": "x.spec.ts",
+              "line": 4,
+              "column": 7
+            },
+            {
+              "title": "flaky one",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "",
+                  "projectName": "",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 1,
+                      "error": {
+                        "message": "Error: flake",
+                        "stack": "Error: flake\n    at /redacted/x.spec.ts:8:79",
+                        "location": {
+                          "file": "/redacted/x.spec.ts",
+                          "column": 79,
+                          "line": 8
+                        },
+                        "snippet": "   6 |     throw new Error('first line of failure\\nsecond line\\nthird line');\n   7 |   });\n>  8 |   test('flaky one', async ({}, testInfo) => { if (testInfo.retry === 0) throw new Error('flake'); });\n     |                                                                               ^\n   9 |   test.skip('skipped one', async () => {});\n  10 | });\n  11 |"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/redacted/x.spec.ts",
+                            "column": 79,
+                            "line": 8
+                          },
+                          "message": "Error: flake\n\n   6 |     throw new Error('first line of failure\\nsecond line\\nthird line');\n   7 |   });\n>  8 |   test('flaky one', async ({}, testInfo) => { if (testInfo.retry === 0) throw new Error('flake'); });\n     |                                                                               ^\n   9 |   test.skip('skipped one', async () => {});\n  10 | });\n  11 |\n    at /redacted/x.spec.ts:8:79"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-29T00:08:57.398Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/tmp/e2e-out/x-suite-A-flaky-one/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/redacted/x.spec.ts",
+                        "column": 79,
+                        "line": 8
+                      }
+                    },
+                    {
+                      "workerIndex": 3,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 1,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 1,
+                      "startTime": "2026-10-29T00:08:58.126Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "flaky"
+                }
+              ],
+              "id": "5ecc84104dc43a6b1dcb-4db0346fba9fcd2b8622",
+              "file": "x.spec.ts",
+              "line": 8,
+              "column": 7
+            },
+            {
+              "title": "skipped one",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "location": {
+                        "file": "/redacted/x.spec.ts",
+                        "line": 9,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "expectedStatus": "skipped",
+                  "projectId": "",
+                  "projectName": "",
+                  "results": [
+                    {
+                      "workerIndex": 3,
+                      "parallelIndex": 0,
+                      "status": "skipped",
+                      "duration": 0,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-29T00:08:58.210Z",
+                      "annotations": [
+                        {
+                          "type": "skip",
+                          "location": {
+                            "file": "/redacted/x.spec.ts",
+                            "line": 9,
+                            "column": 8
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "skipped"
+                }
+              ],
+              "id": "5ecc84104dc43a6b1dcb-11885ab4119e742dac47",
+              "file": "x.spec.ts",
+              "line": 9,
+              "column": 8
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-29T00:08:56.245Z",
+    "duration": 2003.6619999999998,
+    "expected": 1,
+    "skipped": 1,
+    "unexpected": 1,
+    "flaky": 1
+  }
+}
