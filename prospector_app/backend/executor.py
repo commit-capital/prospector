@@ -728,23 +728,23 @@ def retrigger_review(n: int, reviewer_id: str, *, dry_run: bool,
         attempt=attempt, failure="review retrigger failed unexpectedly")
 
 
-def _bot_comment_url(n: int, marker: str) -> str | None:
-    """The URL of the bot's comment on `n` that carries `marker`, or None when
-    there is none. Raises when the comments cannot be read."""
+def _bot_comment_url(n: int, *markers: str) -> str | None:
+    """The URL of the bot's comment on `n` that carries any of `markers`, or
+    None when there is none. Raises when the comments cannot be read."""
     comments = gh.issue_comments(int(n))
     if comments is None:
         raise RuntimeError(f"the comments on #{n} could not be read")
     return next((c.get("html_url") or "" for c in comments
                  if _is_bot_login((c.get("user") or {}).get("login"))
-                 and marker in (c.get("body") or "")), None)
+                 and any(m in (c.get("body") or "") for m in markers)), None)
 
 
 def post_design_findings(n: int, *, dry_run: bool, initiator: str = "operator") -> dict:
     """Post the design findings holding PR `n`'s merge as a bot comment
     (`pipeline/design_comment.py`), unless the bot already posted these
-    findings, and record the comment on the design review. Skipped outside
-    `TRIAGE_DESIGN_COMMENT`'s audience, with no finding to post, or when the
-    head moved past the review."""
+    findings or this head's, and record the comment on the design review.
+    Skipped outside `TRIAGE_DESIGN_COMMENT`'s audience, with no finding to
+    post, or when the head moved past the review."""
     base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "DESIGN_FINDINGS",
             "initiator": initiator}
     rec = data.store().load_pr(n)
@@ -764,7 +764,8 @@ def post_design_findings(n: int, *, dry_run: bool, initiator: str = "operator") 
     text = design_comment.body(found, reviewed)
 
     def attempt() -> dict[str, object]:
-        url = _bot_comment_url(n, design_comment.marker(fp))
+        url = _bot_comment_url(n, design_comment.head_marker(reviewed),
+                               design_comment.findings_marker(fp))
         if url is not None:
             return {"status": "exists", "detail": f"these findings are already posted on #{n}",
                     "event_url": url or None}
@@ -775,9 +776,10 @@ def post_design_findings(n: int, *, dry_run: bool, initiator: str = "operator") 
                 "event_url": (r.stdout or "").strip() or None}  # gh prints the comment's URL
 
     def record(res: dict) -> None:
-        data.store().note_design_comment(
-            n, {"fingerprint": fp, "url": res.get("event_url"), "posted_at": storekit.now()},
-            reviewed_sha=reviewed)
+        if not data.store().note_design_comment(
+                n, {"fingerprint": fp, "url": res.get("event_url"), "posted_at": storekit.now()},
+                reviewed_sha=reviewed):
+            raise RuntimeError("the design review changed before the comment was recorded")
 
     return _bot_write("design-findings", base, dry_run=dry_run,
                       preview=f"would post {len(found)} design finding(s) on #{n} as "

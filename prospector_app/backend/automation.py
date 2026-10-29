@@ -122,9 +122,6 @@ def classify(pr: Pr) -> dict | None:
     if pr.ci_stale_checks and freshness.is_current(pr, "signals"):
         return _r("act", "rerun-ci", gates.ci_stale_reason(pr.ci_stale_checks))
 
-    if design_comment.posted(pr) is not None:
-        return _r("handed", "author-design", "waiting on the author to address the design "
-                                             "findings posted on the PR")
     if pr.mergeable is False:
         action = "rebase"
     elif pr.drift_state == "conflicts" or pr.ci == "unreported":
@@ -147,6 +144,9 @@ def classify(pr: Pr) -> dict | None:
             return _r("auto", "budgeted", "the hunter's next pick, behind the day's "
                                           "continuation budget: " + what)
         return _r("auto", "hunt", f"the hunter's next pick: {what}")
+    if design_comment.posted(pr) is not None:
+        return _r("handed", "author-design", "waiting on the author to address the design "
+                                             "findings posted on the PR")
     return _blocked(pr, action, why)
 
 

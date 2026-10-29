@@ -44,6 +44,12 @@ except Re-verify.
   unreported), **⟳ Resolve merge conflicts** (Mergeable row when it fails),
   **📝 Rewrite the description** (Code review row), **🔧 Fix findings**
   (Design row): queue an autofix. See Other actions.
+- **💬 Post to author** (Design row): POST /api/reviews/design/comment/pr/{n}
+  → `executor.post_design_findings`. It posts the confirmed blocking and major
+  findings as `{bot}`, once per head and set of findings, on the PRs
+  `TRIAGE_DESIGN_COMMENT` names (off, maintainers, everyone). The design lane
+  posts them on its own after a review; once posted, the PR waits on its
+  author. **💬 Posted ↗** links the comment.
 - **↻ Run / ↻ Re-run** on the Design, Security and Threat scan rows, and
   **Analyze now / ↻ Re-analyze** on the analysis row (PR in a cluster): start
   the matching job (design-review-pr, security-review, threat-scan-pr,

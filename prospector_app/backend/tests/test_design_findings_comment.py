@@ -89,13 +89,16 @@ def test_only_open_confirmed_blocking_and_major_findings_are_posted(gh_fake):
     assert "<details><summary>Details</summary>" in text and "`src/a.py:3`" in text
     for absent in ("refuted one", "a nit", "unsure one", "fixed one"):
         assert absent not in text
-    assert text.endswith(design_comment.marker(design_comment.fingerprint(found)))
+    assert design_comment.head_marker(HEAD) in text
+    assert text.endswith(design_comment.findings_marker(design_comment.fingerprint(found)) + " -->")
 
 
-def test_finding_text_cannot_mention_anyone_or_break_out_of_its_details():
-    text = design_comment.body([_finding("ping @alice", body="</details><!-- x --> @bob")], HEAD)
-    assert "@alice" not in text and "@bob" not in text
+def test_finding_text_cannot_mention_link_or_break_out_of_its_details():
+    text = design_comment.body([_finding("ping @alice in #12", body=(
+        "</details><!-- x --> @bob [click](https://x.example) ![p](https://x.example/p.png)"))], HEAD)
+    assert "@alice" not in text and "@bob" not in text and "#12" not in text
     assert text.count("</details>") == 1 and "<!-- x" not in text
+    assert "[click](" not in text and "![p](" not in text
 
 
 def test_a_maintainers_pr_gets_one_comment_and_reads_as_the_authors_move(gh_fake):
@@ -122,11 +125,29 @@ def test_the_same_findings_are_never_posted_twice(gh_fake):
     assert design_comment.posted(gh_fake.store.load_pr(5)) is not None
 
 
-def test_different_findings_get_a_new_comment(gh_fake):
+def test_a_reworded_review_of_the_same_head_is_not_posted_again(gh_fake):
     _post()
+    _save(gh_fake.store, findings=[_finding("the same problem, reworded")])
+    assert _post()["status"] == "exists"
+    assert len(gh_fake.runs) == 1
+    data.refresh()
+    assert design_comment.posted(gh_fake.store.load_pr(5)) is not None
+
+
+def test_a_new_head_with_different_findings_gets_a_new_comment(gh_fake):
+    _post()
+    gh_fake.comments[0]["body"] = gh_fake.comments[0]["body"].replace(HEAD, "e" * 40)
     _save(gh_fake.store, findings=[_finding("another problem")])
     assert _post()["status"] == "executed"
     assert len(gh_fake.runs) == 2
+
+
+def test_a_red_security_verdict_posts_nothing(gh_fake):
+    rec = gh_fake.store.load_pr(5).raw
+    rec["security"]["verdict"] = "RED"
+    gh_fake.store.save_pr(rec)
+    data.refresh()
+    assert _post()["status"] == "skipped" and gh_fake.runs == []
 
 
 @pytest.mark.parametrize("audience, association, posts", [
