@@ -94,7 +94,7 @@ def classify(pr: Pr) -> dict | None:
         return _merge_pick_gap(pr, gap)
     if req.get("status") == "awaiting-review":
         return _r("act", "approve-parked", _parked_reason(req))
-    if pr.disposition == "merge" and why == f"not clean: {gates.THREAT_SCAN_STALE}":
+    if pr.disposition == "merge" and gates.pr_clean(pr)[1] == [gates.THREAT_SCAN_STALE]:
         return _r("auto", "waiting", "the threat scan has not judged this head yet; "
                                      "a worker scans new heads every ten minutes")
     if pr.disposition == "needs-human":

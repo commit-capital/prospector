@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 import posixpath
 import re
 import shlex
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from pipeline import actions, codeowners, describe_pr, diffpaths, profile, review_policy, reviewers, risktier, settings, wire
 from pipeline.freshness import currency_failure, is_current
@@ -673,69 +673,68 @@ def merge_eligibility(pr: Pr, today: str | None = None,
     YELLOW, on the merge's activity entry for a PR never reviewed — so passing
     it here without logging it is only for previewing the gate. RED is never
     overridable this way, and neither is a verdict taken at an earlier head.
-    A stacked PR blocks outright (stacked_block)."""
+    A stacked PR blocks outright (stacked_block). The reason joins every
+    merge_gate blocker."""
+    gate = merge_gate(pr, today, changed_paths, override_reason)
+    return not gate.blockers, gate.reason
+
+
+class MergeGate(NamedTuple):
+    blockers: list[str]
+    reason: str
+
+
+def merge_gate(pr: Pr, today: str | None = None,
+               changed_paths: list[str] | None = None,
+               override_reason: str | None = None) -> MergeGate:
+    """Every reason merge_eligibility refuses a human merge, in check order, and
+    the gate's reason: the blockers joined, or what passing means."""
+    blockers: list[str] = []
     stacked = stacked_block(pr)
     if stacked is not None:
-        return False, stacked
+        blockers.append(stacked)
     if changed_paths is not None:
         hm = codeowners.human_merge(changed_paths)
         if hm:
             owners = " ".join(hm["owners"])
-            return False, (f"requires manual merge by a code owner ({owners}) — "
-                           f"CODEOWNERS path: {', '.join(hm['paths'][:5])}")
-    ok, reasons = pr_clean(pr, today)
-    if not ok:
-        return False, "not clean: " + "; ".join(reasons)
-    blocked = security_merge_block(pr, override_reason)
-    if blocked is not None:
-        return False, blocked
-    # A verify section exists from the moment the blind adequacy verdict is
-    # committed and carries an outcome only once the phase reaches one, so the
-    # outcome is what says a verification concluded. A null outcome (blind
-    # committed, or a run that errored and held) has concluded nothing and blocks
-    # no more than a section that was never written. Only a verification that
-    # reached negative evidence (or needs an explicit human escalation decision)
-    # blocks, and it keeps blocking past the age window until a re-run replaces
-    # it. An unverifiable conclusion is absence of evidence, so it remains
-    # visible but does not block a human merge.
-    if pr.verify_outcome is not None and is_current(pr, "verify"):
+            blockers.append(f"requires manual merge by a code owner ({owners}) — "
+                            f"CODEOWNERS path: {', '.join(hm['paths'][:5])}")
+    blockers += pr_clean(pr, today)[1]
+    security = security_merge_block(pr, override_reason)
+    if security is not None:
+        blockers.append(security)
+    note = "passed all checks run"
+    # Only a concluded outcome counts: a null one (blind verdict only, or a held
+    # run) concluded nothing. Negative evidence, or an escalate awaiting a human
+    # decision, blocks past the age window until a re-run replaces it.
+    outcome = pr.verify_outcome
+    if outcome is not None and is_current(pr, "verify"):
         days = settings.verify_max_age_days()
-        if (pr.verify_outcome in VERIFY_AGES_OUT
+        if (outcome in VERIFY_AGES_OUT
                 and not is_current(pr, "verify", max_age_days=days, today=today)):
-            return True, (f"passed all checks run — dynamic verification "
-                          f"{pr.verify_outcome} is older than {days}d and not counted")
-        if pr.verify_outcome == "verified-fix":
-            why = verify_signals_incomplete(pr)
-            if why is not None:
-                # The operator may still merge on partial evidence, but never
-                # unknowingly: the reason names the gap and the app displays it.
-                return True, f"passed all checks run — verification incomplete: {why}"
-        elif pr.verify_outcome == "agent-verified":
-            # A concluded, corroborating state: the harness-authored test went
-            # red->green, so nothing here says "the PR must change". The reason
-            # names the provenance so the operator merges knowingly, and names
-            # any configured-lane gap the same way the verified-fix branch does,
-            # so partial evidence is never presented as complete.
-            provenance = ("passed all checks run — fix corroborated by an "
-                         "agent-authored test (not an author-shipped test)")
-            why = verify_signals_incomplete(pr)
-            if why is not None:
-                return True, f"{provenance}; verification incomplete: {why}"
-            return True, provenance
-        elif pr.verify_outcome in VERIFY_UNVERIFIABLE_OUTCOMES:
-            # No negative evidence about the PR: the sandbox had nothing it
-            # could faithfully run. Keep this off the automatic merge path, but
-            # do not turn absence of evidence into a human-merge block.
-            return True, ("passed all checks run — dynamic verification "
-                          f"{pr.verify_outcome} (inconclusive)")
-        elif not pr.verify_override:
+            note += f" — dynamic verification {outcome} is older than {days}d and not counted"
+        elif outcome in ("verified-fix", "agent-verified"):
+            # Both corroborate the fix. The operator may merge on partial
+            # evidence, but never unknowingly: the note names an agent-authored
+            # test's provenance and any configured-lane gap.
+            parts = (["fix corroborated by an agent-authored test (not an author-shipped test)"]
+                     if outcome == "agent-verified" else [])
+            gap = verify_signals_incomplete(pr)
+            if gap is not None:
+                parts.append(f"verification incomplete: {gap}")
+            if parts:
+                note += " — " + "; ".join(parts)
+        elif outcome in VERIFY_UNVERIFIABLE_OUTCOMES:
+            # No negative evidence: the sandbox had nothing it could faithfully
+            # run. Off the automatic merge path, but not a human-merge block.
+            note += f" — dynamic verification {outcome} (inconclusive)"
+        elif not pr.verify_override and not (outcome == "escalate"
+                                             and (override_reason or "").strip()):
             # escalate ("a human must decide") may be cleared with a logged
             # reason. Actual failures (not-verified, regressed, needs-rebase)
             # and safety refusals (deps-touched) stay hard blocks regardless.
-            if not (pr.verify_outcome == "escalate"
-                    and (override_reason or "").strip()):
-                return False, f"dynamic verification {pr.verify_outcome}"
-    return True, "passed all checks run"
+            blockers.append(f"dynamic verification {outcome}")
+    return MergeGate(blockers, "; ".join(blockers) if blockers else note)
 
 
 def merge_rank(pr: Pr) -> int:
