@@ -132,7 +132,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #      fix request `requeues`. An older worker's writes drop them, so its
 #      retries of that head never end, and an older hunter reads a failed
 #      triage as a standing skip.
-STORE_SCHEMA_VERSION = 42
+# 43 — an issue's `fix_request` may carry `feature` and the issue a
+#      `feature_decision` / `feature_screen`; an older worker builds an approved
+#      feature as a defect fix without its spec and ends it `not-a-defect`.
+STORE_SCHEMA_VERSION = 43
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the
