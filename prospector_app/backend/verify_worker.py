@@ -1065,23 +1065,25 @@ def _drain_loop() -> None:
 
 def _take_review(retest: bool) -> tuple[str, int] | None:
     """The next review pick, entered in `_reviewing` so no other slot takes
-    it, or None while the hunt is off, both review lanes are closed, or the
+    it, or None while both review lanes are closed, the hunt is off, or the
     account's capacity holds the pick's lane. Only the slot that `retest`s
     runs a tripped lane's self-test; the others read the lane's health."""
-    if not enabled_autohunt():
-        return None
     is_open = lane_health.open_or_retest if retest else lane_health.is_open
     open_lanes = frozenset(
         lane for lane in HUNT_ROTATION
         if (lane != "design" or settings.design_review_mode() != "off") and is_open(lane))
-    if not open_lanes:
+    if not open_lanes or not enabled_autohunt():
         return None
     with _review_lock:
         pick = next_auto(open_lanes)
-        if pick is None or not lane_health.capacity_open(pick[0]):
+        if pick is None:
             return None
         _reviewing.add(pick[1])
-    return pick
+    if lane_health.capacity_open(pick[0]):
+        return pick
+    with _review_lock:
+        _reviewing.discard(pick[1])
+    return None
 
 
 def _review_loop(retest: bool = True) -> None:
@@ -1100,6 +1102,7 @@ def _review_loop(retest: bool = True) -> None:
                 stop.wait(POLL_SECONDS)
                 continue
             lane, n = pick
+            beat()
             print(f"[autohunt] {lane} review for PR #{n}", flush=True)
             ran = (run_security(n) if lane == "security" else run_design(n)) is not None
             if not ran:
