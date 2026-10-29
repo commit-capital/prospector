@@ -488,12 +488,58 @@ def test_a_reviewer_that_never_reached_a_verdict_is_a_machine_fault(cross):
     assert res.ending == "run-failed" and res.fault is True
 
 
-def test_no_review_runs_when_the_host_s_checks_refuse(cross, monkeypatch):
-    monkeypatch.setattr(fix_lane, "suite_proof", lambda spec, patch, label: {
-        "exit": 20, "exit_confirm": 20, "confirmed": True, "flake": False, "excluded": 0,
-        "new_failures": ["src/other.test.ts"]})
-    cross["run"]()
-    assert cross["reviewed"] == []
+REGRESSED = {"exit": 20, "exit_confirm": 20, "confirmed": True, "flake": False, "excluded": 0,
+             "new_failures": ["src/other.test.ts"]}
+
+
+def _suite(monkeypatch, cross, refusals: int) -> list[str]:
+    """Stub the full suite to refuse its first `refusals` runs, returning the
+    patches it ran over; each run must come after a review."""
+    runs: list[str] = []
+
+    def suite_proof(spec, patch, label):
+        assert cross["reviewed"], "the full suite ran before the review"
+        runs.append(patch)
+        return REGRESSED if len(runs) <= refusals else {**REGRESSED, "confirmed": False,
+                                                        "new_failures": []}
+    monkeypatch.setattr(fix_lane, "suite_proof", suite_proof)
+    return runs
+
+
+def test_the_full_suite_runs_once_after_the_review(cross, monkeypatch):
+    runs = _suite(monkeypatch, cross, 0)
+    res = cross["run"]()
+    assert res.ending == "fixed", res.detail
+    assert runs == [res.result["patch"]]
+    assert "suite_refused" not in res.result
+
+
+def test_a_fix_the_full_suite_refuses_gives_way_to_the_next_agreed_fix(cross, monkeypatch):
+    runs = _suite(monkeypatch, cross, 1)
+    res = cross["run"]()
+    assert res.ending == "fixed", res.detail
+    assert len(runs) == 2
+    refused = res.result["suite_refused"]
+    assert len(refused) == 1 and "src/other.test.ts" in refused[0]["reason"]
+    assert res.result["pick"] != refused[0]["pick"]
+    assert "after the full suite refused 1 fix(es)" in res.detail
+    assert res.result["proof"]["suite"]["confirmed"] is False
+
+
+def test_a_run_whose_every_agreed_fix_the_full_suite_refuses_is_unproven(cross, monkeypatch):
+    runs = _suite(monkeypatch, cross, 99)
+    res = cross["run"]()
+    assert res.ending == "fix-unproven" and "full suite fail" in res.detail
+    picks = [r["pick"] for r in res.result["suite_refused"]]
+    assert len(runs) == len(picks) == len(set(picks)) == len(res.result["agreement"]["agreed"])
+
+
+def test_no_full_suite_runs_for_a_fix_the_review_rejects(cross, monkeypatch):
+    runs = _suite(monkeypatch, cross, 0)
+    cross["review"] = {"lens": "scope-safety", "verdict": "unsafe",
+                       "reason": "widens access for viewers", "concerns": []}
+    res = cross["run"]()
+    assert res.ending == "fix-rejected" and runs == []
 
 
 def test_a_dispute_records_each_reading_the_candidates_split_into(cross):

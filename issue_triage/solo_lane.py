@@ -220,10 +220,11 @@ def author(worktree: str, *, title: str, body: str, env: dict[str, str],
 def host_checks(spec: fix_lane.LaneSpec, *, test_patch: str, fix_patch: str,
                 test_paths: list[str], tree: Path, proof_patch: Callable[..., Path],
                 label: str, proof: dict, on_step: Callable[[str], None],
-                own_green: bool = True) -> tuple[str, str] | None:
+                own_green: bool = True, suite: bool = True) -> tuple[str, str] | None:
     """The host's checks over a fix, recorded on `proof`: its own tests green
     twice with it applied (unless `own_green` is False — a caller that already
-    proved them), the compile, the lint, the related tests, and the full suite.
+    proved them), the compile, the lint, the related tests, and the full suite
+    (unless `suite` is False — a caller that runs it once on the change that stands).
     None when it clears them all, else the (ending, reason) it stops at — a
     check whose sandbox could not run (issue_gates.sandbox_fault) ends
     `sandbox`, the machine's condition, never a verdict. `tree` is a checkout of the lane's tree the related tests are picked from."""
@@ -288,6 +289,8 @@ def host_checks(spec: fix_lane.LaneSpec, *, test_patch: str, fix_patch: str,
             if block:
                 return "fix-unproven", block
 
+    if not suite:
+        return None
     on_step("full suite")
     block = fix_lane.record_suite(proof, fix_lane.suite_proof(spec, test_patch + fix_patch,
                                                               label))
@@ -300,7 +303,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         on_step: Callable[[str], None] = lambda step: None,
         start_patch: str | None = None, attempt: dict | None = None,
         review: bool = False, advisory: frozenset[str] = frozenset(),
-        model: str | None = None) -> fix_lane.LaneResult:
+        model: str | None = None, suite: bool = True) -> fix_lane.LaneResult:
     """One agent reproduces and fixes `spec`'s issue; the host's re-gate and
     test runs name the ending. With `start_patch` the clone opens holding an
     earlier attempt (tests and change, uncommitted) that the agent revises, told
@@ -311,7 +314,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
     the design lens, the other fixes written for the report; a review that
     rejects it ends `fix-rejected` with the reviewers' comments, except under an
     `advisory` lens, whose comments ride on the result for the next round. `model` pins
-    the agent's model. The clone is removed on the way out."""
+    the agent's model, and `suite` is `host_checks`'. The clone is removed on the way out."""
     label = f"solo-{spec.issue}"
     clone_dir = workdir / "solo"
     agent_runs = 0
@@ -397,7 +400,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                 and red.get("exit_confirm") == gates.SENTINEL_TEST_FAIL else "not-reproduced")
         blocked = host_checks(spec, test_patch=test_patch, fix_patch=fix_patch,
                               test_paths=test_paths, tree=clone, proof_patch=proof_patch,
-                              label=label, proof=result["proof"], on_step=on_step)
+                              label=label, proof=result["proof"], on_step=on_step,
+                              suite=suite)
         if blocked:
             return finish(*blocked)
 
@@ -408,7 +412,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                 str(clone), fix_patch, title=spec.title, body=spec.body,
                 approved=spec.approved, root_cause=str(verdict["root_cause"]), test_paths=test_paths,
                 evidence=f"- The change's tests fail on the base and pass with it; the "
-                         f"compile, related tests and full suite pass.\n- {detail}.",
+                         f"compile{', related tests and full suite' if suite else ' and related tests'}"
+                         f" pass.\n- {detail}.",
                 inventory_veto=result["tier"].get("tier") == 0,
                 history=_review_history(attempt, verdict.get("responses") or []),
                 alternatives=(attempt or {}).get("alternatives", ()),

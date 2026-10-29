@@ -25,8 +25,8 @@ an operator's Propose (`trust_boundary.held`). Any other run without an agreed
 fix ends `fix-unproven`. Among fixes that pass the same reproductions, the one
 picked is the one a comparison of their design prefers
 (`review_issue_fix.preferred_fix`), else the smallest. The picked fix then goes
-through the host's checks (`solo_lane.host_checks`: compile, related tests, the
-full suite) together with the tests of every reproduction it passed
+through the host's checks (`solo_lane.host_checks`: compile, related tests)
+together with the tests of every reproduction it passed
 (`shipped_reproductions`). Agreement
 proves the fix does what its tests ask, never that it does nothing more or
 everything the report asks, so a fix that clears the checks then faces a full
@@ -43,7 +43,9 @@ every check, a fresh review that reads the earlier rounds, and a fresh
 trust-boundary judgment; it counts only while the revision passes the shipped
 reproductions and every shown claim. A pick whose reviews reject it and that
 no round clears ends `fix-rejected`; one that only leaves part of the report
-ships as a partial fix. The reviewer's
+ships as a partial fix. The change that stands then runs the full suite, once
+(`_judge_in_turn`); a fix it refuses gives way to the next agreed fix, the
+smallest first, judged the same way. The reviewer's
 inventory of unasked changes to inputs that worked vetoes a `safe` only on
 tier-0 paths; elsewhere it is recorded beside the verdict for the maintainer
 who reviews the proposal.
@@ -360,7 +362,7 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         blocked = solo_lane.host_checks(
             spec, test_patch=test_patch, fix_patch=pick.fix_patch,
             test_paths=test_paths, tree=tree, proof_patch=proof_patch, label=label,
-            proof=result["proof"], on_step=on_step, own_green=False)
+            proof=result["proof"], on_step=on_step, own_green=False, suite=False)
         if blocked:
             return blocked[0], blocked[1], reproduction, 0
 
@@ -497,7 +499,7 @@ def _revise(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         res = solo_lane.run(
             spec, workdir=workdir / f"revise-{n}", on_step=on_step,
             start_patch=diffpaths.filter_diff(patch, lambda p: p not in pinned) + required,
-            review=True, model=pick.model,
+            review=True, model=pick.model, suite=False,
             attempt={"summary": summary, "root_cause": root_cause,
                      "review": _brief(comments, shown_now), "history": _history(rounds),
                      "alternatives": others})
@@ -560,6 +562,57 @@ def _answer_review(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
                                              others=others, proof_patch=proof_patch,
                                              label=label, on_step=on_step)
     return ending, detail, revised or reproduction, spent
+
+
+def _judge_in_turn(spec: fix_lane.LaneSpec, workdir: Path, picks: list[Candidate],
+                   repros: list[Candidate], cands: list[Candidate], result: dict, *,
+                   proof_patch: Callable[..., Path], label: str,
+                   on_step: Callable[[str], None]) -> tuple[str | None, str, dict, int, Candidate]:
+    """Judge `picks[0]` (`_judge_pick`, then `_answer_review`) and run the full
+    suite once over the change that stands; while the suite is what refuses it,
+    judge the next of `picks` afresh, recording each refusal on
+    `result["suite_refused"]`. Returns `_answer_review`'s ending, reason and
+    reproduction record, the agent runs spent, and the pick last judged."""
+    spent = 0
+    ending: str | None = None
+    detail = ""
+    reproduction: dict = {}
+    pick = picks[0]
+    for n, pick in enumerate(picks):
+        if n:
+            result.update(proof={}, reviews=[])
+            for key in ("revisions", "claims", "boundary"):
+                result.pop(key, None)
+        others = alternatives(pick, cands)
+        ending, detail, reproduction, s = _judge_pick(
+            spec, workdir, pick, repros, result, others=others, proof_patch=proof_patch,
+            label=label, on_step=on_step)
+        spent += s
+        ending, detail, reproduction, s = _answer_review(
+            spec, workdir, pick, repros, result, ending, detail, reproduction,
+            others=others, proof_patch=proof_patch, label=label, on_step=on_step)
+        spent += s
+        if ending:
+            return ending, detail, reproduction, spent, pick
+        on_step("full suite")
+        detail = fix_lane.record_suite(result["proof"],
+                                       fix_lane.suite_proof(spec, result["patch"], label))
+        if not detail:
+            return None, "", reproduction, spent, pick
+        ending = "fix-unproven"
+        result.setdefault("suite_refused", []).append({"pick": pick.index, "reason": detail})
+    return ending, detail, reproduction, spent, pick
+
+
+def _in_turn(pick: Candidate, fits: list[Candidate]) -> list[Candidate]:
+    """`pick`, then the rest of `fits`, the smallest fix first."""
+    return [pick, *sorted((c for c in fits if c is not pick),
+                          key=lambda c: (issue_gates.changed_line_count(c.fix_patch), c.index))]
+
+
+def _how(how: str, result: dict) -> str:
+    refused = len(result.get("suite_refused") or [])
+    return f"after the full suite refused {refused} fix(es), the next" if refused else how
 
 
 def _reviewed(result: dict) -> str:
@@ -709,14 +762,9 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         pick, how, spent = (lone, "its fix", 0) if lone else _choose(spec, workdir, agreed, result,
                                                                       on_step)
         agent_runs += spent
-        others = alternatives(pick, cands)
-        ending, detail, reproduction, spent = _judge_pick(
-            spec, workdir, pick, repros, result, others=others, proof_patch=proof_patch,
-            label=label, on_step=on_step)
-        agent_runs += spent
-        ending, detail, reproduction, spent = _answer_review(
-            spec, workdir, pick, repros, result, ending, detail, reproduction,
-            others=others, proof_patch=proof_patch, label=label, on_step=on_step)
+        ending, detail, reproduction, spent, pick = _judge_in_turn(
+            spec, workdir, [lone] if lone else _in_turn(pick, agreed), repros, cands, result,
+            proof_patch=proof_patch, label=label, on_step=on_step)
         agent_runs += spent
         if ending:
             return finish(ending, detail)
@@ -725,7 +773,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
                                    "reproduce the defect; its fix passes them and clears the "
                                    f"host's checks and {_reviewed(result)}")
         return finish("fixed", f"{len(agreed)} of {len(live)} fixes pass all {len(repros)} "
-                               f"reproductions; {how} clears the host's checks and "
+                               f"reproductions; {_how(how, result)} clears the host's "
+                               "checks and "
                                + _reviewed(result))
     except _LANE_ERRORS as e:
         return finish(*_faulted(e))
@@ -778,14 +827,9 @@ def judge_reading(spec: fix_lane.LaneSpec, *, workdir: Path, result: dict, readi
     proof_patch = _proof_patcher(spec, label)
     try:
         pick, how, agent_runs = _choose(spec, workdir, fits, result, on_step)
-        others = alternatives(pick, cands)
-        ending, detail, reproduction, spent = _judge_pick(
-            spec, workdir, pick, repros, result, others=others, proof_patch=proof_patch,
-            label=label, on_step=on_step)
-        agent_runs += spent
-        ending, detail, reproduction, spent = _answer_review(
-            spec, workdir, pick, repros, result, ending, detail, reproduction,
-            others=others, proof_patch=proof_patch, label=label, on_step=on_step)
+        ending, detail, reproduction, spent, pick = _judge_in_turn(
+            spec, workdir, _in_turn(pick, fits), repros, cands, result,
+            proof_patch=proof_patch, label=label, on_step=on_step)
         agent_runs += spent
     except _LANE_ERRORS as e:
         return finish(*_faulted(e))
@@ -793,6 +837,6 @@ def judge_reading(spec: fix_lane.LaneSpec, *, workdir: Path, result: dict, readi
         shutil.rmtree(workdir / "pre-fix", ignore_errors=True)
     if ending:
         return finish(ending, detail)
-    return finish("fixed", f"the answer chose reading {reading}; {how} passes its "
+    return finish("fixed", f"the answer chose reading {reading}; {_how(how, result)} passes its "
                            f"{len(repros)} reproduction(s) and clears the host's checks and "
                            + _reviewed(result))
