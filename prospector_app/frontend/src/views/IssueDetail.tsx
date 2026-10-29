@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { api, type IssueDetail } from "../api";
 import { TrustedAuthorName } from "../components/TrustedAuthor";
 import { IssueSummary } from "../components/issues/IssueSummary";
+import { FeatureScreenPanel } from "../components/FeatureScreenPanel";
 import { FixStatusChip, IssueFixPanel } from "../components/IssueFixPanel";
 import { ReviewerVerdicts } from "../components/ReviewerVerdicts";
 import { FlyoutIssueLink } from "../components/FlyoutIssueLink";
@@ -46,6 +47,8 @@ export function IssueDetailContent({ issue }: { issue: number }) {
       </div>
 
       <IssueSummary d={d} onChanged={reload} />
+
+      <FeatureScreenPanel d={d} onChanged={reload} />
 
       <section className="panel">
         <div className="panel-head"><h3>Other actions</h3></div>

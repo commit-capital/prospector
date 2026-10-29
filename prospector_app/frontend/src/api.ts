@@ -1706,7 +1706,37 @@ export interface IssueStatusLine {
 /** Full issue detail for the flyout: the table row plus body + analysis. */
 /** The issue page's plain-language card (issue_triage/issue_display.py). */
 export interface IssueDisplay { bug: string; fix: string }
+/** The screener's reading of a feature request (issue_triage/feature_screen.py);
+ *  the mockup page itself is fetched on demand. */
+export interface FeatureScreen {
+  verdict: "consider" | "not-a-fit" | "unclear";
+  why: string | null;
+  size: "small" | "medium" | "large" | null;
+  precedents: number[];
+  has_mockup: boolean;
+  mockup_refused?: string | null;
+}
+/** A maintainer's call on a feature request. */
+export interface FeatureDecision {
+  decision: "implement" | "decline";
+  by: string;
+  at: string;
+  guidance?: string;
+}
+/** One row of the Home card's shortlist. */
+export interface FeatureRequestItem {
+  issue: number;
+  title: string | null;
+  url: string;
+  why: string | null;
+  size: FeatureScreen["size"];
+  precedents: number[];
+  has_mockup: boolean;
+  screened_at: string | null;
+}
 export interface IssueDetail extends IssueRow {
+  feature_screen: FeatureScreen | null;
+  feature_decision: FeatureDecision | null;
   body: string | null;
   display: IssueDisplay | null;
   /** What happened to Prospector's fix and why it waits on you, in plain
@@ -2276,6 +2306,10 @@ export const api = {
     });
     return r.json() as Promise<IssueExecResult>;
   },
+  featureRequests: () => get<{ items: FeatureRequestItem[]; count: number }>("/api/issues/features"),
+  featureMockup: (n: number) => get<{ html: string }>(`/api/issues/${n}/feature-mockup`),
+  featureDecision: (n: number, decision: "implement" | "decline" | "reopen", guidance?: string) =>
+    postJson(`/api/issues/${n}/feature-decision`, { decision, guidance }),
   reopenIssue: async (n: number, dryRun: boolean) => {
     const r = await fetch(`/api/reopen/issue/${n}?dry_run=${dryRun}`, { method: "POST" });
     return r.json() as Promise<IssueExecResult>;

@@ -1867,3 +1867,15 @@ tr.row-done:hover > td { opacity: 1; }
    grid in its own scroll box, so headers stick inside the flyout */
 .fix-compare-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 8px; }
 .fix-compare-grid { max-height: 75vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+
+/* feature requests */
+.feature-row { display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--border); }
+.feature-row:first-child { border-top: none; }
+.feature-row-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.feature-size { margin-left: 6px; }
+.feature-decision { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; }
+.feature-mockup-thumb { flex: none; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); cursor: pointer; position: relative; }
+.feature-mockup-frame { border: 0; background: #fff; display: block; }
+.feature-mockup-frame-thumb { transform: scale(.25); transform-origin: top left; pointer-events: none; }
+.feature-mockup-modal { width: auto; max-width: 96vw; max-height: 96vh; overflow: auto; }
+.feature-mockup-modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
