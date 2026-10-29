@@ -40,9 +40,61 @@ def test_parses_passed_and_failed_specs():
     ]
 
 
-def test_retried_pass_is_flaky_without_outcome_field():
+def test_results_without_a_test_status_are_failed():
     r = _report(_spec("t", [{"status": "failed"}, {"status": "passed"}]))
-    assert _run(r).results[0].status == "flaky"
+    assert _run(r).results[0].status == "failed"
+
+
+def _status(test_status: object, expected: object, *last: str) -> str:
+    extra: dict[str, object] = {"status": test_status}
+    if expected is not None:
+        extra["expectedStatus"] = expected
+    run = _run(_report(_spec("t", [{"status": s} for s in last], **extra)))
+    return run.results[0].status
+
+
+def test_unexpected_pass_is_failed():
+    assert _status("unexpected", "failed", "passed") == "failed"
+    assert _status("unexpected", "passed", "failed") == "failed"
+    assert _status("unexpected", "passed", "timedOut") == "timedOut"
+    assert _status("unexpected", "passed", "interrupted") == "interrupted"
+
+
+def test_expected_needs_matching_expected_and_last_status():
+    assert _status("expected", "passed", "passed") == "passed"
+    assert _status("expected", "failed", "failed") == "passed"
+    assert _status("expected", None, "failed") == "failed"
+    assert _status("expected", "garbage", "failed") == "failed"
+    assert _status("expected", "passed", "failed") == "failed"
+    assert _status("expected", "failed", "passed") == "failed"
+    assert _status("expected", "passed") == "failed"
+
+
+def test_flaky_skipped_and_unknown_test_statuses():
+    assert _status("flaky", "passed", "failed", "passed") == "flaky"
+    assert _status("skipped", "skipped", "skipped") == "skipped"
+    assert _status("weird", "passed", "passed") == "failed"
+    assert _status(None, "passed", "passed") == "failed"
+
+
+def test_empty_suites_is_not_a_run():
+    run = _run({"suites": []})
+    assert run.booted is False and run.problem == "no specs ran"
+
+
+def test_attachment_names_pass_the_png_key_checks():
+    bad = [
+        "/tmp/e2e-out/a\\..\\b.png",
+        "/tmp/e2e-out/sp ace.png",
+        "/tmp/e2e-out/" + "a" * 300 + ".png",
+        "/tmp/e2e-out/a//b.png",
+        "/tmp/e2e-out/a/./b.png",
+        "/tmp/e2e-out/ok.png\n",
+    ]
+    atts = [{"contentType": "image/png", "path": p} for p in bad]
+    atts.append({"contentType": "image/png", "path": "/tmp/e2e-out/" + "a" * 296 + ".png"})
+    run = _run(_report(_spec("t", [{"status": "failed", "attachments": atts}])))
+    assert run.results[0].attachments == ["a" * 296 + ".png"]
 
 
 def test_error_is_first_line_capped():

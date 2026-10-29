@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Literal, get_args
+from typing import Literal
 
 SpecStatus = Literal["passed", "failed", "flaky", "skipped", "timedOut", "interrupted"]
 
@@ -14,7 +14,7 @@ MAX_TEXT = 300
 _MAX_ATTACHMENTS = 20
 _OUT_PREFIX = "/tmp/e2e-out/"
 _SEP = " › "
-_STATUSES = frozenset(get_args(SpecStatus)) - {"flaky"}
+_KEY = re.compile(r"[A-Za-z0-9._/-]+")
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -58,16 +58,14 @@ def _safe_file(file: object) -> str | None:
 
 def _status(test: dict[str, object], results: list[dict[str, object]]) -> SpecStatus:
     outcome = test.get("status")
-    if outcome == "flaky":
-        return "flaky"
-    if outcome == "skipped":
-        return "skipped"
     last = results[-1].get("status") if results else None
-    if outcome == "expected" and test.get("expectedStatus") != "passed" and last in ("passed", "failed"):
-        return "passed"
-    if len(results) > 1 and last == "passed" and any(r.get("status") != "passed" for r in results[:-1]):
-        return "flaky"
-    if isinstance(last, str) and last in _STATUSES:
+    if outcome in ("flaky", "skipped"):
+        return outcome  # pyright: ignore[reportReturnType]
+    if outcome == "expected":
+        expected = test.get("expectedStatus")
+        if expected in ("passed", "failed") and last == expected:
+            return "passed"
+    elif outcome == "unexpected" and last in ("timedOut", "interrupted"):
         return last  # pyright: ignore[reportReturnType]
     return "failed"
 
@@ -92,7 +90,9 @@ def _attachments(results: list[dict[str, object]]) -> list[str]:
             if not path.startswith(_OUT_PREFIX):
                 continue
             rel = path[len(_OUT_PREFIX) :]
-            if any(seg in ("", ".", "..") for seg in rel.split("/")) or rel in names:
+            if not _KEY.fullmatch(rel) or len(rel) > MAX_TEXT or rel in names:
+                continue
+            if any(seg in ("", ".", "..") for seg in rel.split("/")):
                 continue
             names.append(rel)
     return names[:_MAX_ATTACHMENTS]
@@ -149,6 +149,8 @@ def parse_report(report: bytes | None, *, output_tail: str) -> E2eRun:
                 break
         stack.extend((c, here, suite_file) for c in reversed(_dicts(suite.get("suites"))))
 
+    if not results and not dropped:
+        return _no_run("no specs ran")
     notes: list[str] = []
     if capped:
         notes.append(f"stopped at {MAX_RESULTS} results")
