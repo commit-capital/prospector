@@ -76,6 +76,16 @@ def test_the_snapshot_carries_no_mockup(client):
     assert c.get("/api/issues/7").json()["feature_screen"]["has_mockup"] is True
 
 
+@pytest.mark.parametrize("placeholder", [{"verdict": "screening", "by": "studio"},
+                                         {"verdict": "failed", "error": "no JSON"}])
+def test_a_placeholder_screen_is_no_verdict(client, placeholder):
+    c, store = client
+    _issue(store, screen=placeholder)
+    assert _card(c) == []
+    d = c.get("/api/issues/7").json()
+    assert d["feature_screen"] is None and d["is_feature_request"] is True
+
+
 def test_a_stale_screen_is_off_the_card(client):
     c, store = client
     _issue(store)

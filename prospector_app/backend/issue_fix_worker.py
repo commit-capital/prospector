@@ -51,6 +51,7 @@ from issue_triage import (
     fix_review_runner,
     fixability,
     followup,
+    issue_freshness,
     public_loop,
 )
 from issue_triage.issue_model import Issue
@@ -431,27 +432,39 @@ def _judge(store: IssueStore, issue: Issue, base: prove.PinnedBase, trigger: str
     return True
 
 
-# Feature requests whose screen the agent failed this process, by when.
-_screen_failed: dict[int, float] = {}
 # Feature requests screened per coordinator pass.
 SCREEN_BATCH = 3
+# A screening claim this old is abandoned: the screener may run twice, then the mockup.
+SCREEN_CLAIM_SECONDS = 3 * feature_screen.AGENT_TIMEOUT_SECONDS
+
+
+def _screenable(issue: Issue) -> bool:
+    """An undecided feature request with no current screen, no live claim, and
+    no failed screen resting through TRIAGE_RETRY_SECONDS."""
+    if not feature_screen.is_feature_request(issue) or issue.feature_decision is not None:
+        return False
+    sec = issue.section("feature_screen")
+    if sec is None:
+        return True
+    age = storekit.seconds_since(sec.get("checked_at"))
+    if sec.get("verdict") == "screening":
+        return age is None or age >= SCREEN_CLAIM_SECONDS
+    if not issue_freshness.is_current(issue, "feature_screen"):
+        return True
+    return sec.get("verdict") == "failed" and (age is None or age >= TRIAGE_RETRY_SECONDS)
 
 
 def screen_features(store: IssueStore, limit: int | None, *, trigger: str = "worker") -> list[int]:
-    """Screen up to `limit` (None: every) open feature requests with no current
-    screen and no maintainer decision, the newest first, over this machine's
-    pinned base and one refresh of the taste digest, each while the lane's AI
-    capacity is open. The issues screened. A base this machine lacks leaves
-    every request unscreened; an agent outage propagates."""
+    """Screen up to `limit` (None: every) screenable feature requests, the
+    newest first, over this machine's pinned base and one refresh of the taste
+    digest, each while the lane's AI capacity is open. The issues screened. A
+    base this machine lacks leaves every request unscreened; an agent outage
+    propagates."""
     from prospector_app.backend import issue_data
 
-    now = time.monotonic()
     issues = issue_data.issues()
-    pending = sorted(((i.raw.get("meta") or {}).get("created_at") or "", n, i)
-                     for n, i in issues.items()
-                     if feature_screen.is_feature_request(i)
-                     and feature_screen.current(i) is None and i.feature_decision is None
-                     and now - _screen_failed.get(n, -TRIAGE_RETRY_SECONDS) >= TRIAGE_RETRY_SECONDS)
+    pending = sorted(((i.raw.get("meta") or {}).get("created_at") or "", n)
+                     for n, i in issues.items() if _screenable(i))
     pending = pending[::-1][:limit]
     if not pending or not lane_health.capacity_open(LANE):
         return []
@@ -461,18 +474,36 @@ def screen_features(store: IssueStore, limit: int | None, *, trigger: str = "wor
         return []
     history = feature_history.refresh(issues.values())
     screened = []
-    for _, n, issue in pending:
+    for _, n in pending:
         if not lane_health.capacity_open(LANE):
             break
-        if _screen(store, issue, base, history, trigger):
+        if _screen(store, n, base, history, trigger):
             screened.append(n)
     return screened
 
 
-def _screen(store: IssueStore, issue: Issue, base: prove.PinnedBase, history: Path,
+def _claim_screen(store: IssueStore, n: int) -> tuple[Issue, dict | None] | None:
+    """Claim issue `n` for this worker's screen under a compare-and-swap: the
+    claimed issue and the section the claim replaced, or None when it is no
+    longer screenable or another writer got there first."""
+    got = store.stamped_issue(n)
+    if got is None or not _screenable(got[0]):
+        return None
+    issue, stamp = got
+    prior = issue.section("feature_screen")
+    issue.stage_feature_screen({"verdict": "screening", "by": settings.worker_id()})
+    return (issue, prior) if store.save_issue_if(issue, stamp) else None
+
+
+def _screen(store: IssueStore, n: int, base: prove.PinnedBase, history: Path,
             trigger: str) -> bool:
-    """Screen one feature request and book it. Whether the agent finished."""
-    n = issue.number
+    """Claim, screen and book one feature request. Whether the agent finished.
+    An unusable answer is recorded as a `failed` screen, which rests the
+    request; an agent outage releases the claim."""
+    claimed = _claim_screen(store, n)
+    if claimed is None:
+        return False
+    issue, prior = claimed
     started = storekit.now()
     created = storekit.parse_ts((issue.raw.get("meta") or {}).get("created_at"))
     replies = (public_loop.read_replies(issue, created) or []) if created else []
@@ -482,11 +513,12 @@ def _screen(store: IssueStore, issue: Issue, base: prove.PinnedBase, history: Pa
                                             replies=replies, subject=verdict_log.Subject("issue", n))
     except (ValueError, RuntimeError) as e:
         if isinstance(e, headless_agent.AgentUnavailable):
+            store.set_issue_section(n, "feature_screen", prior)
             raise
-        _screen_failed[n] = time.monotonic()
         traceback.print_exc()
+        issue.record_feature_screen({"verdict": "failed", "error": str(e)[:300]})
         return False
-    store.edit_issue(n).record_feature_screen(section)
+    issue.record_feature_screen(section)
     store.append_run({"phase": "feature-screen:run", "issue": n, "started": started,
                       "finished": storekit.now(), "trigger": trigger,
                       "stats": {"verdict": section["verdict"], "size": section.get("size"),

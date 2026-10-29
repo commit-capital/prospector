@@ -274,6 +274,10 @@ class Issue:
         _stamp(self.rec, "feature_screen", section, None)
         self._store.set_issue_section(self.number, "feature_screen", self.rec["feature_screen"])
 
+    def stage_feature_screen(self, section: dict) -> None:
+        """Stage the screen without persisting, for a compare-and-swap."""
+        _stamp(self.rec, "feature_screen", section, None)
+
     def record_feature_decision(self, section: dict) -> None:
         """Write the decision alone, so a screen recorded meanwhile survives."""
         assert self._store is not None, "a store-less Issue view is read-only"

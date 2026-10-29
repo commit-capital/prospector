@@ -30,6 +30,9 @@ if TYPE_CHECKING:
 MODEL = "sonnet"
 AGENT_TIMEOUT_SECONDS = 900
 VERDICTS = ("consider", "not-a-fit", "unclear")
+# What the screening lane writes in place of a verdict: its claim while a worker
+# screens, and an unusable answer resting before a retry. Neither is a verdict.
+PLACEHOLDERS = ("screening", "failed")
 SIZES = ("small", "medium", "large")
 MOCKUP_MAX = 200_000
 MOCKUP_FILE = "mockup.html"
@@ -348,11 +351,18 @@ def approval(issue: Issue | None, *, requested: bool = False) -> str | None:
     decision = (issue.feature_decision if issue else None) or {}
     if not requested and decision.get("decision") != "implement":
         return None
-    return approval_block(issue.feature_screen if issue else None, repo=config.repo_name())
+    screen = issue.feature_screen if issue else None
+    return approval_block(None if _placeholder(screen) else screen, repo=config.repo_name())
+
+
+def _placeholder(screen: dict | None) -> bool:
+    return (screen or {}).get("verdict") in PLACEHOLDERS
 
 
 def current(issue: Issue) -> dict | None:
-    """The issue's screen while it is current, else None."""
-    if issue.feature_screen is None or not issue_freshness.is_current(issue, "feature_screen"):
+    """The issue's screen while it is current and a verdict, else None."""
+    screen = issue.feature_screen
+    if (screen is None or _placeholder(screen)
+            or not issue_freshness.is_current(issue, "feature_screen")):
         return None
-    return issue.feature_screen
+    return screen

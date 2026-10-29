@@ -47,6 +47,12 @@ def test_the_block_leaves_out_the_maintainer_s_guidance(store):
     assert block is not None and "x fits" in block and "in the toolbar" not in block
 
 
+
+def test_a_placeholder_screen_gives_the_approval_no_notes(store):
+    store.edit_issue(7).record_feature_screen({"verdict": "failed", "error": "no JSON"})
+    block = feature_screen.approval(store.load_issue(7), requested=True)
+    assert block is not None and "(none given)" in block and "no JSON" not in block
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "repo_name", lambda: "paperclip")

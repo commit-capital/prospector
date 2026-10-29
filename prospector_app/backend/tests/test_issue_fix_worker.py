@@ -11,7 +11,7 @@ import pytest
 
 from issue_triage import dispute_question, feature_history, feature_screen, fix_review, fix_review_runner, fixability, public_loop
 from issue_triage.issue_store import IssueStore
-from pipeline import profile, prove, settings
+from pipeline import headless_agent, profile, prove, settings
 from pipeline import store as S
 from prospector_app.backend import data, issue_data, issue_fix_worker, lane_health
 
@@ -539,7 +539,6 @@ def screening(hunting, monkeypatch, tmp_path):
     monkeypatch.setattr(prove, "pinned", lambda st: prove.PinnedBase(
         sha="b" * 40, tier=2, image="img", clone=tmp_path))
     monkeypatch.setattr(public_loop, "read_replies", lambda issue, after: [])
-    monkeypatch.setattr(issue_fix_worker, "_screen_failed", {})
     monkeypatch.setattr(feature_history, "refresh", lambda issues, *, force=False: tmp_path)
     screened: dict = {"section": {"verdict": "consider", "size": "small", "mockup": "<html>"},
                       "issues": []}
@@ -588,11 +587,58 @@ def test_screen_features_stops_when_capacity_closes(hunting, screening, capacity
     assert issue_fix_worker.screen_features(hunting, None) == [7]
 
 
-def test_a_failed_screen_rests_the_request(hunting, screening):
+def _age_screen(store: IssueStore, n: int, seconds: float) -> None:
+    rec = store.load_issue(n).raw
+    rec["feature_screen"]["checked_at"] = _ago(seconds=seconds)
+    store.save_issue(rec)
+
+
+def test_a_failed_screen_is_recorded_and_rests_until_the_retry_time(hunting, screening):
     screening["section"] = ValueError("no JSON object found in agent output")
     assert issue_fix_worker.screen_features(hunting, None) == []
+    screen = hunting.load_issue(3).feature_screen
+    assert screen["verdict"] == "failed" and "no JSON object" in screen["error"]
+    assert feature_screen.current(hunting.load_issue(3)) is None
     assert issue_fix_worker.screen_features(hunting, None) == []
     assert screening["issues"] == [3]
+    _age_screen(hunting, 3, issue_fix_worker.TRIAGE_RETRY_SECONDS + 60)
+    screening["section"] = {"verdict": "unclear"}
+    assert issue_fix_worker.screen_features(hunting, None) == [3]
+    assert screening["issues"] == [3, 3]
+
+
+def test_an_issue_another_worker_claimed_is_skipped(hunting, screening):
+    hunting.edit_issue(3).record_feature_screen({"verdict": "screening", "by": "studio"})
+    assert issue_fix_worker.screen_features(hunting, None) == []
+    assert screening["issues"] == []
+    assert feature_screen.current(hunting.load_issue(3)) is None
+
+
+def test_an_abandoned_claim_is_retaken(hunting, screening):
+    hunting.edit_issue(3).record_feature_screen({"verdict": "screening", "by": "studio"})
+    _age_screen(hunting, 3, issue_fix_worker.SCREEN_CLAIM_SECONDS + 60)
+    assert issue_fix_worker.screen_features(hunting, None) == [3]
+    assert hunting.load_issue(3).feature_screen["verdict"] == "consider"
+
+
+def test_a_screen_holds_its_claim_while_the_agent_runs(hunting, screening, monkeypatch):
+    seen = []
+
+    def screen(issue, *a, **kw):
+        seen.append(hunting.load_issue(issue.number).feature_screen)
+        return {"verdict": "unclear"}
+
+    monkeypatch.setattr(feature_screen, "screen", screen)
+    monkeypatch.setattr(settings, "worker_id", lambda: "studio")
+    assert issue_fix_worker.screen_features(hunting, None) == [3]
+    assert seen[0]["verdict"] == "screening" and seen[0]["by"] == "studio"
+
+
+def test_an_agent_outage_releases_the_claim(hunting, screening):
+    screening["section"] = headless_agent.AgentUnavailable("down")
+    with pytest.raises(headless_agent.AgentUnavailable):
+        issue_fix_worker.screen_features(hunting, None)
+    assert hunting.load_issue(3).feature_screen is None
 
 
 def test_the_feature_screen_backfill_prints_yes_rate(hunting, screening, monkeypatch, capsys):
