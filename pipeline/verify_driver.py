@@ -568,6 +568,15 @@ def _run_build_step(what: str, argv: list[str], *, env: dict[str, str],
 _BUILT_MARKER = "built"
 
 
+def _lacks_browser(sha: str, tier: int, tag: str) -> bool:
+    """Whether a finished tier-1 base for an e2e profile is missing the browser
+    its clone's Playwright pin calls for. A base without its clone counts as
+    complete."""
+    return (tier == 1 and profile.active().verify.e2e is not None
+            and playwright_version(base_clone_dir(sha)) is not None
+            and not base_has_browser(tag))
+
+
 def build_base_image(sha: str, *, tier: int) -> str:
     """Produce a scrubbed remote-stripped clone of `sha` under SCRATCH and build
     the per-batch base image from it (Tier 1 prefetches the pnpm store and the
@@ -584,7 +593,8 @@ def build_base_image(sha: str, *, tier: int) -> str:
     ctx = base_clone_dir(sha).parent
     tag = base_image_tag(sha, tier)
     with verify_gc.generation_lock(ctx):
-        if (ctx / _BUILT_MARKER).is_file() and image_parent(tag) == sandbox_image():
+        if ((ctx / _BUILT_MARKER).is_file() and image_parent(tag) == sandbox_image()
+                and not _lacks_browser(sha, tier, tag)):
             return tag
         _build_base_image(sha, tier, ctx, tag)
         (ctx / _BUILT_MARKER).touch()
@@ -1493,6 +1503,11 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
 # Where the e2e phase's Playwright writes its JSON report and screenshots.
 E2E_OUT = "/tmp/e2e-out"
 
+# How long before the host's phase timeout Playwright stops itself, so it can
+# shut its webServer down and write a partial report.
+E2E_STOP_MARGIN_S = 120
+_E2E_MIN_GLOBAL_TIMEOUT_MS = 60_000
+
 # One deadline for the whole artifact copy, and the most it reads past what the
 # artifact reader takes before giving the copy up.
 E2E_COPY_TIMEOUT_S = 120
@@ -1503,14 +1518,18 @@ def e2e_test_cmd(cfg: profile.E2eConfig, specs: list[str] | None = None) -> str:
     """The e2e phase's bash command, built from the profile alone. With no
     `specs` it runs every `*.spec.ts` under the config's directory but the
     profile's excludes, listed into an array inside the container; an empty
-    selection exits 1 rather than run the whole config."""
+    selection exits 1. The line reporter's progress goes to stdout and the
+    JSON report to the file PLAYWRIGHT_JSON_OUTPUT_NAME names."""
     if specs == []:
         raise ValueError("no e2e specs selected")
+    global_timeout_ms = max(_E2E_MIN_GLOBAL_TIMEOUT_MS,
+                            (cfg.boot_timeout_s - E2E_STOP_MARGIN_S) * 1000)
     run = f"PLAYWRIGHT_JSON_OUTPUT_NAME={E2E_OUT}/report.json"
     if cfg.channel_env:
         run = f"{cfg.channel_env}=chromium {run}"
     run += (f" npx playwright test --config {shlex.quote(cfg.config)}"
-            f" --reporter=json --output {E2E_OUT} --")
+            f" --reporter=line,json --global-timeout={global_timeout_ms}"
+            f" --output {E2E_OUT} --")
     if specs is not None:
         return f"{run} {' '.join(shlex.quote(s) for s in specs)}"
     root = posixpath.dirname(cfg.config) or "."
@@ -1580,6 +1599,18 @@ def _remove_container(container: str, env: dict[str, str]) -> None:
               file=sys.stderr, flush=True)
 
 
+def e2e_config(image: str) -> profile.E2eConfig:
+    """The profile's e2e section. Raises RuntimeError when the profile has none
+    or `image` holds no browser."""
+    cfg = profile.active().verify.e2e
+    if cfg is None:
+        raise RuntimeError("no verify.e2e in the profile")
+    if not base_has_browser(image):
+        raise RuntimeError("no browser in this base: re-run prepare-base after adding "
+                           "verify.e2e to the profile")
+    return cfg
+
+
 def run_e2e(image: str, *, tier: int, patch: Path | None = None,
             specs: list[str] | None = None, base_sha: str = "",
             head_sha: str = "") -> tuple[int, e2e_report.E2eRun, e2e_artifacts.Artifacts]:
@@ -1587,11 +1618,7 @@ def run_e2e(image: str, *, tier: int, patch: Path | None = None,
     base as pinned) and return the phase's exit code, the parsed run and the
     collected artifacts. The container is kept for the copy and always
     removed after."""
-    cfg = profile.active().verify.e2e
-    if cfg is None:
-        raise RuntimeError("no verify.e2e in the profile")
-    if not base_has_browser(image):
-        raise RuntimeError("no browser in this base")
+    cfg = e2e_config(image)
     test_cmd = e2e_test_cmd(cfg, specs)
     container = container_name()
     env = launcher_env()
@@ -2388,24 +2415,34 @@ def build_image() -> str:
 
 def e2e_coverage_cmd(store: Store, *, runs: int) -> int:
     """Run the e2e suite `runs` times on the pinned base and write the coverage
-    report and the failing specs' screenshots under SCRATCH. Non-zero only when
-    no run booted."""
+    report and the failing specs' screenshots under SCRATCH. Non-zero when no
+    spec ran in any run that booted."""
     if runs < 1:
         print("--runs must be at least 1", file=sys.stderr)
         return 2
     try:
         base_sha, tier = pinned_base(store), pinned_tier(store)
         image = base_image_tag(base_sha, tier)
-        results = [run_e2e(image, tier=tier, base_sha=base_sha) for _ in range(runs)]
+        e2e_config(image)
     except RuntimeError as e:
         print(e, file=sys.stderr)
         return 2
+    no_artifacts = e2e_artifacts.Artifacts(report=None, pngs={}, skipped=[])
+    results: list[tuple[int, e2e_report.E2eRun, e2e_artifacts.Artifacts]] = []
+    for i in range(1, runs + 1):
+        try:
+            results.append(run_e2e(image, tier=tier, base_sha=base_sha))
+        except (OSError, subprocess.SubprocessError, RuntimeError) as e:
+            problem = f"run {i} raised {type(e).__name__}: {e}"[:e2e_report.MAX_TEXT]
+            results.append((-1, e2e_report.E2eRun(booted=False, results=[], problem=problem),
+                            no_artifacts))
     e2e_runs = [r[1] for r in results]
     cov = e2e_coverage.classify(e2e_runs)
     out_dir = SCRATCH / "e2e-coverage" / f"{base_sha[:12]}-{datetime.now(UTC):%Y%m%dT%H%M%SZ}"
     out_dir.mkdir(parents=True, exist_ok=True)
     root = out_dir.resolve()
     shown: list[e2e_coverage.SpecCoverage] = []
+    notes: list[str] = []
     for c in cov:
         key = c.screenshot
         png = next((r[2].pngs[key] for r in results if key in r[2].pngs), None) if key else None
@@ -2414,16 +2451,20 @@ def e2e_coverage_cmd(store: Store, *, runs: int) -> int:
             continue
         target = (root / "shots" / key).resolve()
         assert target.is_relative_to(root), key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(png)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(png)
+        except OSError as e:
+            notes.append(f"could not write shots/{key}: {e.strerror or e}")
+            shown.append(replace(c, screenshot=None))
+            continue
         shown.append(replace(c, screenshot=f"shots/{key}"))
-    failures = e2e_coverage.boot_failures(e2e_runs)
     report = out_dir / "report.md"
     report.write_text(e2e_coverage.render(
-        shown, base_sha=base_sha[:12], boot_failures=failures,
-        skipped=e2e_coverage.skipped_count(e2e_runs)))
+        shown, base_sha=base_sha[:12], boot_failures=e2e_coverage.boot_failures(e2e_runs),
+        runs=len(e2e_runs), skipped=e2e_coverage.skipped_count(e2e_runs), notes=notes))
     print(report.resolve())
-    return 1 if len(failures) == len(e2e_runs) else 0
+    return 0 if cov else 1
 
 
 def main(argv: list[str] | None = None) -> int:

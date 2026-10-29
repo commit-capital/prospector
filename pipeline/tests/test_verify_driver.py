@@ -2885,6 +2885,38 @@ class TestBaseBuildSharing:
         assert len(builds["clones"]) == 2
         assert builds["built"][vd.base_image_tag(self.SHA, 1)] == "pr-verify:pnpm-9.15.4-0123456789ab"
 
+    def _browserless(self, builds, monkeypatch, *, e2e: bool = True, pins: bool = True,
+                     tier: int = 1) -> list[str]:
+        """A finished build whose image holds no browser; returns the probed tags."""
+        vd.build_base_image(self.SHA, tier=tier)
+        if pins:
+            (vd.base_clone_dir(self.SHA) / "pnpm-lock.yaml").write_text(
+                "packages:\n\n  '@playwright/test@1.62.1':\n")
+        if e2e:
+            monkeypatch.setattr(profile, "active", _profile_with_e2e)
+        probed: list[str] = []
+        monkeypatch.setattr(vd, "base_has_browser", lambda tag: probed.append(tag) or False)
+        monkeypatch.setattr(vd, "prefetch_browsers", lambda src, dest: None)
+        return probed
+
+    def test_a_browserless_base_for_an_e2e_profile_is_rebuilt(self, builds, monkeypatch):
+        probed = self._browserless(builds, monkeypatch)
+        vd.build_base_image(self.SHA, tier=1)
+        assert probed == [vd.base_image_tag(self.SHA, 1)]
+        assert len(builds["clones"]) == 2
+
+    def test_a_base_with_its_browser_is_reused(self, builds, monkeypatch):
+        self._browserless(builds, monkeypatch)
+        monkeypatch.setattr(vd, "base_has_browser", lambda tag: True)
+        vd.build_base_image(self.SHA, tier=1)
+        assert len(builds["clones"]) == 1
+
+    @pytest.mark.parametrize("case", [{"e2e": False}, {"pins": False}, {"tier": 0}])
+    def test_a_base_that_needs_no_browser_is_reused_unprobed(self, builds, monkeypatch, case):
+        probed = self._browserless(builds, monkeypatch, **case)
+        vd.build_base_image(self.SHA, tier=case.get("tier", 1))
+        assert probed == [] and len(builds["clones"]) == 1
+
     def test_a_missing_sandbox_image_is_built_before_the_clone(self, builds):
         del builds["built"][vd.sandbox_image()]
         vd.build_base_image(self.SHA, tier=1)
@@ -3263,10 +3295,18 @@ def test_e2e_test_cmd_is_built_from_the_profile_only():
     assert cmd.startswith("mapfile -t specs < <(")
     assert "; PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/e2e-out/report.json npx playwright test" in cmd
     assert "--config tests/e2e/playwright.config.ts" in cmd
-    assert "--reporter=json" in cmd and "--output /tmp/e2e-out" in cmd
+    assert "--reporter=line,json" in cmd and "--output /tmp/e2e-out" in cmd
     assert "--grep-invert" not in cmd                      # excludes are by file, not title
     assert "grep -vxF -e tests/e2e/x.spec.ts" in cmd
     assert "find tests/e2e " in cmd
+
+
+@pytest.mark.parametrize("boot_timeout_s, ms", [(600, 480_000), (3600, 3_480_000),
+                                                (150, 60_000), (1, 60_000)])
+def test_e2e_test_cmd_stops_playwright_before_the_host_does(boot_timeout_s, ms):
+    cfg = _cfg(boot_timeout_s=boot_timeout_s)
+    for cmd in (vd.e2e_test_cmd(cfg), vd.e2e_test_cmd(cfg, specs=["a.spec.ts"])):
+        assert f" --global-timeout={ms} " in cmd
 
 
 def test_e2e_test_cmd_without_excludes_has_no_grep_stage():
@@ -3434,7 +3474,7 @@ class TestRunE2e:
     def test_run_e2e_refuses_a_base_without_a_browser(self, monkeypatch):
         docker, _ = self._setup(monkeypatch)
         monkeypatch.setattr(vd, "base_has_browser", lambda image: False)
-        with pytest.raises(RuntimeError, match="no browser in this base"):
+        with pytest.raises(RuntimeError, match="no browser in this base.*re-run prepare-base"):
             vd.run_e2e("img:t1", tier=1)
         assert docker == []
 

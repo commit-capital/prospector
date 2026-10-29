@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from pipeline import e2e_coverage, verify_driver
+from pipeline import e2e_coverage, profile, verify_driver
 from pipeline.e2e_artifacts import Artifacts
 from pipeline.e2e_report import E2eRun, SpecResult, SpecStatus
 
@@ -91,7 +92,7 @@ def _cov(reliable: int, flaky: int, failing: int) -> list[e2e_coverage.SpecCover
 
 def test_render_leads_with_the_count():
     out = e2e_coverage.render(_cov(reliable=40, flaky=2, failing=2), base_sha="abc",
-                              boot_failures=["no results"], skipped=3)
+                              boot_failures=["no results"], skipped=3, runs=3)
     lines = out.splitlines()
     assert lines[0] == "# E2E coverage at abc: 40 of 44 specs reliable"
     assert "failing.spec.ts › t0" in out
@@ -99,10 +100,118 @@ def test_render_leads_with_the_count():
     assert "a \\| b c" in out
 
 
-def test_cli_writes_the_report_and_the_failing_screenshot(tmp_path, monkeypatch, capsys):
+def test_render_says_when_no_run_booted():
+    out = e2e_coverage.render([], base_sha="abc", boot_failures=["no report"] * 3, runs=3)
+    assert out.splitlines()[0] == "# E2E coverage at abc: no run booted (3 of 3 runs)"
+    assert "no report" in out
+
+
+def test_render_says_when_runs_booted_but_no_spec_ran():
+    out = e2e_coverage.render([], base_sha="abc", boot_failures=["x"], skipped=4, runs=3)
+    assert out.splitlines()[0] == "# E2E coverage at abc: no specs ran"
+
+
+def test_render_lists_notes():
+    out = e2e_coverage.render(_cov(1, 0, 0), base_sha="abc", boot_failures=[], runs=1,
+                              notes=["could not write shots/a.png: disk full"])
+    assert "## Notes" in out and "- could not write shots/a.png: disk full" in out
+
+
+@pytest.fixture
+def cli(tmp_path, monkeypatch):
+    """The CLI on a pinned tier-0 base with an e2e profile and a browser."""
     monkeypatch.setattr(verify_driver, "SCRATCH", tmp_path)
     monkeypatch.setattr(verify_driver, "local_pin",
                         lambda store: {"base_sha": "f" * 40, "tier": 0})
+    monkeypatch.setattr(profile, "active", lambda: profile.parse_profile(
+        {"version": 1, "verify": {"e2e": {"config": "e2e/p.config.ts"}}}, "t"))
+    monkeypatch.setattr(verify_driver, "base_has_browser", lambda image: True)
+    return ["e2e-coverage", "--store", str(tmp_path / "s.db")]
+
+
+def _ok_run(image: str, **kw: object):
+    return 0, _run(_res("ok", "passed")), Artifacts(report=None, pngs={}, skipped=[])
+
+
+def _report_of(capsys) -> str:
+    return Path(capsys.readouterr().out.strip().splitlines()[-1]).read_text()
+
+
+@pytest.mark.parametrize("unready, message", [
+    ("profile", "no verify.e2e in the profile"),
+    ("browser", "re-run prepare-base after adding verify.e2e to the profile")])
+def test_cli_checks_the_profile_and_browser_once_before_any_run(
+        cli, monkeypatch, capsys, unready, message):
+    if unready == "profile":
+        monkeypatch.setattr(profile, "active", lambda: profile.parse_profile({"version": 1}, "t"))
+    else:
+        monkeypatch.setattr(verify_driver, "base_has_browser", lambda image: False)
+    monkeypatch.setattr(verify_driver, "run_e2e", lambda *a, **k: pytest.fail("ran"))
+    assert verify_driver.main([*cli, "--runs", "3"]) == 2
+    assert message in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("exc", [OSError("docker gone"), subprocess.TimeoutExpired("docker", 5),
+                                 RuntimeError("x" * 400)])
+def test_cli_keeps_earlier_runs_when_one_raises(cli, monkeypatch, capsys, exc):
+    calls: list[int] = []
+
+    def flaky_run(image: str, **kw: object):
+        calls.append(1)
+        if len(calls) == 2:
+            raise exc
+        return _ok_run(image)
+
+    monkeypatch.setattr(verify_driver, "run_e2e", flaky_run)
+    assert verify_driver.main([*cli, "--runs", "3"]) == 0
+    report = _report_of(capsys)
+    assert len(calls) == 3
+    assert report.splitlines()[0] == f"# E2E coverage at {'f' * 12}: 1 of 1 specs reliable"
+    line = next(ln for ln in report.splitlines() if "run 2 raised" in ln)
+    assert f"run 2 raised {type(exc).__name__}: " in line
+    assert len(line) <= len("- ") + 300
+
+
+def test_cli_lets_a_keyboard_interrupt_through(cli, monkeypatch):
+    def interrupted(image: str, **kw: object):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(verify_driver, "run_e2e", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        verify_driver.main([*cli, "--runs", "2"])
+
+
+def test_cli_skips_a_screenshot_it_cannot_write(cli, monkeypatch, capsys):
+    def failing_run(image: str, **kw: object):
+        run = _run(_res("bad", "failed", "boom", ["bad/shot.png"]))
+        return 1, run, Artifacts(report=None, pngs={"bad/shot.png": PNG}, skipped=[])
+
+    monkeypatch.setattr(verify_driver, "run_e2e", failing_run)
+    real_write = Path.write_bytes
+
+    def write_bytes(self: Path, data: bytes) -> int:
+        if self.name == "shot.png":
+            raise OSError("disk full")
+        return real_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", write_bytes)
+    assert verify_driver.main([*cli, "--runs", "1"]) == 0
+    report = _report_of(capsys)
+    assert "could not write shots/bad/shot.png: disk full" in report
+    row = next(ln for ln in report.splitlines() if "bad" in ln and "boom" in ln)
+    assert "shots/" not in row
+
+
+@pytest.mark.parametrize("run, headline", [
+    (E2eRun(booted=False, results=[], problem="no report"), "no run booted (2 of 2 runs)"),
+    (_run(_res("s", "skipped")), "no specs ran")])
+def test_cli_fails_when_nothing_counted(cli, monkeypatch, capsys, run, headline):
+    monkeypatch.setattr(verify_driver, "run_e2e", lambda image, **kw: (
+        1, run, Artifacts(report=None, pngs={}, skipped=[])))
+    assert verify_driver.main([*cli, "--runs", "2"]) == 1
+    assert _report_of(capsys).splitlines()[0] == f"# E2E coverage at {'f' * 12}: {headline}"
+
+
+def test_cli_writes_the_report_and_the_failing_screenshot(tmp_path, cli, monkeypatch, capsys):
     calls: list[str] = []
 
     def fake_run_e2e(image: str, **kw: object):
@@ -112,7 +221,7 @@ def test_cli_writes_the_report_and_the_failing_screenshot(tmp_path, monkeypatch,
         return 0, run, Artifacts(report=None, pngs={"bad/shot.png": PNG}, skipped=[])
 
     monkeypatch.setattr(verify_driver, "run_e2e", fake_run_e2e)
-    rc = verify_driver.main(["e2e-coverage", "--runs", "2", "--store", str(tmp_path / "s.db")])
+    rc = verify_driver.main([*cli, "--runs", "2"])
     assert rc == 0 and calls == ["pr-verify-base:ffffffffffff-t0"] * 2
     report = Path(capsys.readouterr().out.strip().splitlines()[-1])
     assert report.is_file() and report.is_relative_to(tmp_path / "e2e-coverage")

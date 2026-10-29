@@ -110,10 +110,18 @@ def _cell(text: str | None) -> str:
     return " ".join((text or "").split()).replace("|", "\\|")
 
 
-def render(cov: list[SpecCoverage], *, base_sha: str, boot_failures: list[str],
-           skipped: int = 0) -> str:
+def _headline(cov: list[SpecCoverage], boot_failures: list[str], runs: int) -> str:
+    if len(boot_failures) >= runs:
+        return f"no run booted ({len(boot_failures)} of {runs} runs)"
+    if not cov:
+        return "no specs ran"
     reliable = sum(1 for c in cov if c.verdict == "reliable")
-    lines = [f"# E2E coverage at {base_sha}: {reliable} of {len(cov)} specs reliable", ""]
+    return f"{reliable} of {len(cov)} specs reliable"
+
+
+def render(cov: list[SpecCoverage], *, base_sha: str, boot_failures: list[str], runs: int,
+           skipped: int = 0, notes: list[str] | None = None) -> str:
+    lines = [f"# E2E coverage at {base_sha}: {_headline(cov, boot_failures, runs)}", ""]
     for verdict in _VERDICTS:
         rows = [c for c in cov if c.verdict == verdict]
         if not rows:
@@ -129,4 +137,7 @@ def render(cov: list[SpecCoverage], *, base_sha: str, boot_failures: list[str],
     if boot_failures:
         lines += ["", "## Runs that did not count", ""]
         lines += [f"- {_cell(p)}" for p in boot_failures]
+    if notes:
+        lines += ["", "## Notes", ""]
+        lines += [f"- {_cell(n)}" for n in notes]
     return "\n".join(lines) + "\n"
