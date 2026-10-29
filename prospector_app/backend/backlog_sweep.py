@@ -17,8 +17,7 @@ author to rebase when that cannot work:
 - `ineligible`: `gates.fix_eligibility` keeps the bot off the branch.
 
 The classification is local git only: the base and every PR head are fetched
-into a gitignored bare repository and tested with `git replay` and `git
-merge-tree`, pushing nothing. Every action is one runs-ledger entry (PHASE),
+into a gitignored bare repository and tested with `git merge-tree`, pushing nothing. Every action is one runs-ledger entry (PHASE),
 which is both the per-PR record that a head was already queued or asked (so the
 sweep acts on a head at most once each way) and the count the daily cap
 `TRIAGE_BACKLOG_SWEEP_DAILY` is spent against. The cap is 0 by default, which
@@ -104,9 +103,15 @@ def _when(stamp: str | None) -> datetime | None:
         return None
 
 
+# The replayed commits stay in the local cache, so their identity is a placeholder.
+_GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_AUTHOR_NAME": "backlog-sweep",
+            "GIT_AUTHOR_EMAIL": "backlog-sweep@localhost", "GIT_COMMITTER_NAME": "backlog-sweep",
+            "GIT_COMMITTER_EMAIL": "backlog-sweep@localhost"}
+
+
 def _git(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git", "-C", str(REPO_DIR), *args], capture_output=True, text=True,
-                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, timeout=600)
+                          env={**os.environ, **_GIT_ENV}, timeout=600)
 
 
 def _base_ref() -> str:
@@ -141,13 +146,25 @@ def probe(n: int, head: str | None) -> Probe | str:
     if merged.returncode not in (0, 1):
         return f"git merge-tree failed: {merged.stderr.strip()}"
     conflicts = merged.stdout.split("\n")[1:] if merged.returncode == 1 else []
-    rebase_clean = (not merges and not conflicts
-                    and _git("replay", "--onto", base, span).returncode == 0)
+    rebase_clean = not merges and not conflicts and _replays(base, span)
     return Probe(head_date=_git("log", "-1", "--format=%cI", head).stdout.strip(),
                  current=current, merge_commits=merges, rebase_clean=rebase_clean,
                  conflicts=[p for p in conflicts if p],
                  changed=[p for p in _git("diff", "--name-only", f"{base}...{head}")
                           .stdout.split("\n") if p])
+
+
+def _replays(base: str, span: str) -> bool:
+    """Whether each commit in `span` cherry-picks onto `base` in turn without
+    conflict, as a rebase would."""
+    onto = _git("rev-parse", base).stdout.strip()
+    for commit in _git("rev-list", "--reverse", span).stdout.split():
+        picked = _git("merge-tree", "--write-tree", "--no-messages",
+                      f"--merge-base={commit}^", onto, commit)
+        if picked.returncode != 0:
+            return False
+        onto = _git("commit-tree", picked.stdout.split()[0], "-p", onto, "-m", "replay").stdout.strip()
+    return True
 
 
 def classify(rec: Pr, pr_probe: Probe) -> Plan:
