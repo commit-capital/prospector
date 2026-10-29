@@ -102,10 +102,27 @@ def _titles(path: tuple[str, ...], title: object) -> str:
     return _text(_SEP.join((*path, title if isinstance(title, str) else "")))
 
 
+def _tail_problem(output_tail: str) -> str:
+    lines = [ln.strip() for ln in output_tail.splitlines() if ln.strip()]
+    errors = [ln for ln in lines if ln.startswith("Error:")]
+    return (errors or lines or ["no report"])[-1][:MAX_TEXT]
+
+
+def _top_error(data: dict[str, object]) -> str | None:
+    """The first line of Playwright's first top-level error (a webServer,
+    global-setup or global-timeout failure)."""
+    errors = data.get("errors")
+    if not isinstance(errors, list) or not errors or not isinstance(errors[0], dict):
+        return None
+    message = errors[0].get("message")
+    if not isinstance(message, str):
+        return None
+    return _text(_ANSI.sub("", message).strip().split("\n", 1)[0]) or None
+
+
 def parse_report(report: bytes | None, *, output_tail: str) -> E2eRun:
     if report is None:
-        errors = [ln.strip() for ln in output_tail.splitlines() if ln.strip().startswith("Error:")]
-        return _no_run(errors[-1][:MAX_TEXT] if errors else "no report")
+        return _no_run(_tail_problem(output_tail))
     try:
         data: object = json.loads(report)
     except (ValueError, RecursionError):
@@ -149,11 +166,14 @@ def parse_report(report: bytes | None, *, output_tail: str) -> E2eRun:
                 break
         stack.extend((c, here, suite_file) for c in reversed(_dicts(suite.get("suites"))))
 
+    top_error = _top_error(data)
     if not results and not dropped:
-        return _no_run("no specs ran")
+        return _no_run(top_error or "no specs ran")
     notes: list[str] = []
     if capped:
         notes.append(f"stopped at {MAX_RESULTS} results")
     if dropped:
         notes.append(f"dropped {dropped} results with an unsafe file path")
+    if top_error:
+        notes.append(top_error)
     return E2eRun(booted=True, results=results, problem="; ".join(notes) or None)

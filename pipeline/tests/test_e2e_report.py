@@ -128,6 +128,39 @@ def test_missing_report_is_a_boot_failure():
     assert parse_report(None, output_tail="").problem == "no report"
 
 
+def test_missing_report_without_an_error_line_names_the_last_tail_line():
+    tail = "  [12/167] a.spec.ts › boots\n\nphase e2e timed out after 600s\n\n"
+    assert parse_report(None, output_tail=tail).problem == "phase e2e timed out after 600s"
+    assert parse_report(None, output_tail="x" * 500 + "\n").problem == "x" * 300
+    assert parse_report(None, output_tail=" \n\n").problem == "no report"
+
+
+def test_a_top_level_error_is_the_problem_of_a_run_with_no_specs():
+    run = _run({"suites": [], "errors": [
+        {"message": "\x1b[31mError: Timed out waiting 120000ms from config.webServer.\x1b[39m\n  at x"},
+        {"message": "second"}]})
+    assert run.booted is False
+    assert run.problem == "Error: Timed out waiting 120000ms from config.webServer."
+
+
+def test_a_top_level_error_is_capped():
+    run = _run({"suites": [], "errors": [{"message": "y" * 1000}]})
+    assert run.problem == "y" * 300
+
+
+def test_a_top_level_error_is_noted_beside_results():
+    report = _report(_spec("t", [{"status": "passed"}], status="expected", expectedStatus="passed"))
+    report["errors"] = [{"message": "Timed out waiting 480s for the test suite to run"}]
+    run = _run(report)
+    assert run.booted and [r.title for r in run.results] == ["t"]
+    assert run.problem == "Timed out waiting 480s for the test suite to run"
+
+
+def test_malformed_top_level_errors_are_ignored():
+    for errors in ("boom", [], ["boom"], [{"message": 3}], [{}], {"message": "x"}):
+        assert _run({"suites": [], "errors": errors}).problem == "no specs ran"
+
+
 def test_truncated_json_is_a_boot_failure():
     run = parse_report(b'{"suites": [', output_tail="")
     assert run.booted is False and run.problem
