@@ -50,6 +50,17 @@ def test_a_bulk_merge_goes_through_the_gated_merge(monkeypatch):
         "merged": 1, "blocked": 1}
 
 
+def test_post_design_findings_goes_through_the_gated_post(monkeypatch):
+    seen = []
+    monkeypatch.setattr(executor, "post_design_findings", lambda n, *, dry_run: seen.append(
+        (n, dry_run)) or {"pr": n, "action": "DESIGN_FINDINGS",
+                          "status": "skipped" if n == 2 else "dry-run"})
+    evs = _drain(bulk.run_bulk([1, 2], "POST_DESIGN_FINDINGS", dry_run=True))
+    assert seen == [(1, True), (2, True)]
+    assert done_summary([e for e in evs if e["event"] == "done"][0]) == {
+        "dry-run": 1, "skipped": 1}
+
+
 def test_review_retrigger_routes_and_schedules_refresh(monkeypatch):
     baselines = {1: object(), 2: object()}
     seen = []

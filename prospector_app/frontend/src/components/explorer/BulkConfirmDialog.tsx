@@ -42,7 +42,8 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, r
   }, []);
 
   const postsComment = action !== "MERGE" && action !== "REVIEW_RETRIGGER"
-    && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY" && action !== "RUN_DESIGN";
+    && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY" && action !== "RUN_DESIGN"
+    && action !== "POST_DESIGN_FINDINGS";
   const localQueue = action === "QUEUE_VERIFY";
   const reviewNoun = action === "RUN_SECURITY" ? "security review" : action === "RUN_DESIGN" ? "design review" : null;
   const backgroundJobs = reviewNoun !== null;
@@ -126,6 +127,13 @@ export function BulkConfirmDialog({ action, comment, canonical, perPr = false, r
           📐 Starts one design review per PR, one at a time, on this machine's verify
           base pin, replacing any review the PR's head already has. A PR not
           threat-scanned clear is skipped. The jobs continue if this dialog or page is closed.
+        </div>
+      )}
+      {action === "POST_DESIGN_FINDINGS" && (
+        <div className="muted small bulk-perpr-note">
+          💬 Posts each PR's confirmed design findings (with its minor ones as optional) as
+          the bot, once per head and set of findings. A PR outside the Post design findings
+          setting's audience, or with no confirmed blocking or major finding, is skipped.
         </div>
       )}
       {postsComment && (perPr

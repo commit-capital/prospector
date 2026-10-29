@@ -168,6 +168,7 @@ export const TERMS: Record<string, GlossaryEntry> = {
   "bulk.QUEUE_VERIFY": { title: "Queue for verification", meaning: "Run each selected PR's tests in a safe, isolated environment. Nothing is posted to GitHub." },
   "bulk.RUN_SECURITY": { title: "Run security reviews", meaning: "Start an in-depth security review of each selected PR. Runs in the background." },
   "bulk.RUN_DESIGN": { title: "Run design reviews", meaning: "Start a design review (reuse, layering, test quality) of each selected PR's latest commit. Runs in the background, one at a time." },
+  "bulk.POST_DESIGN_FINDINGS": { title: "Post design findings to authors", meaning: "Comment each selected PR's confirmed design findings on it, so its author can fix them. Only PRs the Post design findings setting covers." },
   "bulk.MERGE": { title: "Merge", meaning: "Merge each selected PR. A PR that fails its checks is skipped." },
 
   // freshness (the OTHER meaning of "stale")

@@ -125,8 +125,10 @@ doesn't fit. The issue-fix worker then does the work.
   - **✓ seen** on a community response: POST /api/responses/{n}/ack. Store,
     for every operator.
   - **Bulk → Apply** (close, review, comment, merge, re-trigger, queue
-    verification, run security or design reviews): POST /api/execute/bulk,
-    one PR at a time. Each PR passes its own gates.
+    verification, run security or design reviews, post design findings to
+    authors): POST /api/execute/bulk, one PR at a time. Each PR passes its own
+    gates. To post the design findings already standing, filter on the Design
+    review check failing, select all, and apply in dry-run first.
 - **Issues** close-out cards and the bulk close bar: the issue close endpoints,
   one issue at a time.
 - **Cluster detail**: one action per member, previewed and then run via POST
