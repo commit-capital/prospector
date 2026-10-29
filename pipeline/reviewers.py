@@ -451,10 +451,9 @@ DESIGN_BLOCKING = frozenset({"blocking", "major"})
 # Raised with any change to what the design review's severities mean or how
 # its findings are judged; a review stamped with an earlier rubric reads stale
 # and is taken again.
-DESIGN_RUBRIC = 4
-# The rubric that set what the severities mean. Rubrics 3 and 4 only change how
-# blocking and major findings are judged, so an earlier review with none of
-# them still stands.
+DESIGN_RUBRIC = 3
+# The rubric that set what the severities mean. Rubric 3 only verifies blocking
+# and major findings, so an earlier review with none of them still stands.
 DESIGN_SEVERITY_RUBRIC = 2
 
 
