@@ -20,12 +20,13 @@ if TYPE_CHECKING:
 
 
 def _c(key: str, name: str, status: str, detail: str = "", at: str | None = None,
-       advisory: bool = False, stale: bool = False) -> dict:
+       advisory: bool = False, stale: bool = False, pending: bool = False) -> dict:
     """One rollup row. An `advisory` row is shown without counting toward
     readiness or the passed/total tally; a `stale` one describes an older
-    commit than the PR's head, which `against` names."""
+    commit than the PR's head, which `against` names; a `pending` one warns
+    only because a review it waits on hasn't come in."""
     return {"key": key, "name": name, "status": status, "detail": detail, "at": at,
-            "advisory": advisory, "stale": stale, "against": None}
+            "advisory": advisory, "stale": stale, "pending": pending, "against": None}
 
 
 # Stable identifiers for each named check, independent of the display name
@@ -58,7 +59,8 @@ def _aggregate(key: str, name: str, rec: Pr, kind: str, at: str | None) -> dict:
         status = "warn"
     else:
         status = "pass"
-    return _c(key, name, status, " · ".join(parts), at, stale=reviewers.STALE in live)
+    return _c(key, name, status, " · ".join(parts), at, stale=reviewers.STALE in live,
+              pending=status == "warn" and reviewers.STALE not in live)
 
 
 _BAR_CHECK = {reviewers.PASS: "pass", reviewers.FAIL: "fail", reviewers.STALE: "warn",
@@ -83,7 +85,7 @@ def _design(rec: Pr) -> dict:
         detail = f"{detail} · {covered}"
     row = _c("design", d.label, _BAR_CHECK[b.status],
              detail if gating else f"{detail} · advisory", (entry or {}).get("observed_at"),
-             advisory=not gating)
+             advisory=not gating, pending=b.status == reviewers.PENDING)
     reviewed = (entry or {}).get("reviewed_sha")
     row["against"] = reviewed
     row["stale"] = bool(reviewed and reviewed != review_policy.review_head(rec, d))

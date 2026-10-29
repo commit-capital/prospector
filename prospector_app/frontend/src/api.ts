@@ -619,7 +619,7 @@ export interface CoverageRecord {
 }
 
 // `stale`: the row describes `against`, an older commit than the PR's head.
-export interface CheckItem { key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null; advisory?: boolean; stale?: boolean; against?: string | null }
+export interface CheckItem { key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null; advisory?: boolean; stale?: boolean; pending?: boolean; against?: string | null }
 export interface ChecksRollup { checks: CheckItem[]; passed: number; total: number }
 
 export interface AuthorStats {

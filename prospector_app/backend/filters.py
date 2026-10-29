@@ -157,11 +157,12 @@ def matches(row: dict, spec: dict) -> bool:
         # Per-check filter (#578): each clause narrows on one named check
         # (its stable `key`, from pr_checks.checks_for_record) to one or more
         # of passed/failed/never-ran; clauses AND together, statuses within a
-        # clause OR. A check that never ran for this PR — either because the
-        # phase hasn't run, or its rolled-up status is "na" — reads as
-        # never_ran; "warn" (a caution short of a clean pass, e.g. a stale
-        # security verdict) counts as failed, since it isn't a clean pass.
-        row_checks = {c.get("key"): c.get("status") for c in (row.get("checks") or {}).get("checks") or []}
+        # clause OR. A check that never ran for this PR — the phase hasn't
+        # run, its rolled-up status is "na", or it awaits a review — reads as
+        # never_ran; any other "warn" (a caution short of a clean pass, e.g. a
+        # stale security verdict) counts as failed, since it isn't a clean pass.
+        row_checks = {c.get("key"): "na" if c.get("pending") else c.get("status")
+                      for c in (row.get("checks") or {}).get("checks") or []}
         for clause in spec["checks"]:
             if not isinstance(clause, dict):
                 continue
