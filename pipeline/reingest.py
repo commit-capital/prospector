@@ -30,6 +30,7 @@ from pipeline import headless_agent
 from pipeline import ingest
 from pipeline import redundancy
 from pipeline import reformat_rationales
+from pipeline import threat_scan
 from pipeline.freshness import is_current
 from pipeline.settings import REPO_ROOT
 from pipeline.store import Store
@@ -150,10 +151,9 @@ def _run(store: Store, pr: int) -> int:
         _say(f"✓ PR #{pr} is {rec.state}; refreshed its meta, nothing to re-analyze.")
         return 0
 
-    # 2. The threat verdict must track the current head. Its scan also records
-    #    whether the head is the same patch as an earlier one, whose summary and
-    #    analysis then still hold.
-    if not is_current(rec, "threat"):
+    # 2. Rescan a threat verdict the scan would not keep. The scan also records
+    #    the head's patch, which can carry the summary and analysis.
+    if threat_scan.unscanned({pr: rec}, store.load_threats()):
         _say("② Threat-rescanning the current head…")
         _threat_rescan(pr)
         rec = store.load_pr(pr)
@@ -166,19 +166,19 @@ def _run(store: Store, pr: int) -> int:
              f"summary + analysis unchanged. Nothing to reingest.")
         return 0
 
-    # The agentic tail reads the current head's diff.
+    # 3. The agentic tail reads the current head's diff.
     sha = rec.head_sha or ""
     _say("③ Caching the diff for the current head…")
     diff_cache.fetch_diff(pr, sha, store=store)
 
-    # 3. Re-summarize if the summary went stale (mechanism-level, feeds ANALYZE).
+    # 4. Re-summarize if the summary went stale (mechanism-level, feeds ANALYZE).
     if needs_summary:
         _say("④ Re-summarizing the PR…")
         _resummarize(store, pr, sha, rec.title)
         rec = store.load_pr(pr)
         assert rec is not None
 
-    # 4. Re-analyze if the disposition went stale: per-cluster for a clustered PR,
+    # 5. Re-analyze if the disposition went stale: per-cluster for a clustered PR,
     #    deterministic for a confirmed standalone.
     if needs_analysis:
         cids = rec.cluster_ids
@@ -205,7 +205,7 @@ def _run(store: Store, pr: int) -> int:
             n = analyze_driver.disposition_orphans(store)
             _say(f"    standalone PRs dispositioned: {n}")
 
-    # 5. Report which sections now track the current head.
+    # Report which sections now track the current head.
     rec = store.load_pr(pr)
     assert rec is not None
     _say(f"✓ PR #{pr} reingested at {(rec.head_sha or '?')[:7]}:")

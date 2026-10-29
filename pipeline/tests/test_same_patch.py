@@ -43,9 +43,12 @@ class TestPatchId:
         assert diff_cache.patch_id(BEFORE + "x" * diff_cache.MAX_DIFF_BYTES) is None
 
     def test_a_binary_change_has_none(self):
-        binary = ("diff --git a/fixture.zip b/fixture.zip\nindex 1a..2b 100644\n"
-                  "Binary files a/fixture.zip and b/fixture.zip differ\n")
-        assert diff_cache.patch_id(BEFORE + binary) is None
+        changed = ("diff --git a/fixture.zip b/fixture.zip\nindex 1a..2b 100644\n"
+                   "Binary files a/fixture.zip and b/fixture.zip differ\n")
+        added = ("diff --git a/x.wasm b/x.wasm\nnew file mode 100644\nindex 0000000..3c\n"
+                 "Binary files /dev/null and b/x.wasm differ\n")
+        assert diff_cache.patch_id(BEFORE + changed) is None
+        assert diff_cache.patch_id(BEFORE + added) is None
 
 
 def _seed(store: Store, diffs: Path, head: str, diff: str) -> None:
@@ -54,7 +57,19 @@ def _seed(store: Store, diffs: Path, head: str, diff: str) -> None:
     sections = {k: v for k, v in (rec.raw if rec else {}).items() if k not in ("pr", "meta")}
     store.save_pr({"pr": 1, **sections,
                    "meta": {"title": "t", "author": "alice", "state": "open", "draft": False,
-                            "head_sha": head, "checked_at": "2026-10-28T00:00:00+00:00"}})
+                            "head_sha": head, "base": "master",
+                            "checked_at": "2026-10-28T00:00:00+00:00"}})
+
+
+def _github(monkeypatch, parents: dict[str, list[str]], on_base: tuple[str, ...] = ("b1", "b2")):
+    """GitHub as `threat_scan.base_merge` reads it: each head's parents, and
+    which commits master contains."""
+    def gh_json(path: str) -> dict:
+        if "/commits/" in path:
+            return {"parents": [{"sha": s} for s in parents.get(path.rsplit("/", 1)[1], [])]}
+        other = path.rsplit("/", 1)[1].split("...")[0]
+        return {"status": "ahead" if other in on_base else "diverged"}
+    monkeypatch.setattr(threat_scan.gh, "gh_json", gh_json)
 
 
 def _scan(store: Store, diffs: Path) -> dict:
@@ -65,7 +80,8 @@ def _scan(store: Store, diffs: Path) -> dict:
 
 
 class TestScanRecordsThePatch:
-    def test_base_merges_chain_and_a_real_change_resets(self, tmp_path):
+    def test_base_merges_chain_and_a_real_change_resets(self, tmp_path, monkeypatch):
+        _github(monkeypatch, {"h2": ["h1", "b1"], "h3": ["h2", "b2"], "h4": ["h3"]})
         store, diffs = Store(tmp_path), tmp_path / "diffs"
         diffs.mkdir()
         _seed(store, diffs, "h1", BEFORE)
@@ -76,6 +92,16 @@ class TestScanRecordsThePatch:
         assert _scan(store, diffs)["same_as"] == ["h1", "h2"]
         _seed(store, diffs, "h4", _diff("cc..dd", 260, added="agents"))
         assert _scan(store, diffs)["same_as"] == []
+
+    def test_the_same_patch_without_a_base_merge_resets(self, tmp_path, monkeypatch):
+        _github(monkeypatch, {"h2": ["h1"], "h3": ["h2", "elsewhere"]})
+        store, diffs = Store(tmp_path), tmp_path / "diffs"
+        diffs.mkdir()
+        _seed(store, diffs, "h1", BEFORE)
+        _scan(store, diffs)
+        for head in ("h2", "h3"):
+            _seed(store, diffs, head, AFTER_BASE_MERGE)
+            assert _scan(store, diffs)["same_as"] == []
 
     def test_a_record_stamped_before_patches_starts_its_chain_at_its_next_head(self, tmp_path):
         store, diffs = Store(tmp_path), tmp_path / "diffs"

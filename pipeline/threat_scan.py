@@ -88,9 +88,11 @@ from typing import TYPE_CHECKING, Literal
 from pipeline import actions
 from pipeline import diff_cache
 from pipeline import gates
+from pipeline import gh
 from pipeline import notify
 from pipeline import profile
 from pipeline import progress
+from pipeline import settings
 from pipeline import storekit
 from pipeline import threat_evidence
 from pipeline import threats
@@ -191,8 +193,7 @@ class DiffScan:
     the whole diff. `source` is what it read: `cached` (a whole cached diff),
     `fetched` (the whole diff, read from GitHub for this scan), `partial` (a
     capped cached copy alone, judged only when what it holds is already
-    malicious), or `uncached` (nothing). `patch` is the whole cached diff's
-    diff_cache.patch_id."""
+    malicious), or `uncached` (nothing). `patch` is its diff_cache.patch_id."""
     result: dict | None
     source: Literal["cached", "fetched", "partial", "uncached"]
     patch: str | None = None
@@ -287,15 +288,28 @@ SAME_AS_CAP = 10
 
 
 def patch_section(rec: Pr, pid: str | None) -> dict | None:
-    """The `patch` section to stamp at `rec`'s head, whose whole diff hashes to
-    `pid`, or None when there is nothing new to record. While the patch is
-    unchanged it names the earlier heads that shared it."""
+    """The `patch` section for `rec`'s head, whose diff hashes to `pid`: the
+    earlier heads it carries facts from, while each move merged the base and
+    kept the patch. None when there is nothing new to record."""
     prior = rec.section("patch") or {}
     head = prior.get("against_head_sha")
     if pid is None or head == rec.head_sha:
         return None
-    return {"id": pid, "same_as": ([*prior["same_as"], head][-SAME_AS_CAP:]
-                                   if head and pid == prior.get("id") else [])}
+    carry = (head and pid == prior.get("id") and rec.head_sha
+             and base_merge(head, rec.head_sha, rec.base_ref))
+    return {"id": pid, "same_as": [*prior["same_as"], head][-SAME_AS_CAP:] if carry else []}
+
+
+def base_merge(prev: str, head: str, base: str | None) -> bool:
+    """Whether `head` is a merge of branch `base` into `prev`: its first parent
+    is `prev` and `base` contains its other. Unknown reads as no."""
+    repo = settings.repo()
+    parents = [p.get("sha") for p in (gh.gh_json(f"repos/{repo}/commits/{head}") or {})
+               .get("parents") or []]
+    if not base or len(parents) != 2 or parents[0] != prev:
+        return False
+    compare = gh.gh_json(f"repos/{repo}/compare/{parents[1]}...{base}") or {}
+    return compare.get("status") in ("ahead", "identical")
 
 
 @dataclass
@@ -376,8 +390,8 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
                 current = store.edit_pr(n)
                 if current.head_sha == rec.head_sha:
                     # the stamp this replaces judged the same head: an
-                    # operator's clearing stays, and a leak it named that
-                    # this scan does not find retires its open item
+                    # operator's clearing stays, and a leak it named that this
+                    # scan does not find retires its open item
                     prior = current.section("threat") if stamped_at_head(current) else None
                     if prior and "cleared" in prior:
                         result = {**result, "cleared": prior["cleared"]}
