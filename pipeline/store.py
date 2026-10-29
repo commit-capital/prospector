@@ -109,7 +109,7 @@ FIX_REQUEST_SOURCES = {"operator", "auto", "objection"}
 PR_SECTIONS = ("meta", "signals", "reviews", "drift", "summary", "cluster", "analysis",
                "security", "issues", "threat", "greptile_review", "verify", "verify_request",
                "fix_request", "security_run", "design_run", "display", "responses",
-               "response_ack", "author_return", "backing")
+               "response_ack", "author_return", "backing", "patch")
 
 
 def run_claim_held_elsewhere(run: dict | None, *, host: str,
@@ -268,6 +268,10 @@ def validate_pr(rec: dict) -> None:
     t = rec.get("threat")
     if t and t.get("verdict") not in THREAT_VERDICTS:
         raise ValidationError(f"threat.verdict: {t.get('verdict')!r} not in {sorted(THREAT_VERDICTS)}")
+    pa = rec.get("patch")
+    if pa and not (isinstance(pa.get("id"), str) and isinstance(pa.get("same_as"), list)
+                   and all(isinstance(s, str) for s in pa["same_as"])):
+        raise ValidationError("patch: needs id (a string) and same_as (a list of head SHAs)")
     gr = rec.get("greptile_review")
     if gr:
         if gr.get("severity") not in GREPTILE_SEVERITIES:

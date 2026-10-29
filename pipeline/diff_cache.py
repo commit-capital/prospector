@@ -24,6 +24,7 @@ Every function that touches the cache takes an optional `diffs_dir` override
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import subprocess
@@ -177,6 +178,21 @@ def is_complete(text: str) -> bool:
     listing. A copy at or past the cap is not trusted to be whole: a whole
     diff that long reads the same as one cut there."""
     return len(text) < MAX_DIFF_BYTES and not _PARTIAL_FILE.search(text)
+
+
+_BLOB_LINE = re.compile(r"^index [^\n]*\n", re.M)
+_HUNK_RANGE = re.compile(r"^@@ [^@\n]+ @@", re.M)
+
+
+def patch_id(text: str) -> str | None:
+    """A hash of the change a whole diff makes, blind to where it sits: two
+    heads whose diffs differ only in blob hashes and hunk line numbers, as
+    after merging the base into the branch, share it. None for a diff that is
+    not whole."""
+    if not is_complete(text):
+        return None
+    body = _HUNK_RANGE.sub("@@", _BLOB_LINE.sub("", text))
+    return hashlib.sha256(body.encode()).hexdigest()
 
 
 @dataclass(frozen=True)
