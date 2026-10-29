@@ -12,7 +12,7 @@ import { SkeletonRows } from "../components/SkeletonRows";
 
 const KIND_ICON: Record<string, string> = {
   merge: "🔀", close: "📮", comment: "💬", review: "📝", "line-comment": "💬", "review-retrigger": "🔁",
-  "pr-edit": "✏️", resubmit: "🔄", reopen: "↩", undo: "⤺", handoff: "📤", reconcile: "♻️", "issue-close": "🎫",
+  "design-findings": "💬", "pr-edit": "✏️", resubmit: "🔄", reopen: "↩", undo: "⤺", handoff: "📤", reconcile: "♻️", "issue-close": "🎫",
   "issue-fix-rerun": "🔁", "issue-fix": "🛠️",
 };
 const KIND_TIP: Record<string, string> = {
@@ -23,6 +23,7 @@ const KIND_TIP: Record<string, string> = {
   review: "A review (approve / request changes / comment) was submitted on a PR as {bot}.",
   "line-comment": "An inline comment was posted on one line of a PR's diff as {bot}.",
   "review-retrigger": "An automated reviewer was asked to re-review the PR's current head, as {bot}.",
+  "design-findings": "A PR's confirmed design findings were posted for its author, as {bot}.",
   "pr-edit": "A PR's description was rewritten as {bot}.",
   "issue-fix-rerun": "The failed CI jobs on an issue-fix PR were re-run as {bot}.",
   "issue-fix": "An operator directed an issue's fix — asked for one, sent it back, answered, approved, chose another PR, or cancelled. Recorded in Prospector; nothing posted upstream.",

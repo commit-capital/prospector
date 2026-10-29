@@ -127,6 +127,8 @@ def _apply(n: int, action: str, *, comment: str | None, canonical: int | None,
                     "detail": str(e)}
     if action == "MERGE":
         return executor.merge_pr(n, method, dry_run=dry_run, reason=reason)
+    if action == "POST_DESIGN_FINDINGS":
+        return executor.post_design_findings(n, dry_run=dry_run)
     if action == "REVIEW_RETRIGGER":
         # The request names a reviewer; only the registry's own id for it
         # goes any further.

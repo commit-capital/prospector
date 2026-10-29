@@ -198,6 +198,19 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     reportResult(r);
   };
 
+  // Post the design findings holding the merge as a bot comment, so the
+  // author sees them.
+  const [postingDesign, setPostingDesign] = useState(false);
+  const postDesignFindings = async () => {
+    if (postingDesign) return;
+    if (!dryRun && !window.confirm(`Post the design findings on #${prNum} as ${botLogin}?`)) return;
+    setPostingDesign(true);
+    const r = await api.postDesignFindings(prNum, dryRun);
+    setPostingDesign(false);
+    reportResult(r);
+    if (r.status === "executed" || r.status === "exists") reloadPr();
+  };
+
   // Re-run the SECURITY phase from the "Security review" check row
   // (#581) — streamed like the cluster-page re-run (ClusterDetail #56). On
   // done, reload so the fresh verdict flips the row (and the merge gate).
@@ -368,6 +381,12 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     const design = pr.reviews_detail?.design ?? null;
     const goal = design && design.digest.stale !== true ? designFixGoal(design.entry?.findings ?? []) : "";
     const fixWhy = fixUnavailable(fixRunner, pr.fix_request ?? null, resolved);
+    const postable = design?.entry != null && design.digest.stale !== true
+      && design.entry.findings.some((f) => !f.resolved && !f.outdated
+        && (f.severity === "blocking" || f.severity === "major") && f.verification?.verdict === "confirmed");
+    const comment = design?.entry?.extra.comment;
+    const posted = typeof comment === "object" && comment !== null && "url" in comment
+      && typeof comment.url === "string" ? comment.url : null;
     checksActions.design = (
       <>
         {goal && (
@@ -378,6 +397,13 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             {fixBusy === "fix" ? "Queuing…" : "🔧 Fix findings"}
           </button>
         )}
+        {postable && (posted
+          ? <a className="btn-secondary sm" href={posted} target="_blank" rel="noreferrer"
+              title="The design findings are posted on the PR for its author">💬 Posted ↗</a>
+          : <button className="btn-secondary sm" onClick={() => void postDesignFindings()} disabled={postingDesign}
+              title={`Post the confirmed blocking and major findings on the PR as ${botLogin}, so its author can fix them`}>
+              {postingDesign ? "Posting…" : "💬 Post to author"}
+            </button>)}
         <button className="btn-secondary sm" onClick={runDesign} disabled={designJob.running}
           title="Design-review this PR's current head now, replacing any review it has. Runs on a machine holding a verify base pin.">
           {designJob.running ? "Running…" : design?.entry ? "↻ Re-run" : "↻ Run"}

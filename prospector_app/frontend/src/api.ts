@@ -2784,6 +2784,10 @@ export const api = {
     const r = await fetch(`/api/reviews/${encodeURIComponent(reviewer)}/retrigger/pr/${n}?dry_run=${dryRun}`, { method: "POST" });
     return r.json() as Promise<ExecResult>;
   },
+  postDesignFindings: async (n: number, dryRun: boolean) => {
+    const r = await fetch(`/api/reviews/design/comment/pr/${n}?dry_run=${dryRun}`, { method: "POST" });
+    return r.json() as Promise<ExecResult>;
+  },
   queueVerify: async (n: number) => {
     const r = await fetch(`/api/prs/${n}/verify/queue`, { method: "POST" });
     const body = (await r.json().catch(() => null)) as { detail?: string; pr?: number; status?: string } | null;

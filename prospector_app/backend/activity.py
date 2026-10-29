@@ -72,13 +72,15 @@ def _engine() -> storekit.Engine:
 
 
 # The semantic vocabulary (#40). Aggregation groups on these.
-KINDS = ("merge", "close", "comment", "review", "line-comment", "review-retrigger", "pr-edit",
+KINDS = ("merge", "close", "comment", "review", "line-comment", "review-retrigger",
+         "design-findings", "pr-edit",
          "resubmit", "reopen", "undo", "handoff", "reconcile",
          "issue-close", "issue-reopen", "issue-comment", "alert-dismiss", "issue-propose",
          "issue-question", "issue-fix-label", "issue-fix-comment", "issue-fix-rerun", "issue-fix")
 
 # The kinds that post text on a PR as the bot — the dashboard's "comments" tally.
-COMMENT_KINDS = frozenset({"comment", "review", "line-comment", "review-retrigger"})
+COMMENT_KINDS = frozenset({"comment", "review", "line-comment", "review-retrigger",
+                           "design-findings"})
 
 # A mechanical `action` that alone decides the kind, whatever kind the row was stored under.
 _ACTION_KIND = {
@@ -187,7 +189,8 @@ _FIX_VERB = {"FIX_SOLVE": "asked for a fix", "FIX_SEND_BACK": "sent the fix back
 _VERB = {
     "merge": "merged", "close": "closed", "comment": "commented", "reopen": "reopened",
     "undo": "undid an action", "handoff": "handed off", "reconcile": "reconciled",
-    "line-comment": "commented on a line", "pr-edit": "rewrote the description",
+    "line-comment": "commented on a line", "design-findings": "posted design findings",
+    "pr-edit": "rewrote the description",
     "resubmit": "pushed a fix", "issue-close": "closed", "issue-reopen": "reopened",
     "issue-comment": "commented", "alert-dismiss": "dismissed the alert",
     "issue-question": "asked a question", "issue-fix-label": "labelled",

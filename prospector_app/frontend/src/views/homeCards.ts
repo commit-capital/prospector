@@ -69,6 +69,7 @@ export const HANDED_UNBLOCK: Record<string, string> = {
   "author-declined": "Nothing — the agent judged the change unsafe to write and said why.",
   "author-verify": "A verification run that confirms the fix red→green.",
   "author-rejected": "A patch the refuting reviewer calls safe.",
+  "author-design": "An author push that addresses the design findings posted on the PR.",
   "author-other": "An author push that clears the recorded refusal.",
   "stacked": "Its base PR merging, so GitHub retargets it onto the default branch.",
   "needs-human": "Nothing — a needs-human pick is a decision reserved for a person.",
@@ -184,7 +185,7 @@ export const HOME_CARDS: HomeCard[] = [
   {
     key: "author",
     title: "Someone else's turn",
-    blurb: "The automation cannot move these without the contributor: conflicts the bot will not rebase, red CI, verification that did not confirm the fix, an agent that tried and declined with its reasoning, or a stacked PR waiting on its base.",
+    blurb: "The automation cannot move these without the contributor: conflicts the bot will not rebase, red CI, verification that did not confirm the fix, design findings posted for them to address, an agent that tried and declined with its reasoning, or a stacked PR waiting on its base.",
     column: "handed",
     spec: { automation_owner: "author" },
     breakdown: [
@@ -193,6 +194,7 @@ export const HOME_CARDS: HomeCard[] = [
       { label: "agent declined", spec: bucket("author-declined"), hint: HANDED_UNBLOCK["author-declined"] },
       { label: "verification failed", spec: bucket("author-verify"), hint: HANDED_UNBLOCK["author-verify"] },
       { label: "fix rejected by reviewer", spec: bucket("author-rejected"), hint: HANDED_UNBLOCK["author-rejected"] },
+      { label: "design findings posted", spec: bucket("author-design"), hint: HANDED_UNBLOCK["author-design"] },
       { label: "stacked on another PR", spec: bucket("stacked"), hint: HANDED_UNBLOCK["stacked"] },
       { label: "other", spec: bucket("author-other"), hint: HANDED_UNBLOCK["author-other"] },
     ],

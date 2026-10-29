@@ -35,11 +35,13 @@ from prospector_app.backend import service
 from prospector_app.backend.safety_guard import bot_merge_run, bot_run
 from pipeline import bot_token
 from pipeline import ci_signal
+from pipeline import design_comment
 from pipeline import gh
 from pipeline import live_prs
 from pipeline import settings
 from pipeline import freshness
 from pipeline import reviewers
+from pipeline import storekit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -724,6 +726,66 @@ def retrigger_review(n: int, reviewer_id: str, *, dry_run: bool,
         "review_retrigger", base, dry_run=dry_run,
         preview=f"would comment “{mention}” on #{n} as {settings.bot_login()} to re-trigger the review",
         attempt=attempt, failure="review retrigger failed unexpectedly")
+
+
+def _bot_comment_url(n: int, *markers: str) -> str | None:
+    """The URL of the bot's comment on `n` that carries any of `markers`, or
+    None when there is none. Raises when the comments cannot be read."""
+    comments = gh.issue_comments(int(n))
+    if comments is None:
+        raise RuntimeError(f"the comments on #{n} could not be read")
+    return next((c.get("html_url") or "" for c in comments
+                 if _is_bot_login((c.get("user") or {}).get("login"))
+                 and any(m in (c.get("body") or "") for m in markers)), None)
+
+
+def post_design_findings(n: int, *, dry_run: bool, initiator: str = "operator") -> dict:
+    """Post the design findings holding PR `n`'s merge as a bot comment
+    (`pipeline/design_comment.py`), unless the bot already posted these
+    findings or this head's, and record the comment on the design review.
+    Skipped outside `TRIAGE_DESIGN_COMMENT`'s audience, with no finding to
+    post, or when the head moved past the review."""
+    base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": "DESIGN_FINDINGS",
+            "initiator": initiator}
+    rec = data.store().load_pr(n)
+    if rec is None:
+        return {**base, "status": "skipped", "detail": "no such PR in the store"}
+    held = design_comment.audience_refusal(rec)
+    found = design_comment.findings(rec)
+    if held is None and not found:
+        held = "no confirmed blocking or major design finding stands at this head"
+    if held is None:
+        pf = _preflight(n, rec, check_head=True)
+        held = None if pf.ok else f"pre-flight: {pf.message}"
+    if held is not None:
+        return {**base, "status": "skipped", "detail": held}
+    reviewed = str((rec.review_entry(reviewers.DESIGN.id) or {}).get("reviewed_sha") or "")
+    fp = design_comment.fingerprint(found)
+    text = design_comment.body(found, design_comment.minor(rec), reviewed)
+
+    def attempt() -> dict[str, object]:
+        url = _bot_comment_url(n, design_comment.head_marker(reviewed),
+                               design_comment.findings_marker(fp))
+        if url is not None:
+            return {"status": "exists", "detail": f"these findings are already posted on #{n}",
+                    "event_url": url or None}
+        r = bot_run(["gh", "pr", "comment", str(n), "--repo", settings.repo(), "--body", text])
+        if r.returncode != 0:
+            return {"status": "error", "detail": r.stderr.strip()[:160]}
+        return {"status": "executed", "detail": f"posted the design findings on #{n}",
+                "event_url": (r.stdout or "").strip() or None}  # gh prints the comment's URL
+
+    def record(res: dict) -> None:
+        if not data.store().note_design_comment(
+                n, {"fingerprint": fp, "url": res.get("event_url"), "posted_at": storekit.now()},
+                reviewed_sha=reviewed):
+            raise RuntimeError("the design review changed before the comment was recorded")
+
+    return _bot_write("design-findings", base, dry_run=dry_run,
+                      preview=f"would post {len(found)} design finding(s) on #{n} as "
+                              f"{settings.bot_login()}",
+                      attempt=attempt, failure="posting the design findings failed unexpectedly",
+                      on_success=record, fingerprint=fp)
 
 
 def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | None = None,

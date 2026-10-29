@@ -70,6 +70,7 @@ function friendlyAction(action: string): string {
     CLOSE: "close", CLOSE_DUP: "close (dup)", CLOSE_FIXED: "close (already-fixed)",
     CLOSE_STALE: "close (stale)", CLOSE_WONTFIX: "close (won't fix)",
     MERGE: "merge", REVIEW_RETRIGGER: "review re-trigger",
+    POST_DESIGN_FINDINGS: "design findings", DESIGN_FINDINGS: "design findings",
   };
   return map[action] ?? action.toLowerCase().replace(/_/g, " ");
 }

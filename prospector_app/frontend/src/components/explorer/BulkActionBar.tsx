@@ -6,7 +6,7 @@ import { Select } from "../Select";
 
 export type BulkAction = "CLOSE" | "CLOSE_DUP" | "CLOSE_FIXED" | "CLOSE_STALE" | "CLOSE_WONTFIX"
   | "CLOSE_OVERSIZED" | "REQUEST_CHANGES" | "COMMENT" | "REVIEW_RETRIGGER"
-  | "QUEUE_VERIFY" | "RUN_SECURITY" | "RUN_DESIGN" | "MERGE";
+  | "QUEUE_VERIFY" | "RUN_SECURITY" | "RUN_DESIGN" | "POST_DESIGN_FINDINGS" | "MERGE";
 
 const ACTS: { v: BulkAction; label: string }[] = [
   { v: "CLOSE_DUP", label: "close — dup of" },
@@ -20,6 +20,7 @@ const ACTS: { v: BulkAction; label: string }[] = [
   { v: "QUEUE_VERIFY", label: "queue for verification" },
   { v: "RUN_SECURITY", label: "run security reviews" },
   { v: "RUN_DESIGN", label: "run design reviews" },
+  { v: "POST_DESIGN_FINDINGS", label: "post design findings to authors" },
   { v: "MERGE", label: "merge" },
 ];
 
@@ -38,7 +39,8 @@ export function BulkActionBar({ selected, onApply }:
   if (selected.length === 0) return null;
   const isMerge = action === "MERGE";
   const postsComment = action !== "MERGE" && action !== "REVIEW_RETRIGGER"
-    && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY" && action !== "RUN_DESIGN";
+    && action !== "QUEUE_VERIFY" && action !== "RUN_SECURITY" && action !== "RUN_DESIGN"
+    && action !== "POST_DESIGN_FINDINGS";
   const retriggers = activeReviewers("review").filter((r) => r.retrigger)
     .map((r) => ({ v: `REVIEW_RETRIGGER:${r.id}`, label: `re-trigger ${r.label}` }));
   const actions: { v: string; label: string }[] = [...ACTS.slice(0, -1), ...retriggers, ACTS.at(-1)!];

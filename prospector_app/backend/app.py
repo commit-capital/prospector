@@ -1652,6 +1652,15 @@ def retrigger_review(reviewer: str, n: int, dry_run: bool = True):
     return result
 
 
+@app.post("/api/reviews/design/comment/pr/{n}")
+def post_design_findings(n: int, dry_run: bool = True):
+    """Post PR #n's confirmed blocking and major design findings as the bot."""
+    res = executor.post_design_findings(n, dry_run=dry_run)
+    if res.get("status") in ("executed", "exists"):
+        data.refresh()
+    return res
+
+
 @app.get("/api/pipeline/status")
 def pipeline_status_get():
     """Pipeline phase timing + PR coverage stats for the Control Panel."""
