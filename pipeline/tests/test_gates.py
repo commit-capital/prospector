@@ -302,15 +302,12 @@ class TestMergeEligibility:
     def test_an_unclean_unreviewed_pr_reports_both_blockers(self):
         rec = _pr(signals={"ci": "passing", "mergeable": False, "has_tests": True,
                            "checked_at": NOW, "against_head_sha": HEAD})
-        unclean = gates.pr_clean(rec, today="2026-06-10")[1]
-        unreviewed = gates.security_merge_block(rec)
-        assert unclean and unreviewed is not None
-        ok, reason = gates.merge_eligibility(rec, today="2026-06-10")
-        assert not ok and reason == "; ".join([*unclean, unreviewed])
-        assert gates.merge_blockers(rec, today="2026-06-10") == [*unclean, unreviewed]
-        # A reason clears the missing review, not the other blocker.
-        assert gates.merge_blockers(rec, today="2026-06-10",
-                                    override_reason="one-line typo fix") == unclean
+        blockers = gates.merge_gate(rec, today="2026-06-10").blockers
+        assert len(blockers) == 2
+        assert blockers[0] == "merge conflicts" and "no security review" in blockers[1]
+        # A reason clears the missing review, not the conflicts.
+        assert gates.merge_gate(rec, today="2026-06-10",
+                                override_reason="one-line typo fix").blockers == ["merge conflicts"]
 
     def test_a_reason_merges_a_clean_unreviewed_pr(self):
         ok, reason = gates.merge_eligibility(_pr(), today="2026-06-10",

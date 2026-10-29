@@ -225,22 +225,22 @@ def _age_days(pr: Pr) -> int | None:
 
 
 def _merge_gate_fields(rec: Pr) -> dict:
-    """The merge gate for the app: ok/reason from gates.merge_eligibility,
-    `blockers` from gates.merge_blockers, plus `overridable` (a reason at merge time clears the block) and
+    """The merge gate for the app: blockers/reason from gates.merge_gate,
+    plus `overridable` (a reason at merge time clears the block) and
     `override_kind` naming which block ("security" for a YELLOW verdict,
     "unreviewed" for a PR no security review has reached, "verify" for an
     escalate outcome) so the UI labels the override and the executor logs it to
     the right place."""
-    ok, reason = gates.merge_eligibility(rec)
-    if ok:
-        return {"ok": ok, "reason": reason, "blockers": [], "overridable": False,
-                "override_kind": None}
-    sec = gates.security_overridable(rec)
-    waive = not sec and gates.security_waivable(rec)
-    ver = gates.verify_overridable(rec)
-    kind = "security" if sec else "unreviewed" if waive else "verify" if ver else None
-    return {"ok": ok, "reason": reason, "blockers": gates.merge_blockers(rec),
-            "overridable": kind is not None, "override_kind": kind}
+    blockers, reason = gates.merge_gate(rec)
+    gate = {"ok": not blockers, "reason": reason, "blockers": blockers,
+            "overridable": False, "override_kind": None}
+    if blockers:
+        sec = gates.security_overridable(rec)
+        waive = not sec and gates.security_waivable(rec)
+        ver = gates.verify_overridable(rec)
+        kind = "security" if sec else "unreviewed" if waive else "verify" if ver else None
+        gate.update(overridable=kind is not None, override_kind=kind)
+    return gate
 
 
 def _code_owner_gate(gate: dict, owners: list[str]) -> dict:
