@@ -59,6 +59,23 @@ def test_features_lists_consider_without_decision_ranked_small_first(client):
     assert first["screened_at"]
 
 
+def test_the_card_reads_a_projection_not_the_issue_table(client, monkeypatch):
+    c, store = client
+    _issue(store, 2, screen={**SCREEN, "mockup": "<html></html>"})
+    _issue(store, 3)
+    monkeypatch.setattr(issue_data, "full_issues", lambda: pytest.fail("read every issue"))
+    items = c.get("/api/issues/features").json()["items"]
+    assert sorted((r["issue"], r["has_mockup"]) for r in items) == [(2, True), (3, False)]
+
+
+def test_the_snapshot_carries_no_mockup(client):
+    c, store = client
+    _issue(store, screen={**SCREEN, "mockup": "<html>m</html>"})
+    issue_data.refresh()
+    assert "mockup" not in issue_data.issues()[7].feature_screen
+    assert c.get("/api/issues/7").json()["feature_screen"]["has_mockup"] is True
+
+
 def test_a_stale_screen_is_off_the_card(client):
     c, store = client
     _issue(store)

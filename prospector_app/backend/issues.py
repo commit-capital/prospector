@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from issue_triage import feature_screen, fix_review
 from issue_triage import issue_display
 from issue_triage import issue_links
+from issue_triage import issue_model
 from issue_triage import pr_index
 from issue_triage import fix_choice, fixability, trust_boundary
 from pipeline import gates
@@ -52,7 +53,8 @@ def _store():
 
 def cached_issues() -> dict[int, Issue]:
     """Every issue in the store from the app's cached light snapshot
-    (candidate PR links omitted) — for whole-store scans that need no links."""
+    (candidate PR links and mockups omitted) — for whole-store scans that need
+    neither."""
     _sync_store_root()
     return issue_data.issues()
 
@@ -372,22 +374,31 @@ def get_issue(n: int) -> dict | None:
 _SIZE_RANK = {"small": 0, "medium": 1, "large": 2}
 
 
+_SCREEN_FIELDS = ("verdict", "why", "size", "precedents", "checked_at", "against_updated_at")
+_FEATURE_PATHS = [("meta", "content_updated_at"), ("feature_decision",),
+                  *(("feature_screen", f) for f in _SCREEN_FIELDS)]
+
+
 def feature_requests() -> dict:
     """The shortlist: open issues whose current screen says `consider` and that
-    no maintainer has decided, smallest first, then newest screened."""
-    _sync_store_root()
+    no maintainer has decided, smallest first, then newest screened. Reads only
+    the projected screen fields of open issues, never a mockup."""
     rows: list[dict] = []
-    for n, i in issue_data.full_issues().items():
-        screen = feature_screen.current(i)
-        if i.state != "open" or screen is None or screen.get("verdict") != "consider" \
-                or i.feature_decision is not None:
+    for row, (content_at, decision, *fields, has_mockup) in _store().issue_rows(
+            _FEATURE_PATHS, states=["open"], present=[("feature_screen", "mockup")]):
+        screen = dict(zip(_SCREEN_FIELDS, fields))
+        if screen["verdict"] != "consider" or decision is not None:
             continue
-        rows.append({"issue": n, "title": i.title,
+        n = row["issue"]
+        view = issue_model.Issue(None, {"issue": n, "feature_screen": screen, "meta": {
+            "updated_at": row["updated_at"], "content_updated_at": content_at}})
+        if feature_screen.current(view) is None:
+            continue
+        rows.append({"issue": n, "title": row["title"],
                      "url": f"https://github.com/{settings.repo()}/issues/{n}",
-                     "why": screen.get("why"), "size": screen.get("size"),
-                     "precedents": screen.get("precedents") or [],
-                     "has_mockup": bool(screen.get("mockup")),
-                     "screened_at": (i.section("feature_screen") or {}).get("checked_at")})
+                     "why": screen["why"], "size": screen["size"],
+                     "precedents": screen["precedents"] or [], "has_mockup": has_mockup,
+                     "screened_at": screen["checked_at"]})
     rows.sort(key=lambda r: r["screened_at"] or "", reverse=True)
     rows.sort(key=lambda r: _SIZE_RANK.get(r["size"], len(_SIZE_RANK)))
     return {"items": rows, "count": len(rows)}
