@@ -32,9 +32,9 @@ HINTS: dict[str, str] = {
                 "moved heads, reopens and closes in the store, then wakes the threat scan.",
     "stale-refresh": "Re-reads from GitHub the merge candidates whose stored head may have "
                      "moved, so a candidate is not left waiting on stale facts.",
-    "rereview": "Asks an active code reviewer to review a clean, CI-green PR whose review is "
-                "stale or missing at a head several hours old, posting the reviewer's mention as "
-                "the bot.",
+    "rereview": "Asks an active code reviewer to review a recently updated PR whose CI is not "
+                "failing and whose review is stale or missing at a head several hours old, "
+                "conflicts or not, posting the reviewer's mention as the bot.",
     "responses": "Reads how authors answered our actions: replies, reopens, new commits and "
                  "resubmissions since a PR or issue was last acted on.",
     "cluster": "Summarizes new and moved PRs, places them into clusters, and analyzes the "
