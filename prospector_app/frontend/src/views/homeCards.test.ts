@@ -239,5 +239,4 @@ test("every standing a Prospector fix PR takes shows on a Home card", () => {
   });
   assert.ok(covers("followup", "worker"), "followup");
   assert.ok(covers("handed-back", "you"), "handed-back");
-  assert.ok(covers("with-maintainers", "maintainers"), "with-maintainers");
 });

@@ -8,7 +8,6 @@ import { actionsFor } from "./prStatusActions";
 const OWNER_LINE: Record<string, string> = {
   worker: "Prospector's move · nothing for you to do",
   author: "The author's move",
-  maintainers: "The maintainers' move",
   you: "Your move",
 };
 

@@ -259,11 +259,8 @@ def _fix_status(issue: Issue) -> tuple[str, str, str | StatusLine] | None:
                     f"You approved Prospector's fix #{pr}; it's with the maintainers."
                     + (f" It came back once: {why}." if fu.get("state") == "handed-back" else ""))
         if fu.get("state") == "ready":
-            if partial_note(run) is None:
-                return ("pr-open", f"#{pr} is green; with the maintainers",
-                        f"Prospector's fix #{pr} passes its checks; it's with the maintainers.")
-            return ("review", f"#{pr} is green — ready for your review",
-                    f"Prospector's fix #{pr} passes its checks and waits for your review.")
+            return ("pr-open", f"#{pr} is green; with the maintainers",
+                    f"Prospector's fix #{pr} passes its checks; it's with the maintainers.")
         if fu.get("state") == "handed-back":
             return "review", f"#{pr} handed back: {why}", _handed_back_line(pr, fu)
         if fu.get("state") == "watching" and fu.get("reason"):
