@@ -82,7 +82,7 @@ def read_artifacts(stream: IO[bytes]) -> Artifacts:
         with tarfile.open(fileobj=stream, mode="r|") as tar:
             seen = 0
             while (member := tar.next()) is not None:
-                tar.members = []
+                tar.members = []  # pyright: ignore[reportAttributeAccessIssue]  # tarfile keeps every TarInfo otherwise
                 seen += 1
                 if seen > MAX_ENTRIES:
                     skipped.append(f"more than {MAX_ENTRIES} entries; the rest were not read")
