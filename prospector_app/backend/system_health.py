@@ -159,16 +159,21 @@ def summarize(health_hosts: list[dict], offline: list[dict],
         lanes.update((name, host) for name in names)
     outdated = {h: v for h, v in (outdated or {}).items() if h not in stood_down}
     drift = {h: st for h, st in (profile_drift or {}).items() if h not in stood_down}
+    drift = drift if len(drift) > 1 else {}
     down = {(lane, host) for lane, host in lanes
             if host in offline_by_host or host in outdated or host in drift
             or lane in tripped_by_host.get(host, [])}
 
     items: list[HealthItem] = []
     if drift:
+        newest = max(int(st.get("version") or 1) for st in drift.values())
+        behind = sorted(h for h, st in drift.items() if int(st.get("version") or 1) < newest)
         items.append({
             "kind": "profile-drift", "severity": "red", "host": None,
-            "label": f"Profiles differ across {len(drift)} machines — workers paused",
-            "detail": "\n".join(_profile_line(h, st) for h, st in sorted(drift.items()))
+            "label": f"{', '.join(behind)} out of date — update Prospector there" if behind
+                     else f"Profiles differ across {len(drift)} machines — workers paused",
+            "detail": "Workers are paused until then: pull main and restart." if behind
+                      else "\n".join(_profile_line(h, st) for h, st in sorted(drift.items()))
                       + "\nMake each machine's TRIAGE_PROFILE file match and restart its workers."})
     for host, code_v in sorted(outdated.items(), key=lambda kv: kv[0] != me):
         items.append({
@@ -266,7 +271,7 @@ def status() -> SystemHealth:
     summary = summarize(health["hosts"], escalation.offline_workers(registries=regs),
                         worker_lanes, ingest_last, stood_down=stood,
                         outdated=schema_gate.outdated_hosts(regs, store_v, me), store_schema=store_v, me=me,
-                        profile_drift=profile_gate.drift(regs, me))
+                        profile_drift=profile_gate.drift(regs))
     from prospector_app.backend import capacity_view
     try:
         paused = capacity_view.health_items()
