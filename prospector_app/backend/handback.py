@@ -50,6 +50,10 @@ def marker(head: str) -> str:
     return f"<!-- prospector:handback:{head[:12]} -->"
 
 
+def rebase_ask_marker(head: str) -> str:
+    return f"<!-- prospector:rebase-ask:{head[:12]} -->"
+
+
 def evidence_judged(stamp: dict) -> bool:
     """Whether a resolve auto-review stamp holds a judgment against the change:
     a reviewer's considered rejection, a compile that failed, or related tests
@@ -166,6 +170,32 @@ def comment_body(kind: str, author: str | None, paths: list[str], head: str) -> 
             f"Our automation tried to fix this but couldn't produce a change it trusts, "
             f"so it needs you. {ask} Once you push, it's picked up again automatically.\n\n"
             f"{marker(head)}")
+
+
+def rebase_ask_body(author: str | None, paths: list[str], head: str) -> str:
+    """The backlog sweep's one ask of an author whose PR drifted too far behind
+    the base for the automation to bring it current."""
+    base = settings.default_branch()
+    who = f"@{author} " if author else ""
+    shown = "".join(f"\n- `{p}`" for p in paths[:10])
+    more = f"\n- …and {len(paths) - 10} more" if len(paths) > 10 else ""
+    where = f" in:{shown}{more}" if shown else "."
+    return (f"Hi {who}— this PR has fallen far enough behind `{base}` that it now "
+            f"conflicts with it{where}\n\n"
+            f"We normally keep open PRs up to date with `{base}` ourselves, but this one has "
+            f"drifted too far for us to do that safely. Could you rebase it onto the latest "
+            f"`{base}` and push? Once you do, we'll pick it up again promptly.\n\n"
+            f"{rebase_ask_marker(head)}")
+
+
+def rebase_close_body(author: str | None) -> str:
+    """The backlog sweep's close of a PR whose author did not answer its ask."""
+    base = settings.default_branch()
+    who = f"@{author}" if author else "there"
+    return (f"Hi {who}, thanks for this PR. We're closing it for now: it still conflicts "
+            f"with `{base}`, and we haven't heard back in the two weeks since we asked for a "
+            f"rebase. If it's still relevant, bring the branch up to date with `{base}` and "
+            f"reopen it (or comment here and we'll reopen it), and we'll pick it up promptly.")
 
 
 def close_body(kind: str, author: str | None, paths: list[str]) -> str:
