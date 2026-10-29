@@ -415,9 +415,9 @@ def _fix_issue(pr: int, followup: dict) -> Issue:
 
 @pytest.fixture
 def ours(store, monkeypatch):
-    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "commitperclip")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triage-bot")
     rec = _rec()
-    rec["meta"]["author"] = "app/commitperclip"
+    rec["meta"]["author"] = "app/triage-bot"
     store.save_pr(rec)
     data.refresh()
 
@@ -454,7 +454,7 @@ def test_a_fix_pr_whose_issue_is_missing_reads_as_any_pr(ours):
 
 
 def test_an_outsiders_pr_never_scans_issues(store, monkeypatch):
-    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "commitperclip")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triage-bot")
 
     def boom() -> dict:
         raise AssertionError("an outsider's PR read the issues")
@@ -463,9 +463,9 @@ def test_an_outsiders_pr_never_scans_issues(store, monkeypatch):
 
 
 def test_a_new_issue_snapshot_rebuilds_only_prospectors_own_pr_rows(store, monkeypatch):
-    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "commitperclip")
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triage-bot")
     ours, theirs = _rec(1), _rec(2)
-    ours["meta"]["author"] = "app/commitperclip"
+    ours["meta"]["author"] = "app/triage-bot"
     store.save_pr(ours)
     store.save_pr(theirs)
     data.refresh()

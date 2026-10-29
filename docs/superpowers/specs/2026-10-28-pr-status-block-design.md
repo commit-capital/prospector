@@ -6,7 +6,7 @@ Brandon opens a PR page to answer one question: why isn't this PR fully green an
 "Ready to merge", and will it get there on its own? Today the page can't answer it.
 
 - The "Suggested action" comes from the PR's analysis. On one of our own issue-fix
-  PRs (author `commitperclip[bot]`) it can say "comment on the PR". Nobody needs to
+  PRs (authored by the configured bot) it can say "comment on the PR". Nobody needs to
   comment on our own PR: the system should be doing that work itself.
 - A PR the automation gave up on looks like a list of checks with one red row.
   #15363, #17534 and #17585 were handed back after their revisions, and the only
