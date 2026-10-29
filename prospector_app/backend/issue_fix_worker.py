@@ -12,7 +12,9 @@ hour (`poll_replies`); every ten minutes it follows up its open pull requests
 (`issue_triage.followup`, as `TRIAGE_ISSUE_FIX_FOLLOWUP` allows), then ingests
 the in-scope issues updated since, starts another attempt where a reply or an
 edited report calls for one, and brings GitHub in line with their attempts
-(`issue_triage.public_loop`, as `TRIAGE_ISSUE_FIX_PUBLIC` allows); and, with
+(`issue_triage.public_loop`, as `TRIAGE_ISSUE_FIX_PUBLIC` allows), closing the
+issues the triage found not here or already fixed (`issue_triage.close_out`);
+and, with
 `TRIAGE_ISSUE_FIX_HUNT=1` and a slot free, it queues one `solve` for a fresh
 issue (`hunt`) within `settings.issue_fix_hunt_budget()` a UTC day, from the
 issues the triage judged fixable (`triage`, TRIAGE_BATCH of the newest before
@@ -40,6 +42,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_triage import (
+    close_out,
     dispute_question,
     feature_history,
     feature_screen,
@@ -77,6 +80,8 @@ FAILED_RETRY_COOLDOWN = timedelta(hours=1)
 HUNT_MAX_ATTEMPTS = 3
 # How often the coordinator looks for requests a worker that is gone left running.
 RECLAIM_SECONDS = 300.0
+# Times an orphaned request is queued again before it ends `failed`.
+MAX_REQUEUES = 2
 # The request actions that run no agent: a `propose` pushes a proven patch and
 # opens its pull request.
 MECHANICAL_ACTIONS = frozenset({"propose"})
@@ -181,7 +186,9 @@ def recover_orphans(store: IssueStore) -> list[int]:
     heartbeat has been silent past worker_health.OFFLINE_AFTER_SECONDS (a host
     with no heartbeat is judged by its claim's age). A claim a live lane holds
     is its run, never touched from here, and a request that ended since it was
-    read is left as it ended. Returns the issues requeued."""
+    read is left as it ended. A request already requeued MAX_REQUEUES times
+    ends `failed` instead, so one that takes its process down with it is left
+    to its lane's retry cap. Returns the issues requeued."""
     me = settings.worker_id()
     registry = data.store().load_issue_fix_worker()
     requeued_issues: list[int] = []
@@ -197,7 +204,9 @@ def recover_orphans(store: IssueStore) -> list[int]:
             who = f"the issue-fix worker on {host} went offline"
         else:
             continue
-        note = f"requeued: {who} mid-{req.get('action')}"
+        requeues = int(req.get("requeues") or 0)
+        note = (f"requeued: {who} mid-{req.get('action')}" if requeues < MAX_REQUEUES
+                else f"failed: {who} mid-{req.get('action')} {requeues + 1} times")
         got = store.stamped_issue(n)
         if got is None:
             continue
@@ -205,10 +214,14 @@ def recover_orphans(store: IssueStore) -> list[int]:
         if current.fix_request != req:
             continue
         now = storekit.now()
-        requeued = {k: v for k, v in req.items() if k not in ("host", "started_at")}
-        current.stage_fix_request({**requeued, "status": "queued"})
+        if requeues < MAX_REQUEUES:
+            requeued = {k: v for k, v in req.items() if k not in ("host", "started_at")}
+            current.stage_fix_request({**requeued, "status": "queued", "requeues": requeues + 1})
+        else:
+            current.stage_fix_request({**req, "status": "failed", "finished_at": now,
+                                       "reason": note})
         current.stage_fix_thread({"at": now, "by": "worker", "kind": "note", "text": note})
-        if store.save_issue_if(current, stamp):
+        if store.save_issue_if(current, stamp) and requeues < MAX_REQUEUES:
             requeued_issues.append(n)
     return requeued_issues
 
@@ -279,7 +292,8 @@ def run_once(store: IssueStore) -> bool:
 
 def poll_replies(store: IssueStore) -> int:
     """Queue an `answer` for each question asked on GitHub that got one, or
-    whose default is due. Returns how many were queued."""
+    whose default is due, unless its `answer` has failed HUNT_MAX_ATTEMPTS
+    times. Returns how many were queued."""
     queued = 0
     for n, issue in store.fix_issues().items():
         run = issue.fix_run or {}
@@ -287,7 +301,11 @@ def poll_replies(store: IssueStore) -> int:
         asked = question.get("asked") or {}
         if not asked.get("at") or question.get("answered"):
             continue
-        if (issue.fix_request or {}).get("status") in fix_review.IN_FLIGHT:
+        req = issue.fix_request or {}
+        if req.get("status") in fix_review.IN_FLIGHT:
+            continue
+        if (req.get("action") == "answer" and req.get("status") == "failed"
+                and int(req.get("attempts") or 1) >= HUNT_MAX_ATTEMPTS):
             continue
         labels = [o["label"] for o in question.get("options") or []]
         got = dispute_question.read_answer(
@@ -341,7 +359,8 @@ def _huntable(issues: dict) -> list[tuple[bool, int, Issue]]:
 
 
 # Issues whose triage the agent failed this process, by when, so a run that
-# cannot finish is not retried every tick.
+# cannot finish is not retried every tick; `fixability.failed_triage` counts
+# them on the record.
 _triage_failed: dict[int, float] = {}
 TRIAGE_RETRY_SECONDS = 6 * 3600
 # Issues triaged before each hunt: above the daily intake over the day's hunts.
@@ -395,6 +414,8 @@ def _judge(store: IssueStore, issue: Issue, base: prove.PinnedBase, trigger: str
             raise
         _triage_failed[n] = time.monotonic()
         traceback.print_exc()
+        if not isinstance(e, capacity.CapacityPaused):
+            store.edit_issue(n).record_fix_triage(fixability.failed_triage(issue, str(e)))
         return False
     record["asks"] = int((issue.fix_triage or {}).get("asks") or 0)
     if record["verdict"] == "ask":
@@ -478,7 +499,8 @@ def fill(store: IssueStore, want: int) -> list[int]:
     fixability triage judged `go` at their current content, a maintainer's
     ahead of any other, then an easy fix, then by fixability, then the newest
     (`fixability.hunt_key`), never past the day's budget and only while the
-    lane's AI capacity is open. The triage's replies ride as notes. The issues
+    lane's AI capacity is open. The triage's replies and its read of the fix
+    (`approach`) ride as notes. The issues
     queued. Picks come from the app's issue snapshot; the day's count is read
     from the store, and each queue write re-checks the issue there."""
     from prospector_app.backend import issue_data
@@ -492,8 +514,10 @@ def fill(store: IssueStore, want: int) -> list[int]:
             break
         if _budget_spent(store) or not lane_health.capacity_open(LANE):
             break
+        approach = tri.get("approach") and f"The triage's read of the fix: {tri['approach']}"
+        notes = "\n\n".join(p for p in (tri.get("notes"), approach) if p) or None
         ok, _ = fix_review.queue(store, n, "solve", by="hunter", source="hunter",
-                                 guidance=tri.get("guidance"), notes=tri.get("notes"))
+                                 guidance=tri.get("guidance"), notes=notes)
         if ok:
             queued.append(n)
     return queued
@@ -519,12 +543,25 @@ def _answer_replies(store: IssueStore) -> None:
         public_loop.answer_replies(store, may_route=lambda: lane_health.capacity_open(LANE))
 
 
+def _close_out(store: IssueStore) -> None:
+    """`close_out.run` over the app's issue snapshot, its checks running only
+    while the lane's AI capacity is open."""
+    from prospector_app.backend import issue_data
+
+    with capacity.metered(LANE):
+        close_out.run(store, issue_data.issues(),
+                      may_run=lambda: lane_health.capacity_open(LANE))
+
+
 def _every_ten_minutes(store: IssueStore) -> None:
     """Follow up the open proposals, then refresh the in-scope issues, answer
-    the replies, and bring GitHub in line with them; one step failing leaves the
-    others to run, and an agent outage trips the lanes and ends the pass."""
+    the replies, read the replies on issues Prospector closed, bring GitHub in
+    line with them, and close the issues the triage found not here or already
+    fixed; one step failing leaves the others to run, and an agent outage trips
+    the lanes and ends the pass."""
     try:
-        for step in (_follow_up, public_loop.refresh, _answer_replies, public_loop.sync):
+        for step in (_follow_up, public_loop.refresh, _answer_replies, close_out.watch,
+                     public_loop.sync, _close_out):
             try:
                 step(store)
             except headless_agent.AgentUnavailable as e:

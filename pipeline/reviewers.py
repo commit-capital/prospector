@@ -621,10 +621,11 @@ def digests(pr: Pr) -> dict[str, dict]:
         entry = pr.review_entry(rid)
         if entry is None and rid not in active:
             continue
+        head = review_policy.review_head(pr, r)
         if r.source == PROSPECTOR and rid not in active:
-            out[rid] = digest(r, entry, bar(r, entry, pr.head_sha), pr.head_sha, advisory=True)
+            out[rid] = digest(r, entry, review_policy.own_bar(pr, r), head, advisory=True)
             continue
-        out[rid] = digest(r, entry, review_policy.bar(pr, r), pr.head_sha)
+        out[rid] = digest(r, entry, review_policy.bar(pr, r), head)
     return out
 
 

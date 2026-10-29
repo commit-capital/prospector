@@ -88,9 +88,11 @@ from typing import TYPE_CHECKING, Literal
 from pipeline import actions
 from pipeline import diff_cache
 from pipeline import gates
+from pipeline import gh
 from pipeline import notify
 from pipeline import profile
 from pipeline import progress
+from pipeline import settings
 from pipeline import storekit
 from pipeline import threat_evidence
 from pipeline import threats
@@ -191,9 +193,10 @@ class DiffScan:
     the whole diff. `source` is what it read: `cached` (a whole cached diff),
     `fetched` (the whole diff, read from GitHub for this scan), `partial` (a
     capped cached copy alone, judged only when what it holds is already
-    malicious), or `uncached` (nothing)."""
+    malicious), or `uncached` (nothing). `patch` is its diff_cache.patch_id."""
     result: dict | None
     source: Literal["cached", "fetched", "partial", "uncached"]
+    patch: str | None = None
 
 
 def judge_diff(rec: Pr, diffs_dir: Path = diff_cache.DIFFS, *, fetch: bool = True) -> DiffScan:
@@ -215,7 +218,7 @@ def judge_diff(rec: Pr, diffs_dir: Path = diff_cache.DIFFS, *, fetch: bool = Tru
 
     text = path.read_text(errors="replace")
     if diff_cache.is_complete(text):
-        return DiffScan(scan_text(text), "cached")
+        return DiffScan(scan_text(text), "cached", diff_cache.patch_id(text))
     whole = diff_cache.fetch_complete(rec.number) if fetch else None
     if whole is not None:
         return DiffScan(scan_text(whole.text, whole.unread), "fetched")
@@ -278,6 +281,41 @@ def scan_record(rec: Pr, registry: dict, diffs_dir: Path = diff_cache.DIFFS,
     if result["verdict"] == "clear" and diff.result is None:
         return None  # nothing observed and nothing judged — don't stamp
     return result
+
+
+# How many earlier heads a `patch` section names.
+SAME_AS_CAP = 10
+
+
+def patch_section(rec: Pr, pid: str | None) -> dict | None:
+    """The `patch` section for `rec`'s head, whose diff hashes to `pid`: the
+    earlier heads it carries facts from, while each move merged the base and
+    kept the patch. None when there is nothing new to record."""
+    prior = rec.section("patch") or {}
+    head = prior.get("against_head_sha")
+    if pid is None or head == rec.head_sha:
+        return None
+    carry = (head and pid == prior.get("id") and rec.head_sha
+             and base_merge(head, rec.head_sha, rec.base_ref))
+    return {"id": pid, "same_as": [*prior["same_as"], head][-SAME_AS_CAP:] if carry else []}
+
+
+def base_merge(prev: str, head: str, base: str | None) -> bool:
+    """Whether `head` is a maintainer's merge of branch `base` into `prev`: its
+    first parent is `prev`, `base` contains its other, and its author is the bot
+    or can write to the repository. Unknown reads as no."""
+    repo = settings.repo()
+    commit = gh.gh_json(f"repos/{repo}/commits/{head}") or {}
+    parents = [p.get("sha") for p in commit.get("parents") or []]
+    author = (commit.get("author") or {}).get("login")
+    if not base or not author or len(parents) != 2 or parents[0] != prev:
+        return False
+    if author != settings.bot_login():
+        role = gh.gh_json(f"repos/{repo}/collaborators/{author}/permission") or {}
+        if role.get("permission") not in ("admin", "write"):
+            return False
+    compare = gh.gh_json(f"repos/{repo}/compare/{parents[1]}...{base}") or {}
+    return compare.get("status") in ("ahead", "identical")
 
 
 @dataclass
@@ -367,7 +405,7 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
                             and "secret-leak" not in result["signatures"]):
                         item_ops.append(functools.partial(
                             actions.withdraw, item_id=f"rotate-secret:{n}"))
-                    current.set_threat(result)
+                    current.set_threat(result, patch_section(current, diff.patch))
                     restamped += 1
                 else:
                     moved += 1

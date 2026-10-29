@@ -238,6 +238,32 @@ def test_run_security_rc0_without_verdict_lands_in_failure_memory(store, monkeyp
     assert verify_worker.next_auto() is None
 
 
+def test_a_head_whose_security_review_keeps_failing_leaves_the_pool(store, monkeypatch):
+    # The in-memory skip dies with the process; the count on the record does not.
+    store.save_pr(_clean_merge_pr(1))
+    data.refresh()
+
+    class FakeProc:
+        pid = 0
+        stdout = iter(["lens output\n"])
+
+        def wait(self):
+            return 0  # an INCOMPLETE review: no verdict landed
+
+    monkeypatch.setattr(worker_children.subprocess, "Popen", lambda argv, **kw: FakeProc())
+    for _ in range(verify_worker.HUNT_MAX_FAILURES):
+        verify_worker.security_failed.clear()
+        data.refresh()
+        assert verify_worker.next_auto() == ("security", 1)
+        verify_worker.run_security(1)
+    verify_worker.security_failed.clear()
+    data.refresh()
+    assert verify_worker.next_auto() is None
+    rec = store.load_pr(1).raw
+    rec["meta"]["head_sha"] = "c" * 40
+    assert S.run_failures(rec["security_run"], "c" * 40) == 0
+
+
 def test_run_security_rc0_with_verdict_clears_failure_memory(store, monkeypatch):
     """rc==0 AND a GREEN verdict landed during the run: the PR left the
     security pool for real, so it comes out of security_failed."""
@@ -1026,6 +1052,31 @@ class TestErroredRetry:
         self._errored(store, 2, kind="sandbox-error", host="laptop", hours_ago=7)
         assert verify_worker.auto_verifiable(data.prs()[2])
 
+    def _judgment_less(self, store, n):
+        rec = store.load_pr(n).raw
+        rec["verify"] = {"tier": "blind", "checked_at": _now(), "against_head_sha": HEAD,
+                         "against_base_sha": "b" * 40}
+        store.save_pr(rec)
+        data.refresh()
+
+    def test_an_interrupted_runs_leftover_record_does_not_block_the_retry(self, store,
+                                                                         monkeypatch):
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "laptop")
+        self._errored(store, 1, kind="interrupted", host="studio")
+        self._judgment_less(store, 1)
+        assert data.prs()[1].verify_outcome is None
+        assert verify_worker.auto_verifiable(data.prs()[1])
+
+    def test_an_interrupted_head_stops_at_the_retry_cap(self, store, monkeypatch):
+        from pipeline import gates
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "laptop")
+        self._errored(store, 1, kind="interrupted", host="studio")
+        store.edit_pr(1).record_verify_request(
+            "error", error_kind="interrupted", error="x", host="studio",
+            attempts=gates.VERIFY_RETRY_ATTEMPTS - 1, finished_at=_iso_hours_ago(7))
+        self._judgment_less(store, 1)
+        assert not verify_worker.auto_verifiable(data.prs()[1])
+
     def test_the_prs_own_refusal_is_never_retried(self, store, monkeypatch):
         monkeypatch.setenv("TRIAGE_WORKER_ID", "laptop")
         self._errored(store, 1, kind="refused-safety", host="studio")
@@ -1407,6 +1458,35 @@ class TestDesignLane:
         assert booked == [("fail", "design")]
         assert store.load_pr(1).review_entry("design") is None
         assert store.claim_design_run(1, host="some-other-machine", stale_after=3600) is True
+
+    def test_a_head_whose_design_review_keeps_failing_leaves_the_pool(
+            self, store, monkeypatch, tmp_path):
+        def review(*a, **kw):
+            raise verify_worker.design_review.DesignReviewFailed("no answer")
+        self._ready(store, monkeypatch, tmp_path, review)
+        for _ in range(verify_worker.HUNT_MAX_FAILURES):
+            verify_worker.design_failed.clear()
+            data.refresh()
+            assert verify_worker.next_auto(frozenset({"design"})) == ("design", 1)
+            verify_worker.run_design(1)
+        verify_worker.design_failed.clear()
+        data.refresh()
+        assert verify_worker.next_auto(frozenset({"design"})) is None
+        # An operator's run is not counted.
+        assert verify_worker.run_design(1, trigger="control") is False
+        assert S.run_failures(store.load_pr(1).raw["design_run"], HEAD) == (
+            verify_worker.HUNT_MAX_FAILURES)
+
+    def test_a_coverage_fault_counts_toward_the_head_s_failures(self, store, monkeypatch,
+                                                                 tmp_path):
+        def review(clone, diff, *, head_sha, **kw):
+            return {"kind": "review", "reviewed_sha": head_sha, "findings": [],
+                    "checks": [], "summary": "s"}
+        self._ready(store, monkeypatch, tmp_path, review)
+        monkeypatch.setattr(verify_worker.coverage, "measure",
+                            lambda clone, **kw: {"status": "fault", "reason": "disk full"})
+        assert verify_worker.run_design(1) is True
+        assert S.run_failures(store.load_pr(1).raw["design_run"], HEAD) == 1
 
     def test_an_outage_trips_the_agent_lanes(self, store, monkeypatch, tmp_path):
         from pipeline import headless_agent

@@ -116,7 +116,8 @@ def _no_comparison_judge(monkeypatch):
     request; no test reaches it, so it names no case our fix misses. A test
     that needs cases sets them."""
     from issue_triage import second_opinion
-    monkeypatch.setattr(second_opinion, "compare", lambda *a, **k: [])
+    monkeypatch.setattr(second_opinion, "compare",
+                        lambda *a, **k: second_opinion.Comparison(missed=[]))
 
 
 @pytest.fixture(autouse=True)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -87,5 +88,13 @@ def main(argv: list[str]) -> int:
     return 0 if rec.get("exit") == gates.SENTINEL_PASS else 1
 
 
+def exit_on_term() -> None:
+    """Turn a stop into an ordinary exit, so the check's temporary trees are
+    removed on the way out. The phase container it launched is left to
+    `verify_driver.stop_orphaned_sandboxes`, which whoever stopped it runs."""
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+
+
 if __name__ == "__main__":
+    exit_on_term()
     sys.exit(main(sys.argv[1:]))

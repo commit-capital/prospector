@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import capacity, headless_agent, profile, review_policy, reviewers
+from pipeline import capacity, headless_agent, profile, review_policy, reviewers, settings
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from prospector_app.backend import data, fix_queue, fix_worker, sandbox_check
@@ -109,6 +109,7 @@ def test_update_parks_for_review_and_pushes_nothing(store, monkeypatch):
 
     req = store.load_pr(1).fix_request
     assert req["status"] == "awaiting-review"
+    assert req["result"]["autopush"] is False
     assert not _pushed(probe), "an unattended update must not reach the branch"
     assert ("update", "--probe") in probe.calls
 
@@ -1608,6 +1609,40 @@ def test_a_failed_ending_is_hunted_again_once_it_cools(store, monkeypatch):
     assert fix_worker.auto_fixable(data.prs()[1]) == ("rebase", None)
 
 
+def _fail_hunted_rebase(store, kind: str = "run-failed") -> None:
+    """Queue, claim and fail PR 1's hunted rebase, then age the failure past
+    the cooldown."""
+    from datetime import datetime, timedelta, timezone
+    fix_queue.queue_pr(1, "rebase", source="auto")
+    claimed = store.claim_fix_request(1, host=settings.worker_id())
+    fix_worker._fail(1, claimed, "the sandbox could not run", kind=kind)
+    rec = store.load_pr(1).raw
+    rec["fix_request"]["finished_at"] = (datetime.now(timezone.utc) - timedelta(
+        seconds=fix_worker.FAILED_RETRY_COOLDOWN_SECONDS + 60)).isoformat()
+    store.save_pr(rec)
+    data.refresh()
+
+
+def test_a_head_that_keeps_failing_rests_from_the_hunter(store, monkeypatch):
+    for _ in range(fix_worker.HUNT_MAX_FAILURES - 1):
+        _fail_hunted_rebase(store)
+        assert fix_worker.next_auto() == ("rebase", 1, None)
+    _fail_hunted_rebase(store, kind=capacity.PAUSED_KIND)  # ran nothing
+    assert fix_worker.next_auto() == ("rebase", 1, None)
+    _fail_hunted_rebase(store)
+    assert store.load_pr(1).fix_request["failures"] == fix_worker.HUNT_MAX_FAILURES
+    assert fix_worker.next_auto() is None
+    # A new head is new work.
+    rec = store.load_pr(1).raw
+    rec["meta"]["head_sha"] = "b" * 40
+    for section in ("signals", "drift", "reviews"):
+        rec[section]["against_head_sha"] = "b" * 40
+    store.save_pr(rec)
+    data.refresh()
+    fix_queue.queue_pr(1, "rebase", source="auto")
+    assert "failures" not in store.load_pr(1).fix_request
+
+
 def test_an_agent_that_does_not_land_is_a_failure_not_a_verdict(store, monkeypatch):
     _queue_fix()
     probe = _fix_probe()
@@ -1782,6 +1817,58 @@ def test_the_lane_judges_only_this_hosts_unjudged_resolves(store, monkeypatch, a
     monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", autopush)
     park(store)
     assert fix_worker.next_reviewable() == picked
+
+
+_REJECTED = {"tier": {"tier": 2, "pinned_by": ["a.ts"]},
+             "reviews": [{"lens": "behavior", "verdict": "unsafe", "reason": "x"}],
+             "bar": {"ok": False, "reason": "x"}}
+
+
+@pytest.mark.parametrize("gates, budget, extra, picked", [
+    (("objection",), 5, {}, 1),
+    (("objection",), 5, {"rounds": [{"objection": {}}]}, None),
+    (("objection",), 0, {}, None),
+    (("ci",), 5, {}, None),
+    (("objection",), 5, {"auto_review": {**_REJECTED, "tier": {"tier": 0}}}, None),
+], ids=["owed", "already-continued", "budget-spent", "not-opted-in", "tier-0"])
+def test_a_rejection_no_continuation_answered_is_judged_again(store, monkeypatch, gates,
+                                                              budget, extra, picked):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+        autofix=profile.AutofixPolicy(fixable_gates=gates)))
+    monkeypatch.setattr(fix_worker.objections, "budget_left", lambda st, w: budget)
+    fix_worker._review_backoff.clear()
+    _parked_resolve(store, result={**RESOLVE_RESULT, "auto_review": _REJECTED, **extra})
+    assert fix_worker.next_reviewable() == picked
+
+
+def test_a_refused_budget_rests_the_owed_resolve(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "resolve")
+    monkeypatch.setattr(profile, "active", lambda: profile.RepoProfile(
+        autofix=profile.AutofixPolicy(fixable_gates=("objection",))))
+    reads: list[int] = []
+    monkeypatch.setattr(fix_worker.objections, "budget_left",
+                        lambda st, w: reads.append(1) or 0)
+    fix_worker._review_backoff.clear()
+    _parked_resolve(store, result={**RESOLVE_RESULT, "auto_review": _REJECTED})
+    assert fix_worker.next_reviewable() is None
+    assert fix_worker.next_reviewable() is None
+    assert len(reads) == 1
+
+
+def test_an_owed_continuation_starts_from_the_stamped_rejection(review_lane, store,
+                                                                 monkeypatch):
+    monkeypatch.setattr(fix_worker, "_may_continue", lambda rec, objection: True)
+    continued: list[tuple[dict, dict]] = []
+    monkeypatch.setattr(fix_worker, "_continue_resolve",
+                        lambda n, rec, claimed, head, wt, result, stamp, objection:
+                        continued.append((stamp, objection)))
+    _parked_resolve(store, result={**RESOLVE_RESULT, "auto_review": _REJECTED})
+    fix_worker.review_parked_resolve(1)
+    assert review_lane["review_calls"] == []
+    [(stamp, objection)] = continued
+    assert stamp["reviews"] == _REJECTED["reviews"]
+    assert objection["kind"] == "resolve-review"
 
 
 def test_a_clean_bar_approves_for_the_push_lane(review_lane, store):
@@ -2003,6 +2090,34 @@ def test_a_sandbox_error_leaves_no_stamp_so_a_recovered_host_retries(
     assert fix_worker.next_reviewable() is None
     fix_worker._review_backoff.clear()
     assert fix_worker.next_reviewable() == 1
+
+
+def test_a_review_that_keeps_failing_as_a_machine_waits_for_an_operator(
+        review_lane, store, monkeypatch):
+    monkeypatch.setattr(
+        fix_worker.compile_preflight, "run_command_for_patch",
+        lambda pr, head, patch, cmd, runs_tests=False: {"cmd": cmd, "error": "no docker"})
+    _parked_resolve(store)
+    for _ in range(fix_worker.MAX_ATTEMPTS):
+        fix_worker._review_backoff.clear()
+        assert fix_worker.next_reviewable() == 1
+        fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert req["result"]["review_failures"] == fix_worker.MAX_ATTEMPTS
+    fix_worker._review_backoff.clear()
+    assert fix_worker.next_reviewable() is None
+
+
+def test_a_review_no_agent_could_run_is_not_counted(review_lane, store, monkeypatch):
+    def down(wt, **kw):
+        raise capacity.CapacityPaused(capacity.Decision(False, "window full", None))
+    monkeypatch.setattr(fix_worker.review_resolve, "review", down)
+    _parked_resolve(store)
+    fix_worker.review_parked_resolve(1)
+    req = store.load_pr(1).fix_request
+    assert req["status"] == "awaiting-review"
+    assert "review_failures" not in req["result"]
 
 
 def test_a_sandbox_refusal_stamps_with_its_reason(review_lane, store, monkeypatch):
@@ -2517,6 +2632,7 @@ class TestDeclinedPrompt:
         req = store.load_pr(1).fix_request
         assert req["status"] == "refused"
         assert "safeguards declined" in req["refused_reason"]
+        assert "API Error" not in req["refused_reason"]
         assert ("abort",) in probe.calls
 
     def test_a_declined_describe_is_refused_not_failed(self, store, monkeypatch, tmp_path):
@@ -2532,6 +2648,7 @@ class TestDeclinedPrompt:
         req = store.load_pr(5).fix_request
         assert req["status"] == "refused"
         assert "safeguards declined" in req["refused_reason"]
+        assert "API Error" not in req["refused_reason"]
 
 
 class TestCiObjection:

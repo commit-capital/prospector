@@ -23,11 +23,13 @@ with `409 {"unconfigured": true}`.
   as the GitHub App named by `TRIAGE_BOT_LOGIN`, using a token
   `pipeline/get-bot-token.sh` mints from `TRIAGE_BOT_KEY_FILE`. Each write path
   there (`bot_run`, `bot_merge_run`, `chat_bot_run`, `alert_bot_run`,
-  `propose_bot_run`, `label_bot_run`) has its own allowlist. Every path refuses an
+  `propose_bot_run`, `label_bot_run`, `close_bot_run`) has its own allowlist. Every path refuses an
   empty token or an empty bot login and never falls back to the operator's login.
   A machine that cannot mint a token does all executor writes as dry-runs
   (`executor.live_possible`). Executor writes, dry-runs included, go to the
   Activity log. Widening any allowlist needs security-focused tests.
+- **Issue closes are operator-directed**, except `issue_triage/close_out.py`'s
+  through `close_bot_run`, which never closes a maintainer's issue.
 - **Never hand-run `gh` writes against the triaged repository.** The
   `PreToolUse` hook (`.claude/hooks/deny-triage-writes.py`) denies `gh pr`/`gh
   issue` writes to `TRIAGE_REPO` and every mutating `gh api` call. It judges a

@@ -415,7 +415,8 @@ def _hunter_now(roster: dict, verify_running: set[int]) -> dict[str, list[NowIte
             continue
         pr = prs.get(n)
         design = (pr.raw.get("design_run") or {}) if pr else {}
-        lane = "design" if design.get("host") == m["host"] else "security"
+        lane = ("design" if design.get("host") == m["host"] and design.get("started_at")
+                else "security")
         claim = design if lane == "design" else ((pr.raw.get("security_run") or {}) if pr else {})
         out[lane].append({"host": m["host"], "pr": n, "issue": None,
                           "title": pr.title if pr else None, "step": None,

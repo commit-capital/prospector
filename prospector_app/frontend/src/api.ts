@@ -21,6 +21,15 @@ export type ResponsesFilter = "any" | "reopened" | "new_commits" | "replied" | "
  *  CheckClause below. */
 export type CheckStatus = "pass" | "fail" | "never_ran";
 
+/** The human merge gate (gates.merge_eligibility); `blockers` lists every reason it refuses. */
+export interface MergeGate {
+  ok: boolean;
+  reason: string;
+  blockers: string[];
+  overridable?: boolean;
+  override_kind?: "security" | "unreviewed" | "verify" | null;
+}
+
 /** Filter PRs on one named CI/vetting check (e.g. "security", "verify"):
  *  match if its rolled-up status falls in `status` (an array ORs; a bare
  *  value is shorthand for a one-element array). Multiple clauses in
@@ -101,13 +110,49 @@ export interface FilterSpec {
 /** The Home column a PR's standing with the automation places it in: a click
  *  of yours moves it, a worker moves it, or the automation handed it back. */
 export type AutomationColumn = "act" | "auto" | "handed";
-/** Whose move a PR is: the operator, the automation itself, or the author. */
-export type AutomationOwner = "you" | "worker" | "author";
+/** Whose move a PR is: the operator, the automation itself, the author, or
+ *  the repository's maintainers (who merge Prospector's own fix PRs). */
+export type AutomationOwner = "you" | "worker" | "author" | "maintainers";
+/** The status a PR leads with: a worker moves it, someone else's move, green
+ *  and ready to merge, one quick click of yours, or stuck until you decide. */
+export type AutomationState = "moving" | "waiting" | "ready" | "needs-you" | "stalled";
+/** One stage on a PR's way to ready-to-merge (pr_status.STAGES). */
+export interface PRStage {
+  key: string;
+  label: string;
+  status: "done" | "current" | "failed" | "todo";
+  detail: string;
+}
+/** One lane outcome on a PR (pipeline/outcomes.py), with when it ended. */
+export interface PRTried {
+  lane: string;
+  stage: string;
+  fault: "machine" | "subject" | "judged" | null;
+  by: string | null;
+  words: string;
+  at: string;
+}
+/** A PR page's status block (GET /api/prs/{n}/status). */
+export interface PRStatus {
+  standing: AutomationStanding;
+  stages: PRStage[];
+  tried: PRTried[];
+  issue: number | null;
+  seed: string | null;
+}
+/** Where a moving PR stands in its lane's queue (GET /api/prs/{n}/status/next). */
+export interface NextStep {
+  lane: "security" | "verify" | "design" | "fix";
+  position: number;
+  of: number;
+  eta_hours: number | null;
+}
 /** One PR's standing with the automation, as the backend derives it. */
 export interface AutomationStanding {
   column: AutomationColumn;
   bucket: string;
   owner: AutomationOwner;
+  state: AutomationState;
   reason: string;
 }
 
@@ -470,7 +515,7 @@ export interface PRRow {
   safety_titles?: { severity: string; title: string; location: string }[];
   author_stats?: AuthorStats | null;
   checks?: ChecksRollup;
-  merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "unreviewed" | "verify" | null };
+  merge_gate?: MergeGate;
   age_days?: number | null;
   responses?: PRResponses | null;
   author_return?: OpenAuthorReturn | null;
@@ -1275,7 +1320,7 @@ export interface PRDetail extends PRRow {
   display?: PRDisplay | null;
   // the processing rows ahead of the checks: summary, cluster, analysis
   stages?: CheckItem[];
-  merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "unreviewed" | "verify" | null };
+  merge_gate?: MergeGate;
   // the changed paths that pinned risk_tier (the detail view's "why this tier")
   risk_tier_paths?: string[];
   // each changed path above the leaf tier, with its tier (0 = core … 2)
@@ -1491,6 +1536,27 @@ export interface IssueFixCoverage {
   status: "addressed" | "not-addressed" | "already-fixed" | "out-of-scope";
   evidence: string;
 }
+/** A defect as the issue page shows it, with the host's latest claim test of it. */
+export interface IssueFixDefect extends IssueFixCoverage {
+  claim?: Pick<IssueFixClaim, "status" | "why" | "ruling">;
+}
+/** The reviews' coverage merged into one account (issue_gates.fix_coverage).
+ *  `unshown` holds the defects left that no claim test could show remain. */
+export interface IssueFixCoverageView {
+  state: "complete" | "partial" | "unchecked";
+  defects: IssueFixDefect[];
+  unshown: IssueFixDefect[];
+  /** What a partial fix leaves, in one sentence (fix_review.partial_note). */
+  note: string | null;
+}
+/** One reason a fixed attempt waits for an operator (trust_boundary.holds):
+ *  a "rival" hold's open PRs, a "boundary" hold's crossings. */
+export interface IssueFixHold {
+  kind: "intake" | "rival" | "single" | "boundary";
+  text: string;
+  prs?: number[];
+  crossings?: IssueFixCrossing[];
+}
 /** One trust boundary a fix crosses (issue_triage/trust_boundary.py). */
 export interface IssueFixCrossing {
   kind: string;
@@ -1521,6 +1587,12 @@ export interface IssueFixRivalEntry {
   why: string;
   /** Cases the comparison judge found the fix misses. */
   missed?: string[];
+  /** The tail of its tests' run against our fix, with terminal colour codes. */
+  output?: string;
+  /** What its failing tests check instead of the report's ask; set, they hold nothing. */
+  set_aside?: string;
+  /** Changes it makes that the report does not ask for. */
+  extras?: string[];
 }
 export interface IssueFixQuestion {
   question: string;
@@ -1637,6 +1709,60 @@ export interface ReviewerPolicy {
   window_days: number;
 }
 
+/** Where the lanes' attempts stopped (prospector_app/backend/outcome_summary.py). */
+export interface ResultCase {
+  issue: number | null;
+  pr: number | null;
+  at: string;
+  trigger: string;
+  by: string | null;
+  words: string;
+  asked: { by: string; words: string } | null;
+  leaves: string[];
+}
+
+export interface ResultGroup {
+  lane: string;
+  stage: string;
+  fault: "machine" | "subject" | "judged" | null;
+  count: number;
+  cases: ResultCase[];
+}
+
+export interface ResultRepeat {
+  lane: string;
+  stage: string;
+  kind: "pr" | "issue";
+  number: number;
+  issue: number | null;
+  count: number;
+  last: string;
+}
+
+export interface ResultWeek {
+  week: string;
+  ok: number;
+  machine: number;
+  subject: number;
+  judged: number;
+}
+
+export interface ResultParked {
+  kind: string;
+  count: number;
+  cases: { issue: number; title: string | null; why: string }[];
+}
+
+export interface LaneResults {
+  days: number;
+  since: string;
+  attempts: number;
+  groups: ResultGroup[];
+  repeats: ResultRepeat[];
+  weeks: ResultWeek[];
+  parked: ResultParked[];
+}
+
 /** A label on a recorded reviewer run (pipeline/verdict_labels.py). */
 export interface VerdictLabel {
   expected: string;
@@ -1686,7 +1812,8 @@ export interface IssueFilterSpec {
 }
 export type IssueDisposition = "not-planned" | "completed" | "fixed" | "dup";
 /** The issue pipeline's per-issue triage verdict (issue ANALYZE). */
-export type IssueTriageDisposition = "close-dup" | "close-fixed" | "request-repro" | "link-pr" | "needs-human";
+export type IssueTriageDisposition = "close-dup" | "close-fixed" | "request-changes" | "request-repro"
+  | "link-pr" | "needs-human" | "close-disputed";
 /** The stored analysis section: the verdict plus the agent's written reasons. */
 interface IssueAnalysis {
   disposition: IssueTriageDisposition;
@@ -1756,12 +1883,39 @@ export interface IssueDetail extends IssueRow {
   fix_followup?: IssueFixFollowup | null;
   /** The pull request the fix attempt is open as (fix_review.open_pr). */
   fix_pr?: number | null;
-  /** Why the fixed attempt waits for an operator to open its PR (trust_boundary.held). */
-  fix_held?: string | null;
+  /** Every reason the fixed attempt waits for an operator to open its PR,
+   *  most pressing first (trust_boundary.holds). */
+  fix_holds?: IssueFixHold[];
+  /** What the fixed attempt covers of its report, defect by defect (fix_review.coverage). */
+  fix_coverage?: IssueFixCoverageView | null;
   /** The PR going ahead as the fix in place of ours, while the choice stands. */
   fix_choice?: IssueFixChoice | null;
   /** The operator's approval of the open PR while it holds (fix_review.approval). */
   fix_approved?: IssueFixApproval | null;
+  /** The fixability triage against the report bar (issue_triage/fixability.py). */
+  fix_triage?: IssueFixTriage | null;
+  /** Prospector's unattended close (issue_triage/close_out.py), with the
+   *  author's reply once they disputed it. */
+  fix_closed?: IssueFixClosed | null;
+}
+export interface IssueFixClosed {
+  kind: "not-in-repo" | "external" | "already-fixed";
+  at: string;
+  disputed?: { at: string; by: string; reply: string } | null;
+  reopened?: string | null;
+}
+/** Whether an issue meets the report bar: `gaps` its author was asked to close,
+ *  `asked` what became of that comment, `current` false once a reply or edit
+ *  waits to be judged again. */
+export interface IssueFixTriage {
+  verdict: "go" | "ask" | "skip";
+  kind: string | null;
+  gaps: { kind: "several-asks" | "no-repro" | "unsettled"; ask: string }[] | null;
+  readings: string[] | null;
+  approach: string | null;
+  reason: string | null;
+  asked: string | null;
+  current: boolean;
 }
 /** An open fix PR approved as it stands and left to the maintainers. */
 export interface IssueFixApproval { by: string; at: string; partial: boolean }
@@ -2515,6 +2669,7 @@ export const api = {
   identities: () => get<IdentitiesResult>("/api/identities"),
   trustLadder: () => get<TrustLadder>("/api/policy/trust-ladder"),
   reviewerPolicy: () => get<ReviewerPolicy>("/api/policy/reviewers"),
+  laneResults: (days: number) => get<LaneResults>(`/api/results?days=${days}`),
   // "Retry live mode" — re-probes whether this machine can mint a bot
   // token, since the backend only probes once and caches the result for its
   // whole lifetime otherwise (see /api/identities/refresh).
@@ -2630,6 +2785,8 @@ export const api = {
     return body as { pr: number; status: string };
   },
   verifyRunner: () => get<VerifyRunner>("/api/verify/runner"),
+  prStatus: (n: number) => get<PRStatus>(`/api/prs/${n}/status`),
+  prNextStep: (n: number) => get<NextStep | null>(`/api/prs/${n}/status/next`),
   queueFix: async (n: number, action: FixAction, guidance?: string) => {
     const r = await fetch(`/api/prs/${n}/fix/queue?action=${action}`, {
       method: "POST", headers: { "Content-Type": "application/json" },

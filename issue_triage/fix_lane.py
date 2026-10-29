@@ -28,6 +28,7 @@ from typing import Literal, cast
 from issue_triage import (
     fetch_issues,
     fix_issue,
+    fix_outcome,
     issue_gates,
     judge_repro,
     lane_check,
@@ -618,12 +619,16 @@ def record_result(store: IssueStore, workdir: Path, *, issue: int, report: str,
     }
     workdir.mkdir(parents=True, exist_ok=True)
     (workdir / "result.json").write_text(json.dumps(record, indent=2) + "\n")
+    stats = {"action": action, "lane": lane, "ending": res.ending, "fault": res.fault,
+             "detail": res.detail, "host": settings.worker_id(), "base_sha": base.sha,
+             "report_sha": report, "agent_runs": res.agent_runs}
+    if res.ending == "fixed" and (left := fix_outcome.leaves(res.result)):
+        stats["leaves"] = left
     store.append_run({
-        "phase": "issue-fix:run", "issue": issue, "started": started, "finished": finished,
-        "trigger": trigger,
-        "stats": {"action": action, "lane": lane, "ending": res.ending, "fault": res.fault,
-                  "detail": res.detail, "host": settings.worker_id(), "base_sha": base.sha,
-                  "report_sha": report, "agent_runs": res.agent_runs},
+        "phase": fix_outcome.RUN_PHASE, "issue": issue, "started": started,
+        "finished": finished, "trigger": trigger, "stats": stats,
+        "outcome": fix_outcome.of_run(issue, report, ending=res.ending, fault=res.fault,
+                                      detail=res.detail, trigger=trigger, extra=extra),
     })
     return record
 

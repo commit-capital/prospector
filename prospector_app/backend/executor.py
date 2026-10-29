@@ -1515,6 +1515,65 @@ def post_fix_comment(number: int, body: str, *, marker: str, issue: int, comment
                       attempt=attempt, failure="posting the comment failed unexpectedly")
 
 
+UNANSWERED = "GitHub did not answer"
+
+
+def auto_close_gate(n: int) -> str | None:
+    """Why issue `n` may not be closed unattended, read live: it is a pull
+    request, not open, a maintainer's (`gates.priority_author`), or GitHub
+    does not answer (UNANSWERED). None when it may."""
+    from pipeline import gates
+
+    live = gh.gh_json(f"repos/{settings.repo()}/issues/{int(n)}")
+    if live is None:
+        return UNANSWERED
+    if live.get("pull_request"):
+        return "a pull request"
+    if live.get("state") != "open":
+        return "not open"
+    if gates.priority_author((live.get("user") or {}).get("login"),
+                             live.get("author_association")):
+        return "a maintainer's issue"
+    return None
+
+
+def auto_close_issue(n: int, *, kind: str, reason: str, body: str, marker: str,
+                     token: str | None, dry_run: bool) -> dict:
+    """Close issue `n` unattended (`issue_triage.close_out`), as the bot: post
+    `body` unless a bot comment ending in `marker` is there, then close it with
+    `reason` through `safety_guard.close_bot_run`. Gated live, dry-runs too, on
+    `auto_close_gate`: a refusal is `blocked`, an unanswered read an `error`.
+    With no token every run is a dry-run. Logged to Activity as an issue close
+    whose reason is the triage's `kind`."""
+    from prospector_app.backend import issues as issues_mod
+
+    base: dict = {"issue": int(n), "action": "CLOSE_ISSUE_AUTO", "reason": kind,
+                  "state_reason": reason}
+    held = auto_close_gate(n)
+    if held:
+        return _log("issue-close", {**base, "status": "error" if held == UNANSWERED else "blocked",
+                                    "detail": f"auto-close gate: {held}"}, dry_run=dry_run)
+
+    def attempt(token: str) -> dict[str, object]:
+        if not _bot_commented_with(n, marker):
+            r = bot_run(["gh", "api", f"repos/{settings.repo()}/issues/{int(n)}/comments",
+                         "-f", f"body={body}"], token)
+            if r.returncode != 0:
+                return {"status": "error", "detail": "comment failed: "
+                        + (_gh_api_error(r) or f"gh exited {r.returncode}")}
+        r = safety_guard.close_bot_run(int(n), reason, token)
+        if r.returncode != 0:
+            return {"status": "error", "detail": "close failed: "
+                    + (_gh_api_error(r) or f"gh exited {r.returncode}")}
+        return {"status": "executed", "detail": f"commented and closed #{n} ({kind})"}
+
+    return _bot_write("issue-close", base, token=token, dry_run=dry_run,
+                      preview=f"would comment and close #{n} ({kind})", attempt=attempt,
+                      failure="the unattended close failed unexpectedly",
+                      on_success=lambda _res: issues_mod.reflect_issue_state(
+                          n, "closed", reason.replace("_", " ")))
+
+
 def hand_back_comment(n: int, body: str, *, marker: str, token: str | None,
                       dry_run: bool) -> dict:
     """Post an autofix hand-back `body` on PR `n` as the bot, unless a bot

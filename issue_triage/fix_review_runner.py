@@ -36,6 +36,7 @@ from issue_triage import (
     dispute_question,
     feature_screen,
     fix_lane,
+    fix_outcome,
     fix_review,
     followup,
     intake_audit,
@@ -100,9 +101,11 @@ def _spec(store: IssueStore, n: int, base: prove.PinnedBase, guidance: str | Non
             fix_lane.report_sha(title, body))
 
 
-def _words(guidance: str | None, notes: str | None) -> dict[str, str] | None:
-    """What a run record keeps of the words the request carried."""
-    return {k: v for k, v in (("guidance", guidance), ("notes", notes)) if v} or None
+def _words(guidance: str | None, notes: str | None,
+           asked_by: str | None = None) -> dict[str, str] | None:
+    """What a run record keeps of the words the request carried, and who asked."""
+    words = {k: v for k, v in (("guidance", guidance), ("notes", notes)) if v}
+    return {**words, **({"requested_by": asked_by} if words and asked_by else {})} or None
 
 
 def _revision_base(record: dict) -> prove.PinnedBase:
@@ -144,7 +147,8 @@ def _intake(store: IssueStore, n: int, spec: fix_lane.LaneSpec,
 
 def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
           on_step: Callable[[str], None], notes: str | None = None,
-          unattended: bool = False, feature: bool = False) -> tuple[dict, dict | None]:
+          unattended: bool = False, feature: bool = False,
+          asked_by: str | None = None) -> tuple[dict, dict | None]:
     """The cross-tested lane on issue `n`; its record and, for a dispute, the
     drafted question. An `unattended` solve of a report the intake audit reads
     as malicious ends `refused` without running the lane. A `feature` solve
@@ -176,7 +180,7 @@ def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
     record = fix_lane.record_result(
         store, workdir, issue=n, report=report, base=base, action="fix", lane="cross",
         models=list(settings.issue_fix_models()), res=res, started=started,
-        finished=storekit.now(), trigger=trigger, extra=_words(guidance, notes))
+        finished=storekit.now(), trigger=trigger, extra=_words(guidance, notes, asked_by))
     if record["ending"] == "fixed":
         record = _second_opinion(store, n, base, record, trigger=trigger, on_step=on_step,
                                  approved=spec.approved)
@@ -235,7 +239,7 @@ def _second_opinion(store: IssueStore, n: int, base: prove.PinnedBase, record: d
 def revise(store: IssueStore, n: int, *, comments: str,
            on_step: Callable[[str], None], trigger: str = "send-back",
            notes: str | None = None, advisory: frozenset[str] = frozenset(),
-           feature: bool = False) -> dict:
+           feature: bool = False, asked_by: str | None = None) -> dict:
     """One agent revises the last attempt's change under a maintainer's
     `comments` and anyone else's `notes`, proven on the attempt's base or, when
     this machine no longer holds it, the current pin. The revision keeps the
@@ -267,7 +271,7 @@ def revise(store: IssueStore, n: int, *, comments: str,
     return fix_lane.record_result(
         store, workdir, issue=n, report=report, base=base, action="fix", lane="revise",
         models=[settings.agent_model() or "default"], res=res, started=started,
-        finished=storekit.now(), trigger=trigger, extra=_words(comments, notes))
+        finished=storekit.now(), trigger=trigger, extra=_words(comments, notes, asked_by))
 
 
 def answer(store: IssueStore, n: int, answer_: dict, *, on_step: Callable[[str], None],
@@ -336,7 +340,7 @@ def run_request(store: IssueStore, n: int, req: dict, *,
     except headless_agent.AgentUnavailable as e:
         _finish(store, n, req, "failed", f"the agent is unavailable: {e}")
         raise
-    except (RequestFailed, prove.NoBase, prove.SandboxFault, RuntimeError, ValueError) as e:
+    except Exception as e:
         outcome, status = f"{action} failed: {e}", "failed"
     _finish(store, n, req, status, outcome)
     _note(store, n, outcome)
@@ -360,12 +364,14 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
                on_step: Callable[[str], None]) -> str:
     guidance = req.get("guidance")
     notes = req.get("notes")
+    asked_by = req.get("requested_by")
     trigger = "hunter" if req.get("source") == "hunter" else "operator"
     unattended = req.get("source") in ("hunter", "public")
     feature = bool(req.get("feature"))
     if action == "solve":
         record, question = solve(store, n, guidance=guidance, notes=notes, trigger=trigger,
-                                 on_step=on_step, unattended=unattended, feature=feature)
+                                 on_step=on_step, unattended=unattended, feature=feature,
+                                 asked_by=asked_by)
         _write_run(store, n, record, question)
         return f"Solved: {fix_review.outcome(record)}"
     if action == "send-back" and req.get("rivals"):
@@ -374,7 +380,7 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
     if action == "send-back" and req.get("source") == "followup":
         return _revise_proposal(store, n, guidance or "", notes=notes, trigger="followup",
                                 live=settings.issue_fix_followup() == "live", on_step=on_step,
-                                own_round=True)
+                                own_round=True, asked_by=asked_by)
     if action == "send-back":
         issue = store.load_issue(n)
         pr = fix_review.open_pr(issue) if issue else None
@@ -386,13 +392,16 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
                                 "to change in it")
         if pr:
             return _revise_proposal(store, n, guidance or "", notes=notes, trigger="send-back",
-                                    live=not req.get("dry_run"), on_step=on_step)
+                                    live=not req.get("dry_run"), on_step=on_step,
+                                    asked_by=asked_by)
         if mode == "restart":
             record, question = solve(store, n, guidance=guidance, notes=notes,
-                                     trigger="send-back", on_step=on_step, feature=feature)
+                                     trigger="send-back", on_step=on_step, feature=feature,
+                                     asked_by=asked_by)
             _write_run(store, n, record, question)
             return f"Started over: {fix_review.outcome(record)}"
-        record = revise(store, n, comments=guidance or "", notes=notes, on_step=on_step)
+        record = revise(store, n, comments=guidance or "", notes=notes, on_step=on_step,
+                        asked_by=asked_by)
         _write_run(store, n, record, None)
         return f"Revised: {fix_review.outcome(record)}"
     if action == "answer":
@@ -408,7 +417,7 @@ def _carry_out(store: IssueStore, n: int, action: str, req: dict, *,
 def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, live: bool,
                      on_step: Callable[[str], None], notes: str | None = None,
                      amend: Callable[[dict], bool] | None = None,
-                     own_round: bool = False) -> str:
+                     own_round: bool = False, asked_by: str | None = None) -> str:
     """Revise the fix behind issue `n`'s open pull request under `guidance`
     and `notes` and, when the revision ends `fixed` and `amend` (given the
     revised record to complete) passes it, push it onto the same branch
@@ -434,7 +443,7 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
     kept = result_file.read_text()
     try:
         record = revise(store, n, comments=guidance, notes=notes, on_step=on_step,
-                        trigger=trigger,
+                        trigger=trigger, asked_by=asked_by,
                         advisory=FOLLOWUP_ADVISORY if own_round else frozenset())
     except BaseException:
         result_file.write_text(kept)
@@ -468,6 +477,9 @@ def _revise_proposal(store: IssueStore, n: int, guidance: str, *, trigger: str, 
         raise RequestFailed(f"the revision could not go onto #{pr}: {res.get('detail')}")
     if res.get("status") == "dry-run":
         result_file.write_text(kept)
+        if own_round:
+            # No push went out (no bot token), so the same revision is due again.
+            _count_revision(store, n, pr, fault=True)
         return f"Dry run: {res.get('detail')}"
     distilled = fix_review.distill(record)
     distilled["proposal"] = proposal
@@ -505,6 +517,9 @@ def _hand_back(store: IssueStore, n: int, pr: int, reason: str, *,
                               **({"head_sha": head} if head else {}),
                               "judged": {"head_sha": head, "reason": reason[:400],
                                          "outside": False}})
+    store.append_run(fix_outcome.handback_row(
+        n, pr, str(head) if head else None, by=None, reason=reason, outside=False,
+        revisions=int(fu.get("revisions") or 0)))
 
 
 def _late_rivals(store: IssueStore, n: int, prs: list[int], *, live: bool,

@@ -135,7 +135,10 @@ def run(store: Store, *, limit: int, concurrency: int,
                     _say(stop.line)
                 continue
             # Serial on the main thread — the store is never touched concurrently.
-            errs = analyze_driver.commit_analysis(store, payload)
+            try:
+                errs = analyze_driver.commit_analysis(store, payload)
+            except Exception as e:
+                errs = [f"the commit raised: {e!r}"]
             if errs:
                 failed += 1
                 _say(f"    ! cluster {cid}: validation failed  ({done}/{len(todo)})")
@@ -146,23 +149,28 @@ def run(store: Store, *, limit: int, concurrency: int,
                 analyzed += [int(r["pr"]) for r in payload.get("prs", [])]
                 _say(f"    ✓ cluster {cid} committed  ({done}/{len(todo)})")
 
-    _say("④ Wrapping up — each step reads every PR from the store:")
-    orphans, salvage = _post_steps(store)
-    _say(f"  writing the summary cards of the {len(analyzed)} analyzed PR(s)…")
-    cards = display_pass.refresh(store, analyzed, trigger="analyze", concurrency=conc)
-    _say(f"  wrote {cards} summary card(s)")
-    _say("  counting the clusters still pending (reads the clusters too)…")
-    remaining = len(analyze_driver.pending(store))
-    _say(f"✓ committed {committed}/{len(todo)} clusters ({failed} failed); "
-         f"{orphans} standalone PR(s) dispositioned; {salvage} salvage-fix item(s); "
-         f"{remaining} clusters still pending analysis.")
-    record: dict = {"phase": "analyze:commit", "started": started, "finished": _now(),
-                    "stats": {"committed": committed, "failed": failed,
-                              "orphans": orphans, "salvage_items": salvage,
-                              "attempted": len(todo)}}
-    if trigger:
-        record["trigger"] = trigger
-    store.append_run(record)
+    # The ledger row is the lane's daily budget, so it lands however the
+    # wrap-up ends.
+    orphans = salvage = 0
+    try:
+        _say("④ Wrapping up — each step reads every PR from the store:")
+        orphans, salvage = _post_steps(store)
+        _say(f"  writing the summary cards of the {len(analyzed)} analyzed PR(s)…")
+        cards = display_pass.refresh(store, analyzed, trigger="analyze", concurrency=conc)
+        _say(f"  wrote {cards} summary card(s)")
+        _say("  counting the clusters still pending (reads the clusters too)…")
+        remaining = len(analyze_driver.pending(store))
+        _say(f"✓ committed {committed}/{len(todo)} clusters ({failed} failed); "
+             f"{orphans} standalone PR(s) dispositioned; {salvage} salvage-fix item(s); "
+             f"{remaining} clusters still pending analysis.")
+    finally:
+        record: dict = {"phase": "analyze:commit", "started": started, "finished": _now(),
+                        "stats": {"committed": committed, "failed": failed,
+                                  "orphans": orphans, "salvage_items": salvage,
+                                  "attempted": len(todo)}}
+        if trigger:
+            record["trigger"] = trigger
+        store.append_run(record)
     return AnalyzeRun(len(todo), committed, failed, errored, stop)
 
 

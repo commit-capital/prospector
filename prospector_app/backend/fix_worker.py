@@ -50,7 +50,7 @@ from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Callable
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 from pipeline import (author_fix, capacity, ci_signal, compile_preflight, describe_pr, diffpaths, freshness,
                       gates, gh, headless_agent, objections, profile, resolve_conflicts,
@@ -273,7 +273,9 @@ def recover_orphans() -> list[int]:
                 "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
                 started_at=req.get("started_at"), finished_at=_now(), error=note,
                 source=req.get("source"), guidance=req.get("guidance"),
-                objection=req.get("objection"), host=me)
+                objection=req.get("objection"), host=me,
+                failures=int(req.get("failures") or 0) + 1,
+                head_sha=req.get("against_head_sha"))
             marked.append(n)
     return marked
 
@@ -300,11 +302,11 @@ def reclaim_stranded_resolves() -> list[int]:
     """Cancel the parked `resolve` requests no one can usefully push: this
     worker's own whose resolution no longer applies onto the current default
     branch, and any whose authoring worker has been offline longer than
-    RESOLVE_STRANDED_SECONDS and that no reviewer rejected. Either way the
-    hunter re-authors them on a machine that is up. A resolve a reviewer
-    rejected carries a judgment the operator should read, and stays. The
-    cancel is stamped `reclaimed`, which is what re-arms the head for the
-    hunter. Returns the PRs cancelled."""
+    RESOLVE_STRANDED_SECONDS, since an approval only that worker can carry out
+    waits on nothing. Either way the hunter re-authors them on a machine that
+    is up. The cancel is stamped `reclaimed`, which is what re-arms the head
+    for the hunter, and keeps any auto-review so a reviewer's rejection stays
+    readable. Returns the PRs cancelled."""
     me = settings.worker_id()
     st = data.store()
     registry = st.load_fix_worker()
@@ -329,14 +331,12 @@ def reclaim_stranded_resolves() -> list[int]:
             since = float("inf")
         if since < RESOLVE_STRANDED_SECONDS:
             continue
-        reviews = ((req.get("result") or {}).get("auto_review") or {}).get("reviews") or []
-        if any(isinstance(r, dict) and r.get("verdict") != "safe" and not r.get("failed")
-               for r in reviews):
-            continue
+        auto = (req.get("result") or {}).get("auto_review")
         _cancel(n, req, f"the worker that authored this resolution ({host}) has been "
                         f"offline for {since / 3600:.0f} hours and only it can push the "
                         f"kept merge; the head is handed back to the hunter",
-                result={"reclaimed": {"from": host, "at": _now()}})
+                result={"reclaimed": {"from": host, "at": _now()},
+                        **({"auto_review": auto} if auto else {})})
         cancelled.append(n)
     return cancelled
 
@@ -389,7 +389,9 @@ def next_approved() -> int | None:
 # PRs whose auto-review last ended as a machine failure (a crashed or timed-out
 # reviewer, a git error), by the monotonic time it happened. Held in memory so a
 # restart — a recovered machine — retries immediately, while a live worker waits
-# TRANSIENT_RETRY_SECONDS between attempts instead of spinning on one PR.
+# TRANSIENT_RETRY_SECONDS between attempts instead of spinning on one PR. The
+# request's `result.review_failures` counts them; at MAX_ATTEMPTS the resolve
+# waits for an operator.
 _review_backoff: dict[int, float] = {}
 
 
@@ -400,12 +402,16 @@ def next_reviewable() -> int | None:
     stamped with this host's name, because the kept merge worktree is the thing
     being judged (a record naming no host keeps its worktree on an unknown
     machine, and judging it here could only cancel work another can still
-    push); only ones no auto-review has stamped — a stamped verdict stands
-    until the resolve is re-authored (`_review_stands`); and none resting in
+    push); only ones no auto-review has stamped (`_review_stands`), or whose
+    stamped rejection is owed a continuation (`_continuation_owed`) that the
+    profile and today's objection budget allow, an owed one the budget refuses
+    resting so the budget is read once per rest; none whose review failed as
+    a machine MAX_ATTEMPTS times; and none resting in
     _review_backoff."""
     if "resolve" not in settings.fix_autopush():
         return None
     me = settings.worker_id()
+    may_continue: bool | None = None
     best_n: int | None = None
     best_key: str | None = None
     for n, rec in data.prs().items():
@@ -414,12 +420,22 @@ def next_reviewable() -> int | None:
             continue
         if req.get("host") != me:
             continue
-        if _review_stands((req.get("result") or {}).get("auto_review")):
+        result = req.get("result") or {}
+        if _review_stands(result.get("auto_review")) and not _continuation_owed(result):
+            continue
+        if int(result.get("review_failures") or 0) >= MAX_ATTEMPTS:
             continue
         rested_at = _review_backoff.get(n)
         if rested_at is not None and (time.monotonic() - rested_at
                                       < TRANSIENT_RETRY_SECONDS):
             continue
+        if _continuation_owed(result):
+            if may_continue is None:
+                may_continue = ("objection" in profile.active().autofix.fixable_gates
+                                and objections.budget_left(data.store(), me) > 0)
+            if not may_continue:
+                _review_backoff[n] = time.monotonic()
+                continue
         key = str(req.get("queued_at") or "")
         if best_key is None or key < best_key:
             best_n, best_key = n, key
@@ -432,6 +448,29 @@ def _review_stands(auto: dict | None) -> bool:
     if auto is None:
         return False
     return bool(auto.get("reviews")) or (auto.get("tier") or {}).get("tier") != 0
+
+
+def _judged_rejection(review: dict) -> bool:
+    return review.get("verdict") != "safe" and not review.get("failed")
+
+
+def _rejection_objection(review: dict) -> dict:
+    """A reviewer's judged rejection of a resolve, as the objection a
+    continuation answers."""
+    return objections.build(
+        "resolve-review",
+        f"{review.get('lens')}-lens: {review.get('reason')}\n"
+        + "\n".join(str(c) for c in review.get("concerns") or []),
+        origin={"lens": review.get("lens"), "concerns": list(review.get("concerns") or [])})
+
+
+def _continuation_owed(result: dict) -> bool:
+    """Whether a stamped rejection outside tier 0 never had a continuation
+    round answer it. The continuation starts from that rejection; the
+    reviewers are not asked again."""
+    auto = result.get("auto_review") or {}
+    rejected = any(isinstance(r, dict) and _judged_rejection(r) for r in auto.get("reviews") or [])
+    return rejected and (auto.get("tier") or {}).get("tier") != 0 and not result.get("rounds")
 
 
 def _oldest(status: str, mine_only: tuple[str, ...] = (),
@@ -610,12 +649,11 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
     terminal status the caller has already written."""
     entry = fix_queue.ledger_entry(
         n, req, status, detail, host or settings.worker_id(), _now(),
-        trigger="autohunt" if req.get("source") in AUTO_SOURCES else None, judged=judged)
+        trigger="autohunt" if req.get("source") in AUTO_SOURCES else None, judged=judged,
+        kind=kind)
     signature = (req.get("objection") or {}).get("signature")
     if signature:
         entry["stats"]["objection"] = signature
-    if status == "failed":
-        entry["stats"]["kind"] = kind
     try:
         data.store().append_run(entry)
     except Exception:
@@ -630,14 +668,20 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
         lane_health.note_failure("fix", kind=kind, reason=detail or "", pr=n)
 
 
+# Failure kinds that ran nothing for the PR, so they do not count toward
+# HUNT_MAX_FAILURES.
+_NOTHING_RAN_KINDS = (capacity.PAUSED_KIND, "agent-unavailable")
+
+
 def _fail(n: int, req: dict, message: str, result: dict | None = None, *,
           kind: str = "run-failed") -> None:
+    failures = int(req.get("failures") or 0) + (kind not in _NOTHING_RAN_KINDS)
     data.store().edit_pr(n).record_fix_request(
         "failed", req.get("action", "fix"), queued_at=req.get("queued_at"),
         started_at=req.get("started_at"), finished_at=_now(),
         error=message[-TAIL_CHARS:], result=result, source=req.get("source"),
         guidance=req.get("guidance"), objection=req.get("objection"), host=settings.worker_id(),
-        head_sha=req.get("against_head_sha"))
+        failures=failures or None, head_sha=req.get("against_head_sha"))
     data.refresh()
     _log_run(n, req, "failed", message[-TAIL_CHARS:], kind=kind)
 
@@ -1154,10 +1198,10 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
               result=_checks_only(sandbox_check.collect_checks(n)) or None,
               kind="agent-unavailable")
         return None
-    except headless_agent.AgentDeclined as e:
+    except headless_agent.AgentDeclined:
         _resubmit(n, "abort")
-        _decline(n, claimed, f"The model's safeguards declined this PR's text, so "
-                             f"nothing was authored: {e}")
+        _decline(n, claimed, "The model's safeguards declined this PR's text, so "
+                             "nothing was authored.")
         return None
     except (RuntimeError, ValueError) as e:
         _resubmit(n, "abort")
@@ -1425,9 +1469,9 @@ def _describe(n: int, claimed: dict) -> None:
         _fail(n, claimed, f"The agent could not run on {settings.worker_id()}: {e}",
               kind="agent-unavailable")
         return
-    except headless_agent.AgentDeclined as e:
-        _decline(n, claimed, f"The model's safeguards declined this PR's text, so no "
-                             f"description was written: {e}")
+    except headless_agent.AgentDeclined:
+        _decline(n, claimed, "The model's safeguards declined this PR's text, so no "
+                             "description was written.")
         return
     except (RuntimeError, ValueError) as e:
         _fail(n, claimed, f"The agent attempt did not land: {e}")
@@ -1480,9 +1524,13 @@ def _park(n: int, claimed: dict, action: str, result: dict, host: str) -> None:
     re-applies its reviewed patch to a fresh clone. Holding a clone would only
     accumulate them on one machine while a browsable backlog sits unreviewed —
     and would tie the approval to the machine that authored it. A `resolve` keeps
-    its tree, because the merge commit it holds is the thing being approved."""
+    its tree, because the merge commit it holds is the thing being approved.
+
+    `result.autopush` records whether this worker's TRIAGE_FIX_AUTOPUSH named
+    the action, so every reader says why it parked as the worker saw it."""
     if action not in ("resolve", "describe"):
         _resubmit(n, "abort")
+    result = {**result, "autopush": action in settings.fix_autopush()}
     data.store().edit_pr(n).record_fix_request(
         "awaiting-review", action, queued_at=claimed.get("queued_at"),
         started_at=claimed.get("started_at"), result=result,
@@ -1637,11 +1685,13 @@ def review_parked_resolve(n: int) -> None:
     that evidence decides. Pass → the request becomes `approved`, and the drain
     loop pushes it through `push_approved` like an operator's approval. Fail →
     it returns to `awaiting-review` with the verdict for the operator to read,
-    and the stamp keeps it from being judged again. A machine failure — a
-    crashed or timed-out reviewer with no judged rejection beside it, a git or
-    evidence error, a related-tests sandbox that errored instead of running —
-    restores the request unstamped and rests the PR in _review_backoff, so a
-    live worker retries later and a restarted one immediately."""
+    and the stamp keeps it from being judged again. A stamped rejection no
+    continuation answered skips the reviewers and continues from it. A machine
+    failure — a crashed or timed-out reviewer with no judged rejection beside
+    it, a git or evidence error, a related-tests sandbox that errored instead
+    of running — restores the request unstamped and rests the PR in
+    _review_backoff, so a live worker retries later and a restarted one
+    immediately, up to MAX_ATTEMPTS times."""
     rec = data.store().load_pr(n)
     if rec is None:
         return
@@ -1669,11 +1719,14 @@ def review_parked_resolve(n: int) -> None:
     if claimed is None:
         return
 
-    def restore(reason: str) -> None:
+    def restore(reason: str, *, ran: bool = True) -> None:
         _review_backoff[n] = time.monotonic()
+        result = dict(claimed.get("result") or {})
+        if ran:
+            result["review_failures"] = int(result.get("review_failures") or 0) + 1
         data.store().edit_pr(n).record_fix_request(
             "awaiting-review", "resolve", queued_at=claimed.get("queued_at"),
-            started_at=req.get("started_at"), result=claimed.get("result"),
+            started_at=req.get("started_at"), result=result,
             source=claimed.get("source"), host=settings.worker_id(),
             base_sha=claimed.get("base_sha"), head_sha=head)
         data.refresh()
@@ -1682,9 +1735,17 @@ def review_parked_resolve(n: int) -> None:
 
     try:
         _judge_claimed_resolve(n, rec, claimed, head, str(worktree), restore)
+    except (headless_agent.AgentUnavailable, capacity.CapacityPaused) as e:
+        restore(f"no reviewer could run: {e}", ran=False)
     except Exception:
         traceback.print_exc()
         restore("the review crashed")
+
+
+class _Restore(Protocol):
+    """Puts a claimed resolve back unjudged; `ran` is whether any reviewer ran."""
+
+    def __call__(self, reason: str, *, ran: bool = True) -> None: ...
 
 
 def _resolution_diff(n: int) -> str | None:
@@ -1696,8 +1757,16 @@ def _resolution_diff(n: int) -> str | None:
 
 def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
                            worktree: str,
-                           restore: Callable[[str], None]) -> None:
+                           restore: _Restore) -> None:
     result = dict(claimed.get("result") or {})
+    if _continuation_owed(result):
+        prior = dict(result["auto_review"])
+        objection = _rejection_objection(next(r for r in prior["reviews"] if _judged_rejection(r)))
+        if not _may_continue(rec, objection):
+            restore("no continuation may start yet", ran=False)
+            return
+        _continue_resolve(n, rec, claimed, head, worktree, result, prior, objection)
+        return
     paths = [str(p) for p in (result.get("conflict_paths") or [])]
     diff_r = _resubmit(n, "diff")
     patch = _diff_text(diff_r)
@@ -1730,20 +1799,14 @@ def _judge_claimed_resolve(n: int, rec: Pr, claimed: dict, head: str,
             reviews.append({"lens": lens, **verdict})
             if verdict.get("verdict") != "safe" and not verdict.get("failed"):
                 break
-        judged_rejection = next((r for r in reviews
-                                 if r.get("verdict") != "safe" and not r.get("failed")), None)
+        judged_rejection = next((r for r in reviews if _judged_rejection(r)), None)
         if any(r.get("failed") for r in reviews) and judged_rejection is None:
             restore("a reviewer failed as a machine, with no judged rejection "
                     "beside it")
             return
         stamp["reviews"] = reviews
         if judged_rejection is not None:
-            objection = objections.build(
-                "resolve-review",
-                f"{judged_rejection.get('lens')}-lens: {judged_rejection.get('reason')}\n"
-                + "\n".join(str(c) for c in judged_rejection.get("concerns") or []),
-                origin={"lens": judged_rejection.get("lens"),
-                        "concerns": list(judged_rejection.get("concerns") or [])})
+            objection = _rejection_objection(judged_rejection)
             if tier != 0 and _may_continue(rec, objection):
                 _continue_resolve(n, rec, claimed, head, worktree, result, stamp, objection)
                 return
@@ -2153,8 +2216,9 @@ _VERDICT_ENDINGS = ("pushed", "refused", "cancelled")
 # answer, a worker restart mid-run, an agent that never finished, a sandbox
 # that could not run, a resubmit that crashed. The hunter may try that head
 # again once the failure is this old, so a machine that recovers picks the PR
-# back up on its own.
+# back up on its own, until the head has failed HUNT_MAX_FAILURES times.
 FAILED_RETRY_COOLDOWN_SECONDS = 3600
+HUNT_MAX_FAILURES = 3
 
 
 def _cooled_down(finished_at: str | None) -> bool:
@@ -2169,7 +2233,8 @@ def _hunt_attempted(pr: Pr, action: str) -> bool:
     A verdict ending rests it until the author pushes — a refused rebase
     re-run every sweep would pin the hunter to the same few conflicted PRs. A
     failed ending rests it for FAILED_RETRY_COOLDOWN_SECONDS only: it says
-    nothing about the code, so the PR is not rested on it. The stamp a moved
+    nothing about the code, so the PR is not rested on it, until the head has
+    failed HUNT_MAX_FAILURES times. The stamp a moved
     head no longer matches re-arms the PR either way. A hunted rebase ends
     under the action it turned into — `resolve` when it paused on conflicts,
     `update` when its history holds merge commits — so either ending rests
@@ -2187,7 +2252,8 @@ def _hunt_attempted(pr: Pr, action: str) -> bool:
     if status in _VERDICT_ENDINGS:
         return True
     if status == "failed":
-        return not _cooled_down(req.get("finished_at"))
+        return (int(req.get("failures") or 0) >= HUNT_MAX_FAILURES
+                or not _cooled_down(req.get("finished_at")))
     return False
 
 

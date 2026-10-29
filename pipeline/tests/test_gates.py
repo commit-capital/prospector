@@ -115,7 +115,7 @@ class TestThreatScanAtHead:
     def test_the_human_merge_gate_refuses_an_unscanned_head(self):
         rec = _pr(threat=threat_section("OLD", NOW), security=_green())
         ok, why = gates.merge_eligibility(rec, today="2026-06-10", changed_paths=["src/a.ts"])
-        assert not ok and why == f"not clean: {gates.THREAT_SCAN_STALE}"
+        assert not ok and why == gates.THREAT_SCAN_STALE
 
     def test_an_unscanned_head_never_demotes_a_merge_pick(self):
         rec = _pr(threat=threat_section("OLD", NOW), analysis=_merge_analysis())
@@ -298,6 +298,16 @@ class TestMergeEligibility:
     def test_a_clean_unreviewed_pr_waits_on_a_security_review(self):
         ok, reason = gates.merge_eligibility(_pr(), today="2026-06-10")
         assert not ok and "no security review" in reason
+
+    def test_an_unclean_unreviewed_pr_reports_both_blockers(self):
+        rec = _pr(signals={"ci": "passing", "mergeable": False, "has_tests": True,
+                           "checked_at": NOW, "against_head_sha": HEAD})
+        blockers = gates.merge_gate(rec, today="2026-06-10").blockers
+        assert len(blockers) == 2
+        assert blockers[0] == "merge conflicts" and "no security review" in blockers[1]
+        # A reason clears the missing review, not the conflicts.
+        assert gates.merge_gate(rec, today="2026-06-10",
+                                override_reason="one-line typo fix").blockers == ["merge conflicts"]
 
     def test_a_reason_merges_a_clean_unreviewed_pr(self):
         ok, reason = gates.merge_eligibility(_pr(), today="2026-06-10",

@@ -4,6 +4,9 @@ set, and the sandbox is mocked."""
 from __future__ import annotations
 
 import json
+import os
+import signal
+import time
 from pathlib import Path
 
 import pytest
@@ -150,3 +153,15 @@ def test_a_compose_conflict_is_refused_and_recorded(monkeypatch, tmp_path, capsy
     assert "check refused" in capsys.readouterr().out
     rec = json.loads(records.read_text().splitlines()[0])
     assert rec["error_kind"] == "refused" and "share paths" in rec["error"]
+
+
+def test_a_stopped_check_exits_through_its_cleanup():
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        issue_sandbox_check.exit_on_term()
+        with pytest.raises(SystemExit) as stopped:
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(5)
+        assert stopped.value.code == 143
+    finally:
+        signal.signal(signal.SIGTERM, previous)

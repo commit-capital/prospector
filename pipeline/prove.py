@@ -301,7 +301,8 @@ def _legs(base: PinnedBase, phase: Literal["red", "green"], want: int, *,
 
 class SuiteFault(SandboxFault):
     """A full-suite run did not complete: a sandbox fault, a timeout, a
-    pre-patch that does not apply, or a report the runner did not account for.
+    pre-patch that does not apply, a report the runner did not account for, or
+    a baseline failing too much of its plan to trust.
     The machine's condition, never a verdict on a fix."""
 
 
@@ -348,6 +349,8 @@ def _baseline_run(base: PinnedBase, pre_patch: str | None, *, label: str) -> lis
             or not isinstance(failed, list) or not all(isinstance(f, str) for f in failed)):
         raise SuiteFault(f"the suite baseline did not complete (exit {rc}): "
                          f"{verify_driver.error_excerpt(tail)}")
+    if why := verify_driver.implausible_baseline(trailer):
+        raise SuiteFault(why)
     return sorted(failed)
 
 

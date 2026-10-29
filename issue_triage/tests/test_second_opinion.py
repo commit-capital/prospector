@@ -148,6 +148,10 @@ def test_only_a_closed_gap_earns_credit_and_an_open_one_holds_the_fix():
 
 # --- the comparison judge -----------------------------------------------------------
 
+def _found(missed: list[str], **over) -> second_opinion.Comparison:
+    return second_opinion.Comparison(missed=missed, **over)
+
+
 def _answer(monkeypatch, text: str | Exception) -> dict:
     seen: dict = {}
 
@@ -164,8 +168,8 @@ def _answer(monkeypatch, text: str | Exception) -> dict:
 def test_the_judge_reads_their_change_as_data_and_names_cases_in_words(monkeypatch):
     seen = _answer(monkeypatch, '```json\n{"missed": ["an empty string returns null"], '
                                 '"reason": "r"}\n```')
-    assert COMPARE(RIVAL, OURS, title="parse fails", body="parse('') throws") == [
-        "an empty string returns null"]
+    assert COMPARE(RIVAL, OURS, title="parse fails", body="parse('') throws") == _found(
+        ["an empty string returns null"])
     assert "parse('') throws" in seen["prompt"] and "s || null" in seen["prompt"]
     assert "export const x = 2;" in seen["prompt"] and "data" in seen["prompt"]
     assert (seen["allow_gh"], seen["env_allow"]) == (False, ())
@@ -174,7 +178,7 @@ def test_the_judge_reads_their_change_as_data_and_names_cases_in_words(monkeypat
 def test_a_long_case_is_cut_at_a_word_and_marked(monkeypatch):
     case = "the setup screen " * 60
     _answer(monkeypatch, '```json\n{"missed": ["' + case + '"], "reason": "r"}\n```')
-    [got] = COMPARE(RIVAL, OURS, title="t", body="b") or [""]
+    [got] = (COMPARE(RIVAL, OURS, title="t", body="b") or _found([""])).missed
     assert got.endswith("…") and len(got) <= second_opinion.CASE_MAX + 1
     assert got[:-1].split()[-1] in {"the", "setup", "screen"}
 
@@ -187,11 +191,11 @@ def test_a_judge_with_no_usable_answer_names_nothing(monkeypatch, text):
 
 
 def test_cases_the_judge_finds_make_a_gap_the_tests_did_not(legs, monkeypatch):
-    monkeypatch.setattr(second_opinion, "compare", lambda *a, **k: ["empty input"])
+    monkeypatch.setattr(second_opinion, "compare", lambda *a, **k: _found(["empty input"]))
     entry = second_opinion.judge(BASE, RIVAL, OURS, label="so-7", title="t", body="b")
     assert (entry["verdict"], entry["missed"]) == ("gap", ["empty input"])
     assert "empty input" in second_opinion.notes([(RIVAL, entry)])
-    monkeypatch.setattr(second_opinion, "compare", lambda *a, **k: [])
+    monkeypatch.setattr(second_opinion, "compare", lambda *a, **k: _found([]))
     assert second_opinion.recheck(BASE, RIVAL, OURS, entry, label="so-7", title="t",
                                   body="b")["verdict"] == "gap-closed"
 
@@ -202,6 +206,74 @@ def test_a_rival_without_tests_is_judged_by_its_change_alone(legs, monkeypatch):
     assert second_opinion.judge(BASE, untested, OURS, label="so-7", title="t",
                                 body="b")["verdict"] == "covered"
     assert legs["seen"] == []
-    monkeypatch.setattr(second_opinion, "compare", lambda *a, **k: ["empty input"])
+    monkeypatch.setattr(second_opinion, "compare", lambda *a, **k: _found(["empty input"]))
     assert second_opinion.judge(BASE, untested, OURS, label="so-7", title="t",
                                 body="b")["verdict"] == "gap"
+
+
+def test_the_judge_rules_on_failing_tests_and_names_the_rival_s_extras(monkeypatch):
+    seen = _answer(monkeypatch, '```json\n{"missed": [], "extras": ["renames the config loader"], '
+                                '"tests": {"check_report": false, "why": "they call readChunk, '
+                                'which only the other change adds"}, "reason": "r"}\n```')
+    got = COMPARE(RIVAL, OURS, title="t", body="b", failing="TypeError: readChunk is not a function")
+    assert got == _found([], extras=["renames the config loader"],
+                         tests_outside="they call readChunk, which only the other change adds")
+    assert "readChunk is not a function" in seen["prompt"] and '"check_report"' in seen["prompt"]
+    # Shown no failing tests, the judge is asked nothing of them, and a ruling it gives anyway counts for nothing.
+    seen = _answer(monkeypatch, '```json\n{"missed": [], "tests": {"check_report": false, '
+                                '"why": "w"}, "reason": "r"}\n```')
+    assert COMPARE(RIVAL, OURS, title="t", body="b") == _found([])
+    assert "failing-tests" not in seen["prompt"]
+
+
+def test_a_failing_test_the_report_does_not_ask_for_is_set_aside(legs, monkeypatch):
+    """#14149: #14150's test calls readAssistantChunk, which only #14150 adds."""
+    legs.update(ours=RED)
+    asked: dict = {}
+
+    def compare(*a, failing=None, **k):
+        asked["failing"] = failing
+        return _found([], tests_outside="a helper only #12 adds")
+
+    monkeypatch.setattr(second_opinion, "compare", compare)
+    entry = second_opinion.judge(BASE, RIVAL, OURS, label="so-7", title="t", body="b")
+    assert entry["verdict"] == "skipped" and entry["set_aside"] == "a helper only #12 adds"
+    assert "expect(parse(''))" in asked["failing"] and "x.test.ts > empty" in asked["failing"]
+    assert "x.test.ts > empty" in entry["output"]
+
+
+def test_a_set_aside_test_holds_nothing_when_the_judge_also_finds_a_missed_case(legs, monkeypatch):
+    legs.update(ours=RED)
+    monkeypatch.setattr(second_opinion, "compare",
+                        lambda *a, **k: _found(["empty input"], tests_outside="renamed output"))
+    entry = second_opinion.judge(BASE, RIVAL, OURS, label="so-7", title="t", body="b")
+    assert entry["verdict"] == "gap" and entry["set_aside"] == "renamed output"
+    notes = second_opinion.notes([(RIVAL, entry)])
+    assert "empty input" in notes and "expect(parse(''))" not in notes
+    monkeypatch.setattr(second_opinion, "compare", lambda *a, **k: _found([]))
+    # The tests still fail with ours, but only the missed case is checked again.
+    assert second_opinion.recheck(BASE, RIVAL, OURS, entry, label="so-7", title="t",
+                                  body="b")["verdict"] == "gap-closed"
+
+
+def test_a_relevant_failing_test_stays_a_gap_and_extras_are_kept(legs, monkeypatch):
+    legs.update(ours=RED)
+    monkeypatch.setattr(second_opinion, "compare",
+                        lambda *a, **k: _found([], extras=["reformats the parser module"]))
+    entry = second_opinion.judge(BASE, RIVAL, OURS, label="so-7", title="t", body="b")
+    assert entry["verdict"] == "gap" and "set_aside" not in entry
+    assert entry["extras"] == ["reformats the parser module"]
+
+
+def test_a_rival_that_also_does_more_than_the_issue_asks_is_not_offered_to_go_with():
+    entries = [{"pr": 4, "author": "d", "verdict": "gap-open", "why": "x fails",
+                "extras": ["renames the loader"]}]
+    text, phrase = second_opinion.held_line(entries)
+    assert text == ("Prospector has a working fix but is holding it: #4 has tests our fix fails. "
+                    "#4 also changes things the issue does not ask for. Send ours back to close "
+                    "the gap.")
+    assert phrase in text and "Go with" not in text
+    entries.append({"pr": 5, "author": "e", "verdict": "gap-open", "why": "y"})
+    text, _ = second_opinion.held_line(entries)
+    assert text.endswith("#4 also changes things the issue does not ask for. Go with #5, or send "
+                         "ours back to close the gap.")

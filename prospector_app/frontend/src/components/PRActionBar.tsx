@@ -207,7 +207,7 @@ export function PRActionBar({ pr, runState, onActed, summary }:
     : alreadyDone ? `already actioned at ${runState?.at} — click to act again` : "";
 
   return (
-    <section className={`suggestion summary-panel tone-${sug?.tone ?? "muted"}`}>
+    <section className={`suggestion summary-panel tone-${sug?.tone ?? "muted"}`} id="pr-actions">
       <h3 className="summary-title">Summary</h3>
       {summary}
       <div className="summary-action">
@@ -291,7 +291,10 @@ export function PRActionBar({ pr, runState, onActed, summary }:
               ? <>⚠ {mergeGate.override_kind === "verify" ? "verify escalated"
                   : mergeGate.override_kind === "unreviewed" ? "no security review"
                   : "security YELLOW"} — merging logs your reason as the override</>
-              : <>⛔ Merge blocked — {mergeGate.reason}{mergeGate.overridable ? " — type an override reason below to merge anyway" : ""}</>}
+              // An overridable gate has one blocker: the reason must clear every refusal.
+              : <>⛔ Merge blocked{mergeGate.blockers.length > 1
+                  ? <>:<ul>{mergeGate.blockers.map((b) => <li key={b}>{b}</li>)}</ul></>
+                  : <> — {mergeGate.reason}{mergeGate.overridable ? " — type an override reason below to merge anyway" : ""}</>}</>}
           </div>
         )}
         {action === "MERGE" && mergeGate?.ok && (

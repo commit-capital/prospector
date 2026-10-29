@@ -48,6 +48,14 @@ def test_noop_when_every_section_current(tmp_path, monkeypatch):
     monkeypatch.setattr(reingest.headless_agent, "run_agent",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran agent")))
 
+    set_section(store, 100, "threat", {"verdict": "clear", "signatures": [],
+                                       "revision": reingest.threat_scan.threats.REVISION},
+                against_head_sha="sha2")
+    monkeypatch.setattr(reingest, "_threat_rescan",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("rescanned")))
+    monkeypatch.setattr(reingest.diff_cache, "fetch_diff",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fetched")))
+
     assert reingest.run(store, 100) == 0
     assert store.load_pr(100).disposition == "merge"
     run = store.runs()[-1]

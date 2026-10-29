@@ -142,13 +142,6 @@ _DECLINED = re.compile(r"safeguards flagged this message"
                        r"|can't respond to this message", re.I)
 
 
-def declined_reason(text: str) -> str | None:
-    """The line of `text` that says the model refused the prompt, or None."""
-    for line in text.splitlines():
-        if _DECLINED.search(line):
-            return line.strip()[:300]
-    return None
-
 
 class EditsBlockedError(RuntimeError):
     """The CLI denied an Edit/Write on a path inside the granted edit_root.
@@ -571,9 +564,8 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
         why = unavailable_reason(failure)
         if why:
             raise AgentUnavailable(f"claude exited {proc.returncode}: {why}")
-        declined = declined_reason(failure)
-        if declined:
-            raise AgentDeclined(declined)
+        if _DECLINED.search(failure):
+            raise AgentDeclined("the model's safeguards declined the prompt")
         if transient(failure):
             raise AgentTransient(f"claude exited {proc.returncode}: the service was "
                                  f"overloaded; last output: {tail}")

@@ -27,7 +27,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
-from pipeline import capacity, headless_agent, storekit
+from pipeline import capacity, freshness, headless_agent, storekit
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -135,7 +135,7 @@ def source_hash(pr: Pr) -> str:
 def current(pr: Pr) -> dict | None:
     """The PR's display section while it describes the PR's head and verdict."""
     sec = pr.section("display")
-    if not sec or sec.get("against_head_sha") != pr.effective_head_sha:
+    if not sec or not freshness.carries(pr, sec.get("against_head_sha")):
         return None
     return sec if sec.get("source_hash") == source_hash(pr) else None
 
@@ -276,7 +276,7 @@ def refresh(store: Store, ns: list[int], *, trigger: str, concurrency: int = 4) 
 
 def wanted(prs: dict[int, Pr]) -> list[int]:
     """Open PRs with an analysis and no current display section, merge picks first."""
-    from pipeline import freshness, gates
+    from pipeline import gates
     picks = [pr for pr in prs.values()
              if pr.state == "open" and pr.disposition and freshness.is_current(pr, "analysis")
              and current(pr) is None]

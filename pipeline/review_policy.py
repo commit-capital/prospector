@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from pipeline import reviewers, settings, storekit
+from pipeline import freshness, reviewers, settings, storekit
 from pipeline.reviewers import Bar, Reviewer
 
 if TYPE_CHECKING:
@@ -96,9 +96,20 @@ def bar(pr: Pr, reviewer: Reviewer) -> Bar:
     return own_bar(pr, reviewer)
 
 
+def review_head(pr: Pr, reviewer: Reviewer) -> str | None:
+    """The head `reviewer`'s entry is judged at: the design review's own head
+    while freshness.carries it, else the ingested head."""
+    entry = pr.review_entry(reviewer.id) or {}
+    reviewed = entry.get("reviewed_sha")
+    if (reviewer.id == reviewers.DESIGN.id
+            and freshness.carries(pr, reviewed, reviewers.open_findings(entry))):
+        return reviewed
+    return pr.head_sha
+
+
 def own_bar(pr: Pr, reviewer: Reviewer) -> Bar:
     """`reviewer`'s bar on `pr` whether or not it gates."""
-    return reviewers.bar(reviewer, pr.review_entry(reviewer.id), pr.head_sha,
+    return reviewers.bar(reviewer, pr.review_entry(reviewer.id), review_head(pr, reviewer),
                          threshold=policy().threshold)
 
 

@@ -313,12 +313,12 @@ def queue_due(issue: Issue, now: datetime, view: dict | None = None) -> Queued |
     return None
 
 
-def _view(pub: dict, mode: str) -> dict:
+def mode_view(pub: dict, mode: str) -> dict:
     """The part of a `fix_public` section `mode` reads and writes."""
     return (pub.get("dry") or {}) if mode == "dry-run" else pub
 
 
-def _edit_view(pub: dict, mode: str) -> dict:
+def edit_mode_view(pub: dict, mode: str) -> dict:
     if mode == "dry-run":
         return pub.setdefault("dry", {})
     return pub
@@ -340,7 +340,7 @@ def work_for(issue: Issue, mode: str, now: datetime, host: str) -> _Work:
     """What `sync` on `host` would write for `issue` in `mode`, against its
     record. An issue out of scope only has the labels recorded for it taken
     off."""
-    view = _view(issue.fix_public, mode)
+    view = mode_view(issue.fix_public, mode)
     have = {int(k): v for k, v in (view.get("labels") or {}).items()}
     scoped = in_scope(issue)
     want = label_targets(issue) if scoped else {}
@@ -417,21 +417,22 @@ def _record(store: IssueStore, n: int, mode: str, field: str, key: str,
     """Record under `fix_public` (its dry-run part in dry-run) that `field`
     `key` is now `value`."""
     def change(pub: dict) -> None:
-        _edit_view(pub, mode).setdefault(field, {})[key] = value
+        edit_mode_view(pub, mode).setdefault(field, {})[key] = value
     _update(store, n, change)
 
 
 def _record_label(store: IssueStore, n: int, mode: str, number: int, by: dict) -> None:
     """Record that `by["host"]` set `number`'s label to `by["label"]`."""
     def change(pub: dict) -> None:
-        view = _edit_view(pub, mode)
+        view = edit_mode_view(pub, mode)
         view.setdefault("labels", {})[str(number)] = by["label"]
         view.setdefault("label_by", {})[str(number)] = by
     _update(store, n, change)
 
 
-def _take_lease(store: IssueStore, n: int, host: str, now: datetime) -> Issue | None:
-    """Lease issue `n` to `host` for LEASE; the issue as the lease found it, or
+def take_lease(store: IssueStore, n: int, host: str, now: datetime,
+               hold: timedelta = LEASE) -> Issue | None:
+    """Lease issue `n` to `host` for `hold`; the issue as the lease found it, or
     None when another worker holds it or the swap was lost."""
     got = store.stamped_issue(n)
     if got is None:
@@ -441,7 +442,7 @@ def _take_lease(store: IssueStore, n: int, host: str, now: datetime) -> Issue | 
     lease = pub.get("lease") or {}
     if lease.get("host") not in (None, host) and str(lease.get("until") or "") > _iso(now):
         return None
-    pub["lease"] = {"host": host, "until": _iso(now + LEASE)}
+    pub["lease"] = {"host": host, "until": _iso(now + hold)}
     issue.stage_fix_public(pub)
     return issue if store.save_issue_if(issue, stamp) else None
 
@@ -472,7 +473,8 @@ def ask_triage(issue: Issue, record: dict) -> str:
     mode = issue_mode(issue, mode)
     key = f"triage-{asks + 1}"
     body = public_comments.triage_question(issue.number, key, record.get("question"),
-                                           list(record.get("readings") or []))
+                                           list(record.get("readings") or []),
+                                           gaps=record.get("gaps"))
     if public_comments.problems(body):
         return "refused"
     token = executor.mint_bot_token() if mode == "live" else None
@@ -494,7 +496,7 @@ def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
     if not work_for(issue, mode, now, host) or _backing_off(issue, now):
         return False
     n = issue.number
-    leased = _take_lease(store, n, host, now)
+    leased = take_lease(store, n, host, now)
     if leased is None:
         return False
     work = work_for(leased, mode, now, host)
@@ -549,13 +551,13 @@ def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
                 else:
                     _note(store, n, f"Could not queue {q.action}: {why}.")
     finally:
-        def release(pub: dict) -> None:
+        def unlease(pub: dict) -> None:
             pub.pop("lease", None)
             if failed:
                 pub["error"] = {"at": _iso(now), "detail": failed[:300]}
             else:
                 pub.pop("error", None)
-        _update(store, n, release)
+        _update(store, n, unlease)
     if failed:
         _note(store, n, f"GitHub write failed, retrying later: {failed[:300]}")
     return True
@@ -688,7 +690,7 @@ def respond(store: IssueStore, issue: Issue, *, mode: str, now: datetime,
     if not _answerable(issue):
         return False
     n = issue.number
-    view = _view(issue.fix_public, mode)
+    view = mode_view(issue.fix_public, mode)
     if view.get("capped_at"):
         return False
     run = issue.fix_run or {}
@@ -699,7 +701,7 @@ def respond(store: IssueStore, issue: Issue, *, mode: str, now: datetime,
         return False
     finished = _when(run.get("finished"))
     if "replies_seen" not in view and (finished is None or now - finished > REPLY_MAX_AGE):
-        _record_view(store, n, mode, replies_seen=_iso(now), report_seen=edited or "",
+        record_view(store, n, mode, replies_seen=_iso(now), report_seen=edited or "",
                      replies_read_at=issue.updated_at or "")
         return False
     after = replies_after(issue, view)
@@ -717,15 +719,15 @@ def respond(store: IssueStore, issue: Issue, *, mode: str, now: datetime,
     read = {"replies_read_at": issue.updated_at or "",
             "replies_seen": replies[-1].at if replies else (_iso(after) if after else None)}
     if not edited and not replies:
-        _record_view(store, n, mode, **read)
+        record_view(store, n, mode, **read)
         return False
     if int(view.get("reattempts") or 0) >= MAX_REATTEMPTS:
-        _record_view(store, n, mode, capped_at=_iso(now), report_seen=edited, **read)
+        record_view(store, n, mode, capped_at=_iso(now), report_seen=edited, **read)
         return True
     if not edited:
         if mode == "dry-run":
             _note(store, n, f"Dry run: would route {_plural(len(replies))}.")
-            _record_view(store, n, mode, **read)
+            record_view(store, n, mode, **read)
             return True
         if not may_route():
             return False
@@ -733,19 +735,19 @@ def respond(store: IssueStore, issue: Issue, *, mode: str, now: datetime,
         if verdict is None:
             misses = int(view.get("route_misses") or 0) + 1
             if misses < MAX_ROUTE_MISSES:
-                _record_view(store, n, mode, route_misses=misses)
+                record_view(store, n, mode, route_misses=misses)
                 return False
-            _record_view(store, n, mode, route_misses=0, **read)
+            record_view(store, n, mode, route_misses=0, **read)
             _note(store, n, f"Could not read {_plural(len(replies))} after {misses} tries; "
                             "leaving them for a person.")
             return True
         if verdict in ("none", "declined"):
-            _record_view(store, n, mode, route_misses=0, **read)
+            record_view(store, n, mode, route_misses=0, **read)
             _note(store, n, f"Read {_plural(len(replies))}: nothing to act on."
                   if verdict == "none" else
                   f"The agent declined to read {_plural(len(replies))}; a person should look.")
             return True
-    leased = _take_lease(store, n, settings.worker_id(), now)
+    leased = take_lease(store, n, settings.worker_id(), now)
     if leased is None:
         return False
     try:
@@ -774,22 +776,23 @@ def respond(store: IssueStore, issue: Issue, *, mode: str, now: datetime,
             elif edited:
                 _note(store, n, "The report was edited; starting another attempt.")
         if ok:
-            _record_view(store, n, mode, reattempts=int(view.get("reattempts") or 0) + 1,
+            record_view(store, n, mode, reattempts=int(view.get("reattempts") or 0) + 1,
                          report_seen=edited, route_misses=0, **read)
     finally:
-        _update(store, n, _release)
+        release(store, n)
     return True
 
 
-def _release(pub: dict) -> None:
-    pub.pop("lease", None)
+def release(store: IssueStore, n: int) -> None:
+    """Give up the lease `take_lease` took on issue `n`."""
+    _update(store, n, lambda pub: pub.pop("lease", None))
 
 
-def _record_view(store: IssueStore, n: int, mode: str, **fields: object) -> None:
+def record_view(store: IssueStore, n: int, mode: str, **fields: object) -> None:
     """Set `fields` (the ones not None) on issue `n`'s `fix_public` record, its
     dry-run part in dry-run."""
     def change(pub: dict) -> None:
-        view = _edit_view(pub, mode)
+        view = edit_mode_view(pub, mode)
         view.update({k: v for k, v in fields.items() if v is not None})
     _update(store, n, change)
 

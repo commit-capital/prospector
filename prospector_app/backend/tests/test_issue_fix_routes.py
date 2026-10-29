@@ -38,7 +38,8 @@ def test_the_issue_says_why_its_fix_waits_for_an_operator(client):
                                         "boundary": {"crossings": [{
                                             "kind": "auth", "where": "a", "what": "w",
                                             "requested": True}]}})
-    assert "auth" in c.get("/api/issues/7").json()["fix_held"]
+    [hold] = c.get("/api/issues/7").json()["fix_holds"]
+    assert hold["kind"] == "boundary" and "auth" in hold["text"]
 
 
 def test_an_action_that_does_not_fit_is_a_409_with_the_reason(client):

@@ -282,6 +282,21 @@ def test_a_live_poll_queues_a_follow_up_revision(store, monkeypatch):
     assert req["action"] == "send-back" and req["source"] == "followup"
     assert "guidance" not in req and "objected to the change" in req["notes"]
     assert "revisions" not in store.load_issue(7).fix_followup  # counted when it finishes
+    assert req["requested_by"] == "Greptile"
+
+
+def test_a_hand_back_is_logged_with_the_reviewers_words(store, monkeypatch):
+    finding = {"path": "a.test.ts", "line": 3, "body": "These two tests are near-duplicates."}
+    monkeypatch.setattr(followup, "read",
+                        lambda pr: _pr(views=[_greptile(reviewers.FAIL, findings=[finding])]))
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "described_head": HEAD,
+                                             "revisions": followup.MAX_REVISIONS})
+    followup.poll(store, mode="live")
+    row = [r.raw for r in store.runs() if r.phase == "issue-fix:handback"][-1]
+    out = row["outcome"]
+    assert (row["issue"], row["pr"], out["lane"], out["stage"], out["by"], out["fault"]) \
+        == (7, 9, "issue-followup", "reviewer", "Greptile", "judged")
+    assert "near-duplicates" in out["words"] and out["subject"]["sha"] == HEAD
 
 
 def _run_follow_up(store: IssueStore, **words: str) -> str:

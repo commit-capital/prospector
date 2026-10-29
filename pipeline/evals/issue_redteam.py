@@ -161,8 +161,8 @@ def run_case(case: Case) -> dict[str, Any]:
         if case.rival is not None:
             rival = second_opinion.Rival(pr=0, author="rival", title="rival", tests="",
                                          fix=diff(case.files, case.rival), test_paths=[])
-            pred["compare"] = {"missed": second_opinion.compare(
-                rival, patch, title=case.title, body=case.body)}
+            found = second_opinion.compare(rival, patch, title=case.title, body=case.body)
+            pred["compare"] = {"missed": found.missed if found else None}
     except Exception as e:  # noqa: BLE001 — a crashed case is scored, not fatal
         pred["error"] = f"{type(e).__name__}: {e}"[:400]
     return pred

@@ -22,7 +22,7 @@ a partial fix wherever the attempt is named (`outcome`, `fix_status`).
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from issue_triage import (
     dispute_question,
@@ -110,6 +110,50 @@ def partial(issue: Issue) -> str | None:
                                                                           "running") else None
 
 
+class ShownClaim(TypedDict):
+    status: str | None
+    why: str | None
+    ruling: str | None
+
+
+class ShownDefect(issue_gates.CoverageEntry, total=False):
+    claim: ShownClaim
+
+
+class ShownCoverage(TypedDict):
+    state: Literal["complete", "partial", "unchecked"]
+    defects: list[ShownDefect]
+    unshown: list[ShownDefect]
+    # `partial_note`, for a partial fix.
+    note: str | None
+
+
+def coverage(issue: Issue) -> ShownCoverage | None:
+    """A fixed attempt's coverage (`issue_gates.fix_coverage`) as the issue page
+    shows it, each defect with the latest claim test of it, or None for any
+    other attempt."""
+    run = issue.fix_run or {}
+    if run.get("ending") != "fixed":
+        return None
+    cov = issue_gates.fix_coverage(run.get("reviews"), run.get("claims"))
+    claims = {issue_gates.defect_key(str(c.get("defect") or "")): c
+              for c in run.get("claims") or []}
+
+    def shown(defects: list[issue_gates.CoverageEntry]) -> list[ShownDefect]:
+        out: list[ShownDefect] = []
+        for d in defects:
+            entry = ShownDefect(**d)
+            claim = claims.get(issue_gates.defect_key(d["defect"]))
+            if claim:
+                entry["claim"] = ShownClaim(status=claim.get("status"), why=claim.get("why"),
+                                            ruling=claim.get("ruling"))
+            out.append(entry)
+        return out
+
+    return ShownCoverage(state=cov.state, defects=shown(cov.defects), unshown=shown(cov.unshown),
+                         note=partial_note(run))
+
+
 def fix_status(issue: Issue) -> tuple[str, str] | None:
     """(status, reason) for issue's fix attempt, or None when it has none. The
     reason of a partial fix leads with what it leaves (`partial`)."""
@@ -141,7 +185,7 @@ def status_line(issue: Issue) -> StatusLine:
     return {**line, "text": line["text"] + (" It fixes only part of the report." if partial(issue) else "")}
 
 
-def _blocked_by(judged: dict) -> str | None:
+def blocked_by(judged: dict) -> str | None:
     """Whose bar a hand-back's change could not clear (`followup.Step.by`). A
     judgment without `by` names its blocker in its reason."""
     if judged.get("by"):
@@ -156,7 +200,7 @@ def _blocked_by(judged: dict) -> str | None:
 def _handed_back_line(pr: object, fu: dict) -> str:
     judged = fu.get("judged") or {}
     why = judged.get("reason") or fu.get("reason") or ""
-    by = _blocked_by(judged)
+    by = blocked_by(judged)
     revisions = int(fu.get("revisions") or 0)
     tries = (f", and {revisions} revision{'s' if revisions != 1 else ''} didn't fix it"
              if revisions else "")

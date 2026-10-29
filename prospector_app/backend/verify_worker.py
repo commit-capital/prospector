@@ -42,6 +42,8 @@ from pipeline import design_review
 from pipeline import diff_cache
 from pipeline import gates
 from pipeline import headless_agent
+from pipeline import pr_outcomes
+from pipeline import reviewers
 from pipeline import security_review
 from pipeline import settings
 from pipeline import store
@@ -406,6 +408,9 @@ def _auto_requested(n: int) -> bool:
 # the hunter tries again; a machine that keeps failing trips its lane long
 # before then, so this only governs one-off run failures.
 SECURITY_FAILED_SECONDS = 6 * 3600.0
+# Failed security or design reviews of one head (store.run_failures) after
+# which the hunter leaves that head to an operator.
+HUNT_MAX_FAILURES = 3
 
 
 class _SkipSet:
@@ -471,7 +476,9 @@ def auto_verifiable(pr: Pr) -> bool:
     adversarial review has not cleared), no current verify record, and no
     verify_request in flight or deliberately stopped. A cancel waits for an
     operator; an error waits unless gates.verify_retry_allowed says the
-    harness, not the PR, is what failed and a retry is due."""
+    harness, not the PR, is what failed and a retry is due. The judgment-less
+    record an errored run leaves behind (outcome None) is not a current verify
+    record, so the retry rule, with its per-head cap, decides."""
     status = (pr.verify_request or {}).get("status")
     if status in ("queued", "running", "waiting-for-base", "cancelled"):
         return False
@@ -480,7 +487,8 @@ def auto_verifiable(pr: Pr) -> bool:
         return False
     if not gates.security_cleared(pr):
         return False
-    if is_current(pr, "verify", max_age_days=settings.verify_max_age_days()):
+    interrupted = status == "error" and pr.verify_outcome is None
+    if not interrupted and is_current(pr, "verify", max_age_days=settings.verify_max_age_days()):
         return False
     return gates.verify_eligible(pr, _changed_paths(pr))
 
@@ -572,6 +580,7 @@ def _pools(prs: dict[int, Pr], open_lanes: frozenset[str]) -> dict[str, list[tup
             (n, pr) for n, pr in prs.items()
             if "security" in open_lanes
             and n not in security_failed and gates.blocked_on_security(pr)
+            and store.run_failures(pr.raw.get("security_run"), pr.head_sha) < HUNT_MAX_FAILURES
             and not store.run_claim_held_elsewhere(
                 pr.raw.get("security_run"), host=me, stale_after=SECURITY_CLAIM_SECONDS)],
         "verify": ([(n, pr) for n, pr in prs.items() if auto_verifiable(pr)]
@@ -580,9 +589,16 @@ def _pools(prs: dict[int, Pr], open_lanes: frozenset[str]) -> dict[str, list[tup
             (n, pr) for n, pr in prs.items()
             if "design" in open_lanes
             and n not in design_failed and design_review.huntable(pr)
+            and store.run_failures(pr.raw.get("design_run"), pr.head_sha) < HUNT_MAX_FAILURES
             and not store.run_claim_held_elsewhere(
                 pr.raw.get("design_run"), host=me, stale_after=DESIGN_CLAIM_SECONDS)],
     }
+
+
+def lane_order(lane: str) -> list[int]:
+    """Every PR in one hunt lane's pool, in the order that lane picks them."""
+    pool = _pools(data.prs(), frozenset({lane})).get(lane) or []
+    return [n for n, _ in sorted(pool, key=design_hunt_key if lane == "design" else hunt_key)]
 
 
 def hunt_candidates(limit: int = 5) -> dict[str, list[int]]:
@@ -651,9 +667,10 @@ def run_security(n: int) -> int | None:
     The store claim is what keeps two idle machines off one PR: a review costs
     several agent runs, so losing the race means dropping the pick rather than
     racing to a duplicate verdict. The claim is released whatever the run does,
-    so a failure leaves the PR free for the next attempt rather than parked.
-    Both no-run returns mean the snapshot that picked this PR is behind the
-    store, which the caller answers with a refresh and a rest."""
+    so a failure leaves the PR free for the next attempt rather than parked,
+    and counts the failure toward HUNT_MAX_FAILURES. Both no-run returns mean
+    the snapshot that picked this PR is behind the store, which the caller
+    answers with a refresh and a rest."""
     st = data.store()
     rec = st.load_pr(n)
     if rec is None or not gates.blocked_on_security(rec):
@@ -662,18 +679,21 @@ def run_security(n: int) -> int | None:
     if not st.claim_security_run(n, host=me, stale_after=SECURITY_CLAIM_SECONDS):
         print(f"[autohunt] PR #{n} is already under review elsewhere", flush=True)
         return None
+    failed = True
     try:
-        return _run_security_claimed(n)
+        rc, failed = _run_security_claimed(n)
+        return rc
     finally:
-        st.release_security_run(n, host=me)
+        st.release_security_run(n, host=me, failed_at=rec.head_sha if failed else None)
 
 
-def _run_security_claimed(n: int) -> int:
+def _run_security_claimed(n: int) -> tuple[int, bool]:
     """Spawn the security review for a PR this host holds the claim on, and
     book the ending on the security lane's health: a verdict that landed is a
     success; a run that exited non-zero or held its verdict is a machine
     failure and parks the PR; an agent outage parks nothing and trips every
-    agent lane at once."""
+    agent lane at once. Returns the exit code and whether the review
+    failed."""
     argv = [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "security_review.py"),
             "--pr", str(n), "--trigger", "autohunt"]
     lines: list[str] = []
@@ -689,21 +709,21 @@ def _run_security_claimed(n: int) -> int:
     data.refresh()
     if rc == security_review.EXIT_AGENT_UNAVAILABLE:
         lane_health.trip_agent_lanes(last or "the agent CLI could not run")
-        return rc
+        return rc, False
     if rc == security_review.EXIT_TRANSIENT:
         security_failed.add(n, f"the service was overloaded: {last}"[:300])
-        return rc
+        return rc, True
     rec2 = data.store().load_pr(n)
     if rc == 0 and rec2 is not None and not gates.blocked_on_security(rec2):
         security_failed.discard(n)
         lane_health.note_success("security")
-        return rc
+        return rc, False
     reason = (f"security review exited {rc}: {last}" if rc
               else f"security review held its verdict: {last}")
     security_failed.add(n, reason[:300])
     lane_health.note_failure("security", kind="security-run" if rc else "incomplete",
                              reason=reason, pr=n)
-    return rc
+    return rc, True
 
 
 def design_base(st: Store) -> tuple[str, Path, int] | None:
@@ -725,10 +745,12 @@ def _design_diff(st: Store, n: int, head: str) -> Path | None:
     return None
 
 
-def _book_design(st: Store, n: int, head: str, stats: dict, trigger: str) -> None:
+def _book_design(st: Store, n: int, head: str, stats: dict, trigger: str, stage: str,
+                 words: str = "") -> None:
     stamp = _now()
     st.append_run({"phase": design_review.PHASE, "pr": n, "started": stamp, "finished": stamp,
-                   "trigger": trigger, "stats": {"head_sha": head, **stats}})
+                   "trigger": trigger, "stats": {"head_sha": head, **stats},
+                   "outcome": pr_outcomes.design(n, head, stage, words)})
 
 
 def run_design(n: int, *, trigger: str = "autohunt", force: bool = False) -> bool | None:
@@ -757,11 +779,14 @@ def run_design(n: int, *, trigger: str = "autohunt", force: bool = False) -> boo
     me = settings.worker_id() if unattended else f"{settings.worker_id()}/{trigger}"
     if not st.claim_design_run(n, host=me, stale_after=DESIGN_CLAIM_SECONDS):
         return None
+    failed = unattended
     try:
         diff = _design_diff(st, n, head)
         if diff is None:
+            failed = False
             design_failed.add(n, "GitHub returned no diff for this head")
-            _book_design(st, n, head, {"error": "GitHub returned no diff for this head"}, trigger)
+            _book_design(st, n, head, {"error": "GitHub returned no diff for this head"}, trigger,
+                         "no-diff", "GitHub returned no diff for this head")
             return None
         measured = (coverage.measure(base[1], base_sha=base[0], tier=base[2], pr=n,
                                      head_sha=head)
@@ -778,32 +803,45 @@ def run_design(n: int, *, trigger: str = "autohunt", force: bool = False) -> boo
             counts[f["severity"]] = counts.get(f["severity"], 0) + 1
             if v := (f.get("verification") or {}).get("verdict"):
                 verdicts[v] = verdicts.get(v, 0) + 1
-        _book_design(st, n, head, {"findings": counts, "verification": verdicts, "saved": saved,
-                                   "coverage": coverage.summary(measured)}, trigger)
-        design_failed.discard(n)
-        if measured is not None and measured["status"] == coverage.FAULT:
-            lane_health.note_failure("design", kind="coverage",
-                                     reason=measured["reason"] or "", pr=n)
+        faulted = measured is not None and measured["status"] == coverage.FAULT
+        blocking = reviewers.design_standing(entry)
+        coverage_reason = (measured or {}).get("reason") or ""
+        if blocking:
+            stage, words = "blocking", "; ".join(str(f.get("title") or "") for f in blocking)
+        elif faulted:
+            stage, words = "coverage", coverage_reason
         else:
+            stage, words = "reviewed", ""
+        _book_design(st, n, head, {"findings": counts, "verification": verdicts, "saved": saved,
+                                   "coverage": coverage.summary(measured)}, trigger, stage, words)
+        design_failed.discard(n)
+        # A faulted coverage run is retried with the whole review, so it
+        # counts as a failure too.
+        if faulted:
+            lane_health.note_failure("design", kind="coverage", reason=coverage_reason, pr=n)
+        else:
+            failed = False
             lane_health.note_success("design")
         if unattended:
             data.refresh()
         return True
     except headless_agent.AgentUnavailable as e:
+        failed = False
         lane_health.trip_agent_lanes(str(e))
+        _book_design(st, n, head, {"error": str(e)[:300]}, trigger, "agent", str(e))
         return False
     except (headless_agent.AgentDeclined, headless_agent.AgentTransient) as e:
         design_failed.add(n, str(e)[:300])
-        _book_design(st, n, head, {"error": str(e)[:300]}, trigger)
+        _book_design(st, n, head, {"error": str(e)[:300]}, trigger, "agent", str(e))
         return False
     except Exception as e:
         reason = str(e) if isinstance(e, design_review.DesignReviewFailed) else repr(e)
         design_failed.add(n, reason[:300])
-        _book_design(st, n, head, {"error": reason[:300]}, trigger)
+        _book_design(st, n, head, {"error": reason[:300]}, trigger, "error", reason)
         lane_health.note_failure("design", kind="design-run", reason=reason, pr=n)
         return False
     finally:
-        st.release_design_run(n, host=me)
+        st.release_design_run(n, host=me, failed_at=head if failed else None)
 
 
 def _note_verify_ending(n: int) -> None:
@@ -904,11 +942,13 @@ def release_stale_claims() -> list[int]:
     me = settings.worker_id()
     st = data.store()
     freed: list[int] = []
-    for n in sorted(st.prs_matching(("security_run", "host"), [me])):
-        st.release_security_run(n, host=me)
-        freed.append(n)
-    for n in st.prs_matching(("design_run", "host"), [me]):
-        st.release_design_run(n, host=me)
+    for n, rec in sorted(st.prs_matching(("security_run", "host"), [me]).items()):
+        if (rec.raw.get("security_run") or {}).get("started_at"):
+            st.release_security_run(n, host=me)
+            freed.append(n)
+    for n, rec in st.prs_matching(("design_run", "host"), [me]).items():
+        if (rec.raw.get("design_run") or {}).get("started_at"):
+            st.release_design_run(n, host=me)
     return freed
 
 

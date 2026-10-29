@@ -186,10 +186,50 @@ def test_no_reply_waits_until_the_default_is_due(store, monkeypatch):
     assert store.load_issue(1).fix_request["answer"] == {"label": "A"}
 
 
+def test_an_answer_that_keeps_failing_is_not_queued_again(store, monkeypatch):
+    _asked(store, datetime.now(timezone.utc).isoformat())
+    monkeypatch.setattr(dispute_question, "read_answer",
+                        lambda n, **kw: {"label": "B", "login": "reporter", "url": "c"})
+    for _ in range(issue_fix_worker.HUNT_MAX_ATTEMPTS):
+        assert issue_fix_worker.poll_replies(store) == 1
+        claimed = store.claim_fix_request(1, host="studio")
+        fix_review_runner._finish(store, 1, claimed, "failed", "the sandbox faulted")
+    assert issue_fix_worker.poll_replies(store) == 0
+
+
+def test_an_orphan_requeued_twice_ends_failed(store, monkeypatch):
+    monkeypatch.setattr(issue_fix_worker.data, "store",
+                        lambda: type("St", (), {"load_issue_fix_worker": lambda self: {}})())
+    monkeypatch.setattr(issue_fix_worker, "STARTED_AT", "9999")
+    fix_review.queue(store, 2, "solve", by="op")
+    for _ in range(issue_fix_worker.MAX_REQUEUES):
+        assert store.claim_fix_request(2, host="studio") is not None
+        assert issue_fix_worker.recover_orphans(store) == [2]
+    assert store.claim_fix_request(2, host="studio") is not None
+    assert issue_fix_worker.recover_orphans(store) == []
+    req = store.load_issue(2).fix_request
+    assert req["status"] == "failed"
+    assert issue_fix_worker.next_request(store.all_issues(), "studio") is None
+
+
+def test_run_request_ends_an_unexpected_error_failed(store, monkeypatch):
+    fix_review.queue(store, 2, "solve", by="op")
+    claimed = store.claim_fix_request(2, host="studio")
+    monkeypatch.setattr(fix_review_runner, "_carry_out",
+                        lambda *a, **kw: (_ for _ in ()).throw(KeyError("result")))
+    monkeypatch.setattr(fix_review_runner.issue_display, "write_story", lambda *a, **kw: None)
+    status, _ = fix_review_runner.run_request(store, 2, claimed)
+    assert status == "failed" and store.load_issue(2).fix_request["status"] == "failed"
+
+
+BAR = fixability.BAR
+
+
 def _triaged(store: IssueStore, n: int, verdict: str = "go", fixability: int = 50,
              **extra: object) -> None:
     store.edit_issue(n).record_fix_triage({"verdict": verdict, "kind": "defect",
-                                           "fixability": fixability, **extra})
+                                           "fixability": fixability, "bar": BAR,
+                                           **extra})
 
 
 @pytest.fixture
@@ -243,6 +283,13 @@ def test_the_hunter_carries_the_replies_the_triage_read(hunting):
     assert issue_fix_worker.hunt(hunting) == 2
     req = hunting.load_issue(2).fix_request
     assert req["guidance"] == "maint: use option B" and req["notes"] == "author: it is option B"
+
+
+def test_the_hunter_hands_the_triage_s_approach_to_the_fix(hunting):
+    _triaged(hunting, 2, notes="author: it is option B", approach="The cause is in x.ts")
+    assert issue_fix_worker.hunt(hunting) == 2
+    notes = hunting.load_issue(2).fix_request["notes"]
+    assert "author: it is option B" in notes and "The cause is in x.ts" in notes
 
 
 def test_the_hunter_keeps_to_its_daily_budget(hunting, monkeypatch):
@@ -396,7 +443,7 @@ def triaging(hunting, monkeypatch, tmp_path):
         sha="b" * 40, tier=2, image="img", clone=tmp_path))
     monkeypatch.setattr(public_loop, "read_replies", lambda issue, after: [])
     monkeypatch.setattr(issue_fix_worker, "_triage_failed", {})
-    judged: dict = {"verdict": {"verdict": "go", "kind": "defect", "fixability": 70},
+    judged: dict = {"verdict": {"verdict": "go", "kind": "defect", "fixability": 70, "bar": BAR},
                     "issues": [], "asked": []}
 
     def judge(issue, clone, *, base_sha, replies=(), subject=None):
@@ -448,6 +495,18 @@ def test_a_triage_that_cannot_finish_rests_the_issue(hunting, triaging):
     assert issue_fix_worker.triage(hunting, 1) == []
     assert issue_fix_worker.triage(hunting, 1) == []
     assert triaging["issues"] == [2, 1]  # 2 rests; 1 is tried next
+
+
+def test_a_triage_that_keeps_failing_is_skipped_until_the_report_changes(hunting, triaging):
+    triaging["verdict"] = ValueError("no JSON object found in agent output")
+    for _ in range(fixability.MAX_TRIAGE_FAILS):
+        issue_fix_worker._triage_failed.clear()
+        issue_fix_worker.triage(hunting, 1)
+    assert triaging["issues"] == [2] * fixability.MAX_TRIAGE_FAILS
+    assert hunting.load_issue(2).fix_triage["verdict"] == "skip"
+    issue_fix_worker._triage_failed.clear()
+    issue_fix_worker.triage(hunting, 1)
+    assert triaging["issues"][-1] == 1  # 2 is no longer picked
 
 
 def test_no_triage_runs_while_capacity_is_paused(hunting, triaging, capacity):

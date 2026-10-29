@@ -1,7 +1,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, type IssueDetail, type IssueFixFollowup, type IssueFixRivalEntry, type IssueFixRun, type IssuePR } from "../../api";
+import { api, type IssueDetail, type IssueFixFollowup, type IssueFixTriage, type IssueFixRun, type IssuePR } from "../../api";
 import { AnalyzeJobLink } from "../AnalyzeJobLink";
 import { Collapsible } from "../Collapsible";
 import { PRLink } from "../PRLink";
@@ -12,7 +12,9 @@ import { DispositionChip, ReproChip } from "../../views/Issues";
 import { EVIDENCE, linkStateChip, referencedPrs } from "./issueLinkChips";
 import { FixDecisionCards } from "./FixDecisionCards";
 import { fixDecision } from "./fixDecision";
-import { otherOpenPRs, rivalRows } from "./rivalComparison";
+import { otherOpenPRs } from "./rivalComparison";
+import { WhyHeld } from "./WhyHeld";
+import { holdReasons } from "./holdReasons";
 import { useExec } from "../../ExecContext";
 import { flashTo, issueSectionId } from "../pageAnchor";
 
@@ -240,38 +242,41 @@ function IssueAnalysis({ d }: { d: IssueDetail }) {
   );
 }
 
-const RIVAL_CHIP: Record<IssueFixRivalEntry["verdict"], { tone: Tone; text: string }> = {
-  covered: { tone: "green", text: "ours covers it" },
-  "gap-closed": { tone: "green", text: "ours now covers it" },
-  gap: { tone: "red", text: "covers more than ours" },
-  "gap-open": { tone: "red", text: "covers more than ours" },
-  skipped: { tone: "muted", text: "not compared" },
+const GAP_LABEL: Record<NonNullable<IssueFixTriage["gaps"]>[number]["kind"], string> = {
+  "several-asks": "Several asks", "no-repro": "Missing detail", unsettled: "Unsettled behavior",
+};
+const ASKED: Record<string, string> = {
+  posted: "asked on the issue", "dry-run": "would ask (dry run)", capped: "asked as often as it may",
+  "out-of-scope": "not asked: public comments are off for this issue", refused: "not asked: the comment failed its checks",
+  error: "not asked: posting failed",
 };
 
-/** Our fix against the other open PRs on the issue, in their tests' words
- *  (issue_triage/second_opinion.py). */
-function RivalComparison({ d }: { d: IssueDetail }) {
-  const rows = rivalRows(d);
-  if (!rows.length) return null;
+/** Where the issue stands against the report bar: what its author was asked,
+ *  or why it waits on you, and the triage's read of a cleaner fix. */
+function ReportBar({ d }: { d: IssueDetail }) {
+  const t = d.fix_triage;
+  if (!t) return null;
+  const yours = t.verdict === "skip" && (t.kind === "too-big" || t.kind === "intended");
+  if (t.verdict !== "ask" && !yours && !t.approach) return null;
   return (
-    <div className="issue-analysis" id={issueSectionId("rivals")}>
-      <div className="analysis-label">Our fix vs. the other open PRs</div>
-      <ul style={{ margin: "0 0 0 18px" }}>
-        {rows.map(({ pr, entry }) => (
-          <li key={pr}>
-            <GitHubPRLink n={pr} />{entry?.author ? ` by ${entry.author}` : ""}{" "}
-            {entry ? (
-              <>
-                <span className={`chip sm chip-${RIVAL_CHIP[entry.verdict].tone}`}>{RIVAL_CHIP[entry.verdict].text}</span>{" "}
-                <span className="muted">{entry.why}</span>
-                {(entry.missed?.length ?? 0) > 0 && (
-                  <ul style={{ margin: "2px 0 0 18px" }}>{entry.missed?.map((m, i) => <li key={i}>{m}</li>)}</ul>
-                )}
-              </>
-            ) : <span className="muted">not compared: the fix hasn't been run against its tests</span>}
-          </li>
-        ))}
-      </ul>
+    <div className="issue-analysis">
+      <div className="analysis-line">
+        <span className="analysis-label">Report bar:</span>
+        {t.verdict === "ask" ? <span>waiting on the reporter, {ASKED[t.asked ?? ""] ?? "not yet asked"}</span>
+          : yours ? <span>{t.kind === "too-big" ? "too big for one PR" : "the code means this behavior"}, needs your call</span>
+          : <span>met</span>}
+        {!t.current && <span className="muted small">the reporter replied or edited it; judging again</span>}
+      </div>
+      {t.verdict === "ask" && t.gaps && t.gaps.length > 0 && (
+        <ul className="issue-asks">{t.gaps.map((g, i) => (
+          <li key={i}><b>{GAP_LABEL[g.kind] ?? g.kind}:</b> {g.ask}
+            {g.kind === "unsettled" && t.readings && t.readings.length > 0 && (
+              <ul>{t.readings.map((r, j) => <li key={j}>{r}</li>)}</ul>)}
+          </li>))}
+        </ul>
+      )}
+      {yours && t.reason && <div className="issue-rationale">{t.reason}</div>}
+      {t.approach && <div className="muted small">Cleaner fix than the report proposes: {t.approach}</div>}
     </div>
   );
 }
@@ -335,14 +340,18 @@ function suggestedAction(d: IssueDetail): string {
   const decision = fixDecision(d);
   if (decision) return `Needs your review: approve as-is or ${decision.partial ? "request a full fix" : "send it back"}`;
   if (d.fix_approved && d.fix_pr != null) return `Approved: #${d.fix_pr} is with the maintainers`;
-  if (d.fix_pr == null && d.fix_held) return "Needs your review: open the fix's PR or send it back";
+  if (d.fix_pr == null && d.fix_holds?.length) return "Needs your review: open the fix's PR or send it back";
   const a = d.analysis;
   switch (a?.disposition) {
     case "close-dup": return `Close as a duplicate of #${a.canonical}`;
     case "close-fixed": return a.fixed_by ? `Close as already fixed by #${a.fixed_by}` : "Close as already fixed";
+    case "request-changes": return "Wait for the reporter to fix the report";
     case "request-repro": return "Ask the reporter for a reproduction";
     case "link-pr": return "Keep open: a linked PR addresses it";
     case "needs-human": return "Needs your decision";
+    case "close-disputed": return d.fix_closed?.disputed
+      ? `${d.fix_closed.disputed.by} disputes Prospector's close as ${d.fix_closed.kind}: reopen it or leave it closed`
+      : "Prospector's close is disputed";
     default: return "Not yet analyzed";
   }
 }
@@ -356,6 +365,7 @@ export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () =
       <h3 className="summary-title">Summary</h3>
       <ProspectorFault d={d} />
       <IssueStory d={d} />
+      <WhyHeld d={d} reasons={d.fix_choice ? [] : holdReasons(d)} />
       {d.body && (
         <Collapsible className="summary-description" summary={<>Full issue report</>}>
           <div className="markdown prbody-md" style={{ maxHeight: "none" }}>
@@ -368,10 +378,9 @@ export function IssueSummary({ d, onChanged }: { d: IssueDetail; onChanged: () =
         <FixPRs d={d} />
       </div>
       <IssueAnalysis d={d} />
-      <RivalComparison d={d} />
+      <ReportBar d={d} />
       <div className="summary-action">
         <div className="sug-headline"><span className="analysis-label">Suggested action:</span> <b>{suggestedAction(d)}</b></div>
-        {d.fix_pr == null && d.fix_held && !d.fix_choice && <div className="muted small">Held: {d.fix_held}</div>}
         <ChoosePR d={d} onChanged={onChanged} />
         {decision ? (
           <>

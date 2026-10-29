@@ -400,6 +400,23 @@ def test_the_distilled_run_keeps_the_review_rounds_and_reads_an_older_round():
 
 # --- the runner --------------------------------------------------------------------
 
+def test_the_page_s_coverage_carries_each_defect_s_claim_test(store):
+    claim = {"defect": "Cancel after a restart is a no-op that returns 200", "status": "unshown",
+             "why": "left to #14070", "ruling": "outside-report", "paths": [], "round": 1}
+    _run(store, reviews=PARTIAL, claims=[claim])
+    cov = fix_review.coverage(store.load_issue(7))
+    assert cov is not None and cov["state"] == "partial"
+    assert cov["note"] == "partial fix: 2 of 3 reported defects handled; not addressed: " \
+        "a session stuck in submitting is never reconciled at startup"
+    by_defect = {d["defect"]: d for d in cov["defects"]}
+    ruled = by_defect["cancel after a restart is a no-op that returns 200"]
+    assert ruled["status"] == "out-of-scope"
+    assert ruled["claim"] == {"status": "unshown", "why": "left to #14070", "ruling": "outside-report"}
+    assert "claim" not in by_defect["the reaper swallows the lease-release error"]
+    _run(store, reviews=PARTIAL, ending="fix-rejected")
+    assert fix_review.coverage(store.load_issue(7)) is None
+
+
 def test_a_solve_that_fixes_part_of_the_report_says_partial_in_the_thread(store, monkeypatch):
     record = {"ending": "fixed", "detail": "proven",
               "result": {"patch": "diff --git a/x b/x\n", "reviews": PARTIAL}}
@@ -596,6 +613,26 @@ def test_a_send_back_that_does_not_reach_the_pull_request_leaves_it_as_it_was(
         "diff --git a/x b/x\n")
     assert issue.fix_followup["state"] == "handed-back"
     assert fix_review.fix_status(issue)[0] == "review"
+
+
+def test_a_follow_up_revision_no_token_could_push_counts_as_a_fault(store, proposed,
+                                                                    monkeypatch):
+    from issue_triage import followup
+    from prospector_app.backend import executor
+    store.edit_issue(7).record_fix_followup({"pr": 9, "state": "watching", "head_sha": "h" * 40})
+    monkeypatch.setattr(settings, "issue_fix_followup", lambda: "live")
+    monkeypatch.setattr(fix_review_runner, "revise", _revised(proposed))
+    monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr(executor, "update_issue_fix_proposal", lambda n, pr, **kw: {
+        "status": "dry-run", "forced": True, "detail": "no bot token"})
+    for _ in range(followup.MAX_REVISION_FAULTS):
+        ok, why = fix_review.queue(store, 7, "send-back", by="followup", source="followup",
+                                   guidance="handle the empty case")
+        assert ok, why
+        fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
+    fu = store.load_issue(7).fix_followup
+    assert fu["revision_faults"] == followup.MAX_REVISION_FAULTS
+    assert followup._spent(fu)
 
 
 def test_a_failure_ends_the_request_failed_with_the_reason(store, monkeypatch):

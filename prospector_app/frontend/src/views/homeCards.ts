@@ -177,16 +177,16 @@ export const HOME_CARDS: HomeCard[] = [
   {
     key: "waiting",
     title: "Waiting on a reviewer or CI",
-    blurb: "The bot pushed and the reviewer or CI has not answered, a verdict is missing at this head and the worker has asked for it, or a machine failure is cooling before its retry.",
+    blurb: "The bot pushed and the reviewer or CI has not answered, a verdict is missing at this head and the worker has asked for it, a machine failure is cooling before its retry, or Prospector's own fix PR is being followed up.",
     column: "auto",
-    spec: bucket("waiting", "retry"),
+    spec: bucket("waiting", "retry", "followup"),
   },
   {
     key: "author",
-    title: "Author's turn",
-    blurb: "The automation cannot move these without the contributor: conflicts the bot will not rebase, red CI, verification that did not confirm the fix, an agent that tried and declined with its reasoning, or a stacked PR waiting on its base.",
+    title: "Someone else's turn",
+    blurb: "The automation cannot move these without the contributor: conflicts the bot will not rebase, red CI, verification that did not confirm the fix, an agent that tried and declined with its reasoning, or a stacked PR waiting on its base. Prospector's own green fix PRs wait here on the maintainers.",
     column: "handed",
-    spec: { automation_owner: "author" },
+    spec: { automation_owner: ["author", "maintainers"] },
     breakdown: [
       { label: "needs a rebase", spec: bucket("author-conflicts"), hint: HANDED_UNBLOCK["author-conflicts"] },
       { label: "red CI", spec: bucket("author-ci"), hint: HANDED_UNBLOCK["author-ci"] },
@@ -200,9 +200,9 @@ export const HOME_CARDS: HomeCard[] = [
   {
     key: "your-call",
     title: "Your call",
-    blurb: "Handed back to you: a needs-human pick, a security verdict, the analysis's own asks, or a path the bot may not touch.",
+    blurb: "Handed back to you: a needs-human pick, a security verdict, the analysis's own asks, a path the bot may not touch, or Prospector's own fix PR that its follow-up gave up on.",
     column: "handed",
-    spec: bucket("needs-human", "security-red", "security-yellow", "asks", "gated", "other"),
+    spec: bucket("needs-human", "security-red", "security-yellow", "asks", "gated", "other", "handed-back"),
     breakdown: [
       { label: "needs a human decision", spec: bucket("needs-human"), hint: HANDED_UNBLOCK["needs-human"] },
       { label: "security RED", spec: bucket("security-red"), hint: HANDED_UNBLOCK["security-red"] },

@@ -232,7 +232,7 @@ def test_concurrent_lens_progress_prints_lens_by_lens(tmp_path, monkeypatch, cap
     assert expected in out
 
 
-def test_agent_outage_exits_with_its_own_code_and_writes_nothing(tmp_path, monkeypatch):
+def test_agent_outage_exits_with_its_own_code_and_books_only_its_outcome(tmp_path, monkeypatch):
     store = Store(str(tmp_path))
     _eligible_pr(store)
     monkeypatch.setattr(rs.diff_cache, "fetch_diff", lambda *a, **k: True)
@@ -244,7 +244,9 @@ def test_agent_outage_exits_with_its_own_code_and_writes_nothing(tmp_path, monke
 
     assert rs.run(store, 100) == rs.EXIT_AGENT_UNAVAILABLE
     assert store.load_pr(100).section("security") is None
-    assert not [r for r in store.runs() if getattr(r, "phase", "") == "security:review-one"]
+    [row] = [r.raw for r in store.runs() if getattr(r, "phase", "") == "security:review-one"]
+    assert "verdict" not in row["stats"]
+    assert (row["outcome"]["stage"], row["outcome"]["fault"]) == ("agent", "machine")
 
 
 def test_every_security_agent_reads_only_a_private_directory_and_the_prs_diff(
@@ -360,7 +362,9 @@ def test_pending_stops_on_service_or_capacity_failure(
     monkeypatch.setattr(rs.headless_agent, "run_agent", fail)
     assert rs.run_pending(store, limit=2) == code
     assert fetched == [100]
-    assert not store.runs()
+    rows = [r.raw for r in store.runs()]
+    assert all(r["outcome"]["fault"] == "machine" for r in rows)
+    assert bool(rows) == (code in (rs.EXIT_AGENT_UNAVAILABLE, rs.EXIT_TRANSIENT))
     _mock_agents(monkeypatch, lens_findings=[])
     assert rs.run_pending(store, limit=2) == 0
     assert Store(tmp_path).load_pr(101).security_verdict == "GREEN"

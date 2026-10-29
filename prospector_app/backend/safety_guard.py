@@ -300,6 +300,33 @@ def label_bot_run(op: str, label: str, token: str, *, number: int | None = None,
                           timeout=timeout, env=bot_env(token))
 
 
+# The GitHub state_reason each unattended close may carry.
+CLOSE_REASONS = ("not_planned", "completed")
+
+
+def assert_close_write(number: int, reason: str) -> None:
+    """Hold an unattended close (`issue_triage.close_out`) to closing one issue
+    by number with a reason in CLOSE_REASONS."""
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise WriteAttemptBlocked(f"a close names an issue number, not {number!r}")
+    if reason not in CLOSE_REASONS:
+        raise WriteAttemptBlocked(f"not an unattended close reason: {reason!r}")
+
+
+def close_bot_run(number: int, reason: str, token: str, *,
+                  timeout: int = 60) -> subprocess.CompletedProcess:
+    """Close issue `number` on TRIAGE_REPO as the configured bot. The command
+    is built here from the checked arguments, so nothing but that one PATCH of
+    the issue's state can run."""
+    token = _require_bot_token(token, "close an issue")
+    assert_close_write(number, reason)
+    assert_store_writes_safe()
+    argv = ["gh", "api", "--method", "PATCH", f"repos/{settings.repo()}/issues/{number}",
+            "--input", "-"]
+    return subprocess.run(argv, input=json.dumps({"state": "closed", "state_reason": reason}),
+                          capture_output=True, text=True, timeout=timeout, env=bot_env(token))
+
+
 _MERGE_RE = re.compile(r"^gh\s+pr\s+merge\s+\d+\b")
 
 

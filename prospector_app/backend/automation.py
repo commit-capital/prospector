@@ -4,8 +4,9 @@ One classification per PR, computed from the same gates and hunter predicates
 the workers decide by, into three columns: `act` (a click of yours moves it),
 `auto` (a worker queue or hunter moves it, nothing for a person to do), and
 `handed` (the automation gave it back — to its author, or to you). The
-`bucket` names the situation inside the column and `owner` says whose move it
-is; `reason` is the one-line why. Home counts, the Explorer's
+`bucket` names the situation inside the column, `owner` says whose move it
+is, `state` is the status a PR's page and the Explorer lead with (STATES), and
+`reason` is the one-line why. Home counts, the Explorer's
 `automation_*` filters, and every card link read this one derivation, so the
 number on a card is the row count its link opens. Pure: no network, no store
 writes.
@@ -17,12 +18,14 @@ from typing import TYPE_CHECKING
 from pipeline import describe_pr, freshness, gates, settings
 
 if TYPE_CHECKING:
+    from issue_triage.issue_model import Issue
     from pipeline.model import Pr
 
 COLUMNS = ("act", "auto", "handed")
 
 # bucket -> owner. `you` is the operator, `author` the contributor, `worker`
-# the automation itself.
+# the automation itself, `maintainers` the repository's own (who merge
+# Prospector's fix PRs).
 OWNERS: dict[str, str] = {
     "malicious": "you", "merge-ready": "you", "approve-parked": "you", "approve-ci": "you",
     "rerun-ci": "you",
@@ -33,16 +36,29 @@ OWNERS: dict[str, str] = {
     "stacked": "author",
     "needs-human": "you", "security-red": "you", "security-yellow": "you", "asks": "you",
     "gated": "you", "other": "you",
+    "followup": "worker", "handed-back": "you", "with-maintainers": "maintainers",
 }
 
+# bucket -> the state a PR's status leads with: `moving` (a worker moves it),
+# `waiting` (someone else's move), `ready` (green; merge it), `needs-you` (one
+# quick click of yours, nothing broken) and `stalled` (the automation gave up
+# or got stuck).
+_NEEDS_YOU = ("malicious", "approve-parked", "approve-ci", "rerun-ci")
+STATES: dict[str, str] = {
+    b: ("ready" if b == "merge-ready" else "needs-you" if b in _NEEDS_YOU
+        else {"worker": "moving", "author": "waiting", "maintainers": "waiting"}.get(o, "stalled"))
+    for b, o in OWNERS.items()}
+
 AUTHOR_BUCKETS = tuple(b for b, o in OWNERS.items() if o == "author")
-YOU_HANDED_BUCKETS = ("needs-human", "security-red", "security-yellow", "asks", "gated", "other")
+YOU_HANDED_BUCKETS = ("needs-human", "security-red", "security-yellow", "asks", "gated", "other",
+                      "handed-back")
 
 _VERIFY_QUEUE = ("queued", "running", "waiting-for-base")
 
 
 def _r(column: str, bucket: str, reason: str) -> dict:
-    return {"column": column, "bucket": bucket, "owner": OWNERS[bucket], "reason": reason[:300]}
+    return {"column": column, "bucket": bucket, "owner": OWNERS[bucket], "state": STATES[bucket],
+            "reason": reason[:800]}
 
 
 def bot_broke_ci(pr: Pr) -> bool:
@@ -69,6 +85,8 @@ def classify(pr: Pr) -> dict | None:
         on = f"#{base} ({pr.base_ref})" if base is not None else f"branch {pr.base_ref}"
         return _r("handed", "stacked", f"stacked on {on} — waits for its base to merge "
                                        f"and GitHub to retarget it onto {settings.default_branch()}")
+    if (ours := _followup_standing(pr)) is not None:
+        return ours
     if gates.bump_exempt(pr):
         return _r("handed", "other", "a dependency bump, outside the automation's scope; "
                                      "merge it once CI and the scanners pass")
@@ -93,9 +111,8 @@ def classify(pr: Pr) -> dict | None:
             return _r("act", "merge-ready", "every check is clear; merge it")
         return _merge_pick_gap(pr, gap)
     if req.get("status") == "awaiting-review":
-        return _r("act", "approve-parked",
-                  f"a parked {req.get('action')} awaits your approval")
-    if pr.disposition == "merge" and why == f"not clean: {gates.THREAT_SCAN_STALE}":
+        return _r("act", "approve-parked", _parked_reason(req))
+    if pr.disposition == "merge" and gates.pr_clean(pr)[1] == [gates.THREAT_SCAN_STALE]:
         return _r("auto", "waiting", "the threat scan has not judged this head yet; "
                                      "a worker scans new heads every ten minutes")
     if pr.disposition == "needs-human":
@@ -146,6 +163,55 @@ def classify(pr: Pr) -> dict | None:
     return _blocked(pr, action, why)
 
 
+def fix_issue(pr: Pr) -> Issue | None:
+    """The open issue a Prospector fix PR was proposed for, or None for anyone
+    else's PR or one whose issue the snapshot does not hold."""
+    if not gates.opened_by_bot(pr):
+        return None
+    from issue_triage import fix_review
+    from prospector_app.backend import issue_data
+    return next((i for i in issue_data.issues().values()
+                 if i.state == "open" and fix_review.open_pr(i) == pr.number), None)
+
+
+def _followup_standing(pr: Pr) -> dict | None:
+    """A Prospector fix PR's standing, from its issue's follow-up: handed back
+    to you, green and with the maintainers, or still being followed up. None
+    for anyone else's PR, or one whose issue the snapshot does not hold."""
+    issue = fix_issue(pr)
+    if issue is None:
+        return None
+    from issue_triage import fix_review
+    fu = fix_review.followup_for(issue.fix_followup, pr.number)
+    line = fix_review.status_line(issue)["text"]
+    if fu.get("state") == "handed-back" and fix_review.approval(issue) is None:
+        return _r("handed", "handed-back", line)
+    if fu.get("state") == "ready" or fix_review.approval(issue) is not None:
+        return _r("handed", "with-maintainers", line)
+    return _r("auto", "followup", line)
+
+
+def _parked_reason(req: dict) -> str:
+    """Why a parked change waits for you: the unattended bar that stopped it,
+    or the parking worker not pushing that action unattended."""
+    action = str(req.get("action"))
+    base = settings.default_branch()
+    what = {"resolve": "the agent's conflict resolve", "fix": "the agent's fix",
+            "describe": "the rewritten description", "update": f"the update from {base}",
+            "rebase": f"the rebase onto {base}"}.get(action, f"the {action}")
+    result = req.get("result") or {}
+    bar = (result.get("auto_review") or {}).get("bar") or result.get("autopush_bar") or {}
+    if bar and not bar.get("ok"):
+        why = bar.get("reason") or "the unattended bar refused it"
+    elif result.get("autopush") is False:
+        why = f"unattended pushes are off for {action} on {req.get('host') or 'its worker'}"
+    elif result.get("autopush"):
+        why = "the unattended bar has not judged it yet"
+    else:
+        return f"{what} awaits your approval"
+    return f"{what} is parked for you: {why}"
+
+
 def _unclear_check(pr: Pr) -> dict | None:
     """The first rollup check that is not clear on a merge-eligible pick, or
     None. A failed or warning check is not clear, except "Includes tests",
@@ -170,18 +236,20 @@ def _merge_pick_gap(pr: Pr, check: dict) -> dict:
     what fills the gap, and whose it is."""
     key, name, detail = check["key"], check["name"], str(check.get("detail") or "")
     if key == "verify":
-        if check["status"] == "warn":
+        if check["status"] == "warn" and pr.verify_outcome is not None:
             return _r("handed", "other", f"verification is partial evidence ({detail}); merge on "
                                           f"your judgment or ask for an independent repro")
         vr = pr.section("verify_request") or {}
+        if vr.get("status") in _VERIFY_QUEUE:
+            return _r("auto", "queued", f"in the verify queue ({vr.get('status')})")
         if vr.get("status") == "error":
-            allowed, why = gates.verify_retry_allowed(pr, worker=settings.worker_id())
-            if allowed or "moved" in why or "another" in why:
-                return _r("auto", "waiting", "verification hit a machine fault, not the PR; "
-                                             "it re-runs automatically")
-            return _r("handed", "other", f"verification could not run on this head "
-                                          f"{gates.VERIFY_RETRY_ATTEMPTS} times; re-queue it "
-                                          f"or merge on your own judgment ({vr.get('error') or why})")
+            final = gates.verify_retry_exhausted(pr)
+            if final:
+                return _r("handed", "other", f"verification will not re-run on its own ({final}); "
+                                              f"re-queue it or merge on your own judgment "
+                                              f"({vr.get('error') or 'no error recorded'})")
+            return _r("auto", "waiting", "verification hit a machine fault, not the PR; "
+                                         "it re-runs automatically")
         return _r("auto", "waiting", "verification has not run yet; the verify hunter picks it up")
     if key == "security":
         return _r("auto", "waiting", "the deep security review has not run yet; the security "
