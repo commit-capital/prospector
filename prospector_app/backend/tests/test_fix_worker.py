@@ -3319,3 +3319,24 @@ def test_a_patch_past_the_cap_keeps_its_start_and_says_so():
     patch = "diff --git a/a b/a\n" + "+x\n" * fix_worker.PATCH_CHARS
     shown = fix_worker._shown_patch(patch)
     assert shown["patch"] == patch[:fix_worker.PATCH_CHARS] and shown["patch_truncated"] is True
+
+
+@pytest.mark.parametrize("error, kind", [
+    (headless_agent.EditsBlockedError("no grant"), "agent-edits"),
+    (headless_agent.AgentTransient("overloaded"), "agent-overloaded"),
+    (fix_worker.capacity.CapacityPaused(fix_worker.capacity.Decision(False, "paused", None)),
+     fix_worker.capacity.PAUSED_KIND),
+    (ValueError("no JSON in the answer"), "agent-answer"),
+])
+def test_an_agent_error_books_the_category_of_what_went_wrong(error, kind):
+    assert fix_worker._agent_kind(error) == kind
+
+
+def test_an_overloaded_agent_never_trips_every_agent_lane(store, monkeypatch):
+    tripped: list[str] = []
+    monkeypatch.setattr(fix_worker.lane_health, "trip_agent_lanes", lambda why: tripped.append(why))
+    fix_queue.queue_pr(1, "rebase")
+    req = store.load_pr(1).fix_request
+    fix_worker._fail(1, req, "overloaded", kind=fix_worker._agent_kind(
+        headless_agent.AgentTransient("overloaded")))
+    assert tripped == []

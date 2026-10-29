@@ -34,7 +34,7 @@ STAGES: dict[str, tuple[str, ...]] = {
                "agent-failed", "agent-unavailable", "sandbox-error", "base-lane",
                "interrupted", "hold", "exception"),
     "autofix": ("pushed", "parked", "cancelled", "refused", "run-failed",
-                "agent-unavailable", "agent-edits", "agent-answer", "helper-crash", "git",
+                "agent-unavailable", "agent-edits", "agent-answer", "agent-overloaded", "helper-crash", "git",
                 "github", "sandbox", "base", "credentials", "record"),
 }
 

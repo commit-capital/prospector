@@ -675,8 +675,15 @@ _NOTHING_RAN_KINDS = (capacity.PAUSED_KIND, "agent-unavailable")
 
 def _agent_kind(e: Exception) -> str:
     """The failure category of an agent run that raised `e`: its edit grant
-    never reached it, or it answered with nothing usable."""
-    return "agent-edits" if isinstance(e, headless_agent.EditsBlockedError) else "agent-answer"
+    never reached it, the service was overloaded, the AI capacity paused it (a
+    deferral, not a failure), or it answered with nothing usable."""
+    if isinstance(e, headless_agent.EditsBlockedError):
+        return "agent-edits"
+    if isinstance(e, headless_agent.AgentTransient):
+        return "agent-overloaded"
+    if isinstance(e, capacity.CapacityPaused):
+        return capacity.PAUSED_KIND
+    return "agent-answer"
 
 
 def _fail(n: int, req: dict, message: str, result: dict | None = None, *,
