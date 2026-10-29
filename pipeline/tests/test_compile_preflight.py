@@ -191,7 +191,7 @@ class TestPhaseDeclared:
 
     def test_launcher_allows_compile_phase(self):
         text = (SANDBOX / "sandbox-run.sh").read_text()
-        m = re.search(r'case "\$PHASE" in ([a-z|-]+)\) ;;', text)
+        m = re.search(r'case "\$PHASE" in ([a-z0-9|-]+)\) ;;', text)
         assert m is not None and "compile" in m.group(1).split("|")
 
     def test_launcher_requires_a_patch_or_pristine_for_compile(self):

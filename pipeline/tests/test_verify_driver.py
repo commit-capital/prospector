@@ -9,6 +9,7 @@ import json
 import os
 import socket
 import subprocess
+import tarfile
 import threading
 import time
 import tracemalloc
@@ -3249,3 +3250,161 @@ class TestPlaywrightBrowsers:
         assert pattern == "/work/browsers/chromium-*"
         assert not fnmatch.fnmatch("/work/browsers/chromium_headless_shell-123", pattern)
         assert fnmatch.fnmatch("/work/browsers/chromium-1234", pattern)
+
+
+def _cfg(**kw) -> profile.E2eConfig:
+    return profile.E2eConfig(config="tests/e2e/playwright.config.ts", **kw)
+
+
+def test_e2e_test_cmd_is_built_from_the_profile_only():
+    cfg = profile.E2eConfig(config="tests/e2e/playwright.config.ts", exclude=("tests/e2e/x.spec.ts",))
+    cmd = vd.e2e_test_cmd(cfg)
+    assert cmd.startswith("PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/e2e-out/report.json npx playwright test")
+    assert "--config tests/e2e/playwright.config.ts" in cmd
+    assert "--reporter=json" in cmd and "--output /tmp/e2e-out" in cmd
+    assert "--grep-invert" not in cmd                      # excludes are by file, not title
+    assert "grep -vxF -e tests/e2e/x.spec.ts" in cmd
+    assert "find tests/e2e " in cmd
+
+
+def test_e2e_test_cmd_without_excludes_has_no_grep_stage():
+    assert "grep" not in vd.e2e_test_cmd(_cfg())
+
+
+def test_e2e_test_cmd_selects_full_chromium_when_the_repo_reads_a_channel():
+    cfg = profile.E2eConfig(config="c.ts", channel_env="PAPERCLIP_PLAYWRIGHT_CHANNEL")
+    assert vd.e2e_test_cmd(cfg).startswith(
+        "PAPERCLIP_PLAYWRIGHT_CHANNEL=chromium PLAYWRIGHT_JSON_OUTPUT_NAME=")
+
+
+def test_e2e_test_cmd_at_the_repo_root_matches_finds_dot_slash_paths():
+    cmd = vd.e2e_test_cmd(profile.E2eConfig(config="c.ts", exclude=("x.spec.ts",)))
+    assert "find . " in cmd and "grep -vxF -e ./x.spec.ts" in cmd
+
+
+def test_e2e_test_cmd_quotes_spec_names():
+    cmd = vd.e2e_test_cmd(_cfg(exclude=("tests/e2e/x.spec.ts",)), specs=["tests/e2e/a b.spec.ts"])
+    assert "'tests/e2e/a b.spec.ts'" in cmd
+    assert "find" not in cmd and "grep" not in cmd
+
+
+def _e2e_tar(report: bytes) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        d = tarfile.TarInfo("e2e-out")
+        d.type = tarfile.DIRTYPE
+        tar.addfile(d)
+        info = tarfile.TarInfo("e2e-out/report.json")
+        info.size = len(report)
+        tar.addfile(info, io.BytesIO(report))
+    return buf.getvalue()
+
+
+_REPORT = json.dumps({"suites": [{"title": "a.spec.ts", "file": "a.spec.ts", "specs": [
+    {"title": "boots", "file": "a.spec.ts", "tests": [
+        {"status": "expected", "results": [{"status": "passed"}]}]}]}]}).encode()
+
+
+class TestRunE2e:
+    """run_e2e runs the e2e phase in a kept container, streams its /tmp/e2e-out
+    out with `docker cp`, and removes the container whatever happened."""
+
+    def _setup(self, monkeypatch, *, phase_rc: int = 20, cp_out: bytes = b"",
+               cp_rc: int = 0, cp_raises: BaseException | None = None):
+        docker: list[list[str]] = []
+        phase: dict = {}
+
+        def run_phase(name, image, **kw):
+            phase.update(kw, name=name, image=image)
+            return phase_rc, "tail"
+
+        class Cp:
+            def __init__(self, argv, **kw):
+                docker.append(list(argv))
+                if cp_raises is not None:
+                    raise cp_raises
+                assert kw["stdout"] == subprocess.PIPE
+                self.stdout = io.BytesIO(cp_out)
+
+            def wait(self, timeout=None):
+                return cp_rc
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(profile, "active", _profile_with_e2e)
+        monkeypatch.setattr(vd, "base_has_browser", lambda image: True)
+        monkeypatch.setattr(vd, "run_phase", run_phase)
+        monkeypatch.setattr(vd.subprocess, "Popen", Cp)
+        monkeypatch.setattr(vd.subprocess, "run", lambda argv, **kw: docker.append(list(argv))
+                            or subprocess.CompletedProcess(argv, 0))
+        return docker, phase
+
+    def test_run_e2e_collects_then_removes_the_container(self, monkeypatch):
+        docker, phase = self._setup(monkeypatch, cp_out=_e2e_tar(_REPORT))
+        rc, run, artifacts = vd.run_e2e("img:t1", tier=1, base_sha="b", head_sha="h")
+        name = phase["container"]
+        assert vd.container_owner(name) == os.getpid()
+        assert phase["name"] == "e2e" and phase["keep"] is True and phase["runs_tests"] is True
+        assert phase["timeout"] == 600
+        assert phase["test_cmd"].startswith("PLAYWRIGHT_JSON_OUTPUT_NAME=")
+        assert docker == [["docker", "cp", f"{name}:/tmp/e2e-out", "-"],
+                          ["docker", "rm", "-f", name]]
+        assert rc == 20 and artifacts.report == _REPORT
+        assert run.booted and [r.title for r in run.results] == ["boots"]
+
+    def test_run_e2e_removes_the_container_when_cp_raises(self, monkeypatch):
+        docker, phase = self._setup(monkeypatch, cp_raises=RuntimeError("boom"))
+        with pytest.raises(RuntimeError, match="boom"):
+            vd.run_e2e("img:t1", tier=1)
+        assert docker[-1] == ["docker", "rm", "-f", phase["container"]]
+
+    def test_run_e2e_timeout_still_removes_the_container(self, monkeypatch):
+        docker, phase = self._setup(monkeypatch, phase_rc=vd._TIMEOUT_EXIT)
+        rc, run, artifacts = vd.run_e2e("img:t1", tier=1)
+        assert rc == vd._TIMEOUT_EXIT and not run.booted
+        assert artifacts.report is None
+        assert docker[-1] == ["docker", "rm", "-f", phase["container"]]
+
+    @pytest.mark.parametrize("failure", [{"cp_rc": 1, "cp_out": _e2e_tar(_REPORT)},
+                                         {"cp_raises": FileNotFoundError("docker")}])
+    def test_a_failed_copy_is_an_empty_collection(self, monkeypatch, failure):
+        docker, phase = self._setup(monkeypatch, **failure)
+        rc, run, artifacts = vd.run_e2e("img:t1", tier=1)
+        assert artifacts.report is None and artifacts.pngs == {}
+        assert not run.booted
+        assert docker[-1] == ["docker", "rm", "-f", phase["container"]]
+
+    def test_run_e2e_refuses_a_base_without_a_browser(self, monkeypatch):
+        docker, _ = self._setup(monkeypatch)
+        monkeypatch.setattr(vd, "base_has_browser", lambda image: False)
+        with pytest.raises(RuntimeError, match="no browser in this base"):
+            vd.run_e2e("img:t1", tier=1)
+        assert docker == []
+
+    def test_run_e2e_refuses_a_profile_without_e2e(self, monkeypatch):
+        self._setup(monkeypatch)
+        monkeypatch.setattr(profile, "active", lambda: profile.parse_profile({"version": 1}, "t"))
+        with pytest.raises(RuntimeError, match="no verify.e2e in the profile"):
+            vd.run_e2e("img:t1", tier=1)
+
+
+def test_run_phase_keeps_the_named_container_only_when_asked(monkeypatch):
+    fake = _FakePopen(output=b"ok", returncode=0)
+    monkeypatch.setattr(vd.subprocess, "Popen", fake)
+    monkeypatch.setattr(vd, "_LargePhaseLock", lambda phase: contextlib.nullcontext())
+    vd.run_phase("e2e", "img:t1", keep=True, container="prospector-verify-1-2")
+    argv = fake.seen["argv"]
+    assert "--keep" in argv
+    assert argv[argv.index("--container-name") + 1] == "prospector-verify-1-2"
+    vd.run_phase("red", "img:t1")
+    assert "--keep" not in fake.seen["argv"]
+
+
+def test_orphan_sweep_lists_stopped_containers(monkeypatch):
+    seen: list[list[str]] = []
+    monkeypatch.setattr(vd.subprocess, "run", lambda argv, **k: seen.append(argv)
+                        or subprocess.CompletedProcess(argv, 0, stdout="", stderr=""))
+    vd.stop_orphaned_sandboxes()
+    assert "-a" in seen[0]
+    assert seen[0][seen[0].index("--filter") + 1] == "name=prospector-verify-"

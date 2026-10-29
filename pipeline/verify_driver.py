@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import platform
+import posixpath
 import re
 import signal
 import shlex
@@ -36,6 +37,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from pipeline import diffpaths
+from pipeline import e2e_artifacts
+from pipeline import e2e_report
 from pipeline import gates
 from pipeline import gh
 from pipeline import profile
@@ -1340,14 +1343,14 @@ def orphaned_sandbox_containers(names: list[str], *,
 
 
 def stop_orphaned_sandboxes() -> list[str]:
-    """Remove every running phase container whose host process is dead and
-    return their names, printing one line naming them. A Docker that cannot
-    be asked leaves everything alone: the phase about to launch fails on its
-    own with the daemon's message."""
+    """Remove every phase container, running or stopped, whose host process is
+    dead and return their names, printing one line naming them. A Docker that
+    cannot be asked leaves everything alone: the phase about to launch fails
+    on its own with the daemon's message."""
     env = launcher_env()
     try:
         ps = subprocess.run(
-            ["docker", "ps", "--filter", f"name={_CONTAINER_PREFIX}", "--format", "{{.Names}}"],
+            ["docker", "ps", "-a", "--filter", f"name={_CONTAINER_PREFIX}", "--format", "{{.Names}}"],
             capture_output=True, text=True, env=env, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -1378,7 +1381,8 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
               timeout: int = PHASE_TIMEOUT_SECONDS, pristine: bool = False,
               tail_bytes: int = OUTPUT_TAIL_BYTES, coverage_tool: Path | None = None,
               coverage_request: Path | None = None,
-              runs_tests: bool = False) -> tuple[int, str]:
+              runs_tests: bool = False, keep: bool = False,
+              container: str | None = None) -> tuple[int, str]:
     """Run ONE sandbox phase and return (exit_code, captured_output_tail).
     `pristine` runs a compile or build phase over the base tree as pinned,
     with no patch. A phase in TEST_PHASES, or one whose caller says its
@@ -1402,6 +1406,9 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
     the fetched coverage provider and the changed lines to measure
     (`pipeline/coverage.py`).
 
+    `keep` leaves the exited container, named `container`, for the caller to
+    copy from and remove (the e2e phase alone).
+
     The launcher gets launcher_env(), never os.environ. A phase in
     LARGE_PHASES holds the host's large-phase lock from launch to exit."""
     with _LargePhaseLock(phase):
@@ -1412,7 +1419,8 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
                                  timeout=timeout, pristine=pristine, tail_bytes=tail_bytes,
                                  coverage_tool=coverage_tool,
                                  coverage_request=coverage_request,
-                                 runs_tests=runs_tests or phase in TEST_PHASES)
+                                 runs_tests=runs_tests or phase in TEST_PHASES,
+                                 keep=keep, container=container)
 
 
 def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
@@ -1421,8 +1429,9 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
                       timeout: int, pristine: bool, pre_patch: Path | None = None,
                       tail_bytes: int = OUTPUT_TAIL_BYTES, coverage_tool: Path | None = None,
                       coverage_request: Path | None = None,
-                      runs_tests: bool = False) -> tuple[int, str]:
-    container = container_name()
+                      runs_tests: bool = False, keep: bool = False,
+                      container: str | None = None) -> tuple[int, str]:
+    container = container or container_name()
     argv = [str(SANDBOX / "sandbox-run.sh"), "--phase", phase, "--image", image,
             "--tier", str(tier), "--test-cmd", test_cmd,
             "--base-sha", base_sha, "--head-sha", head_sha,
@@ -1438,6 +1447,8 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
         argv += ["--cpus", str(large_cpus())]
     if pristine:
         argv += ["--pristine"]
+    if keep:
+        argv += ["--keep"]
     if exclude_file is not None:
         argv += ["--exclude-file", str(exclude_file)]
     if suite_config is not None:
@@ -1475,6 +1486,87 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
         return _TIMEOUT_EXIT, f"phase {phase} timed out after {timeout}s"
     reader.join()
     return returncode, bytes(tail).decode("utf-8", errors="replace")
+
+
+# Where the e2e phase's Playwright writes its JSON report and screenshots.
+E2E_OUT = "/tmp/e2e-out"
+
+
+def e2e_test_cmd(cfg: profile.E2eConfig, specs: list[str] | None = None) -> str:
+    """The e2e phase's Playwright command, built from the profile alone. With
+    no `specs` it runs every `*.spec.ts` under the config's directory but the
+    profile's excludes, listed inside the container."""
+    env = f"PLAYWRIGHT_JSON_OUTPUT_NAME={E2E_OUT}/report.json"
+    if cfg.channel_env:
+        env = f"{cfg.channel_env}=chromium {env}"
+    if specs is not None:
+        targets = " ".join(shlex.quote(s) for s in specs)
+    else:
+        root = posixpath.dirname(cfg.config) or "."
+        prefix = "./" if root == "." else ""
+        listing = f"find {shlex.quote(root)} -type f -name '*.spec.ts'"
+        if cfg.exclude:
+            listing += " | grep -vxF" + "".join(
+                f" -e {shlex.quote(prefix + e)}" for e in cfg.exclude)
+        targets = f"$({listing} | sort)"
+    return (f"{env} npx playwright test --config {shlex.quote(cfg.config)} "
+            f"--reporter=json --output {E2E_OUT} {targets}")
+
+
+def _copy_e2e_out(container: str, env: dict[str, str]) -> e2e_artifacts.Artifacts:
+    """The kept container's E2E_OUT, streamed from `docker cp` into the
+    artifact reader. A copy that does not exit 0 (the container died before
+    writing it, say) collects nothing."""
+    empty = e2e_artifacts.Artifacts(report=None, pngs={}, skipped=[])
+    try:
+        proc = subprocess.Popen(["docker", "cp", f"{container}:{E2E_OUT}", "-"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+    except OSError:
+        return empty
+    assert proc.stdout is not None
+    out = proc.stdout
+    try:
+        artifacts = e2e_artifacts.read_artifacts(out)
+        # The reader can stop early; drain so `docker cp` exits on its own.
+        while out.read(_READ_CHUNK_BYTES):
+            pass
+    finally:
+        out.close()
+        try:
+            rc = proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = proc.wait()
+    return artifacts if rc == 0 else empty
+
+
+def run_e2e(image: str, *, tier: int, patch: Path | None = None,
+            specs: list[str] | None = None, base_sha: str = "",
+            head_sha: str = "") -> tuple[int, e2e_report.E2eRun, e2e_artifacts.Artifacts]:
+    """Run the profile's e2e suite in `image` (the PR's `patch` applied, or the
+    base as pinned) and return the phase's exit code, the parsed run and the
+    collected artifacts. The container is kept for the copy and always
+    removed after."""
+    cfg = profile.active().verify.e2e
+    if cfg is None:
+        raise RuntimeError("no verify.e2e in the profile")
+    if not base_has_browser(image):
+        raise RuntimeError("no browser in this base")
+    container = container_name()
+    env = launcher_env()
+    try:
+        rc, tail = run_phase("e2e", image, patch=patch, tier=tier,
+                             test_cmd=e2e_test_cmd(cfg, specs), base_sha=base_sha,
+                             head_sha=head_sha, timeout=cfg.boot_timeout_s,
+                             runs_tests=True, keep=True, container=container)
+        artifacts = _copy_e2e_out(container, env)
+    finally:
+        try:
+            subprocess.run(["docker", "rm", "-f", container], check=False, env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return rc, e2e_report.parse_report(artifacts.report, output_tail=tail), artifacts
 
 
 class FetchFailure(RuntimeError):

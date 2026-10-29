@@ -40,6 +40,10 @@ done
   exit 2; }
 case "$PHASE" in apply-check|repro|red|green|compile|build|baseline|regress|coverage|e2e) ;; *) echo "bad --phase: $PHASE" >&2; exit 2;; esac
 case "$CPUS" in ''|*[!0-9]*|0) echo "bad --cpus: $CPUS (a positive whole number)" >&2; exit 2;; esac
+# A kept container is one the host removes by name, so only a named e2e run keeps one.
+if [ "$KEEP" = 1 ] && { [ "$PHASE" != e2e ] || [ -z "$CONTAINER_NAME" ]; }; then
+  echo "usage: --keep is for --phase e2e with --container-name N" >&2; exit 2
+fi
 # apply-check, green, compile, and build require a patch onto the base tree.
 # red takes one optionally — the test-only hunks, so it can run a test the
 # diff itself adds — and runs unpatched when omitted. repro always runs

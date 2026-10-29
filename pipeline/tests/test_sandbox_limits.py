@@ -5,7 +5,10 @@ the pids cgroup, so the bounded-selection limits starve it (uv_thread_create
 assertion failures, forks-pool EPIPE). The shell literals are pinned here the
 same way run-phase.sh's sentinels are."""
 import re
+import subprocess
 from pathlib import Path
+
+import pytest
 
 SANDBOX_RUN = Path(__file__).resolve().parents[2] / "sandbox" / "sandbox-run.sh"
 
@@ -41,3 +44,15 @@ def test_e2e_gets_shared_memory_for_chromium():
 def test_keep_is_the_only_way_to_skip_rm():
     text = _script()
     assert "rm_args=( --rm )" in text and '[ "$KEEP" = 1 ] && rm_args=()' in text
+
+
+@pytest.mark.parametrize("args", [
+    ["--phase", "red", "--keep", "--container-name", "prospector-verify-1-2"],
+    ["--phase", "e2e", "--keep"],
+])
+def test_keep_is_refused_unless_a_named_e2e_phase(args, tmp_path):
+    # The refusal comes before any docker call; an empty PATH proves it.
+    p = subprocess.run(["/bin/bash", str(SANDBOX_RUN), "--image", "img", *args],
+                       capture_output=True, text=True, env={"PATH": str(tmp_path)})
+    assert p.returncode == 2
+    assert "--keep" in p.stderr
