@@ -356,7 +356,8 @@ class TestE2e:
     @pytest.mark.parametrize("bad", [
         {"config": ""}, {"config": "/abs/p.ts"}, {"config": "../x.ts"},
         {"config": "a.ts", "boot_timeout_s": 0}, {"config": "a.ts", "exclude": "x"},
-        {"config": "a.ts", "exclude": ["/abs.ts"]},
+        {"config": "a.ts", "exclude": ["/abs.ts"]}, {"config": "-x/p.ts"},
+        {"config": "a.ts", "exclude": ["--grep=x"]},
         {"config": "a.ts", "cmd": "rm -rf /"}, {"config": "a.ts", "channel_env": "A=B"}])
     def test_e2e_rejects_bad_values(self, bad):
         with pytest.raises(SystemExit):

@@ -414,8 +414,8 @@ def _parse_suite(raw: object, source: str) -> SuiteConfig:
 def _parse_repo_path(raw: object, source: str, where: str) -> str:
     if not isinstance(raw, str) or not raw.strip():
         raise _fail(source, where, "must be a non-empty string")
-    if raw.startswith("/") or ".." in raw.split("/"):
-        raise _fail(source, where, "must be a repo-relative path")
+    if raw.startswith(("/", "-")) or ".." in raw.split("/"):
+        raise _fail(source, where, "must be a repo-relative path not starting with '-'")
     return raw
 
 

@@ -1519,9 +1519,12 @@ def e2e_test_cmd(cfg: profile.E2eConfig, specs: list[str] | None = None) -> str:
     `specs` it runs every `*.spec.ts` under the config's directory but the
     profile's excludes, listed into an array inside the container; an empty
     selection exits 1. The line reporter's progress goes to stdout and the
-    JSON report to the file PLAYWRIGHT_JSON_OUTPUT_NAME names."""
+    JSON report to the file PLAYWRIGHT_JSON_OUTPUT_NAME names. Playwright drops
+    file filters after `--`, so a spec may not start with `-`."""
     if specs == []:
         raise ValueError("no e2e specs selected")
+    if specs and any(s.startswith("-") for s in specs):
+        raise ValueError("an e2e spec may not start with '-'")
     global_timeout_ms = max(_E2E_MIN_GLOBAL_TIMEOUT_MS,
                             (cfg.boot_timeout_s - E2E_STOP_MARGIN_S) * 1000)
     run = f"PLAYWRIGHT_JSON_OUTPUT_NAME={E2E_OUT}/report.json"
@@ -1529,7 +1532,7 @@ def e2e_test_cmd(cfg: profile.E2eConfig, specs: list[str] | None = None) -> str:
         run = f"{cfg.channel_env}=chromium {run}"
     run += (f" npx playwright test --config {shlex.quote(cfg.config)}"
             f" --reporter=line,json --global-timeout={global_timeout_ms}"
-            f" --output {E2E_OUT} --")
+            f" --output {E2E_OUT}")
     if specs is not None:
         return f"{run} {' '.join(shlex.quote(s) for s in specs)}"
     root = posixpath.dirname(cfg.config) or "."

@@ -3328,13 +3328,18 @@ def test_e2e_test_cmd_at_the_repo_root_matches_finds_dot_slash_paths():
 
 def test_e2e_test_cmd_quotes_spec_names():
     cmd = vd.e2e_test_cmd(_cfg(exclude=("tests/e2e/x.spec.ts",)), specs=["tests/e2e/a b.spec.ts"])
-    assert cmd.endswith("-- 'tests/e2e/a b.spec.ts'")
+    assert cmd.endswith("--output /tmp/e2e-out 'tests/e2e/a b.spec.ts'")
     assert "find" not in cmd and "grep" not in cmd
 
 
 def test_e2e_test_cmd_refuses_an_empty_spec_list():
     with pytest.raises(ValueError, match="no e2e specs selected"):
         vd.e2e_test_cmd(_cfg(), specs=[])
+
+
+def test_e2e_test_cmd_refuses_a_spec_that_reads_as_a_flag():
+    with pytest.raises(ValueError, match="may not start with '-'"):
+        vd.e2e_test_cmd(_cfg(), specs=["a.spec.ts", "--grep=x"])
 
 
 def _bash_with_mapfile() -> str | None:
@@ -3369,8 +3374,8 @@ def test_e2e_listing_quotes_hostile_names_and_never_globs(tmp_path):
     assert p.returncode == 0, p.stderr
     args = p.stdout.splitlines()
     assert args[args.index("--config") + 1] == f"{_HOSTILE_DIR}/p.config.ts"
-    assert args[args.index("--") + 1:] == [f"{_HOSTILE_DIR}/a.spec.ts",
-                                           f"{_HOSTILE_DIR}/b *.spec.ts"]
+    assert "--" not in args
+    assert args[-2:] == [f"{_HOSTILE_DIR}/a.spec.ts", f"{_HOSTILE_DIR}/b *.spec.ts"]
     assert not (tmp_path / "pwned").exists() and not (tmp_path / "pwned2").exists()
 
 
