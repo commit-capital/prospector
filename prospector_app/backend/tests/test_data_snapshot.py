@@ -101,3 +101,26 @@ def test_author_stats_sums_baseline_and_live_snapshot(tmp_path, monkeypatch):
     }
     assert data.author_stats("nobody") is None
     assert data.author_stats(None) is None
+
+
+def test_a_refresh_recounts_authors_without_rereading_the_baseline(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    store.save_pr({"pr": 1, "meta": {"title": "t", "author": "al", "state": "merged",
+                                     "head_sha": "h", "url": "u"}})
+    store.save_author_baseline({"authors": {"al": {"handle": "al", "total": 4, "open": 0,
+                               "merged": 4, "closed_unmerged": 0, "comments": 0}},
+                               "materialized_at": None})
+    monkeypatch.setattr(data, "_store", store)
+    monkeypatch.setattr(data, "_loaded", False)
+    monkeypatch.setattr(data, "_pr_watermark", None)
+    monkeypatch.setattr(data, "_author_table", None)
+    monkeypatch.setattr(data, "_author_baseline", None)
+    monkeypatch.setattr(data, "_issue_snapshot_generation", lambda: 1)
+    monkeypatch.setattr(data, "_issue_author_stats", dict)
+    assert data.author_stats("al")["merged"] == 5
+
+    monkeypatch.setattr(store, "load_author_baseline", lambda: pytest.fail("baseline re-read"))
+    store.save_pr({"pr": 2, "meta": {"title": "t", "author": "al", "state": "merged",
+                                     "head_sha": "h", "url": "u"}})
+    data.refresh()
+    assert data.author_stats("al")["merged"] == 6

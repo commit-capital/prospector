@@ -141,6 +141,53 @@ def test_mint_bot_token_success_clears_prior_error(monkeypatch):
     assert executor.mint_error() is None
 
 
+def _counting_mint(monkeypatch, stdout: str) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        stderr = ""
+        returncode = 0
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        r = FakeResult()
+        r.stdout = stdout
+        return r
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+    return calls
+
+
+def test_mint_bot_token_reuses_a_token_until_its_reuse_window_ends(monkeypatch):
+    _reset_caches()
+    calls = _counting_mint(monkeypatch, "ghs_first\n")
+    now = [1000.0]
+    monkeypatch.setattr(executor.time, "monotonic", lambda: now[0])
+    assert executor.mint_bot_token() == "ghs_first"
+    assert executor.mint_bot_token() == "ghs_first"
+    assert len(calls) == 1
+
+    now[0] += executor.TOKEN_REUSE_SECONDS
+    assert executor.mint_bot_token() == "ghs_first"
+    assert len(calls) == 2
+
+
+def test_refresh_live_drops_the_reused_token(monkeypatch):
+    _reset_caches()
+    calls = _counting_mint(monkeypatch, "ghs_tok\n")
+    executor.mint_bot_token()
+    executor.refresh_live()
+    executor.mint_bot_token()
+    assert len(calls) == 2
+
+
+def test_a_failed_mint_is_retried_on_the_next_call(monkeypatch):
+    _reset_caches()
+    calls = _counting_mint(monkeypatch, "")
+    assert executor.mint_bot_token() is None
+    assert executor.mint_bot_token() is None
+    assert len(calls) == 2
+
+
 def test_bot_permissions_uses_nonsecret_token_helper_mode_and_caches(monkeypatch):
     _reset_caches()
     calls = []

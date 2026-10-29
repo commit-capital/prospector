@@ -84,6 +84,14 @@ def _no_real_ai_account(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_cached_bot_token(monkeypatch):
+    """`executor.mint_bot_token` reuses a token for half an hour; one test's
+    token must never answer the next test's mint."""
+    from prospector_app.backend import executor
+    monkeypatch.setattr(executor, "_cached_token", None)
+
+
+@pytest.fixture(autouse=True)
 def _no_bot_account_lookup(monkeypatch):
     """`resubmit_identity.commit_identity` asks GitHub for the App's bot
     account; no test reaches it, so machine commits carry the push user. A test

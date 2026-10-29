@@ -102,24 +102,6 @@ def readiness(provider: str | None = None) -> dict[str, object]:
     return backend.readiness()
 
 
-# A minted bot token, cached so we don't re-mint (a shell-out + two API
-# calls) on every chat turn. The token is valid ~1h; we refresh well before that.
-# None when no key is installed / the token can't be minted — in which case the
-# agent stays read-only (writes are simply never offered, never sent as the
-# operator's login).
-_BOT_TOKEN: str | None = None
-_BOT_TOKEN_EXP: float = 0.0
-
-
-def _bot_token() -> str | None:
-    global _BOT_TOKEN, _BOT_TOKEN_EXP
-    if _BOT_TOKEN and _BOT_TOKEN_EXP > time.monotonic():
-        return _BOT_TOKEN
-    _BOT_TOKEN = executor.mint_bot_token()
-    if _BOT_TOKEN:
-        _BOT_TOKEN_EXP = time.monotonic() + 50 * 60  # refresh before the 1h expiry
-    return _BOT_TOKEN
-
 def system_prompt() -> str:
     """The agent's operating manual (agent/context.md plus controls.md), injected
     as its system prompt. REQUIRED — a missing or empty file is a hard failure, never a silent
@@ -795,7 +777,7 @@ async def _run_turn(backend: agent_backend.AgentBackend, ctx_id: str, question: 
         # A successful mint unlocks the agent's curated upstream helpers. The chat
         # process uses the operator environment for reads, and each write helper
         # mints its execution token.
-        token = _bot_token()
+        token = executor.mint_bot_token()
         manual = system_prompt()
         # Resume the live session on a normal turn. On a re-ground the session is
         # unreliable, so start fresh — the context is replayed into the prompt above.

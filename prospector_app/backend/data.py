@@ -452,20 +452,16 @@ def refresh() -> None:
     Incremental (it picks up rows written since the watermark), so it's cheap to
     call on an action path; a snapshot not yet loaded runs the cold load. Cluster
     removals arrive as tombstones on the same watermark, so they drop here too."""
-    global _loaded, _last_check, _author_baseline, _author_table, _generation
+    global _loaded, _last_check, _author_table, _generation
     with _check_lock:
-        # Re-read the baseline registry (it may have been recaptured) and drop the
-        # leaderboard folded from it, even when the PR snapshot itself is unchanged.
-        _author_baseline = None
         _author_table = None
         if _loaded:
             _freshen()
         else:
             _cold_load()
         # An explicit refresh means "make the next read reflect now", so bump the
-        # snapshot identity even when the store rows are unchanged — the reloaded
-        # author baseline (and anything else keyed on generation()) must be
-        # recomputed.
+        # snapshot identity even when the store rows are unchanged, and everything
+        # keyed on generation() is recomputed.
         _generation += 1
         _loaded = True
         _last_check = time.monotonic()

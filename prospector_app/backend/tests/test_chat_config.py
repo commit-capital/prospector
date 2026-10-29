@@ -350,30 +350,6 @@ def test_write_and_agentic_tools_are_disallowed_but_bash_is_not():
     assert "Bash" not in claude_backend._DISALLOWED_TOOLS
 
 
-def test_bot_token_is_cached_and_none_stays_read_only(monkeypatch):
-    # _bot_token caches a minted token (so we don't re-mint a shell-out + two API
-    # calls every chat turn) and returns None when minting fails — which keeps the
-    # agent read-only.
-    monkeypatch.setattr(chat, "_BOT_TOKEN", None)
-    monkeypatch.setattr(chat, "_BOT_TOKEN_EXP", 0.0)
-    calls = {"n": 0}
-
-    def fake_mint():
-        calls["n"] += 1
-        return "tok-123"
-
-    monkeypatch.setattr(chat.executor, "mint_bot_token", fake_mint)
-    assert chat._bot_token() == "tok-123"
-    assert chat._bot_token() == "tok-123"  # served from cache
-    assert calls["n"] == 1                 # minted exactly once
-
-    # a failed mint → None (agent then runs read-only, no write tools offered).
-    monkeypatch.setattr(chat, "_BOT_TOKEN", None)
-    monkeypatch.setattr(chat, "_BOT_TOKEN_EXP", 0.0)
-    monkeypatch.setattr(chat.executor, "mint_bot_token", lambda: None)
-    assert chat._bot_token() is None
-
-
 def test_context_has_critic_and_issue_guidance():
     sp = chat.system_prompt()
     # two-pass-blind discipline

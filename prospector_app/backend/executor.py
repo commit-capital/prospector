@@ -19,6 +19,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, NamedTuple
@@ -66,6 +67,11 @@ def _cluster_id(n: int) -> str | None:
 
 
 _last_mint_error: str | None = None
+# A minted token and when to stop reusing it: 30 minutes into its hour, so every
+# caller, a loop of writes included, still holds at least 30 minutes of it.
+_cached_token: str | None = None
+_cached_token_until = 0.0
+TOKEN_REUSE_SECONDS = 30 * 60
 
 
 def mint_error() -> str | None:
@@ -78,14 +84,17 @@ def mint_error() -> str | None:
 
 
 def mint_bot_token() -> str | None:
-    """Mint a 1-hour bot installation token, or None if unavailable.
+    """A bot installation token, or None if unavailable. A minted token is
+    reused for TOKEN_REUSE_SECONDS.
 
     The token helper loads TRIAGE_BOT_KEY_FILE from the process environment or
     repo-root .env and reads the PEM only inside its short-lived subprocess.
     Any configuration or mint failure returns None and forces dry-run. Never
     raises into the request path.
     """
-    global _last_mint_error
+    global _last_mint_error, _cached_token, _cached_token_until
+    if _cached_token and time.monotonic() < _cached_token_until:
+        return _cached_token
     if not GET_TOKEN.exists():
         _last_mint_error = f"{GET_TOKEN} not found"
         return None
@@ -97,6 +106,7 @@ def mint_bot_token() -> str | None:
     tok = (r.stdout or "").strip()
     if tok:
         _last_mint_error = None
+        _cached_token, _cached_token_until = tok, time.monotonic() + TOKEN_REUSE_SECONDS
         return tok
     _last_mint_error = (r.stderr or "").strip() or f"get-bot-token.sh exited {r.returncode} with no output"
     return None
@@ -150,7 +160,8 @@ def bot_permissions() -> dict[str, str] | None:
 
 
 def refresh_live() -> None:
-    global _live_possible, _bot_permissions, _bot_permissions_probed
+    global _live_possible, _bot_permissions, _bot_permissions_probed, _cached_token
+    _cached_token = None
     _live_possible = None
     _bot_permissions = None
     _bot_permissions_probed = False
