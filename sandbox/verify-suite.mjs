@@ -221,9 +221,14 @@ function buildInvocations(plan, exclude) {
   }
   const gs = keep(plan.generalServer);
   if (gs.length) {
+    // A wrapper plan has already split off the serialized suites, so the rest
+    // take the wrapper's sharded shape: each file its own isolated fork, two
+    // at a time. A listing plan holds every server file and runs them singly.
+    const shape = plan.source === "wrapper"
+      ? ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=2"]
+      : ["--no-file-parallelism", "--maxWorkers=1"];
     invocations.push({ label: "general-server", files: gs,
-                       args: ["--project", SERVER_PROJECT,
-                              "--no-file-parallelism", "--maxWorkers=1", ...gs] });
+                       args: ["--project", SERVER_PROJECT, ...shape, ...gs] });
   }
   for (const [project, files] of Object.entries(plan.workspaceProjects)) {
     const kept = keep(files);
@@ -285,6 +290,7 @@ function partitionMissing(plan, exclude) {
     return false;
   });
   const pruned = {
+    source: plan.source,
     serialized: check(plan.serialized),
     generalServer: check(plan.generalServer),
     workspaceProjects: Object.fromEntries(

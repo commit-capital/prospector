@@ -155,6 +155,19 @@ rc=$?
 echo "$out" | grep -q '"plan":"vitest-list"' || bad "the trailer does not name the listed plan"
 note "a listed plan runs and names its planner"
 
+# the general-server group runs two isolated files at a time under a wrapper
+# plan, which split the serialized suites off, and singly under a listed one
+args="$WORK/args.log"
+FIXTURE_ARGS_LOG="$args" node "$ROOT/verify-suite.mjs" run --plan "$plan" --mode baseline > /dev/null
+grep "gs-one.test.ts" "$args" | grep -q -- "--pool=forks --isolate --fileParallelism --maxWorkers=2" \
+  || bad "a wrapper plan's general-server group does not run two isolated files at a time"
+: > "$args"
+( cd "$NOWRAP" && FIXTURE_ARGS_LOG="$args" node "$ROOT/verify-suite.mjs" run --plan "$listed" \
+    --mode baseline > /dev/null )
+grep "route-a.test.ts" "$args" | grep -q -- "--no-file-parallelism --maxWorkers=1" \
+  || bad "a listed plan's server files do not run one at a time"
+note "general-server parallelism follows the planner"
+
 # a tree without the contract's preflight script skips it
 NOPRE="$WORK/tree-nopre"
 cp -R "$FIX/tree" "$NOPRE"
