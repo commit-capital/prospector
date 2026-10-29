@@ -107,6 +107,30 @@ export type AutomationOwner = "you" | "worker" | "author" | "maintainers";
 /** The status a PR leads with: a worker moves it, someone else's move, green
  *  and ready to merge, one quick click of yours, or stuck until you decide. */
 export type AutomationState = "moving" | "waiting" | "ready" | "needs-you" | "stalled";
+/** One stage on a PR's way to ready-to-merge (pr_status.STAGES). */
+export interface PRStage {
+  key: string;
+  label: string;
+  status: "done" | "current" | "failed" | "todo";
+  detail: string;
+}
+/** One lane outcome on a PR (pipeline/outcomes.py), with when it ended. */
+export interface PRTried {
+  lane: string;
+  stage: string;
+  fault: "machine" | "subject" | "judged" | null;
+  by: string | null;
+  words: string;
+  at: string;
+}
+/** A PR page's status block (GET /api/prs/{n}/status). */
+export interface PRStatus {
+  standing: AutomationStanding;
+  stages: PRStage[];
+  tried: PRTried[];
+  issue: number | null;
+  seed: string | null;
+}
 /** One PR's standing with the automation, as the backend derives it. */
 export interface AutomationStanding {
   column: AutomationColumn;
@@ -2706,6 +2730,7 @@ export const api = {
     return body as { pr: number; status: string };
   },
   verifyRunner: () => get<VerifyRunner>("/api/verify/runner"),
+  prStatus: (n: number) => get<PRStatus>(`/api/prs/${n}/status`),
   queueFix: async (n: number, action: FixAction, guidance?: string) => {
     const r = await fetch(`/api/prs/${n}/fix/queue?action=${action}`, {
       method: "POST", headers: { "Content-Type": "application/json" },

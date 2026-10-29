@@ -185,7 +185,7 @@ def status_line(issue: Issue) -> StatusLine:
     return {**line, "text": line["text"] + (" It fixes only part of the report." if partial(issue) else "")}
 
 
-def _blocked_by(judged: dict) -> str | None:
+def blocked_by(judged: dict) -> str | None:
     """Whose bar a hand-back's change could not clear (`followup.Step.by`). A
     judgment without `by` names its blocker in its reason."""
     if judged.get("by"):
@@ -200,7 +200,7 @@ def _blocked_by(judged: dict) -> str | None:
 def _handed_back_line(pr: object, fu: dict) -> str:
     judged = fu.get("judged") or {}
     why = judged.get("reason") or fu.get("reason") or ""
-    by = _blocked_by(judged)
+    by = blocked_by(judged)
     revisions = int(fu.get("revisions") or 0)
     tries = (f", and {revisions} revision{'s' if revisions != 1 else ''} didn't fix it"
              if revisions else "")

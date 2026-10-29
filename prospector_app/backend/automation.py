@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from pipeline import describe_pr, freshness, gates, settings
 
 if TYPE_CHECKING:
+    from issue_triage.issue_model import Issue
     from pipeline.model import Pr
 
 COLUMNS = ("act", "auto", "handed")
@@ -162,18 +163,25 @@ def classify(pr: Pr) -> dict | None:
     return _blocked(pr, action, why)
 
 
-def _followup_standing(pr: Pr) -> dict | None:
-    """A Prospector fix PR's standing, from its issue's follow-up: handed back
-    to you, green and with the maintainers, or still being followed up. None
-    for anyone else's PR, or one whose issue the snapshot does not hold."""
+def fix_issue(pr: Pr) -> Issue | None:
+    """The open issue a Prospector fix PR was proposed for, or None for anyone
+    else's PR or one whose issue the snapshot does not hold."""
     if not gates.opened_by_bot(pr):
         return None
     from issue_triage import fix_review
     from prospector_app.backend import issue_data
-    issue = next((i for i in issue_data.issues().values()
-                  if i.state == "open" and fix_review.open_pr(i) == pr.number), None)
+    return next((i for i in issue_data.issues().values()
+                 if i.state == "open" and fix_review.open_pr(i) == pr.number), None)
+
+
+def _followup_standing(pr: Pr) -> dict | None:
+    """A Prospector fix PR's standing, from its issue's follow-up: handed back
+    to you, green and with the maintainers, or still being followed up. None
+    for anyone else's PR, or one whose issue the snapshot does not hold."""
+    issue = fix_issue(pr)
     if issue is None:
         return None
+    from issue_triage import fix_review
     fu = fix_review.followup_for(issue.fix_followup, pr.number)
     line = fix_review.status_line(issue)["text"]
     if fu.get("state") == "handed-back" and fix_review.approval(issue) is None:
