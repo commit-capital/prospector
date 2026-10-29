@@ -34,11 +34,12 @@ export function FeatureMockup({ issue, title }: { issue: number; title: string }
   );
   return (
     <>
-      <button type="button" className="feature-mockup-thumb" title="Open the mockup full size"
-        style={{ width: FRAME_W * THUMB_SCALE, height: FRAME_H * THUMB_SCALE }}
-        onClick={() => setOpen(true)}>
+      <div className="feature-mockup-thumb"
+        style={{ width: FRAME_W * THUMB_SCALE, height: FRAME_H * THUMB_SCALE }}>
         {frame(FRAME_W, FRAME_H, "feature-mockup-frame feature-mockup-frame-thumb")}
-      </button>
+        <button type="button" className="feature-mockup-open" aria-label="Open the mockup full size"
+          title="Open the mockup full size" onClick={() => setOpen(true)} />
+      </div>
       {open && (
         <div className="modal-scrim" onClick={() => setOpen(false)}>
           <div className="modal feature-mockup-modal" role="dialog" aria-label={`Mockup for ${title}`}

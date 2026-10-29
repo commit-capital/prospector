@@ -374,6 +374,7 @@ function HomeAutoFeedCard() {
 // decision (implement or decline) takes the row off the shortlist.
 function HomeFeatureCard() {
   const { issueUrl } = useRepoMeta();
+  const { openIssue } = useIssueFlyout();
   const [data, setData] = useState<{ items: FeatureRequestItem[]; count: number } | null>(null);
   const [failed, setFailed] = useState(false);
   const [generation, setGeneration] = useState(0);
@@ -404,7 +405,13 @@ function HomeFeatureCard() {
           <div key={it.issue} className="feature-row">
             <div className="feature-row-text">
               <div>
-                <a href={issueUrl(it.issue)} target="_blank" rel="noreferrer">
+                <a href={issueUrl(it.issue)} target="_blank" rel="noreferrer"
+                  title="Open in this panel (⌘-click for GitHub ↗)"
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+                    e.preventDefault();
+                    openIssue(it.issue);
+                  }}>
                   #{it.issue} {it.title ?? "(no title)"}
                 </a>
                 {it.size && <span className="chip chip-muted sm feature-size">{it.size}</span>}

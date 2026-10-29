@@ -1874,7 +1874,8 @@ tr.row-done:hover > td { opacity: 1; }
 .feature-row-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .feature-size { margin-left: 6px; }
 .feature-decision { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; }
-.feature-mockup-thumb { flex: none; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); cursor: pointer; position: relative; }
+.feature-mockup-thumb { flex: none; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); position: relative; }
+.feature-mockup-open { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; }
 .feature-mockup-frame { border: 0; background: #fff; display: block; }
 .feature-mockup-frame-thumb { transform: scale(.25); transform-origin: top left; pointer-events: none; }
 .feature-mockup-modal { width: auto; max-width: 96vw; max-height: 96vh; overflow: auto; }
