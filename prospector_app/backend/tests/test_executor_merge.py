@@ -86,7 +86,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "live_changed_paths", lambda n: [])
     monkeypatch.setattr(compile_preflight, "run_for_merge",
                         lambda n, head: e.compile(n, head) if callable(e.compile) else e.compile)
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: e.token)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: e.token)
     monkeypatch.setattr(caps, "capabilities", lambda: {"login": "operator"})
     monkeypatch.setattr(executor.activity, "record",
                         lambda kind, **f: e.recorded.append({"kind": kind, **f}))
@@ -94,7 +94,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(issues_mod, "reflect_issue_state",
                         lambda n, state, reason=None: e.reflected.append((int(n), state)))
 
-    def bot_merge_run(argv, token):
+    def bot_merge_run(argv, **kw):
         # What the store held at the moment the merge fired.
         pr = st.load_pr(5)
         e.merges.append({"argv": argv, "security_override": pr.security_override,

@@ -23,24 +23,25 @@ def recorded(monkeypatch):
 
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_reopen_pr_dry_run_is_logged(recorded, dry_run):
-    res = executor.reopen_pr(123, token=None, dry_run=dry_run)
+    res = executor.reopen_pr(123, dry_run=dry_run)
     assert res["status"] == "dry-run"
     assert recorded == [("reopen", {**res, "identity": executor.settings.bot_login(),
                                     "dry_run": True})]
 
 
 def test_reopen_issue_dry_run_is_logged(recorded):
-    res = executor.reopen_issue(77, token=None, dry_run=True)
+    res = executor.reopen_issue(77, dry_run=True)
     assert res["status"] == "dry-run"
     assert [(k, f["dry_run"], f["issue"]) for k, f in recorded] == [("issue-reopen", True, 77)]
 
 
 def test_raising_bot_call_is_a_logged_error(recorded, monkeypatch):
-    def boom(argv, token, **kw):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok_realish")
+    def boom(argv, **kw):
         raise RuntimeError("socket closed")
     monkeypatch.setattr(executor, "bot_run", boom)
 
-    res = executor.reopen_pr(123, token="tok_realish", dry_run=False)
+    res = executor.reopen_pr(123, dry_run=False)
 
     assert res["status"] == "error"
     assert "socket closed" not in res["detail"]  # internals stay in the server log
@@ -48,6 +49,7 @@ def test_raising_bot_call_is_a_logged_error(recorded, monkeypatch):
 
 
 def test_raising_question_post_is_a_logged_error(recorded, monkeypatch, tmp_path):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok_realish")
     from issue_triage import dispute_question, fetch_issues, issue_gates, propose
     monkeypatch.setattr(propose, "load_result",
                         lambda issue: {"report_sha": "r1", "base_sha": "b1", "result": {}})
@@ -58,21 +60,22 @@ def test_raising_question_post_is_a_logged_error(recorded, monkeypatch, tmp_path
     monkeypatch.setattr(dispute_question, "render", lambda *a, **k: "body")
     monkeypatch.setattr(dispute_question, "problems", lambda body: [])
 
-    def boom(argv, token, **kw):
+    def boom(argv, **kw):
         raise RuntimeError("socket closed")
     monkeypatch.setattr(executor, "bot_run", boom)
 
-    res = executor.ask_issue_question(9, token="tok_realish", dry_run=False)
+    res = executor.ask_issue_question(9, dry_run=False)
 
     assert res["status"] == "error"
     assert [(k, f["status"]) for k, f in recorded] == [("issue-question", "error")]
 
 
 def test_failed_log_write_after_a_landed_write_does_not_raise(monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok_realish")
     monkeypatch.setattr(data, "pr_to_clusters", lambda: {123: [5]})
     monkeypatch.setattr(executor, "_bot_comment_ids", lambda n: [])
     monkeypatch.setattr(executor, "_bot_change_request_ids", lambda n: [])
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _ok())
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: _ok())
     reflected = []
     monkeypatch.setattr(executor, "_reflect_state",
                         lambda n, *, state=None, merged=False: reflected.append(state))
@@ -81,7 +84,7 @@ def test_failed_log_write_after_a_landed_write_does_not_raise(monkeypatch):
         raise OSError("activity store unreachable")
     monkeypatch.setattr(executor.activity, "record", log_down)
 
-    res = executor.reopen_pr(123, token="tok_realish", dry_run=False)
+    res = executor.reopen_pr(123, dry_run=False)
 
     assert res["status"] == "reopened"
     assert reflected == ["open"]
@@ -89,15 +92,16 @@ def test_failed_log_write_after_a_landed_write_does_not_raise(monkeypatch):
 
 
 def test_failed_store_reflect_after_a_landed_write_is_still_logged(recorded, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok_realish")
     monkeypatch.setattr(executor, "_bot_comment_ids", lambda n: [])
     monkeypatch.setattr(executor, "_bot_change_request_ids", lambda n: [])
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _ok())
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: _ok())
 
     def reflect_down(n, *, state=None, merged=False):
         raise OSError("store unreachable")
     monkeypatch.setattr(executor, "_reflect_state", reflect_down)
 
-    res = executor.reopen_pr(123, token="tok_realish", dry_run=False)
+    res = executor.reopen_pr(123, dry_run=False)
 
     assert res["status"] == "reopened"
     assert res["bookkeeping_error"]

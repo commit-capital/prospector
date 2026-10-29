@@ -53,6 +53,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pipeline import bot_token
 from prospector_app.backend import activity
 from prospector_app.backend import advisories
 from prospector_app.backend import agent_backend
@@ -60,7 +61,6 @@ from prospector_app.backend import agent_memory
 from prospector_app.backend import alerts
 from prospector_app.backend import claude_backend
 from prospector_app.backend import codex_backend
-from prospector_app.backend import executor
 from prospector_app.backend import issues
 from prospector_app.backend import issue_receipts
 from prospector_app.backend import safety_guard
@@ -101,24 +101,6 @@ def readiness(provider: str | None = None) -> dict[str, object]:
         return {"provider": provider, "ok": False, "problem": "agent support is off"}
     return backend.readiness()
 
-
-# A minted bot token, cached so we don't re-mint (a shell-out + two API
-# calls) on every chat turn. The token is valid ~1h; we refresh well before that.
-# None when no key is installed / the token can't be minted — in which case the
-# agent stays read-only (writes are simply never offered, never sent as the
-# operator's login).
-_BOT_TOKEN: str | None = None
-_BOT_TOKEN_EXP: float = 0.0
-
-
-def _bot_token() -> str | None:
-    global _BOT_TOKEN, _BOT_TOKEN_EXP
-    if _BOT_TOKEN and _BOT_TOKEN_EXP > time.monotonic():
-        return _BOT_TOKEN
-    _BOT_TOKEN = executor.mint_bot_token()
-    if _BOT_TOKEN:
-        _BOT_TOKEN_EXP = time.monotonic() + 50 * 60  # refresh before the 1h expiry
-    return _BOT_TOKEN
 
 def system_prompt() -> str:
     """The agent's operating manual (agent/context.md plus controls.md), injected
@@ -748,8 +730,8 @@ async def _run_turn(backend: agent_backend.AgentBackend, ctx_id: str, question: 
                     file: str | None, line: int | None,
                     prs: list[int] | None, prs_total: int | None,
                     spec: dict | None) -> AsyncIterator[dict[str, str]]:
-    def prepare() -> tuple[str, str | None, str, str | None]:
-        """The prompt, bot token, system prompt, and session to resume, with the
+    def prepare() -> tuple[str, bool, str, str | None]:
+        """The prompt, whether the bot can write, system prompt, and session to resume, with the
         question saved to the thread."""
         thread = load_thread(ctx_id)
         sid = _session_id(ctx_id)
@@ -792,21 +774,21 @@ async def _run_turn(backend: agent_backend.AgentBackend, ctx_id: str, question: 
         else:
             prompt = f"{base}{visible}{anchored}{question}"
 
-        # A successful mint unlocks the agent's curated upstream helpers. The chat
-        # process uses the operator environment for reads, and each write helper
-        # mints its execution token.
-        token = _bot_token()
+        # A mintable bot token unlocks the agent's curated upstream helpers. The
+        # chat process uses the operator environment for reads, and each write
+        # helper fetches its own token.
+        can_write = bot_token.available()
         manual = system_prompt()
         # Resume the live session on a normal turn. On a re-ground the session is
         # unreliable, so start fresh — the context is replayed into the prompt above.
         resumed_sid = sid if (sid and not needs_reground) else None
 
         _save(ctx_id, "user", anchored + question, None)
-        return prompt, token, manual, resumed_sid
+        return prompt, can_write, manual, resumed_sid
 
     # The store reads, the token mint, and the save run on a worker thread, so
     # the event loop keeps serving every other request and stream meanwhile.
-    prompt, token, manual, resumed_sid = await asyncio.to_thread(prepare)
+    prompt, can_write, manual, resumed_sid = await asyncio.to_thread(prepare)
 
     agent_backend.BODY_DIR.mkdir(parents=True, exist_ok=True)
     run = await backend.start(
@@ -815,7 +797,7 @@ async def _run_turn(backend: agent_backend.AgentBackend, ctx_id: str, question: 
             prompt=prompt,
             system_prompt=manual,
             session_id=resumed_sid,
-            can_write=bool(token),
+            can_write=can_write,
             # Resubmit pushes as the confirming operator, never the bot, so an
             # interactive session grants it regardless of token minting.
             can_resubmit=True,

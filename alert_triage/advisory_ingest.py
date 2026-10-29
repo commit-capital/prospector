@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 
+from pipeline import bot_token
 from alert_triage import advisory_model
 from alert_triage import config
 from alert_triage import link_prs
@@ -119,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     store = AdvisoryStore(args.store) if args.store else AdvisoryStore()
     started = _now()
-    token = config.mint_token()
+    token = bot_token.get()
     if token is None:
         raise SystemExit("advisory ingest needs a bot token; minting failed "
                          "(check TRIAGE_BOT_APP_ID / TRIAGE_BOT_KEY_FILE)")

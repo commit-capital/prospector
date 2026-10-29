@@ -35,7 +35,7 @@ def issue(tmp_path, monkeypatch):
 
     monkeypatch.setattr(dispute_question, "draft", draft)
 
-    def bot_run(argv, token):
+    def bot_run(argv, **kw):
         state["posts"].append(argv)
         return subprocess.CompletedProcess(argv, 0, "https://github.com/o/r/issues/7#c1\n", "")
 
@@ -48,16 +48,17 @@ def issue(tmp_path, monkeypatch):
 
 
 def test_a_dry_run_drafts_and_keeps_the_question_without_posting(issue):
-    res = executor.ask_issue_question(7, token=None, dry_run=True)
+    res = executor.ask_issue_question(7, dry_run=True)
     assert res["status"] == "dry-run" and "Should x read 2 or 3?" in res["body"]
     assert issue["posts"] == [] and issue["held"] == []
     assert json.loads(issue["qpath"].read_text())["question"] == QUESTION
     assert issue["events"][0][0] == "issue-question"
 
 
-def test_a_live_ask_posts_the_kept_draft_as_the_bot_and_holds_the_base(issue):
-    executor.ask_issue_question(7, token=None, dry_run=True)
-    res = executor.ask_issue_question(7, token="tok", dry_run=False)
+def test_a_live_ask_posts_the_kept_draft_as_the_bot_and_holds_the_base(issue, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
+    executor.ask_issue_question(7, dry_run=True)
+    res = executor.ask_issue_question(7, dry_run=False)
     assert res["status"] == "executed" and issue["drafts"] == 1
     [argv] = issue["posts"]
     assert argv[:3] == ["gh", "issue", "comment"] and "Should x read 2 or 3?" in argv[-1]
@@ -66,9 +67,10 @@ def test_a_live_ask_posts_the_kept_draft_as_the_bot_and_holds_the_base(issue):
     assert posted["url"].endswith("#c1") and posted["asked_at"]
 
 
-def test_a_question_is_never_asked_twice(issue):
-    executor.ask_issue_question(7, token="tok", dry_run=False)
-    res = executor.ask_issue_question(7, token="tok", dry_run=False)
+def test_a_question_is_never_asked_twice(issue, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
+    executor.ask_issue_question(7, dry_run=False)
+    res = executor.ask_issue_question(7, dry_run=False)
     assert res["status"] == "exists" and len(issue["posts"]) == 1
 
 
@@ -76,8 +78,9 @@ def test_a_question_is_never_asked_twice(issue):
     ({"state": "closed"}, "closed"),
     ({"body": "edited"}, "edited"),
 ])
-def test_the_gate_blocks_before_any_agent_runs(issue, change, why):
+def test_the_gate_blocks_before_any_agent_runs(issue, change, why, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     issue["live"] = {**issue["live"], **change}
-    res = executor.ask_issue_question(7, token="tok", dry_run=False)
+    res = executor.ask_issue_question(7, dry_run=False)
     assert res["status"] == "blocked" and why in res["detail"]
     assert issue["drafts"] == 0 and issue["posts"] == []

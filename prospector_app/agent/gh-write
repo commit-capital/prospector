@@ -13,8 +13,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
+from pipeline import bot_token  # noqa: E402
 from pipeline import settings  # noqa: E402
-from prospector_app.backend import executor  # noqa: E402
 from prospector_app.backend import safety_guard  # noqa: E402
 
 
@@ -120,22 +120,16 @@ def build_gh_argv(argv: list[str]) -> list[str]:
     return [*cmd, "--repo", settings.repo()]
 
 
-def _bad_credentials(stdout: str, stderr: str) -> bool:
-    detail = f"{stdout}\n{stderr}".lower()
-    return "http 401" in detail or "bad credentials" in detail
-
-
 def main(argv: list[str] | None = None) -> int:
     cmd = build_gh_argv(argv if argv is not None else sys.argv[1:])
-    token = executor.mint_bot_token()
-    if not token:
-        detail = executor.mint_error() or "bot token mint returned no token"
+    if not bot_token.available():
+        detail = bot_token.last_error() or "bot token mint returned no token"
         print(f"gh-write: bot installation token unavailable: {detail}", file=sys.stderr)
         return 2
 
-    result = safety_guard.chat_bot_run(cmd, token)
+    result = safety_guard.chat_bot_run(cmd)
     if result.returncode != 0:
-        if _bad_credentials(result.stdout, result.stderr):
+        if safety_guard.bad_credentials(result):
             print(
                 "gh-write: bot installation token expired — retry the write to mint a fresh token",
                 file=sys.stderr,

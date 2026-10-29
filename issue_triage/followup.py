@@ -67,6 +67,7 @@ from typing import TYPE_CHECKING
 
 from datetime import datetime, timezone
 
+from pipeline import bot_token
 from issue_triage import fix_outcome, issue_display, reply_router, second_opinion
 from pipeline import ci_signal, diffpaths, gates, gh, prove, review_fetch, review_policy
 from pipeline import reviewers, settings, storekit, verify_driver
@@ -633,16 +634,14 @@ def poll(store: IssueStore, *, mode: str | None = None,
             else:
                 fu["state"] = "handed-back"
         elif step.kind == "describe":
-            token = executor.mint_bot_token()
-            res = executor.update_issue_fix_proposal(n, int(pr), push=False, token=token,
-                                                     dry_run=not token)
+            res = executor.update_issue_fix_proposal(n, int(pr), push=False,
+                                                     dry_run=not bot_token.available())
             fu["described_head"] = state.head_sha
             if res.get("status") not in ("unchanged",):
                 _note(store, n, f"Description: {res.get('detail')}")
         elif step.kind == "rerun":
-            token = executor.mint_bot_token()
-            res = executor.rerun_issue_fix_checks(n, int(pr), step.run_ids, token=token,
-                                                  dry_run=not token)
+            res = executor.rerun_issue_fix_checks(n, int(pr), step.run_ids,
+                                                  dry_run=not bot_token.available())
             fu.setdefault("reruns", {})[state.head_sha] = step.run_ids
             _note(store, n, f"Re-run: {res.get('detail')} ({step.reason}).")
         elif step.kind == "second-opinion":

@@ -3,9 +3,8 @@
 Acts on the configured repository as the configured bot: close + comment on
 duplicates/already-fixed PRs, submit reviews (approve / request-changes / inline
 comments), reopen, and squash-merge gate-clean PRs (merge_pr). Every write goes
-out under a real installation token minted by pipeline/get-bot-token.sh from
-the private-key path in TRIAGE_BOT_KEY_FILE. When no token can be minted, mint_bot_token()
-returns None and every execution — including merge — is forced to DRY-RUN, so
+out under the bot's installation token (`pipeline.bot_token`). When no token
+can be minted, every execution — including merge — is forced to DRY-RUN, so
 the app cannot post.
 
 Merges are upstream squash-merges via merge_pr (gated by
@@ -34,6 +33,7 @@ from prospector_app.backend import models
 from prospector_app.backend import safety_guard
 from prospector_app.backend import service
 from prospector_app.backend.safety_guard import bot_merge_run, bot_run
+from pipeline import bot_token
 from pipeline import ci_signal
 from pipeline import gh
 from pipeline import live_prs
@@ -42,7 +42,6 @@ from pipeline import freshness
 from pipeline import reviewers
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-GET_TOKEN = REPO_ROOT / "pipeline" / "get-bot-token.sh"
 
 CLOSE_ACTIONS = {"CLOSE_DUP", "CLOSE_FIXED", "CLOSE", "CLOSE_STALE", "CLOSE_OVERSIZED",
                  "CLOSE_WONTFIX"}
@@ -65,43 +64,6 @@ def _cluster_id(n: int) -> str | None:
     return f"{min(cids):03d}" if cids else None
 
 
-_last_mint_error: str | None = None
-
-
-def mint_error() -> str | None:
-    """Why the last mint_bot_token() call returned None — key missing, the
-    minting script missing, or whatever get-bot-token.sh printed to stderr
-    (bad TRIAGE_BOT_APP_ID, the app not installed on the org, a network
-    failure, …). None after a successful mint, or before any call has run.
-    "No token" alone doesn't tell an operator which of those to check."""
-    return _last_mint_error
-
-
-def mint_bot_token() -> str | None:
-    """Mint a 1-hour bot installation token, or None if unavailable.
-
-    The token helper loads TRIAGE_BOT_KEY_FILE from the process environment or
-    repo-root .env and reads the PEM only inside its short-lived subprocess.
-    Any configuration or mint failure returns None and forces dry-run. Never
-    raises into the request path.
-    """
-    global _last_mint_error
-    if not GET_TOKEN.exists():
-        _last_mint_error = f"{GET_TOKEN} not found"
-        return None
-    try:
-        r = subprocess.run(["bash", str(GET_TOKEN)], capture_output=True, text=True, timeout=30)
-    except Exception as e:
-        _last_mint_error = _public_exception_detail("token helper failed unexpectedly", e)
-        return None
-    tok = (r.stdout or "").strip()
-    if tok:
-        _last_mint_error = None
-        return tok
-    _last_mint_error = (r.stderr or "").strip() or f"get-bot-token.sh exited {r.returncode} with no output"
-    return None
-
-
 _live_possible: bool | None = None
 _bot_permissions: dict[str, str] | None = None
 _bot_permissions_probed = False
@@ -121,7 +83,7 @@ def live_possible() -> bool:
     calls it, since nothing else in the request path does."""
     global _live_possible
     if _live_possible is None:
-        _live_possible = mint_bot_token() is not None
+        _live_possible = bot_token.available()
     return _live_possible
 
 
@@ -131,11 +93,11 @@ def bot_permissions() -> dict[str, str] | None:
     if _bot_permissions_probed:
         return _bot_permissions
     _bot_permissions_probed = True
-    if not GET_TOKEN.exists():
+    if not bot_token.GET_TOKEN.exists():
         return None
     try:
         result = subprocess.run(
-            ["bash", str(GET_TOKEN), "--permissions"],
+            ["bash", str(bot_token.GET_TOKEN), "--permissions"],
             capture_output=True, text=True, timeout=30,
         )
         raw = json.loads((result.stdout or "").strip()) if result.returncode == 0 else None
@@ -151,6 +113,7 @@ def bot_permissions() -> dict[str, str] | None:
 
 def refresh_live() -> None:
     global _live_possible, _bot_permissions, _bot_permissions_probed
+    bot_token.forget()
     _live_possible = None
     _bot_permissions = None
     _bot_permissions_probed = False
@@ -158,7 +121,7 @@ def refresh_live() -> None:
 
 def identities() -> dict:
     live = live_possible()
-    error = None if live else mint_error()
+    error = None if live else bot_token.last_error()
     note = None if live else (f"no {settings.bot_login()} token on this machine — dry-run only"
                               + (f" ({error})" if error else ""))
     return {
@@ -388,32 +351,32 @@ def _log(kind: str, res: dict, *, dry_run: bool, **fields: object) -> dict:
     return res
 
 
-def _dry_run(kind: str, base: Mapping[str, object], detail: str, *, token: str | None,
+def _dry_run(kind: str, base: Mapping[str, object], detail: str, *,
              dry_run: bool, **fields: object) -> dict:
     """The logged dry-run result of a write. `forced` marks a dry-run the
     missing token imposed on a caller that asked for a live one."""
-    res = {**base, "status": "dry-run", "detail": detail, "forced": not token and not dry_run}
+    res = {**base, "status": "dry-run", "detail": detail, "forced": not dry_run}
     return _log(kind, res, dry_run=True, **fields)
 
 
-def _bot_write(kind: str, base: Mapping[str, object], *, token: str | None, dry_run: bool,
-               preview: str, attempt: Callable[[str], dict[str, object]], failure: str,
+def _bot_write(kind: str, base: Mapping[str, object], *, dry_run: bool,
+               preview: str, attempt: Callable[[], dict[str, object]], failure: str,
                on_success: Callable[[dict], None] | None = None,
                **fields: object) -> dict:
     """Run one upstream write and log its outcome as activity `kind`.
 
     Without a token, or on `dry_run`, the result is a dry-run whose detail is
-    `preview`. Otherwise `attempt(token)` makes the write through its own
+    `preview`. Otherwise `attempt()` makes the write through its own
     runner and returns the result's `status` and `detail` (and any extra
     fields); an exception it raises becomes an error result whose detail names
     `failure`. After a non-error attempt `on_success` (store bookkeeping) runs
     on the result. Every exit is logged, with `fields` on the entry; once the
     write has landed, a failure in the bookkeeping or the log append is carried
     on the result as `bookkeeping_error` and the status stands."""
-    if dry_run or not token:
-        return _dry_run(kind, base, preview, token=token, dry_run=dry_run, **fields)
+    if dry_run or not bot_token.available():
+        return _dry_run(kind, base, preview, dry_run=dry_run, **fields)
     try:
-        res = {**base, **attempt(token)}
+        res = {**base, **attempt()}
     except Exception as e:  # WriteAttemptBlocked or subprocess error
         res = {**base, "status": "error", "detail": _public_exception_detail(failure, e)}
     if res["status"] != "error" and on_success is not None:
@@ -425,7 +388,7 @@ def _bot_write(kind: str, base: Mapping[str, object], *, token: str | None, dry_
 
 
 def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
-                        comment_argv: list[str], close_argv: list[str], token: str,
+                        comment_argv: list[str], close_argv: list[str],
                         log_verb: str, capture_event_url: bool = False,
                         stale_override: bool = False,
                         on_success: Callable[[], None] | None = None) -> dict:
@@ -446,7 +409,7 @@ def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
     event_url = None  # deep-link to the comment, when we post one
     try:
         if not _has_bot_comment(n, idempotency_key):
-            cr = bot_run(comment_argv, token)
+            cr = bot_run(comment_argv)
             if cr.returncode != 0:
                 return _fail(f"comment failed: {cr.stderr.strip()[:160]}")
             if capture_event_url:
@@ -454,7 +417,7 @@ def _comment_then_close(n: int, *, base: dict, idempotency_key: str | None,
             steps.append("commented")
         else:
             steps.append("comment-exists")
-        clr = bot_run(close_argv, token)
+        clr = bot_run(close_argv)
         if clr.returncode != 0:
             return _fail(f"close failed: {clr.stderr.strip()[:160]}")
         steps.append("closed")
@@ -500,7 +463,7 @@ def _backfill_dup_refs(n: int, action: models.CloseAction) -> models.CloseAction
     return action.model_copy(update=updates) if updates else action
 
 
-def execute_pr(n: int, action: models.CloseAction, *, token: str | None, dry_run: bool) -> dict:
+def execute_pr(n: int, action: models.CloseAction, *, dry_run: bool) -> dict:
     """Execute one PR's disposition. Returns a result record."""
     eff = _effective_action(action)
     base = {"pr": int(n), "cluster_id": _cluster_id(n), "action": eff}
@@ -519,15 +482,15 @@ def execute_pr(n: int, action: models.CloseAction, *, token: str | None, dry_run
         return refusal
 
     # forced dry-run when no token
-    if dry_run or not token:
-        return _dry_run("execute", base, "; ".join(plan), token=token, dry_run=dry_run,
+    if dry_run or not bot_token.available():
+        return _dry_run("execute", base, "; ".join(plan), dry_run=dry_run,
                         stale_override=overridden)
 
     return _comment_then_close(
         n, base=base, idempotency_key=_comment_marker(comment),
         comment_argv=["gh", "pr", "comment", str(n), "--repo", settings.repo(), "--body", comment],
         close_argv=["gh", "pr", "close", str(n), "--repo", settings.repo()],
-        token=token, log_verb="execute", capture_event_url=True,
+        log_verb="execute", capture_event_url=True,
         stale_override=overridden,
         on_success=lambda: _reflect_state(n, state="closed"))
 
@@ -548,17 +511,17 @@ def _bot_change_request_ids(n: int) -> list[int]:
             and r.get("state") == "CHANGES_REQUESTED" and isinstance(r.get("id"), int)]
 
 
-def reopen_pr(n: int, *, token: str | None, dry_run: bool) -> dict:
+def reopen_pr(n: int, *, dry_run: bool) -> dict:
     """Undo: reopen a PR, delete the configured bot's closing comment(s), and
     dismiss any standing bot request-changes review so the PR doesn't
     reopen still showing the bot's "things to fix" block (#70)."""
-    def attempt(token: str) -> dict[str, object]:
-        rr = bot_run(["gh", "pr", "reopen", str(n), "--repo", settings.repo()], token)
+    def attempt() -> dict[str, object]:
+        rr = bot_run(["gh", "pr", "reopen", str(n), "--repo", settings.repo()])
         if rr.returncode != 0:
             return {"status": "error", "detail": f"reopen failed: {rr.stderr.strip()[:160]}"}
         removed = 0
         for cid in _bot_comment_ids(n):
-            dr = bot_run(["gh", "api", "--method", "DELETE", f"repos/{settings.repo()}/issues/comments/{cid}"], token)
+            dr = bot_run(["gh", "api", "--method", "DELETE", f"repos/{settings.repo()}/issues/comments/{cid}"])
             if dr.returncode == 0:
                 removed += 1
         # withdraw any standing request-changes so reopening leaves a clean slate
@@ -567,7 +530,7 @@ def reopen_pr(n: int, *, token: str | None, dry_run: bool) -> dict:
             dn = bot_run(["gh", "api", "--method", "PUT",
                           f"repos/{settings.repo()}/pulls/{n}/reviews/{rid}/dismissals",
                           "-f", "message=Reopened during triage — earlier change request withdrawn.",
-                          "-f", "event=DISMISS"], token)
+                          "-f", "event=DISMISS"])
             if dn.returncode == 0:
                 dismissed += 1
         detail = f"reopened + removed {removed} bot comment(s)"
@@ -577,13 +540,13 @@ def reopen_pr(n: int, *, token: str | None, dry_run: bool) -> dict:
 
     return _bot_write(
         "reopen", {"pr": int(n), "cluster_id": _cluster_id(n), "action": "REOPEN"},
-        token=token, dry_run=dry_run,
+        dry_run=dry_run,
         preview="would reopen + remove bot comment(s) + dismiss any request-changes review",
         attempt=attempt, failure="reopen failed unexpectedly",
         on_success=lambda _: _reflect_state(n, state="open"))
 
 
-def reopen_issue(n: int, *, token: str | None, dry_run: bool) -> dict:
+def reopen_issue(n: int, *, dry_run: bool) -> dict:
     """Undo an issue close: reopen the issue and delete the configured bot's closing
     comment(s), as the bot. Reflects the reopened state back into the shared
     store so the Issues view restores the issue at once — the inverse of the
@@ -591,25 +554,25 @@ def reopen_issue(n: int, *, token: str | None, dry_run: bool) -> dict:
     kind, so it never counts toward PR-reopen velocity."""
     from prospector_app.backend import issues as issues_mod
 
-    def attempt(token: str) -> dict[str, object]:
-        rr = bot_run(["gh", "issue", "reopen", str(n), "--repo", settings.repo()], token)
+    def attempt() -> dict[str, object]:
+        rr = bot_run(["gh", "issue", "reopen", str(n), "--repo", settings.repo()])
         if rr.returncode != 0:
             return {"status": "error", "detail": f"reopen failed: {rr.stderr.strip()[:160]}"}
         removed = 0
         for cid in _bot_comment_ids(n):
-            dr = bot_run(["gh", "api", "--method", "DELETE", f"repos/{settings.repo()}/issues/comments/{cid}"], token)
+            dr = bot_run(["gh", "api", "--method", "DELETE", f"repos/{settings.repo()}/issues/comments/{cid}"])
             if dr.returncode == 0:
                 removed += 1
         return {"status": "reopened", "detail": f"reopened + removed {removed} bot comment(s)"}
 
     return _bot_write(
         "issue-reopen", {"issue": int(n), "action": "REOPEN_ISSUE"},
-        token=token, dry_run=dry_run, preview="would reopen + remove bot comment(s)",
+        dry_run=dry_run, preview="would reopen + remove bot comment(s)",
         attempt=attempt, failure="issue reopen failed unexpectedly",
         on_success=lambda _: issues_mod.reflect_issue_state(n, "open"))
 
 
-def comment_issue(n: int, action: models.IssueCommentBody, *, token: str | None, dry_run: bool) -> dict:
+def comment_issue(n: int, action: models.IssueCommentBody, *, dry_run: bool) -> dict:
     """Post a comment on a GitHub issue as the configured bot, without closing it.
     Reversible (the bot can delete its own comment). Shares the issues/comments
     endpoint with the close paths, so the same bot-write gate applies."""
@@ -619,13 +582,13 @@ def comment_issue(n: int, action: models.IssueCommentBody, *, token: str | None,
         return _log("issue-comment", {**base, "status": "error", "detail": "comment is empty"},
                     dry_run=dry_run)
 
-    def attempt(token: str) -> dict[str, object]:
-        r = bot_run(["gh", "issue", "comment", str(n), "--repo", settings.repo(), "--body", comment], token)
+    def attempt() -> dict[str, object]:
+        r = bot_run(["gh", "issue", "comment", str(n), "--repo", settings.repo(), "--body", comment])
         if r.returncode != 0:
             return {"status": "error", "detail": f"comment failed: {r.stderr.strip()[:160]}"}
         return {"status": "executed", "detail": "comment posted"}
 
-    return _bot_write("issue-comment", base, token=token, dry_run=dry_run,
+    return _bot_write("issue-comment", base, dry_run=dry_run,
                       preview=f'comment: "{comment[:80]}…"', attempt=attempt,
                       failure="issue comment failed unexpectedly")
 
@@ -648,7 +611,7 @@ def _latest_bot_review_url(n: int) -> str | None:
     return urls[-1] if urls else None
 
 
-def submit_review(n: int, event: str, body: str, *, token: str | None, dry_run: bool,
+def submit_review(n: int, event: str, body: str, *, dry_run: bool,
                   override_stale: bool = False) -> dict:
     """Submit a PR review (approve / request-changes / comment) as the configured bot.
 
@@ -670,8 +633,8 @@ def submit_review(n: int, event: str, body: str, *, token: str | None, dry_run: 
     if body.strip():
         argv += ["--body", body]
 
-    def attempt(token: str) -> dict[str, object]:
-        r = bot_run(argv, token)
+    def attempt() -> dict[str, object]:
+        r = bot_run(argv)
         if r.returncode != 0:
             return {"status": "error", "detail": r.stderr.strip()[:160]}
         res: dict[str, object] = {
@@ -682,12 +645,12 @@ def submit_review(n: int, event: str, body: str, *, token: str | None, dry_run: 
                 res["event_url"] = url
         return res
 
-    return _bot_write("review", base, token=token, dry_run=dry_run, preview=preview,
+    return _bot_write("review", base, dry_run=dry_run, preview=preview,
                       attempt=attempt, failure="review failed unexpectedly",
                       event=event, stale_override=overridden)
 
 
-def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, dry_run: bool,
+def comment_line(n: int, file: str, line: int, body: str, *, dry_run: bool,
                  override_stale: bool = False) -> dict:
     """Post an inline review comment on a specific diff line as the configured bot.
 
@@ -700,14 +663,14 @@ def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, 
     if refusal is not None:
         return refusal
 
-    def attempt(token: str) -> dict[str, object]:
+    def attempt() -> dict[str, object]:
         head = ((gh.fetch_pr(n, timeout=30) or {}).get("head") or {}).get("sha") or ""
         if not head:
             return {"status": "error", "detail": "could not resolve head sha"}
         argv = ["gh", "api", "--method", "POST", f"repos/{settings.repo()}/pulls/{n}/comments",
                 "-f", f"body={body}", "-f", f"commit_id={head}", "-f", f"path={file}",
                 "-F", f"line={int(line)}", "-f", "side=RIGHT"]
-        r = bot_run(argv, token)
+        r = bot_run(argv)
         if r.returncode != 0:
             return {"status": "error", "detail": r.stderr.strip()[:160]}
         res: dict[str, object] = {"status": "executed", "detail": f"commented on {file}:{line}"}
@@ -716,13 +679,13 @@ def comment_line(n: int, file: str, line: int, body: str, *, token: str | None, 
             res["event_url"] = url
         return res
 
-    return _bot_write("line_comment", base, token=token, dry_run=dry_run,
+    return _bot_write("line_comment", base, dry_run=dry_run,
                       preview=f"would comment on {file}:{line}: “{body[:50]}…”",
                       attempt=attempt, failure="line comment failed unexpectedly",
                       stale_override=overridden)
 
 
-def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bool,
+def retrigger_review(n: int, reviewer_id: str, *, dry_run: bool,
                      initiator: str = "operator") -> dict:
     """Post the named reviewer's mention as a plain PR comment to re-trigger its
     review.
@@ -745,8 +708,8 @@ def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bo
     if not pf.ok:
         return {**base, "status": "skipped", "detail": f"pre-flight: {pf.message}"}
 
-    def attempt(token: str) -> dict[str, object]:
-        r = bot_run(["gh", "pr", "comment", str(n), "--repo", settings.repo(), "--body", mention], token)
+    def attempt() -> dict[str, object]:
+        r = bot_run(["gh", "pr", "comment", str(n), "--repo", settings.repo(), "--body", mention])
         if r.returncode != 0:
             return {"status": "error", "detail": r.stderr.strip()[:160]}
         res: dict[str, object] = {
@@ -758,7 +721,7 @@ def retrigger_review(n: int, reviewer_id: str, *, token: str | None, dry_run: bo
         return res
 
     return _bot_write(
-        "review_retrigger", base, token=token, dry_run=dry_run,
+        "review_retrigger", base, dry_run=dry_run,
         preview=f"would comment “{mention}” on #{n} as {settings.bot_login()} to re-trigger the review",
         attempt=attempt, failure="review retrigger failed unexpectedly")
 
@@ -873,8 +836,7 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None,
         return res
     if method not in ("merge", "squash", "rebase"):
         method = "squash"
-    token = None if dry_run else mint_bot_token()
-    if dry_run or not token:
+    if dry_run or not bot_token.available():
         detail = f"would merge #{n} (--{method}) as {settings.bot_login()}"
         if override_pending:
             detail += " after logging the security-YELLOW override"
@@ -883,7 +845,7 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None,
         if verify_override_pending:
             detail += " after logging the verify-escalate override"
         res = {**base, "status": "dry-run", "detail": detail,
-               "forced": not token and not dry_run}
+               "forced": not dry_run}
         activity.record("merge", identity=settings.bot_login(), dry_run=True, **res)
         _credit_merge_closed_issues(rec, n, dry_run=True)
         return res
@@ -931,7 +893,7 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None,
         argv += ["--match-head-commit", rec.head_sha]
     merge_progress.step(int(n), "merging upstream")
     try:
-        r = bot_merge_run(argv, token)
+        r = bot_merge_run(argv)
         merged = f"merged (--{method})" + (
             " without a compile verdict, logging your reason" if "compile_waiver" in base else "")
         res = ({**base, "status": "merged", "detail": merged} if r.returncode == 0
@@ -989,7 +951,7 @@ def _issue_close_argv(n: int, reason: str, canonical: int | None) -> list[str]:
     return argv
 
 
-def close_issue(n: int, action: models.IssueCloseDupBody, *, token: str | None, dry_run: bool) -> dict:
+def close_issue(n: int, action: models.IssueCloseDupBody, *, dry_run: bool) -> dict:
     """Close a GitHub issue as a duplicate, as the configured bot: post a comment
     pointing at the canonical issue, then close it `duplicate` — via --duplicate-of
     when a canonical is known, so GitHub records the marked_as_duplicate link on it
@@ -1010,19 +972,19 @@ def close_issue(n: int, action: models.IssueCloseDupBody, *, token: str | None, 
     comment = action.comment or issues_mod.dup_issue_comment(canonical)
     plan = [f'comment: "{comment[:80]}…"', f"close issue #{n}"]
 
-    if dry_run or not token:
-        return _dry_run("issue-close", base, "; ".join(plan), token=token, dry_run=dry_run)
+    if dry_run or not bot_token.available():
+        return _dry_run("issue-close", base, "; ".join(plan), dry_run=dry_run)
 
     # issues and PRs share the issues/comments endpoint
     return _comment_then_close(
         n, base=base, idempotency_key=f"#{canonical}" if canonical else _comment_marker(comment),
         comment_argv=["gh", "issue", "comment", str(n), "--repo", settings.repo(), "--body", comment],
         close_argv=_issue_close_argv(n, "duplicate", canonical),
-        token=token, log_verb="issue-close",
+        log_verb="issue-close",
         on_success=lambda: issues_mod.reflect_issue_state(n, "closed", "duplicate"))
 
 
-def close_issue_fixed(n: int, action: models.IssueCloseFixedBody, *, token: str | None, dry_run: bool) -> dict:
+def close_issue_fixed(n: int, action: models.IssueCloseFixedBody, *, dry_run: bool) -> dict:
     """Close a GitHub issue as fixed by a merged PR, as the configured bot: post a comment
     pointing at the fixing PR, then close it `completed`. Reversible (reopen + delete
     the comment). Gated on issues.close_fixed_gate, which re-verifies live at write
@@ -1037,15 +999,15 @@ def close_issue_fixed(n: int, action: models.IssueCloseFixedBody, *, token: str 
     comment = action.comment or issues_mod.fixed_issue_comment(fixed_by)
     plan = [f'comment: "{comment[:80]}…"', f"close issue #{n} as fixed by #{fixed_by}"]
 
-    if dry_run or not token:
-        return _dry_run("issue-close", base, "; ".join(plan), token=token, dry_run=dry_run)
+    if dry_run or not bot_token.available():
+        return _dry_run("issue-close", base, "; ".join(plan), dry_run=dry_run)
 
     # issues and PRs share the issues/comments endpoint
     return _comment_then_close(
         n, base=base, idempotency_key=f"#{fixed_by}",
         comment_argv=["gh", "issue", "comment", str(n), "--repo", settings.repo(), "--body", comment],
         close_argv=_issue_close_argv(n, "completed", None),
-        token=token, log_verb="issue-close",
+        log_verb="issue-close",
         on_success=lambda: issues_mod.reflect_issue_state(n, "closed", "completed"))
 
 
@@ -1059,7 +1021,7 @@ _CLOSE_ACTION = {"not-planned": "CLOSE_ISSUE", "completed": "CLOSE_ISSUE",
                  "fixed": "CLOSE_ISSUE_FIXED", "dup": "CLOSE_ISSUE_DUP"}
 
 
-def close_issue_with_comment(n: int, action: models.IssueCloseBody, *, token: str | None,
+def close_issue_with_comment(n: int, action: models.IssueCloseBody, *,
                              dry_run: bool) -> dict:
     """Close a GitHub issue as directed by the operator, as the configured bot: post a
     comment, then close it with the disposition's state_reason. Dispositions:
@@ -1088,19 +1050,19 @@ def close_issue_with_comment(n: int, action: models.IssueCloseBody, *, token: st
         comment = issues_mod.dup_issue_comment(action.canonical)
     plan = [f'comment: "{comment[:80]}…"', f"close issue #{n} ({reason})"]
 
-    if dry_run or not token:
-        return _dry_run("issue-close", base, "; ".join(plan), token=token, dry_run=dry_run)
+    if dry_run or not bot_token.available():
+        return _dry_run("issue-close", base, "; ".join(plan), dry_run=dry_run)
 
     return _comment_then_close(
         n, base=base, idempotency_key=_comment_marker(comment),
         comment_argv=["gh", "issue", "comment", str(n), "--repo", settings.repo(), "--body", comment],
         close_argv=_issue_close_argv(n, reason, action.canonical),
-        token=token, log_verb="issue-close",
+        log_verb="issue-close",
         on_success=lambda: issues_mod.reflect_issue_state(n, "closed", reason))
 
 
 def dismiss_alert(source: str, number: int, reason: str, comment: str, *,
-                  token: str | None, dry_run: bool) -> dict:
+                  dry_run: bool) -> dict:
     """Dismiss/resolve a GitHub security alert upstream as the configured bot,
     gated by alert_gates.dismiss_eligibility and logged to Activity. Code
     scanning and Dependabot alerts PATCH to state=dismissed with a
@@ -1140,8 +1102,8 @@ def dismiss_alert(source: str, number: int, reason: str, comment: str, *,
     argv = ["gh", "api", "-X", "PATCH",
             f"repos/{settings.repo()}/{source}/alerts/{int(number)}", *fields]
 
-    def attempt(token: str) -> dict[str, object]:
-        r = alert_bot_run(argv, token)
+    def attempt() -> dict[str, object]:
+        r = alert_bot_run(argv)
         if r.returncode != 0:
             return {"status": "error",
                     "detail": (r.stderr or "").strip()[-300:] or f"gh exited {r.returncode}"}
@@ -1151,7 +1113,7 @@ def dismiss_alert(source: str, number: int, reason: str, comment: str, *,
         alert_data.store().edit_alert(i).record_live_state(new_state, raw_state=new_raw)
         alert_data.refresh()
 
-    return _bot_write("alert-dismiss", base, token=token, dry_run=dry_run,
+    return _bot_write("alert-dismiss", base, dry_run=dry_run,
                       preview=f"would dismiss {source}#{number} ({reason})",
                       attempt=attempt, failure="alert dismiss failed unexpectedly",
                       on_success=reflect)
@@ -1171,7 +1133,7 @@ def _gh_api_error(r: subprocess.CompletedProcess) -> str:
     return (r.stderr or "").strip()[-300:]
 
 
-def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) -> dict:
+def propose_issue_fix(issue: int, *, dry_run: bool = True) -> dict:
     """Open a pull request on TRIAGE_REPO carrying issue `issue`'s last lane
     fix, for a maintainer to review. The run must pass
     `issue_gates.propose_gate`, the pull requests that name the issue
@@ -1259,7 +1221,7 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
     if problems:
         return done("blocked", "rendering: " + "; ".join(problems), dry=dry_run)
 
-    live = not dry_run and bool(token)
+    live = not dry_run and bot_token.available()
     workdir = settings.verify_scratch() / "issue-fix" / f"issue-{issue}" / "propose"
     try:
         pushed = propose.push_fix(issue=issue, report_sha=record["report_sha"],
@@ -1269,12 +1231,10 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
         return done("blocked", f"push: {e}", dry=not live)
     if not live:
         return done("dry-run", f"would open {title_text!r} from {head}", dry=True,
-                    forced=not token and not dry_run, head_sha=pushed.head_sha)
+                    forced=not dry_run, head_sha=pushed.head_sha)
 
-    assert token is not None
     r = propose_bot_run({"title": title_text, "body": body, "head": head,
-                         "base": settings.default_branch(), "maintainer_can_modify": False},
-                        token)
+                         "base": settings.default_branch(), "maintainer_can_modify": False})
     if r.returncode != 0:
         detail = _gh_api_error(r) or f"gh exited {r.returncode}"
         return done("error", f"pushed {ref} but the pull request failed: {detail}", dry=False,
@@ -1285,7 +1245,7 @@ def propose_issue_fix(issue: int, *, token: str | None, dry_run: bool = True) ->
                 reused=pushed.reused)
 
 
-def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | None,
+def update_issue_fix_proposal(issue: int, pr: int, *, push: bool,
                               dry_run: bool = True) -> dict:
     """Bring issue `issue`'s open pull request `pr` up to its last lane run: with
     `push`, the run's fix goes onto the lane branch as one more commit
@@ -1358,7 +1318,7 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
     if problems:
         return done("blocked", "rendering: " + "; ".join(problems), dry=dry_run)
 
-    live = not dry_run and bool(token)
+    live = not dry_run and bot_token.available()
     pushed = None
     if push:
         workdir = settings.verify_scratch() / "issue-fix" / f"issue-{issue}" / "propose"
@@ -1377,9 +1337,8 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
         return done("unchanged", f"#{pr} already carries this run", dry=not live)
     if not live:
         return done("dry-run", f"would have {' and '.join(did)} on #{pr}", dry=True,
-                    forced=not token and not dry_run,
+                    forced=not dry_run,
                     head_sha=pushed.head_sha if pushed else head.get("sha"))
-    assert token is not None
     if edit:
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
             fh.write(body)
@@ -1387,7 +1346,7 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
         try:
             r = safety_guard.chat_bot_run(["gh", "pr", "edit", str(int(pr)), "--title",
                                            title_text, "--body-file", path, "--repo",
-                                           settings.repo()], token)
+                                           settings.repo()])
         finally:
             os.unlink(path)
         if r.returncode != 0:
@@ -1398,16 +1357,16 @@ def update_issue_fix_proposal(issue: int, pr: int, *, push: bool, token: str | N
                 head_sha=pushed.head_sha if pushed else head.get("sha"))
 
 
-def rerun_issue_fix_checks(issue: int, pr: int, run_ids: list[int], *, token: str | None,
+def rerun_issue_fix_checks(issue: int, pr: int, run_ids: list[int], *,
                            dry_run: bool = True) -> dict:
     """Re-run the failed jobs of workflow runs `run_ids` on issue `issue`'s pull
     request `pr`, as the bot. With no token every run is a dry-run. Logged to
     Activity."""
-    def attempt(token: str) -> dict[str, object]:
+    def attempt() -> dict[str, object]:
         failed: list[str] = []
         for run_id in run_ids:
             r = safety_guard.chat_bot_run(["gh", "run", "rerun", str(int(run_id)), "--failed",
-                                           "--repo", settings.repo()], token)
+                                           "--repo", settings.repo()])
             if r.returncode != 0:
                 failed.append(f"{run_id}: {(r.stderr or r.stdout).strip()[:200]}")
         if failed:
@@ -1418,7 +1377,7 @@ def rerun_issue_fix_checks(issue: int, pr: int, run_ids: list[int], *, token: st
     return _bot_write(
         "issue-propose",
         {"issue": int(issue), "pr": int(pr), "action": "RERUN", "runs": [int(r) for r in run_ids]},
-        token=token, dry_run=dry_run,
+        dry_run=dry_run,
         preview=f"would re-run the failed jobs of {len(run_ids)} workflow run(s) on #{pr}",
         attempt=attempt, failure="workflow re-run failed unexpectedly")
 
@@ -1426,7 +1385,7 @@ def rerun_issue_fix_checks(issue: int, pr: int, run_ids: list[int], *, token: st
 _FIX_LABELS_MADE: set[str] = set()
 
 
-def _ensure_fix_label(label: str, token: str) -> str | None:
+def _ensure_fix_label(label: str) -> str | None:
     """Create issue-fix status label `label` on TRIAGE_REPO when it is missing.
     Why it could not be, or None once it exists."""
     from urllib.parse import quote
@@ -1436,7 +1395,7 @@ def _ensure_fix_label(label: str, token: str) -> str | None:
     if label in _FIX_LABELS_MADE:
         return None
     if gh_json(f"repos/{settings.repo()}/labels/{quote(label, safe='')}") is None:
-        r = safety_guard.label_bot_run("create", label, token)
+        r = safety_guard.label_bot_run("create", label)
         if r.returncode != 0 and "already_exists" not in (r.stdout or "") + (r.stderr or ""):
             return f"creating the label {label!r} failed: {_gh_api_error(r)}"
     _FIX_LABELS_MADE.add(label)
@@ -1444,7 +1403,7 @@ def _ensure_fix_label(label: str, token: str) -> str | None:
 
 
 def set_fix_label(number: int, *, add: str | None, remove: str | None, issue: int,
-                  token: str | None, dry_run: bool = True) -> dict:
+                  dry_run: bool = True) -> dict:
     """Swap issue or pull request `number`'s issue-fix status label from
     `remove` to `add` (either may be None) for issue `issue`'s public loop, as
     the bot through `safety_guard.label_bot_run`; a label created the first
@@ -1455,17 +1414,17 @@ def set_fix_label(number: int, *, add: str | None, remove: str | None, issue: in
     if int(number) != int(issue):
         base["pr"] = int(number)
 
-    def attempt(token: str) -> dict[str, object]:
+    def attempt() -> dict[str, object]:
         if remove and remove != add:
-            r = safety_guard.label_bot_run("remove", remove, token, number=int(number))
+            r = safety_guard.label_bot_run("remove", remove, number=int(number))
             if r.returncode != 0 and "HTTP 404" not in (r.stderr or ""):
                 return {"status": "error",
                         "detail": f"removing {remove!r} from #{number} failed: {_gh_api_error(r)}"}
         if add:
-            missing = _ensure_fix_label(add, token)
+            missing = _ensure_fix_label(add)
             if missing:
                 return {"status": "error", "detail": missing}
-            r = safety_guard.label_bot_run("add", add, token, number=int(number))
+            r = safety_guard.label_bot_run("add", add, number=int(number))
             if r.returncode != 0:
                 return {"status": "error",
                         "detail": f"labelling #{number} {add!r} failed: {_gh_api_error(r)}"}
@@ -1474,7 +1433,7 @@ def set_fix_label(number: int, *, add: str | None, remove: str | None, issue: in
 
     preview = (f"would label #{number} {add!r}" if add
                else f"would take {remove!r} off #{number}")
-    return _bot_write("issue-fix-label", base, token=token, dry_run=dry_run, preview=preview,
+    return _bot_write("issue-fix-label", base, dry_run=dry_run, preview=preview,
                       attempt=attempt, failure="setting the status label failed unexpectedly")
 
 
@@ -1489,7 +1448,7 @@ def _bot_commented_with(number: int, marker: str) -> bool:
 
 
 def post_fix_comment(number: int, body: str, *, marker: str, issue: int, comment_kind: str,
-                     token: str | None, dry_run: bool = True) -> dict:
+                     dry_run: bool = True) -> dict:
     """Post issue `issue`'s public-loop comment `body` (kind `comment_kind`) on
     issue or pull request `number`, as the bot, unless a bot comment carrying
     `marker` is already there. With no token every run is a dry-run. Logged to
@@ -1499,18 +1458,18 @@ def post_fix_comment(number: int, body: str, *, marker: str, issue: int, comment
     if int(number) != int(issue):
         base["pr"] = int(number)
 
-    def attempt(token: str) -> dict[str, object]:
+    def attempt() -> dict[str, object]:
         if _bot_commented_with(number, marker):
             return {"status": "exists", "detail": f"the {comment_kind} comment is on #{number}"}
         r = bot_run(["gh", "api", f"repos/{settings.repo()}/issues/{int(number)}/comments",
-                     "-f", f"body={body}"], token)
+                     "-f", f"body={body}"])
         if r.returncode != 0:
             return {"status": "error", "detail": _gh_api_error(r) or f"gh exited {r.returncode}"}
         url = (json.loads(r.stdout or "{}") or {}).get("html_url")
         return {"status": "executed",
                 "detail": f"posted the {comment_kind} comment on #{number}", "url": url}
 
-    return _bot_write("issue-fix-comment", base, token=token, dry_run=dry_run,
+    return _bot_write("issue-fix-comment", base, dry_run=dry_run,
                       preview=f"would post the {comment_kind} comment on #{number}",
                       attempt=attempt, failure="posting the comment failed unexpectedly")
 
@@ -1538,7 +1497,7 @@ def auto_close_gate(n: int) -> str | None:
 
 
 def auto_close_issue(n: int, *, kind: str, reason: str, body: str, marker: str,
-                     token: str | None, dry_run: bool) -> dict:
+                     dry_run: bool) -> dict:
     """Close issue `n` unattended (`issue_triage.close_out`), as the bot: post
     `body` unless a bot comment ending in `marker` is there, then close it with
     `reason` through `safety_guard.close_bot_run`. Gated live, dry-runs too, on
@@ -1554,48 +1513,48 @@ def auto_close_issue(n: int, *, kind: str, reason: str, body: str, marker: str,
         return _log("issue-close", {**base, "status": "error" if held == UNANSWERED else "blocked",
                                     "detail": f"auto-close gate: {held}"}, dry_run=dry_run)
 
-    def attempt(token: str) -> dict[str, object]:
+    def attempt() -> dict[str, object]:
         if not _bot_commented_with(n, marker):
             r = bot_run(["gh", "api", f"repos/{settings.repo()}/issues/{int(n)}/comments",
-                         "-f", f"body={body}"], token)
+                         "-f", f"body={body}"])
             if r.returncode != 0:
                 return {"status": "error", "detail": "comment failed: "
                         + (_gh_api_error(r) or f"gh exited {r.returncode}")}
-        r = safety_guard.close_bot_run(int(n), reason, token)
+        r = safety_guard.close_bot_run(int(n), reason)
         if r.returncode != 0:
             return {"status": "error", "detail": "close failed: "
                     + (_gh_api_error(r) or f"gh exited {r.returncode}")}
         return {"status": "executed", "detail": f"commented and closed #{n} ({kind})"}
 
-    return _bot_write("issue-close", base, token=token, dry_run=dry_run,
+    return _bot_write("issue-close", base, dry_run=dry_run,
                       preview=f"would comment and close #{n} ({kind})", attempt=attempt,
                       failure="the unattended close failed unexpectedly",
                       on_success=lambda _res: issues_mod.reflect_issue_state(
                           n, "closed", reason.replace("_", " ")))
 
 
-def hand_back_comment(n: int, body: str, *, marker: str, token: str | None,
+def hand_back_comment(n: int, body: str, *, marker: str,
                       dry_run: bool) -> dict:
     """Post an autofix hand-back `body` on PR `n` as the bot, unless a bot
     comment ending in `marker` is already there. Logged to Activity."""
     base: dict = {"pr": int(n), "action": "AUTOFIX_HANDBACK"}
 
-    def attempt(token: str) -> dict[str, object]:
+    def attempt() -> dict[str, object]:
         if _bot_commented_with(n, marker):
             return {"status": "exists", "detail": f"the hand-back comment is on #{n}"}
         r = bot_run(["gh", "api", f"repos/{settings.repo()}/issues/{int(n)}/comments",
-                     "-f", f"body={body}"], token)
+                     "-f", f"body={body}"])
         if r.returncode != 0:
             return {"status": "error", "detail": _gh_api_error(r) or f"gh exited {r.returncode}"}
         return {"status": "executed", "detail": f"asked the author of #{n} to take it",
                 "event_url": _html_url(r.stdout)}
 
-    return _bot_write("autofix-handback", base, token=token, dry_run=dry_run,
+    return _bot_write("autofix-handback", base, dry_run=dry_run,
                       preview=f'would comment on #{n}: "{body[:80]}…"',
                       attempt=attempt, failure="posting the hand-back comment failed unexpectedly")
 
 
-def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -> dict:
+def ask_issue_question(issue: int, *, dry_run: bool = True) -> dict:
     """Ask issue `issue` the question its last lane run's dispute raised, as a
     bot comment. The run must pass `issue_gates.question_gate` and the rendered
     comment `dispute_question.problems`. The drafted question is kept beside the
@@ -1660,13 +1619,13 @@ def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -
     if problems:
         return done("blocked", "rendering: " + "; ".join(problems), dry=dry_run)
     preview = f"would ask: {question['question'][:200]}"
-    if dry_run or not token:
+    if dry_run or not bot_token.available():
         return _dry_run("issue-question", {**base_res, "body": body}, preview,
-                        token=token, dry_run=dry_run)
+                        dry_run=dry_run)
 
-    def attempt(token: str) -> dict[str, object]:
+    def attempt() -> dict[str, object]:
         r = bot_run(["gh", "issue", "comment", str(issue), "--repo", settings.repo(),
-                     "--body", body], token)
+                     "--body", body])
         if r.returncode != 0:
             return {"status": "error",
                     "detail": (r.stderr or "").strip()[-300:] or f"gh exited {r.returncode}"}
@@ -1679,6 +1638,6 @@ def ask_issue_question(issue: int, *, token: str | None, dry_run: bool = True) -
         path.write_text(dispute_question.dumps(saved))
         verify_gc.hold(record["base_sha"])
 
-    return _bot_write("issue-question", base_res, token=token, dry_run=dry_run, preview=preview,
+    return _bot_write("issue-question", base_res, dry_run=dry_run, preview=preview,
                       attempt=attempt, failure="asking the question failed unexpectedly",
                       on_success=remember)

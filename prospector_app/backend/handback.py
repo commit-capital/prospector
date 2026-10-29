@@ -204,18 +204,17 @@ def deliver(rec: Pr, req: dict, kind: str, paths: list[str]) -> dict:
                "mode": settings.fix_handback()}
     if step["do"] == "skip":
         return outcome
-    token = executor.mint_bot_token()
     dry_run = settings.fix_handback() != "live"
     if step["do"] == "close":
         res = executor.execute_pr(
             rec.number, models.CloseAction(action="CLOSE_STALE",
                                            comment=close_body(kind, step["author"], paths),
                                            reason="autofix hand-back: author silent"),
-            token=token, dry_run=dry_run)
+            dry_run=dry_run)
     else:
         res = executor.hand_back_comment(rec.number,
                                          comment_body(kind, step["author"], paths, head),
-                                         marker=marker(head), token=token, dry_run=dry_run)
+                                         marker=marker(head), dry_run=dry_run)
     return {**outcome, "status": res.get("status"), "detail": res.get("detail")}
 
 

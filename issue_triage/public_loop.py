@@ -71,6 +71,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from pipeline import bot_token
 from issue_triage import (
     fetch_issues,
     fix_review,
@@ -477,18 +478,17 @@ def ask_triage(issue: Issue, record: dict) -> str:
                                            gaps=record.get("gaps"))
     if public_comments.problems(body):
         return "refused"
-    token = executor.mint_bot_token() if mode == "live" else None
     res = executor.post_fix_comment(issue.number, body,
                                     marker=public_comments.marker(issue.number, key),
                                     issue=issue.number, comment_kind="triage-question",
-                                    token=token, dry_run=mode != "live")
+                                    dry_run=mode != "live")
     status = res.get("status")
     return ("posted" if status in ("executed", "exists")
             else "dry-run" if status == "dry-run" else "error")
 
 
-def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
-               host: str, now: datetime) -> bool:
+def sync_issue(store: IssueStore, issue: Issue, *, mode: str, host: str,
+               now: datetime) -> bool:
     """Bring GitHub in line with issue `issue`'s attempt. Whether it wrote, or
     in dry-run noted, anything."""
     from prospector_app.backend import executor
@@ -511,7 +511,7 @@ def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
                             "so the two likely run different code or settings.")
         for number, (add, remove) in sorted(work.labels.items()):
             res = executor.set_fix_label(number, add=add, remove=remove, issue=n,
-                                         token=token, dry_run=dry)
+                                         dry_run=dry)
             if res.get("status") not in ("executed", "dry-run"):
                 failed = str(res.get("detail") or "the label write failed")
                 break
@@ -529,7 +529,7 @@ def sync_issue(store: IssueStore, issue: Issue, *, mode: str, token: str | None,
                 continue
             res = executor.post_fix_comment(
                 due.number, due.body, marker=public_comments.marker(n, due.key), issue=n,
-                comment_kind=due.kind, token=token, dry_run=dry)
+                comment_kind=due.kind, dry_run=dry)
             if res.get("status") not in ("executed", "exists", "dry-run"):
                 failed = str(res.get("detail") or "the comment failed")
                 break
@@ -567,17 +567,13 @@ def sync(store: IssueStore, *, mode: str | None = None,
          now: datetime | None = None) -> int:
     """Bring GitHub in line with every in-scope issue's attempt, as
     `settings.issue_fix_public` allows. Returns how many issues it acted on."""
-    from prospector_app.backend import executor
 
     mode = mode or settings.issue_fix_public()
     if mode == "off":
         return 0
     now = now or datetime.now(timezone.utc)
-    token = None
-    if mode == "live":
-        token = executor.mint_bot_token()
-        if not token:
-            return 0
+    if mode == "live" and not bot_token.available():
+        return 0
     host = settings.worker_id()
     acted = 0
     for issue in store.fix_issues().values():
@@ -587,8 +583,7 @@ def sync(store: IssueStore, *, mode: str | None = None,
                 and (issue.fix_run or {}).get("ending") != "fixed"):
             continue
         try:
-            acted += sync_issue(store, issue, mode=issue_mode(issue, mode), token=token,
-                                host=host, now=now)
+            acted += sync_issue(store, issue, mode=issue_mode(issue, mode), host=host, now=now)
         except Exception:
             traceback.print_exc()
     return acted

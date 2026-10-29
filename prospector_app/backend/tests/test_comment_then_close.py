@@ -23,14 +23,14 @@ def _call(**kw) -> dict:
     return executor._comment_then_close(
         7, base={"pr": 7, "action": "CLOSE"}, idempotency_key="marker",
         comment_argv=["gh", "pr", "comment", "7"], close_argv=["gh", "pr", "close", "7"],
-        token="tok", log_verb="execute", **kw)
+        log_verb="execute", **kw)
 
 
 # --- every exit is logged (the trust model requires every write attempt recorded) ---
 
 def test_comment_failure_is_recorded(monkeypatch):
     monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Res(1, "rate limited"))
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: _Res(1, "rate limited"))
     recorded = _capture_activity(monkeypatch)
     res = _call()
     assert res["status"] == "error" and "comment failed" in res["detail"]
@@ -40,7 +40,7 @@ def test_comment_failure_is_recorded(monkeypatch):
 def test_close_failure_is_recorded(monkeypatch):
     monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
     monkeypatch.setattr(executor, "bot_run",
-                        lambda argv, token, **kw: _Res(0) if "comment" in argv else _Res(1, "boom"))
+                        lambda argv, **kw: _Res(0) if "comment" in argv else _Res(1, "boom"))
     recorded = _capture_activity(monkeypatch)
     res = _call()
     assert res["status"] == "error" and "close failed" in res["detail"]
@@ -50,7 +50,7 @@ def test_close_failure_is_recorded(monkeypatch):
 def test_exception_is_recorded(monkeypatch):
     monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
 
-    def _boom(argv, token, **kw):
+    def _boom(argv, **kw):
         raise RuntimeError("token revoked")
 
     monkeypatch.setattr(executor, "bot_run", _boom)
@@ -63,7 +63,7 @@ def test_exception_is_recorded(monkeypatch):
 
 def test_success_records_and_runs_on_success(monkeypatch):
     monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Res(0))
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: _Res(0))
     recorded = _capture_activity(monkeypatch)
     ran = []
     res = _call(on_success=lambda: ran.append(True))
@@ -74,7 +74,7 @@ def test_success_records_and_runs_on_success(monkeypatch):
 def test_existing_matching_comment_is_not_reposted(monkeypatch):
     monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: True)
     calls = []
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: (calls.append(argv), _Res(0))[1])
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: (calls.append(argv), _Res(0))[1])
     _capture_activity(monkeypatch)
     res = _call()
     assert res["detail"] == "comment-exists + closed"
@@ -84,7 +84,7 @@ def test_existing_matching_comment_is_not_reposted(monkeypatch):
 def test_event_url_is_opt_in(monkeypatch):
     """Issue closes don't carry event_url; the PR close does."""
     monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Res(0, stdout="https://x/#c1"))
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: _Res(0, stdout="https://x/#c1"))
     _capture_activity(monkeypatch)
     assert "event_url" not in _call()
     assert _call(capture_event_url=True)["event_url"] == "https://x/#c1"
@@ -98,7 +98,7 @@ def test_on_success_failure_keeps_status_executed_and_still_records(monkeypatch)
     carrying the failure as `bookkeeping_error` — and the activity entry must
     still be written, so the audit trail never silently loses a real write."""
     monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Res(0))
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: _Res(0))
     recorded = _capture_activity(monkeypatch)
 
     def boom():
@@ -114,7 +114,7 @@ def test_on_success_failure_keeps_status_executed_and_still_records(monkeypatch)
 
 def test_activity_failure_after_close_keeps_status_executed(monkeypatch):
     monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Res(0))
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: _Res(0))
 
     def record_boom(verb, **k):
         raise RuntimeError("activity insert failed")
@@ -129,7 +129,7 @@ def test_error_result_survives_a_failed_activity_record(monkeypatch):
     """A failed upstream write still returns its own error detail when the
     activity append itself fails — the log write never masks the real failure."""
     monkeypatch.setattr(executor, "_has_bot_comment", lambda n, contains=None: False)
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Res(1, "rate limited"))
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: _Res(1, "rate limited"))
 
     def record_boom(verb, **k):
         raise RuntimeError("log down")
@@ -156,6 +156,7 @@ def test_comment_marker_is_a_verbatim_substring_of_the_first_line():
 def test_execute_pr_posts_its_comment_despite_an_unrelated_bot_comment(monkeypatch):
     """A prior bot comment on the PR — e.g. the "@greptileai" re-trigger — must not
     suppress the closing comment, or the PR gets closed with no explanation."""
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     monkeypatch.setattr(data, "pr_to_clusters", lambda: {123: [5]})
     monkeypatch.setattr(data, "prs", lambda: {123: {"meta": {}}})
     monkeypatch.setattr(executor, "_pr_live", lambda n: None)  # preflight fail-open
@@ -165,9 +166,9 @@ def test_execute_pr_posts_its_comment_despite_an_unrelated_bot_comment(monkeypat
     monkeypatch.setattr(executor, "_has_bot_comment",
                         lambda n, contains=None: contains is None or contains in "@greptileai")
     calls = []
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: (calls.append(argv), _Res(0))[1])
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: (calls.append(argv), _Res(0))[1])
 
-    res = executor.execute_pr(123, models.CloseAction(action="CLOSE"), token="tok", dry_run=False)
+    res = executor.execute_pr(123, models.CloseAction(action="CLOSE"), dry_run=False)
     assert res["status"] == "executed"
     assert res["detail"] == "commented + closed", "the closing comment must still be posted"
     assert any("comment" in c for c in calls)

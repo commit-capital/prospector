@@ -56,7 +56,7 @@ def test_the_guard_refuses_any_other_proposal(payload, why):
 def test_the_propose_write_refuses_without_a_token(monkeypatch):
     monkeypatch.setattr(sg.subprocess, "run", lambda *a, **k: pytest.fail("must not run"))
     with pytest.raises(sg.WriteAttemptBlocked, match="without a"):
-        sg.propose_bot_run(_payload(), "")
+        sg.propose_bot_run(_payload())
 
 
 def test_the_propose_write_posts_the_payload_as_the_bot(monkeypatch):
@@ -68,7 +68,8 @@ def test_the_propose_write_posts_the_payload_as_the_bot(monkeypatch):
         return subprocess.CompletedProcess(argv, 0, "{}", "")
 
     monkeypatch.setattr(sg.subprocess, "run", fake_run)
-    sg.propose_bot_run(_payload(), "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
+    sg.propose_bot_run(_payload())
     assert seen["argv"][:5] == ["gh", "api", "--method", "POST",
                                 f"repos/{sg.settings.repo()}/pulls"]
     assert seen["payload"] == _payload() and seen["token"] == "tok"
@@ -107,7 +108,7 @@ def lane(monkeypatch):
 
     monkeypatch.setattr(propose, "push_revision", fake_revision)
 
-    def fake_edit(argv, token):
+    def fake_edit(argv, **kw):
         state["edits"].append(argv)
         if "--body-file" in argv:
             with open(argv[argv.index("--body-file") + 1]) as fh:
@@ -134,7 +135,7 @@ def lane(monkeypatch):
 
     monkeypatch.setattr(propose, "push_fix", fake_push)
 
-    def fake_post(payload, token):
+    def fake_post(payload):
         state["posts"].append(payload)
         return subprocess.CompletedProcess([], 0, json.dumps(
             {"number": 42, "html_url": "https://github.com/up/proj/pull/42"}), "")
@@ -145,8 +146,9 @@ def lane(monkeypatch):
     return state
 
 
-def test_a_live_proposal_pushes_opens_and_logs(lane):
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+def test_a_live_proposal_pushes_opens_and_logs(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "executed" and res["pr"] == 42
     assert lane["pushes"][0]["dry_run"] is False
     assert lane["posts"][0]["head"] == HEAD
@@ -156,11 +158,12 @@ def test_a_live_proposal_pushes_opens_and_logs(lane):
     assert event["dry_run"] is False and event["pr"] == 42
 
 
-def test_a_partial_fix_is_proposed_without_closing_the_issue(lane):
+def test_a_partial_fix_is_proposed_without_closing_the_issue(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     lane["record"]["result"]["reviews"][0]["coverage"].append(
         {"defect": "cancel after a restart returns 200", "status": "not-addressed",
          "evidence": "the cancellable states exclude submitting"})
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "executed"
     body = lane["posts"][0]["body"]
     assert "Fixes #7" not in body and "Addresses part of #7" in body
@@ -169,14 +172,15 @@ def test_a_partial_fix_is_proposed_without_closing_the_issue(lane):
 
 
 def test_without_a_token_a_live_request_is_a_dry_run(lane):
-    res = executor.propose_issue_fix(7, token=None, dry_run=False)
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "dry-run" and res["forced"] is True
     assert lane["pushes"][0]["dry_run"] is True and lane["posts"] == []
 
 
-def test_a_run_the_gate_refuses_is_blocked_before_any_push(lane):
+def test_a_run_the_gate_refuses_is_blocked_before_any_push(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     lane["live"] = {**lane["live"], "state": "closed"}
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "blocked" and "closed" in res["detail"]
     assert lane["pushes"] == [] and lane["events"][0][0] == "issue-propose"
 
@@ -190,99 +194,112 @@ def _branch(attempt: int) -> str:
     return HEAD if attempt == 1 else f"{HEAD}-{attempt}"
 
 
-def test_the_first_proposal_of_a_report_opens_from_its_first_branch(lane):
-    executor.propose_issue_fix(7, token="tok", dry_run=False)
+def test_the_first_proposal_of_a_report_opens_from_its_first_branch(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
+    executor.propose_issue_fix(7, dry_run=False)
     assert lane["pushes"][0]["attempt"] == 1 and lane["posts"][0]["head"] == HEAD
 
 
-def test_a_lane_branch_with_an_open_pull_request_is_reported_not_reopened(lane):
+def test_a_lane_branch_with_an_open_pull_request_is_reported_not_reopened(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     lane["existing"] = {_branch(1): [_closed(41)],
                         _branch(2): [{"number": 43, "state": "open", "merged_at": None,
                                       "html_url": "u"}]}
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "exists" and "#43" in res["detail"] and res["pr"] == 43
     assert lane["pushes"] == [] and lane["posts"] == []
 
 
-def test_a_lane_branch_whose_pull_request_merged_is_refused(lane):
+def test_a_lane_branch_whose_pull_request_merged_is_refused(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     lane["existing"] = {_branch(1): [_closed(41, merged_at="t")]}
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "blocked" and "#41" in res["detail"] and "merged" in res["detail"]
     assert lane["pushes"] == [] and lane["posts"] == []
 
 
-def test_a_closed_proposal_passes_the_next_one_to_the_next_branch(lane):
+def test_a_closed_proposal_passes_the_next_one_to_the_next_branch(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     lane["existing"] = {_branch(1): [_closed(41)], _branch(2): [_closed(44)]}
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "executed" and res["pr"] == 42
     assert lane["pushes"][0]["attempt"] == 3
     assert lane["posts"][0]["head"] == f"{HEAD}-3"
 
 
-def test_a_report_whose_every_branch_was_closed_is_proposed_no_more(lane):
+def test_a_report_whose_every_branch_was_closed_is_proposed_no_more(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     lane["existing"] = {_branch(k): [_closed(40 + k)]
                         for k in range(1, propose.MAX_ATTEMPTS + 1)}
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "blocked" and "#41" in res["detail"] and "#49" in res["detail"]
     assert lane["pushes"] == [] and lane["posts"] == []
 
 
-def test_unreadable_lane_branch_pull_requests_block_a_proposal(lane):
+def test_unreadable_lane_branch_pull_requests_block_a_proposal(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     lane["existing"] = None
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "blocked" and "cannot be read" in res["detail"]
     assert lane["pushes"] == [] and lane["posts"] == []
 
 
 def test_a_refused_push_opens_nothing(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     def refuse(**kw):
         raise propose.ProposeRefused("the fork cannot be read")
 
     monkeypatch.setattr(propose, "push_fix", refuse)
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "blocked" and "fork cannot be read" in res["detail"]
     assert lane["posts"] == []
 
 
 def test_a_failed_open_names_github_s_own_reason(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     body = ('{"message":"Validation Failed","errors":[{"resource":"PullRequest",'
             '"code":"custom","message":"fork_collab can\'t be granted"}]}')
     monkeypatch.setattr(sg, "propose_bot_run",
-                        lambda p, t: subprocess.CompletedProcess([], 1, body, "gh: 422"))
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+                        lambda p: subprocess.CompletedProcess([], 1, body, "gh: 422"))
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert "Validation Failed; fork_collab can't be granted" in res["detail"]
 
 
 def test_a_failed_open_after_a_push_is_an_error_naming_the_branch(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     monkeypatch.setattr(sg, "propose_bot_run",
-                        lambda p, t: subprocess.CompletedProcess([], 1, "", "Validation Failed"))
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+                        lambda p: subprocess.CompletedProcess([], 1, "", "Validation Failed"))
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "error" and "Validation Failed" in res["detail"]
     assert "prospector/issue-7-" in res["detail"]
 
 
-def test_an_open_pull_request_on_the_issue_is_listed_beside_ours(lane):
+def test_an_open_pull_request_on_the_issue_is_listed_beside_ours(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     lane["related"] = [{"number": 40, "title": "fix x", "state": "open", "author": "a",
                         "closes": True}]
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "executed"
     assert "- #40 (open): fix x" in lane["posts"][0]["body"]
 
 
-def test_a_search_that_did_not_answer_blocks_a_proposal(lane):
+def test_a_search_that_did_not_answer_blocks_a_proposal(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     lane["related"] = None
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "blocked" and "did not answer" in res["detail"]
 
 
-def test_the_proposal_lists_closed_pull_requests_the_search_found(lane):
+def test_the_proposal_lists_closed_pull_requests_the_search_found(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     lane["related"] = [{"number": 40, "title": "old try", "state": "closed", "author": "a"}]
-    executor.propose_issue_fix(7, token="tok", dry_run=False)
+    executor.propose_issue_fix(7, dry_run=False)
     assert "- #40 (closed): old try" in lane["posts"][0]["body"]
 
 
-def test_an_update_pushes_the_revision_on_the_head_the_pull_request_shows(lane):
-    res = executor.update_issue_fix_proposal(7, 9, push=True, token="tok", dry_run=False)
+def test_an_update_pushes_the_revision_on_the_head_the_pull_request_shows(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
+    res = executor.update_issue_fix_proposal(7, 9, push=True, dry_run=False)
     assert res["status"] == "executed"
     assert lane["revisions"][0]["expected_head"] == "b" * 40
     assert lane["revisions"][0]["dry_run"] is False
@@ -291,45 +308,50 @@ def test_an_update_pushes_the_revision_on_the_head_the_pull_request_shows(lane):
     assert lane["events"][-1][1]["action"] == "UPDATE"
 
 
-def test_an_update_follows_the_numbered_branch_its_pull_request_is_open_from(lane):
+def test_an_update_follows_the_numbered_branch_its_pull_request_is_open_from(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     lane["pr"]["head"]["ref"] = f"prospector/issue-7-{REPORT[:8]}-2"
-    res = executor.update_issue_fix_proposal(7, 9, push=True, token="tok", dry_run=False)
+    res = executor.update_issue_fix_proposal(7, 9, push=True, dry_run=False)
     assert res["status"] == "executed" and lane["revisions"][0]["attempt"] == 2
 
 
-def test_an_update_to_a_pull_request_from_another_branch_is_refused(lane):
+def test_an_update_to_a_pull_request_from_another_branch_is_refused(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     lane["pr"] = {**lane["pr"], "head": {**lane["pr"]["head"], "ref": "someone/else"}}
-    res = executor.update_issue_fix_proposal(7, 9, push=True, token="tok", dry_run=False)
+    res = executor.update_issue_fix_proposal(7, 9, push=True, dry_run=False)
     assert res["status"] == "blocked" and lane["revisions"] == [] and lane["edits"] == []
 
 
 def test_an_update_without_a_token_writes_nothing(lane):
-    res = executor.update_issue_fix_proposal(7, 9, push=True, token=None, dry_run=False)
+    res = executor.update_issue_fix_proposal(7, 9, push=True, dry_run=False)
     assert res["status"] == "dry-run" and res["forced"] is True
     assert lane["revisions"][0]["dry_run"] is True and lane["edits"] == []
 
 
-def test_a_description_already_current_is_left_alone(lane):
-    executor.update_issue_fix_proposal(7, 9, push=False, token="tok", dry_run=False)
+def test_a_description_already_current_is_left_alone(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
+    executor.update_issue_fix_proposal(7, 9, push=False, dry_run=False)
     lane["pr"] = {**lane["pr"], "body": lane["bodies"][-1]}
-    res = executor.update_issue_fix_proposal(7, 9, push=False, token="tok", dry_run=False)
+    res = executor.update_issue_fix_proposal(7, 9, push=False, dry_run=False)
     assert res["status"] == "unchanged" and len(lane["edits"]) == 1
 
 
-def test_a_rerun_re_runs_only_the_failed_jobs_as_the_bot(lane):
-    res = executor.rerun_issue_fix_checks(7, 9, [11, 12], token="tok", dry_run=False)
+def test_a_rerun_re_runs_only_the_failed_jobs_as_the_bot(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
+    res = executor.rerun_issue_fix_checks(7, 9, [11, 12], dry_run=False)
     assert res["status"] == "executed"
     assert [e[:5] for e in lane["edits"]] == [["gh", "run", "rerun", "11", "--failed"],
                                               ["gh", "run", "rerun", "12", "--failed"]]
 
 
 def test_a_proposal_credits_the_rival_whose_test_changed_the_fix(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     from issue_triage import second_opinion
     monkeypatch.setattr(second_opinion, "co_author",
                         lambda login: f"{login} <123+{login}@users.noreply.github.com>")
     lane["record"]["result"]["second_opinion"] = [
         {"pr": 12, "author": "contrib", "verdict": "gap-closed", "why": "w"}]
-    res = executor.propose_issue_fix(7, token="tok", dry_run=False)
+    res = executor.propose_issue_fix(7, dry_run=False)
     assert res["status"] == "executed"
     assert lane["pushes"][0]["message"].endswith(
         "Co-authored-by: contrib <123+contrib@users.noreply.github.com>\n")
@@ -337,12 +359,13 @@ def test_a_proposal_credits_the_rival_whose_test_changed_the_fix(lane, monkeypat
 
 
 def test_a_revision_credits_the_rival_whose_test_it_answers(lane, monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     from issue_triage import second_opinion
     monkeypatch.setattr(second_opinion, "co_author",
                         lambda login: f"{login} <123+{login}@users.noreply.github.com>")
     lane["record"]["result"]["second_opinion"] = [
         {"pr": 12, "author": "contrib", "verdict": "gap-closed", "why": "w"}]
-    res = executor.update_issue_fix_proposal(7, 9, push=True, token="tok", dry_run=False)
+    res = executor.update_issue_fix_proposal(7, 9, push=True, dry_run=False)
     assert res["status"] == "executed"
     assert lane["revisions"][0]["message"].endswith(
         "Co-authored-by: contrib <123+contrib@users.noreply.github.com>\n")
@@ -350,6 +373,7 @@ def test_a_revision_credits_the_rival_whose_test_it_answers(lane, monkeypatch):
 
 def test_a_fix_approved_as_partial_is_re_described_without_closing_the_issue(lane, tmp_path,
                                                                              monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     from issue_triage.issue_store import IssueStore
     from prospector_app.backend import issue_data
     store = IssueStore(tmp_path / "issues")
@@ -360,7 +384,7 @@ def test_a_fix_approved_as_partial_is_re_described_without_closing_the_issue(lan
     store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "approved": {
         "by": "op", "judged": None, "partial": True}})
     monkeypatch.setattr(issue_data, "store", lambda: store)
-    res = executor.update_issue_fix_proposal(7, 9, push=False, token="tok", dry_run=False)
+    res = executor.update_issue_fix_proposal(7, 9, push=False, dry_run=False)
     assert res["status"] == "executed"
     body = lane["bodies"][-1]
     assert "Fixes #7" not in body and "Addresses part of #7" in body

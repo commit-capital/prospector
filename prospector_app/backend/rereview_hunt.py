@@ -15,6 +15,7 @@ import threading
 import traceback
 from datetime import datetime, timedelta, timezone
 
+from pipeline import bot_token
 from pipeline import gates, review_policy, reviewers, settings, storekit
 from pipeline.freshness import is_current
 from pipeline.reviewers import Reviewer
@@ -92,8 +93,7 @@ def request_rereviews(limit: int = PER_PASS) -> list[int]:
     budget = settings.rereview_budget() - used_today(bookings, now)
     if budget <= 0:
         return []
-    token = executor.mint_bot_token()
-    if not token:
+    if not bot_token.available():
         print("[rereview] this machine cannot mint the bot token, so it asks for no "
               "re-reviews", flush=True)
         return []
@@ -106,7 +106,7 @@ def request_rereviews(limit: int = PER_PASS) -> list[int]:
         if requested(bookings, n, head):
             continue
         baseline = review_refresh.capture(n, r.id)
-        res = executor.retrigger_review(n, r.id, token=token, dry_run=False,
+        res = executor.retrigger_review(n, r.id, dry_run=False,
                                         initiator="worker")
         stamp = _now()
         data.store().append_run({

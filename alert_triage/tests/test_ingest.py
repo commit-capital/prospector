@@ -62,7 +62,7 @@ def test_fix_scan_survives_meta_rewrite(tmp_path):
 
 
 def _fake_fetch(monkeypatch, by_source: dict[str, list[dict]]) -> None:
-    monkeypatch.setattr(alert_ingest.config, "mint_token", lambda: "token")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "token")
     monkeypatch.setattr(alert_ingest.fetch_alerts, "fetch_source",
                         lambda source, token: by_source.get(source, []))
 

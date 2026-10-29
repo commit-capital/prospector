@@ -125,7 +125,7 @@ def test_close_issue_records_issue_close_kind(monkeypatch):
                         lambda kind, **kw: recorded.append((kind, kw)) or {})
     monkeypatch.setattr(issues_mod, "close_dup_gate", lambda n: (True, "ok"))
     res = executor.close_issue(7, models.IssueCloseDupBody(canonical=3, comment="dup of #3"),
-                               token=None, dry_run=True)
+                               dry_run=True)
     assert res["status"] == "dry-run"
     assert recorded and recorded[0][0] == "issue-close"
     assert recorded[0][1]["action"] == "CLOSE_ISSUE_DUP"
@@ -139,6 +139,7 @@ def test_issue_reopen_is_a_disjoint_kind():
 
 
 def test_reopen_issue_records_issue_reopen_kind(monkeypatch):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     from prospector_app.backend import issues as issues_mod
     recorded: list[tuple[str, dict]] = []
     monkeypatch.setattr(executor.activity, "record",
@@ -150,8 +151,8 @@ def test_reopen_issue_records_issue_reopen_kind(monkeypatch):
         returncode = 0
         stderr = ""
 
-    monkeypatch.setattr(executor, "bot_run", lambda argv, token, **kw: _Ok())
-    res = executor.reopen_issue(6, token="tok", dry_run=False)
+    monkeypatch.setattr(executor, "bot_run", lambda argv, **kw: _Ok())
+    res = executor.reopen_issue(6, dry_run=False)
     assert res["status"] == "reopened"
     assert recorded and recorded[0][0] == "issue-reopen"
 
@@ -163,7 +164,7 @@ def test_close_issue_fixed_records_issue_close_kind(monkeypatch):
                         lambda kind, **kw: recorded.append((kind, kw)) or {})
     monkeypatch.setattr(issues_mod, "close_fixed_gate", lambda n, fixed_by: (True, "ok"))
     res = executor.close_issue_fixed(8, models.IssueCloseFixedBody(fixed_by=42, comment="fixed by #42"),
-                                     token=None, dry_run=True)
+                                     dry_run=True)
     assert res["status"] == "dry-run"
     assert recorded and recorded[0][0] == "issue-close"
     assert recorded[0][1]["action"] == "CLOSE_ISSUE_FIXED"

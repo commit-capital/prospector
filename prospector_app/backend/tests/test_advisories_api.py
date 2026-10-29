@@ -144,9 +144,8 @@ def test_detail_carries_description_and_404s_on_unknown(seeded):
 
 def test_sources_available_probes_advisories(monkeypatch):
     from prospector_app.backend import alerts as alerts_mod
-    from prospector_app.backend import executor
     monkeypatch.setattr(alerts_mod, "_sources_cache", None)
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     seen: list[str] = []
 
     def fake_read(path, token, params=None, *, source=""):

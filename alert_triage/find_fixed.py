@@ -22,6 +22,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from pipeline import bot_token
 from alert_triage import alert_fixed_driver
 from alert_triage import config
 from alert_triage.alert_store import AlertStore
@@ -104,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     store = AlertStore(args.store) if args.store else AlertStore()
     started = storekit.now()
-    token = config.mint_token()
+    token = bot_token.get()
     tier0 = alert_fixed_driver.deterministic_fixed(
         store, path_exists=_path_prober(token) if token else None)
     if tier0:

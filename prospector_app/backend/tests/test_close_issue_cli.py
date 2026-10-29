@@ -21,29 +21,29 @@ def _load():
     return module
 
 
-def test_close_mints_token_then_uses_executor(monkeypatch, capsys):
+def test_close_uses_executor_as_the_bot(monkeypatch, capsys):
     cli = _load()
     seen = {}
 
-    def close(issue, action, *, token, dry_run):
-        seen.update(issue=issue, action=action, token=token, dry_run=dry_run)
+    def close(issue, action, *, dry_run):
+        seen.update(issue=issue, action=action, dry_run=dry_run)
         return {"issue": issue, "status": "executed", "action": "CLOSE_ISSUE_DUP"}
 
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "bot-token")
     monkeypatch.setattr(cli.executor, "close_issue_with_comment", close)
     rc = cli.main(["1883", "--disposition", "dup", "--canonical", "1800"])
 
     assert rc == 0
     assert seen["issue"] == 1883
-    assert seen["token"] == "bot-token" and seen["dry_run"] is False
+    assert seen["dry_run"] is False
     assert seen["action"] == models.IssueCloseBody(disposition="dup", canonical=1800)
     assert json.loads(capsys.readouterr().out)["status"] == "executed"
 
 
 def test_close_refuses_when_a_fresh_bot_token_cannot_be_minted(monkeypatch, capsys):
     cli = _load()
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: None)
-    monkeypatch.setattr(cli.executor, "mint_error", lambda: "key missing")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.last_error", lambda: "key missing")
     monkeypatch.setattr(
         cli.executor,
         "close_issue_with_comment",
@@ -55,7 +55,7 @@ def test_close_refuses_when_a_fresh_bot_token_cannot_be_minted(monkeypatch, caps
 
 def test_blocked_close_returns_failure_and_prints_the_result(monkeypatch, capsys):
     cli = _load()
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "bot-token")
     monkeypatch.setattr(
         cli.executor,
         "close_issue_with_comment",
@@ -71,11 +71,11 @@ def test_comment_file_carries_a_multiline_comment(monkeypatch, tmp_path):
     body = tmp_path / "why.md"
     body.write_text("Closing this one.\n\nSee #1800 for the tracked fix.\n")
 
-    def close(issue, action, *, token, dry_run):
+    def close(issue, action, *, dry_run):
         seen["action"] = action
         return {"issue": issue, "status": "executed", "action": "CLOSE_ISSUE"}
 
-    monkeypatch.setattr(cli.executor, "mint_bot_token", lambda: "bot-token")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "bot-token")
     monkeypatch.setattr(cli.executor, "close_issue_with_comment", close)
     rc = cli.main(["1883", "--disposition", "not-planned", "--comment-file", str(body)])
 

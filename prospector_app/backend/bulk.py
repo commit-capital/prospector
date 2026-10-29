@@ -5,7 +5,7 @@ Bulk is pure orchestration: it loops the selected PR numbers through the same
 per-PR executor, queue, and allowlisted-job paths used elsewhere in the app.
 Upstream writes retain their per-PR gates and activity-log entries, and local
 verification/security work retains its normal queue and job controls. Each
-blocking call (token minting, a store write, an upstream write) runs on a worker
+blocking call (a store write, an upstream write) runs on a worker
 thread, so the event loop keeps serving every other request and stream while a
 batch works.
 """
@@ -16,6 +16,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+from pipeline import bot_token
 from prospector_app.backend import executor
 from prospector_app.backend import jobs
 from prospector_app.backend import models
@@ -74,9 +75,6 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
         yield {"event": "error", "data": f"batch of {len(prs)} exceeds cap of {CAP}"}
         return
 
-    # Local background actions use no upstream token.
-    token = (None if dry_run or (action == "QUEUE_VERIFY" or action in _JOB_ACTIONS)
-             else await asyncio.to_thread(executor.mint_bot_token))
     summary: dict[str, int] = {}
     bookkeeping_errors: list[str] = []
     for n in prs:
@@ -97,7 +95,7 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
                 res = await asyncio.to_thread(
                     _apply, n, action, comment=pr_comment, canonical=canonical,
                     method=method, reason=reason, tags=tags, reviewer=reviewer,
-                    token=token, dry_run=dry_run)
+                    dry_run=dry_run)
         except Exception as e:  # one PR's failure never aborts the batch
             res = {"pr": n, "action": action, "status": "error", "detail": str(e)[:200]}
         status = res.get("status", "error")
@@ -112,7 +110,7 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
 
 def _apply(n: int, action: str, *, comment: str | None, canonical: int | None,
            method: str, reason: str | None, tags: list[str] | None,
-           reviewer: str | None, token: str | None, dry_run: bool) -> dict[str, Any]:
+           reviewer: str | None, dry_run: bool) -> dict[str, Any]:
     """Apply one PR's bulk action other than a `_JOB_ACTIONS` one, whose job
     is scheduled on the event loop."""
     if action == "QUEUE_VERIFY":
@@ -137,20 +135,20 @@ def _apply(n: int, action: str, *, comment: str | None, canonical: int | None,
             (r for r in review_policy.active_reviewers(reviewers.REVIEW)
              if r.retrigger_mention), None)
         rid = chosen.id if chosen is not None else ""
-        baseline = review_refresh.capture(n, rid) if token is not None and rid else None
-        res = executor.retrigger_review(n, rid, token=token, dry_run=dry_run)
+        baseline = review_refresh.capture(n, rid) if not dry_run and bot_token.available() and rid else None
+        res = executor.retrigger_review(n, rid, dry_run=dry_run)
         if res.get("status") == "executed" and baseline is not None:
             review_refresh.schedule(n, rid, baseline)
         return res
     if action in _REVIEW:
         return executor.submit_review(n, _REVIEW[action], comment or "",
-                                      token=token, dry_run=dry_run)
+                                      dry_run=dry_run)
     # CLOSE / CLOSE_DUP / CLOSE_FIXED / CLOSE_STALE / CLOSE_WONTFIX
     return executor.execute_pr(n, models.CloseAction(
         pr=n, action=action,
         canonical=canonical, comment=comment or None,
         reason=reason, tags=tags,
-    ), token=token, dry_run=dry_run)
+    ), dry_run=dry_run)
 
 
 def _merge_ok(res: dict[str, Any]) -> bool:
@@ -162,7 +160,7 @@ def _merge_ok(res: dict[str, Any]) -> bool:
             or (status == "blocked" and "already merged" in (res.get("detail") or "").lower()))
 
 
-def _run_cluster_item(item: models.ClusterItem, *, token: str | None, dry_run: bool) -> dict[str, Any]:
+def _run_cluster_item(item: models.ClusterItem, *, dry_run: bool) -> dict[str, Any]:
     """Dispatch one cluster item to the matching per-PR executor — normalizing its
     raw UI disposition to the executor vocabulary — and capture per-PR training data
     exactly as the single-PR endpoints do. One PR's failure never aborts the batch."""
@@ -176,7 +174,7 @@ def _run_cluster_item(item: models.ClusterItem, *, token: str | None, dry_run: b
             res = executor.merge_pr(n, item.method or "squash", dry_run=dry_run, reason=reason)
         elif action in _CLUSTER_REVIEW:
             res = executor.submit_review(n, action, comment or "",
-                                         token=token, dry_run=dry_run)
+                                         dry_run=dry_run)
         elif action in _CLUSTER_CLOSE:
             res = executor.execute_pr(n, models.CloseAction(
                 pr=n, action=_CLUSTER_CLOSE[action],
@@ -185,7 +183,7 @@ def _run_cluster_item(item: models.ClusterItem, *, token: str | None, dry_run: b
                 upstream_commit=item.upstream_commit,
                 upstream_date=item.upstream_date,
                 comment=comment or None, reason=reason, tags=tags,
-            ), token=token, dry_run=dry_run)
+            ), dry_run=dry_run)
         else:
             res = {"pr": n, "action": action, "status": "skipped",
                    "detail": f"unknown disposition: {action!r}"}
@@ -213,7 +211,6 @@ async def run_cluster(items: list[models.ClusterItem], *, dry_run: bool = True):
         yield {"event": "error", "data": f"batch of {len(items)} exceeds cap of {CAP}"}
         return
 
-    token = None if dry_run else await asyncio.to_thread(executor.mint_bot_token)
     summary: dict[str, int] = {}
     bookkeeping_errors: list[str] = []
 
@@ -230,7 +227,7 @@ async def run_cluster(items: list[models.ClusterItem], *, dry_run: bool = True):
     aborted: str | None = None
     merge_failed = False
     for item in merges:
-        res = await asyncio.to_thread(_run_cluster_item, item, token=token, dry_run=dry_run)
+        res = await asyncio.to_thread(_run_cluster_item, item, dry_run=dry_run)
         merge_failed = merge_failed or not _merge_ok(res)
         yield tally(res)
     if merge_failed and rest:
@@ -241,7 +238,7 @@ async def run_cluster(items: list[models.ClusterItem], *, dry_run: bool = True):
     else:
         for item in rest:
             yield tally(await asyncio.to_thread(_run_cluster_item, item,
-                                                token=token, dry_run=dry_run))
+                                                dry_run=dry_run))
     done: dict[str, Any] = {"summary": summary}
     if aborted:
         done["aborted"] = aborted

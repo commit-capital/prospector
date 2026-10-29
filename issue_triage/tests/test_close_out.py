@@ -58,7 +58,7 @@ def writes(monkeypatch):
         return {"status": "dry-run" if kw["dry_run"] else status["value"], "detail": "d"}
 
     monkeypatch.setattr(executor, "auto_close_issue", auto_close_issue)
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     monkeypatch.setattr(prove, "pinned", lambda st: BASE)
     return {"calls": calls, "status": status}
 
@@ -164,7 +164,7 @@ def test_a_close_with_evidence_comments_closes_and_records(store, writes, monkey
     assert _run(store) == [1]
     [call] = writes["calls"]
     assert call["kind"] == "not-in-repo" and call["reason"] == "not_planned"
-    assert call["dry_run"] is False and call["token"] == "tok"
+    assert call["dry_run"] is False
     assert call["marker"] == public_comments.marker(1, close_out.KEY)
     assert "does not appear to relate to this repository" in call["body"]
     issue = store.load_issue(1)
@@ -205,10 +205,8 @@ def test_a_failed_write_retries_without_checking_again(store, writes, monkeypatc
 
 
 def test_a_live_pass_without_the_bots_token_closes_nothing(store, writes, monkeypatch):
-    from prospector_app.backend import executor
-
     seen = _evidence(monkeypatch)
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     assert _run(store) == [] and seen == [] and writes["calls"] == []
     assert close_out.candidate(store.load_issue(1), "live") == "not-in-repo"
 
@@ -281,7 +279,7 @@ def test_a_dry_run_records_apart_and_writes_nothing(store, writes, monkeypatch):
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_PUBLIC", "dry-run")
     _run(store)
     [call] = writes["calls"]
-    assert call["dry_run"] is True and call["token"] is None
+    assert call["dry_run"] is True
     pub = store.load_issue(1).fix_public
     assert "closed" not in pub and pub["dry"]["closed"]["kind"] == "not-in-repo"
     assert store.load_issue(1).fix_thread[-1]["text"] == "Dry run: would close this as not-in-repo."

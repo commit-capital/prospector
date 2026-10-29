@@ -154,7 +154,7 @@ def test_stopped_turn_flags_reground(temp_store, tmp_path, monkeypatch):
     """After Stop, the next turn re-grounds from the persisted transcript."""
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
 
     class FakeProc:
@@ -215,7 +215,7 @@ def _gated_proc(release: asyncio.Event, session: str):
 def _turn_setup(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
     monkeypatch.setattr(chat, "_build_context", lambda *a, **k: "SUBJECT-CONTEXT")
 
@@ -285,7 +285,7 @@ def test_reground_turn_reinjects_context_and_replay_without_resume(
     prior transcript, and starts a FRESH session (no `-r` of the dead one)."""
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
     monkeypatch.setattr(chat, "_build_context", lambda *a, **k: "SUBJECT-CONTEXT-6744")
 
@@ -331,7 +331,7 @@ def test_turn_store_work_leaves_the_event_loop_free(temp_store, tmp_path, monkey
     stream and every other request keep moving while a turn starts and ends."""
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
     save = chat._save
     load = chat.load_thread

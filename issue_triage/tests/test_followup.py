@@ -336,13 +336,13 @@ def test_a_fixed_follow_up_revision_goes_onto_the_same_pull_request(store, monke
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_FOLLOWUP", "live")
     monkeypatch.setattr(fix_review_runner, "revise", lambda *a, **k: {
         "ending": "fixed", "detail": "ok", "result": {"patch": REVISED}})
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "t")
     calls = []
     monkeypatch.setattr(executor, "update_issue_fix_proposal",
                         lambda n, pr, **kw: calls.append((n, pr, kw)) or {
                             "status": "executed", "detail": "Pushed a revision on #9"})
     out = _run_follow_up(store)
-    assert calls == [(7, 9, {"push": True, "token": "t", "dry_run": False})]
+    assert calls == [(7, 9, {"push": True, "dry_run": False})]
     assert out.startswith("Revised #9")
     assert store.load_issue(7).fix_run["proposal"] == {"pr": 9, "url": "u"}
 
@@ -350,7 +350,7 @@ def test_a_fixed_follow_up_revision_goes_onto_the_same_pull_request(store, monke
 def _pushes(monkeypatch) -> None:
     from prospector_app.backend import executor
     monkeypatch.setenv("TRIAGE_ISSUE_FIX_FOLLOWUP", "live")
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "t")
     monkeypatch.setattr(executor, "update_issue_fix_proposal",
                         lambda n, pr, **kw: {"status": "executed", "detail": "Pushed"})
 
@@ -707,7 +707,7 @@ def test_re_describing_an_approved_hand_back_keeps_it_handed_back(store, monkeyp
     from prospector_app.backend import executor
     monkeypatch.setattr(followup, "read", lambda pr: _pr(views=[_greptile(reviewers.FAIL)]))
     calls = []
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "t")
     monkeypatch.setattr(executor, "update_issue_fix_proposal",
                         lambda n, pr, **kw: calls.append(kw) or {"status": "executed",
                                                                  "detail": "rewrote"})
@@ -769,7 +769,7 @@ def test_an_operator_s_send_back_that_still_leaves_part_comes_back_to_them(store
     monkeypatch.setattr(fix_review_runner, "revise", lambda *a, **k: {
         "ending": "fixed", "detail": "ok",
         "result": {"patch": REVISED, "reviews": PARTIAL_REVIEW}})
-    monkeypatch.setattr(executor, "mint_bot_token", lambda: "t")
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "t")
     monkeypatch.setattr(executor, "update_issue_fix_proposal",
                         lambda n, pr, **kw: {"status": "executed", "detail": "Pushed"})
     store.edit_issue(7).record_fix_followup({"pr": 9, "state": "handed-back", "head_sha": HEAD,

@@ -1,4 +1,6 @@
 """The safety guard is the load-bearing read-only enforcement. Test it hard."""
+import subprocess
+
 import pytest
 
 from prospector_app.backend import safety_guard as sg
@@ -104,11 +106,25 @@ def test_bot_write_blocked_shape(argv):
         sg.assert_bot_write(argv)
 
 
-def test_bot_run_refuses_empty_token():
+@pytest.mark.parametrize("write", [
+    lambda: sg.bot_run(["gh", "pr", "close", "123"]),
+    lambda: sg.chat_bot_run(["gh", "pr", "edit", "123", "--title", "x"]),
+    lambda: sg.alert_bot_run(["gh", "api", "-X", "PATCH", "repos/o/r/dependabot/alerts/3"]),
+    lambda: sg.bot_merge_run(["gh", "pr", "merge", "123", "--squash"]),
+    lambda: sg.label_bot_run("add", "needs answer", number=12),
+    lambda: sg.close_bot_run(12, "completed"),
+    lambda: sg.propose_bot_run({"title": "t", "body": "b", "head": "pushbot:prospector/issue-7-0123abcd",
+                                "base": sg.settings.default_branch(), "maintainer_can_modify": False}),
+])
+def test_every_bot_write_refuses_without_a_token(monkeypatch, write):
     # the load-bearing guarantee: no token → never write (would be default login)
-    for bad in ("", "   ", None):
-        with pytest.raises(sg.WriteAttemptBlocked):
-            sg.bot_run(["gh", "pr", "close", "123"], bad)  # type: ignore[arg-type]
+    monkeypatch.setenv("TRIAGE_PUSH_LOGIN", "pushbot")
+    monkeypatch.setattr(
+        sg.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("subprocess must not run")),
+    )
+    with pytest.raises(sg.WriteAttemptBlocked, match="without a"):
+        write()
 
 
 CHAT_BOT_OK = [
@@ -126,20 +142,7 @@ def test_chat_bot_write_allowed_shape(argv):
     sg.assert_chat_bot_write(argv)
 
 
-def test_chat_bot_run_refuses_empty_token():
-    for bad in ("", "   ", None):
-        with pytest.raises(sg.WriteAttemptBlocked):
-            sg.chat_bot_run(["gh", "pr", "edit", "123", "--title", "x"], bad)  # type: ignore[arg-type]
-
-
 # --- sanctioned bot-MERGE path (org-admin model) -------------------------
-def test_bot_merge_refuses_empty_token():
-    # merging as the configured bot still requires a real token — no token, no merge
-    for bad in ("", "   ", None):
-        with pytest.raises(sg.WriteAttemptBlocked):
-            sg.bot_merge_run(["gh", "pr", "merge", "123", "--squash"], bad)  # type: ignore[arg-type]
-
-
 def test_bot_merge_accepts_match_head_commit(monkeypatch):
     # pinning the merge to the verified head (--match-head-commit) is still a
     # sanctioned `gh pr merge <n>` — the guard must not reject the extra flag,
@@ -149,14 +152,16 @@ def test_bot_merge_accepts_match_head_commit(monkeypatch):
 
     def fake_run(argv, **kw):
         seen["argv"] = argv
+        seen["token"] = kw["env"]["GH_TOKEN"]
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(sg.subprocess, "run", fake_run)
     monkeypatch.setattr(sg, "assert_store_writes_safe", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok_realish")
     argv = ["gh", "pr", "merge", "123", "--repo", "x/y", "--squash",
             "--match-head-commit", "abc123def"]
-    sg.bot_merge_run(argv, "tok_realish")
-    assert seen["argv"] == argv
+    sg.bot_merge_run(argv)
+    assert seen == {"argv": argv, "token": "tok_realish"}
 
 
 def test_store_schema_status_blocks_an_older_checkout(monkeypatch):
@@ -181,6 +186,7 @@ def test_store_schema_status_blocks_an_older_checkout(monkeypatch):
     (sg.bot_merge_run, ["gh", "pr", "merge", "123", "--squash"]),
 ])
 def test_bot_write_paths_refuse_a_stale_store(monkeypatch, runner, argv):
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok_realish")
     monkeypatch.setattr(
         sg, "store_schema_status",
         lambda: {"code_version": 12, "store_version": 13, "write_block": "stale server"},
@@ -191,15 +197,16 @@ def test_bot_write_paths_refuse_a_stale_store(monkeypatch, runner, argv):
     )
 
     with pytest.raises(sg.WriteAttemptBlocked, match="stale server"):
-        runner(argv, "tok_realish")
+        runner(argv)
 
 
-def test_bot_merge_rejects_non_merge_even_with_token():
+def test_bot_merge_rejects_non_merge_even_with_token(monkeypatch):
     # the merge path only ever runs `gh pr merge <n>` — nothing else
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok_realish")
     for argv in (["gh", "pr", "close", "123"], ["gh", "pr", "edit", "123"],
                  ["gh", "api", "-X", "POST", "repos/x"], ["git", "push"]):
         with pytest.raises(sg.WriteAttemptBlocked):
-            sg.bot_merge_run(argv, "tok_realish")
+            sg.bot_merge_run(argv)
 
 
 def test_merge_still_blocked_on_the_ordinary_paths():
@@ -223,6 +230,7 @@ def _label_runs(monkeypatch) -> list[tuple[list[str], str | None]]:
 
     monkeypatch.setattr(sg.subprocess, "run", fake_run)
     monkeypatch.setattr(sg, "assert_store_writes_safe", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
     return seen
 
 
@@ -230,9 +238,9 @@ def test_a_status_label_is_added_removed_or_created_and_nothing_else(monkeypatch
     import json
     seen = _label_runs(monkeypatch)
     repo = sg.settings.repo()
-    sg.label_bot_run("add", "needs answer", "tok", number=12)
-    sg.label_bot_run("remove", "couldn't fix", "tok", number=12)
-    sg.label_bot_run("create", "fix in progress", "tok")
+    sg.label_bot_run("add", "needs answer", number=12)
+    sg.label_bot_run("remove", "couldn't fix", number=12)
+    sg.label_bot_run("create", "fix in progress")
     (add, payload), (remove, _), (create, made) = seen
     assert add == ["gh", "api", "--method", "POST", f"repos/{repo}/issues/12/labels",
                    "--input", "-"]
@@ -254,13 +262,8 @@ def test_a_status_label_is_added_removed_or_created_and_nothing_else(monkeypatch
 def test_any_other_label_write_is_refused(monkeypatch, op, label, number):
     seen = _label_runs(monkeypatch)
     with pytest.raises(sg.WriteAttemptBlocked):
-        sg.label_bot_run(op, label, "tok", number=number)
+        sg.label_bot_run(op, label, number=number)
     assert seen == []
-
-
-def test_a_label_write_needs_a_bot_token():
-    with pytest.raises(sg.WriteAttemptBlocked):
-        sg.label_bot_run("add", "needs answer", "", number=12)
 
 
 # --- the unattended issue close ------------------------------------------------
@@ -268,8 +271,8 @@ def test_a_label_write_needs_a_bot_token():
 def test_an_unattended_close_patches_one_issue_closed_and_nothing_else(monkeypatch):
     import json
     seen = _label_runs(monkeypatch)
-    sg.close_bot_run(12, "not_planned", "tok")
-    sg.close_bot_run(13, "completed", "tok")
+    sg.close_bot_run(12, "not_planned")
+    sg.close_bot_run(13, "completed")
     (argv, payload), (_, done) = seen
     assert argv == ["gh", "api", "--method", "PATCH", f"repos/{sg.settings.repo()}/issues/12",
                     "--input", "-"]
@@ -290,14 +293,7 @@ def test_an_unattended_close_patches_one_issue_closed_and_nothing_else(monkeypat
 def test_any_other_close_is_refused(monkeypatch, number, reason):
     seen = _label_runs(monkeypatch)
     with pytest.raises(sg.WriteAttemptBlocked):
-        sg.close_bot_run(number, reason, "tok")
-    assert seen == []
-
-
-def test_an_unattended_close_needs_a_bot_token(monkeypatch):
-    seen = _label_runs(monkeypatch)
-    with pytest.raises(sg.WriteAttemptBlocked):
-        sg.close_bot_run(12, "completed", "")
+        sg.close_bot_run(number, reason)
     assert seen == []
 
 
@@ -309,5 +305,19 @@ def test_an_unattended_close_refuses_a_store_ahead_of_this_checkout(monkeypatch)
 
     monkeypatch.setattr(sg, "assert_store_writes_safe", ahead)
     with pytest.raises(sg.WriteAttemptBlocked):
-        sg.close_bot_run(12, "completed", "tok")
+        sg.close_bot_run(12, "completed")
     assert seen == []
+
+
+@pytest.mark.parametrize("stderr, dropped", [
+    ("HTTP 401: Bad credentials (https://api.github.com/graphql)", True),
+    ("HTTP 422: Validation Failed", False),
+])
+def test_a_rejected_token_is_dropped_so_the_next_write_mints(monkeypatch, stderr, dropped):
+    forgot = []
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.forget", lambda: forgot.append(True))
+    monkeypatch.setattr(sg.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(
+        argv, 1, stdout="", stderr=stderr))
+    sg.bot_run(["gh", "pr", "close", "123"])
+    assert forgot == ([True] if dropped else [])

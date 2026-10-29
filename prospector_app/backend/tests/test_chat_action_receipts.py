@@ -84,7 +84,7 @@ def test_stream_preserves_agent_text_without_receipt(
         temp_store, tmp_path, monkeypatch):
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
     invented = f"I filed it: https://github.com/{settings.feedback_repo()}/issues/63"
 
@@ -122,7 +122,7 @@ def test_stream_appends_same_turn_receipt(
         temp_store, tmp_path, monkeypatch):
     monkeypatch.setattr(chat, "SESSION_DIR", tmp_path / "cache" / "chat")
     monkeypatch.setattr(chat, "_op_slug", lambda: "tester")
-    monkeypatch.setattr(chat, "_bot_token", lambda: None)
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: None)
     monkeypatch.setattr(chat, "system_prompt", lambda: "SYS")
     receipt = _receipt()
     command = 'prospector_app/agent/file-issue --title "t" --body "b"'

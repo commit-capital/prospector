@@ -52,6 +52,7 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple, Protocol
 
+from pipeline import bot_token
 from pipeline import (author_fix, capacity, ci_signal, compile_preflight, describe_pr, diffpaths, freshness,
                       gates, gh, headless_agent, objections, profile, resolve_conflicts,
                       resolve_evidence, review_fix, review_policy, review_resolve,
@@ -1504,8 +1505,7 @@ def _post_description(n: int, req: dict, result: dict) -> None:
     """Post a parked description as the bot through the curated `pr edit`
     write, Activity-logged. A machine that cannot mint the bot token fails the
     request rather than posting as anyone else."""
-    token = executor.mint_bot_token()
-    if not token:
+    if not bot_token.available():
         _fail(n, req, "this machine cannot mint the bot token, so it cannot post the "
                       "description — approve again from a machine that can, or re-queue",
               kind="credentials")
@@ -1516,8 +1516,7 @@ def _post_description(n: int, req: dict, result: dict) -> None:
         path = fh.name
     try:
         r = safety_guard.chat_bot_run(
-            ["gh", "pr", "edit", str(n), "--body-file", path, "--repo", settings.repo()],
-            token)
+            ["gh", "pr", "edit", str(n), "--body-file", path, "--repo", settings.repo()])
     finally:
         os.unlink(path)
     if r.returncode != 0:
@@ -2206,12 +2205,12 @@ def _retrigger_review(n: int) -> None:
     verdict is what stands between the pushed fix and the merge bar, so the push
     is what asks. Best-effort: no mintable token forces the executor's dry-run,
     and the PR waits for the next scheduled ingest instead."""
-    token = executor.mint_bot_token()
+    live = bot_token.available()
     for r in review_policy.active_reviewers(reviewers.REVIEW):
         if not r.retrigger_mention:
             continue
-        baseline = review_refresh.capture(n, r.id) if token else None
-        res = executor.retrigger_review(n, r.id, token=token, dry_run=token is None,
+        baseline = review_refresh.capture(n, r.id) if live else None
+        res = executor.retrigger_review(n, r.id, dry_run=not live,
                                         initiator="worker")
         if res.get("status") == "executed" and baseline is not None:
             review_refresh.schedule(n, r.id, baseline)
