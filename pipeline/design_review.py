@@ -30,9 +30,14 @@ TITLE_CHARS = 200
 BODY_CHARS = 2000
 
 PROMPT = """\
-You are reviewing pull request #__PR__ ("__TITLE__") to this repository, an
-outside contribution. You judge its design, not its security and not its style
-nits: the repository has other reviewers for those.
+You are reviewing pull request #__PR__ ("__TITLE__") to this repository, from
+an outside contributor or one of its maintainers. You judge its design, not its
+security and not its style nits: the repository has other reviewers for those.
+
+Judge the code, not who wrote it: a finding holds only if it would hold had a
+maintainer written the same change. Who may change a file or path, a trust or
+permission boundary, secrets, credentials, CI and release configuration, and
+any other security concern are never design findings: leave them out.
 
 The repository's default branch is checked out at __CLONE__ — code only its
 maintainers changed. The pull request's diff against it is the file

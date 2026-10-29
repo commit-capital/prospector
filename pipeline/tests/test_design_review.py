@@ -138,6 +138,22 @@ def test_review_runs_locked_down(monkeypatch, clone, diff):
     assert entry["extra"]["rubric"] == reviewers.DESIGN_RUBRIC
 
 
+def test_neither_agent_may_hold_a_merge_on_who_may_make_the_change(monkeypatch, clone, diff):
+    calls = _agents(monkeypatch, {"findings": [_finding()]}, {"verdict": "confirmed", "reason": "r"})
+    design_review.review(clone, diff, pr=7, title="t", head_sha=HEAD, base_sha="b")
+    reviewer, verifier = calls[0]["prompt"], calls[1]["prompt"]
+    assert "had a\nmaintainer written the same change" in reviewer
+    assert "trust or\npermission boundary" in reviewer
+    assert "trust or permission\nboundary" in verifier and "refute it" in verifier
+
+
+def test_a_blocking_finding_judged_under_the_previous_rubric_is_judged_again():
+    old = {"design": {"kind": "review", "reviewed_sha": HEAD, "checks": [],
+                      "findings": [_finding(severity="major")],
+                      "extra": {"rubric": reviewers.DESIGN_RUBRIC - 1}}}
+    assert design_review.huntable(_pr(reviews=old)) is True
+
+
 def test_review_verifies_only_blocking_and_major(monkeypatch, clone, diff):
     calls = _agents(monkeypatch, {"findings": [_finding(severity="minor")]},
                     {"verdict": "confirmed", "reason": "r"})
