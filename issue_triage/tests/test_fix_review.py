@@ -109,6 +109,36 @@ def test_one_request_at_a_time(store):
     assert not ok and "already queued" in why
 
 
+def test_an_operator_answer_takes_the_place_of_the_loops_queued_ask(store):
+    _run(store, ending="fix-disputed", patch="", question=QUESTION)
+    assert fix_review.queue(store, 7, "ask-reporter", by="public", source="public")[0]
+    assert fix_review.replaceable(store.load_issue(7).fix_request)
+    assert fix_review.queue(store, 7, "answer", by="op", answer={"label": "B"}) == (
+        True, "answer queued")
+    req = store.load_issue(7).fix_request
+    assert req["action"] == "answer" and req["source"] == "operator"
+
+
+@pytest.mark.parametrize("req", [
+    {"action": "ask-reporter", "status": "running", "source": "public"},
+    {"action": "answer", "status": "queued", "source": "public", "notes": "the reporter said B"},
+    {"action": "send-back", "status": "queued", "source": "followup"},
+    {"action": "solve", "status": "queued", "source": "operator"},
+])
+def test_an_operator_never_replaces_a_claimed_request_or_anyones_words(store, req):
+    _run(store, ending="fix-disputed", patch="", question=QUESTION)
+    store.edit_issue(7).record_fix_request(req)
+    ok, why = fix_review.queue(store, 7, "answer", by="op", answer={"label": "B"})
+    assert not ok and "already" in why
+
+
+def test_the_loop_never_replaces_its_own_queued_request(store):
+    _run(store, ending="fix-disputed", patch="", question=QUESTION)
+    assert fix_review.queue(store, 7, "ask-reporter", by="public", source="public")[0]
+    ok, why = fix_review.queue(store, 7, "ask-reporter", by="public", source="public")
+    assert not ok and "already queued" in why
+
+
 def test_two_queues_racing_on_one_issue_land_one(store, monkeypatch):
     real = store.stamped_issue
     calls = []

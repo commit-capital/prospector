@@ -403,6 +403,14 @@ def _fits(action: str, run: dict | None, *, guidance: str | None, answer: dict |
     return f"unknown action {action!r}"
 
 
+def replaceable(req: dict | None) -> bool:
+    """Whether an operator's request may take the place of `req`: one the public
+    loop or the hunter queued on its own, not yet claimed, carrying no one's words."""
+    return bool(req and req.get("status") == "queued"
+                and req.get("source") in ("public", "hunter")
+                and not any(req.get(k) for k in ("guidance", "answer", "notes")))
+
+
 def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "operator",
           guidance: str | None = None, answer: dict | None = None,
           notes: str | None = None, rivals: list[int] | None = None,
@@ -426,7 +434,8 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
     if chosen is not None:
         return False, f"an operator chose #{chosen} as the fix"
     req = issue.fix_request
-    if req and req.get("status") in IN_FLIGHT:
+    if (req and req.get("status") in IN_FLIGHT
+            and not (source == "operator" and replaceable(req))):
         return False, f"a {req.get('action')} request is already {req.get('status')}"
     why = _fits(action, issue.fix_run, guidance=guidance, answer=answer, pr=open_pr(issue),
                 followup=issue.fix_followup, notes=notes, rivals=rivals)
