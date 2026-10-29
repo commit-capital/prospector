@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 from prospector_app.backend import author_returns, automation, data
 from prospector_app.backend import filters  # spec predicate
-from prospector_app.backend import issues
+from prospector_app.backend import issue_data, issues
 from prospector_app.backend import pr_checks
 from prospector_app.backend import responses
 from prospector_app.backend import suggest
@@ -451,6 +451,8 @@ _DEFAULT_DESC = {"pr", "greptile", "review", "scans", "safety", "updated", "loc"
 # filled lazily per PR, and a row is dropped only when one of its inputs moves.
 # A freshen replaces the record object of each PR it refetched and keeps every
 # other one, so record identity between two snapshots names the changed PRs.
+# Prospector's own fix PRs also read their issue's follow-up, so a new issue
+# snapshot drops just their rows.
 type _RowInputs = tuple[str, tuple[str | None, ...], profile.RepoProfile, tuple[str, ...]]
 
 
@@ -463,6 +465,7 @@ class _RowCache:
     index: dict[int, list[int]]
     inputs: _RowInputs
     rows: dict[int, dict]
+    issue_gen: int = 0
 
 
 _ROWS: _RowCache | None = None
@@ -517,17 +520,19 @@ def _stale_rows(old: _RowCache, snap: dict[int, Pr], index: dict[int, list[int]]
 
 def _row_cache(snap: dict[int, Pr]) -> dict[int, dict]:
     global _ROWS
-    index, inputs = data.pr_to_clusters(), _row_inputs()
+    index, inputs, issue_gen = data.pr_to_clusters(), _row_inputs(), issue_data.generation()
     with _ROWS_LOCK:
         old = _ROWS
         if old is not None and old.inputs == inputs:
-            if old.snap is snap and old.index is index:
+            if old.snap is snap and old.index is index and old.issue_gen == issue_gen:
                 return old.rows
             stale = _stale_rows(old, snap, index)
+            if old.issue_gen != issue_gen:
+                stale.update(n for n, rec in snap.items() if gates.opened_by_bot(rec))
             rows = {n: row for n, row in old.rows.items() if n not in stale}
         else:
             rows = {}
-        _ROWS = _RowCache(snap, index, inputs, rows)
+        _ROWS = _RowCache(snap, index, inputs, rows, issue_gen)
         return rows
 
 

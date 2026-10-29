@@ -110,13 +110,49 @@ export interface FilterSpec {
 /** The Home column a PR's standing with the automation places it in: a click
  *  of yours moves it, a worker moves it, or the automation handed it back. */
 export type AutomationColumn = "act" | "auto" | "handed";
-/** Whose move a PR is: the operator, the automation itself, or the author. */
-export type AutomationOwner = "you" | "worker" | "author";
+/** Whose move a PR is: the operator, the automation itself, the author, or
+ *  the repository's maintainers (who merge Prospector's own fix PRs). */
+export type AutomationOwner = "you" | "worker" | "author" | "maintainers";
+/** The status a PR leads with: a worker moves it, someone else's move, green
+ *  and ready to merge, one quick click of yours, or stuck until you decide. */
+export type AutomationState = "moving" | "waiting" | "ready" | "needs-you" | "stalled";
+/** One stage on a PR's way to ready-to-merge (pr_status.STAGES). */
+export interface PRStage {
+  key: string;
+  label: string;
+  status: "done" | "current" | "failed" | "todo";
+  detail: string;
+}
+/** One lane outcome on a PR (pipeline/outcomes.py), with when it ended. */
+export interface PRTried {
+  lane: string;
+  stage: string;
+  fault: "machine" | "subject" | "judged" | null;
+  by: string | null;
+  words: string;
+  at: string;
+}
+/** A PR page's status block (GET /api/prs/{n}/status). */
+export interface PRStatus {
+  standing: AutomationStanding;
+  stages: PRStage[];
+  tried: PRTried[];
+  issue: number | null;
+  seed: string | null;
+}
+/** Where a moving PR stands in its lane's queue (GET /api/prs/{n}/status/next). */
+export interface NextStep {
+  lane: "security" | "verify" | "design" | "fix";
+  position: number;
+  of: number;
+  eta_hours: number | null;
+}
 /** One PR's standing with the automation, as the backend derives it. */
 export interface AutomationStanding {
   column: AutomationColumn;
   bucket: string;
   owner: AutomationOwner;
+  state: AutomationState;
   reason: string;
 }
 
@@ -2714,6 +2750,8 @@ export const api = {
     return body as { pr: number; status: string };
   },
   verifyRunner: () => get<VerifyRunner>("/api/verify/runner"),
+  prStatus: (n: number) => get<PRStatus>(`/api/prs/${n}/status`),
+  prNextStep: (n: number) => get<NextStep | null>(`/api/prs/${n}/status/next`),
   queueFix: async (n: number, action: FixAction, guidance?: string) => {
     const r = await fetch(`/api/prs/${n}/fix/queue?action=${action}`, {
       method: "POST", headers: { "Content-Type": "application/json" },

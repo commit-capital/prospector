@@ -62,6 +62,7 @@ from prospector_app.backend import outcome_summary
 from prospector_app.backend import push_identity
 from prospector_app.backend import pipeline_status
 from prospector_app.backend import pr_history
+from prospector_app.backend import pr_status
 from prospector_app.backend import pr_search
 from prospector_app.backend import repo_meta
 from prospector_app.backend import review_refresh
@@ -526,6 +527,23 @@ def pr(n: int):
     if detail is None:
         raise HTTPException(404, f"PR {n} not in cache")
     return detail
+
+
+@app.get("/api/prs/{n}/status")
+def pr_status_route(n: int):
+    """The PR page's status block: standing, stage path, what was tried, and
+    for a stalled PR the agent's first message."""
+    rec = data.store().load_pr(n)
+    if rec is None:
+        raise HTTPException(404, f"PR {n} not in cache")
+    return pr_status.status(rec)
+
+
+@app.get("/api/prs/{n}/status/next")
+def pr_status_next(n: int):
+    """Where a moving PR stands in its lane's queue, and roughly when its turn
+    comes (pr_status.next_step), or null when no queue holds it."""
+    return pr_status.next_step(n)
 
 
 @app.post("/api/prs/{n}/verify/queue")

@@ -595,6 +595,12 @@ def _pools(prs: dict[int, Pr], open_lanes: frozenset[str]) -> dict[str, list[tup
     }
 
 
+def lane_order(lane: str) -> list[int]:
+    """Every PR in one hunt lane's pool, in the order that lane picks them."""
+    pool = _pools(data.prs(), frozenset({lane})).get(lane) or []
+    return [n for n, _ in sorted(pool, key=design_hunt_key if lane == "design" else hunt_key)]
+
+
 def hunt_candidates(limit: int = 5) -> dict[str, list[int]]:
     """Each hunt lane's next `limit` picks in the order the hunter takes them,
     read without picking; design review switched off has none."""

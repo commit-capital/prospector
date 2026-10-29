@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import pytest
 
+from issue_triage import fix_review
+from issue_triage.issue_model import Issue
 from pipeline import reviewers
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from pipeline.testsupport import bump_section, greptile_entry, reviews_section
-from prospector_app.backend import automation, data, service
+from prospector_app.backend import automation, data, issue_data, service
 
 HEAD = "a" * 40
 
@@ -47,6 +49,20 @@ def test_a_parked_change_is_your_move(store):
                           "against_head_sha": HEAD, "host": "w", "queued_at": _now()}
     out = _classify(store, rec)
     assert (out["column"], out["bucket"], out["owner"]) == ("act", "approve-parked", "you")
+    assert out["state"] == "needs-you"
+
+
+def test_every_bucket_has_a_state():
+    assert set(automation.STATES) == set(automation.OWNERS)
+    assert set(automation.STATES.values()) <= {"moving", "waiting", "ready", "needs-you", "stalled"}
+
+
+def test_a_merge_ready_pr_reads_ready_and_a_parked_change_needs_you():
+    assert automation.STATES["merge-ready"] == "ready"
+    assert automation.STATES["approve-parked"] == "needs-you"
+    assert automation.STATES["needs-human"] == "stalled"
+    assert automation.STATES["author-ci"] == "waiting"
+    assert automation.STATES["hunt"] == "moving"
 
 
 def test_a_parked_change_names_the_bar_that_stopped_it(store):
@@ -423,3 +439,75 @@ def test_a_fork_branch_of_the_same_name_is_not_the_base(store):
     out = _classify(store, _layer(11, "layer-2", "layer-1"))
     assert out["bucket"] == "stacked"
     assert out["reason"].startswith("stacked on branch layer-1")
+
+
+def _fix_issue(pr: int, followup: dict) -> Issue:
+    return Issue(None, {"issue": 50, "meta": {"title": "a bug", "state": "open",
+                                              "author": "reporter"},
+                        "fix_run": {"ending": "fixed", "proposal": {"pr": pr}},
+                        "fix_followup": {"pr": pr, **followup}})
+
+
+@pytest.fixture
+def ours(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triage-bot")
+    rec = _rec()
+    rec["meta"]["author"] = "app/triage-bot"
+    store.save_pr(rec)
+    data.refresh()
+
+    def classify(followup: dict | None) -> tuple[dict, Issue | None]:
+        issue = _fix_issue(1, followup) if followup is not None else None
+        monkeypatch.setattr(issue_data, "issues", lambda: {50: issue} if issue else {})
+        out = automation.classify(store.load_pr(1))
+        assert out is not None
+        return out, issue
+    return classify
+
+
+def test_a_handed_back_fix_pr_is_stalled_on_you(ours):
+    out, issue = ours({"state": "handed-back", "revisions": 2,
+                       "judged": {"reason": "2 revisions spent; greptile 4/5", "by": "Greptile"}})
+    assert (out["bucket"], out["state"], out["owner"]) == ("handed-back", "stalled", "you")
+    assert issue is not None and out["reason"] == fix_review.status_line(issue)["text"]
+
+
+def test_a_green_fix_pr_waits_on_the_maintainers(ours):
+    out, _ = ours({"state": "ready"})
+    assert (out["bucket"], out["state"], out["owner"]) == (
+        "with-maintainers", "waiting", "maintainers")
+
+
+def test_a_watching_fix_pr_is_moving(ours):
+    out, _ = ours({"state": "watching", "reason": "waiting on CI"})
+    assert (out["bucket"], out["state"]) == ("followup", "moving")
+
+
+def test_a_fix_pr_whose_issue_is_missing_reads_as_any_pr(ours):
+    out, _ = ours(None)
+    assert out["bucket"] not in ("handed-back", "with-maintainers", "followup")
+
+
+def test_an_outsiders_pr_never_scans_issues(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triage-bot")
+
+    def boom() -> dict:
+        raise AssertionError("an outsider's PR read the issues")
+    monkeypatch.setattr(issue_data, "issues", boom)
+    assert _classify(store, _rec())["bucket"] != "handed-back"
+
+
+def test_a_new_issue_snapshot_rebuilds_only_prospectors_own_pr_rows(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "triage-bot")
+    ours, theirs = _rec(1), _rec(2)
+    ours["meta"]["author"] = "app/triage-bot"
+    store.save_pr(ours)
+    store.save_pr(theirs)
+    data.refresh()
+    monkeypatch.setattr(issue_data, "issues", lambda: {})
+    monkeypatch.setattr(issue_data, "generation", lambda: 1)
+    snap = data.prs()
+    service._row_cache(snap).update({1: {"pr": 1}, 2: {"pr": 2}})
+    assert set(service._row_cache(snap)) == {1, 2}
+    monkeypatch.setattr(issue_data, "generation", lambda: 2)
+    assert set(service._row_cache(snap)) == {2}

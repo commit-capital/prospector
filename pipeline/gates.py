@@ -297,11 +297,16 @@ def priority_author(author: str | None, association: str | None) -> bool:
     return association in MAINTAINER_ASSOCIATIONS or author in active.priority_authors
 
 
+def opened_by_bot(pr: Pr) -> bool:
+    """Whether Prospector's own App opened `pr`."""
+    login = (pr.author or "").removeprefix("app/").removesuffix("[bot]")
+    return bool(login) and login == settings.bot_login()
+
+
 def backed(pr: Pr) -> bool:
     """Whether Prospector stands behind `pr`: its own App opened it, or an
     operator chose it as an issue's fix (`issue_triage.fix_choice`)."""
-    login = (pr.author or "").removeprefix("app/").removesuffix("[bot]")
-    return bool(login) and login == settings.bot_login() or pr.section("backing") is not None
+    return opened_by_bot(pr) or pr.section("backing") is not None
 
 
 def queue_rank(pr: Pr) -> int:

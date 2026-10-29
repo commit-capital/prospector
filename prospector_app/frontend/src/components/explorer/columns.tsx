@@ -13,7 +13,7 @@ import { GitHubPRLink } from "../GitHubPRLink";
 import { DraftChip, StackedChip, TierChip, AckButton } from "../Chips";
 import { AuthorHover } from "../AuthorHover";
 import { LinkedIssues } from "../LinkedIssues";
-import { statusText } from "../prStatus";
+import { stateLabel, stateTone, statusText } from "../prStatus";
 import type { Column } from "../shared/columns";
 
 // Visual aid: a star trails a trusted contributor's handle wherever authors
@@ -287,9 +287,13 @@ export const COLUMNS: ColumnDef[] = [
     cell: (r) => {
       const reason = statusText(r);
       if (!reason) return "—";
+      const state = r.automation?.state;
       return (
         <InfoTip body={reason} cue={false} focusable={false}>
-          <span className="col-status">{reason}</span>
+          <span className="col-status">
+            {state && <span className={`chip chip-${stateTone(state)} sm`}>{stateLabel(state)}</span>}{" "}
+            {reason}
+          </span>
         </InfoTip>
       );
     } },
