@@ -245,3 +245,8 @@ def test_cli_runs_the_listed_specs_and_notes_a_booted_runs_top_level_error(
     assert verify_driver.main([*cli, "--runs", "1"]) == 0
     assert seen == [["e2e/a.spec.ts"]]
     assert "- run 1: Timed out waiting 1800s for the entire test run" in _report_of(capsys)
+
+
+def test_a_test_id_reported_twice_in_a_run_counts_its_worst_result():
+    run = _run(_res("dup", "passed"), _res("dup", "failed", "boom"))
+    assert [c.verdict for c in e2e_coverage.classify([run, run, run])] == ["failing"]

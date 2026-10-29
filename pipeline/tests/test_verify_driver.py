@@ -814,6 +814,12 @@ class TestCaptureE2eBaseline:
         assert "z.spec.ts" not in reliable and "tests/e2e/a.spec.ts" in reliable
         assert [(u["file"], u["verdict"]) for u in uncovered] == [("z.spec.ts", "unlocated")]
 
+    def test_a_baseline_with_no_located_test_is_refused(self, monkeypatch):
+        self._setup(monkeypatch, [_e2e_run(*[(f"z{i}.spec.ts", "t", "passed")
+                                             for i in range(4)])] * 3)
+        with pytest.raises(RuntimeError, match="empty e2e baseline"):
+            vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
+
     def test_a_run_that_did_not_boot_refuses_the_pin(self, monkeypatch):
         ok = _e2e_run(("a.spec.ts", "boots", "passed"))
         self._setup(monkeypatch, [ok, _e2e_run(booted=False, problem="webServer timed out"), ok])
@@ -2722,19 +2728,28 @@ class TestE2eLeg:
         assert sig["edited"] == ["tests/e2e/b.spec.ts"]
         assert gates.e2e_verdict(sig) == "escalate"
 
-    def test_an_app_that_does_not_boot_twice_regresses_every_test(self, monkeypatch):
+    def test_an_app_that_does_not_boot_twice_holds_the_run(self, monkeypatch):
+        # No report is the harness's word (run-phase exits 1), so the record
+        # names every test and the gate holds instead of blaming the PR.
         down = _e2e_run(booted=False, problem="Error: Timed out waiting for config.webServer")
         self._runs(monkeypatch, (1, down), (1, down))
         sig = self._leg()
         assert sig["regression_count"] == 3
         assert sig["problem"] == "Error: Timed out waiting for config.webServer"
-        assert gates.e2e_verdict(sig) == "regressed"
+        assert gates._e2e_incomplete(sig) is True
 
     def test_a_missing_baseline_test_counts_as_failed(self, monkeypatch):
         partial = _e2e_run(("a.spec.ts", "boots", "passed"), ("b.spec.ts", "settings", "passed"))
         self._runs(monkeypatch, (0, partial), (0, partial))
         sig = self._leg()
         assert sig["regressions"] == ["tests/e2e/a.spec.ts › chat"]
+
+    def test_a_failing_exit_whose_report_shows_no_failure_fails_every_test(self, monkeypatch):
+        rc = gates.SENTINEL_TEST_FAIL
+        self._runs(monkeypatch, (rc, self._all({})), (rc, self._all({})))
+        sig = self._leg()
+        assert sig["regression_count"] == 3 and gates.e2e_verdict(sig) == "regressed"
+        assert gates._e2e_incomplete(sig) is False
 
     def test_a_test_passing_only_on_retry_is_not_a_failure(self, monkeypatch):
         self._runs(monkeypatch, (0, self._all({("tests/e2e/a.spec.ts", "chat"): "flaky"})))
@@ -2763,7 +2778,7 @@ class TestE2eLeg:
         self._runs(monkeypatch, (gates.SENTINEL_PATCH_CONFLICT, _e2e_run(booted=False)))
         sig = self._leg()
         assert sig == {"ran": False, "skipped_reason": "e2e-patch-conflict"}
-        assert gates.e2e_verdict(sig) is None
+        assert gates.e2e_verdict(sig) == "escalate"
 
     def test_the_lists_are_capped_and_the_count_is_not(self, monkeypatch):
         many = {f"tests/e2e/m{i:02d}.spec.ts": ["t"] for i in range(30)}

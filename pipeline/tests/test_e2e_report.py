@@ -223,3 +223,14 @@ def test_garbage_types_never_raise():
         assert isinstance(_run(j), E2eRun)
     weird = {"suites": [{"title": 1, "file": 2, "specs": [{"title": None, "tests": [{"results": [{"status": [], "errors": 3, "attachments": [None, 1]}]}]}]}]}
     assert isinstance(_run(weird), E2eRun)
+
+
+def test_a_named_project_leads_the_title_so_its_runs_stay_apart():
+    spec = {"title": "boots", "file": "a.spec.ts", "tests": [
+        {"projectName": "chromium", "status": "expected", "results": [{"status": "passed"}]},
+        {"projectName": "webkit", "status": "skipped", "results": [{"status": "skipped"}]},
+        {"projectName": "", "status": "expected", "results": [{"status": "passed"}]}]}
+    report = json.dumps({"suites": [{"title": "a.spec.ts", "file": "a.spec.ts",
+                                     "specs": [spec]}]}).encode()
+    run = parse_report(report, output_tail="")
+    assert [r.title for r in run.results] == ["chromium › boots", "webkit › boots", "boots"]

@@ -1730,6 +1730,11 @@ class Store:
                 and all(isinstance(t, str) for t in ts) for f, ts in e2e.items())):
             raise ValidationError(
                 "verify_base.e2e_baseline: a map of spec file to test titles, or null")
+        uncovered = record.get("e2e_uncovered", [])
+        if not isinstance(uncovered, list) or not all(isinstance(u, dict) for u in uncovered):
+            raise ValidationError("verify_base.e2e_uncovered: a list of records")
+        if not isinstance(record.get("e2e_skipped", 0), int):
+            raise ValidationError("verify_base.e2e_skipped: an int")
         hosts = dict(self.load_verify_base_hosts())
         host = record.get("host")
         assert host is not None

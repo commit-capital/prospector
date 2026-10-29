@@ -417,7 +417,9 @@ def _e2e_step(e2e: wire.VerifyE2eSignal) -> VerifyStep:
         reason = e2e.get("skipped_reason")
         note = {"not-app-touching": "Skipped — the PR changes no app code.",
                 "no-e2e-baseline": "Skipped — this machine's pinned base has no e2e baseline.",
-                "red-green-not-clean": "Skipped — the red→green above was not clean."
+                "red-green-not-clean": "Skipped — the red→green above was not clean.",
+                "e2e-patch-conflict": "Could not run — the PR's app code does not apply "
+                                      "without its e2e suite changes. Escalated for a human.",
                 }.get(str(reason), f"Skipped ({reason})." if reason else "Never ran.")
         return _step("e2e", label, "skip", note)
     total = e2e.get("baseline_tests")
@@ -799,8 +801,11 @@ def _cause(outcome: str | None, signals: wire.VerifySignals) -> str | None:
                     "nondeterministic reproduction, or a failure the first "
                     "green run did not carry. A human must judge; both runs "
                     "are in the steps below.")
-        if ((signals.get("red_reason_match") or {}).get("confidence") != "low"
-                and gates.e2e_verdict(signals.get("e2e")) == "escalate"):
+        if (signals.get("e2e") or {}).get("skipped_reason") == "e2e-patch-conflict":
+            return ("The PR's app code would not apply to pinned main without its "
+                    "changes to the e2e suite, so the in-app check could not run. A "
+                    "human must read the diff.")
+        if gates.e2e_escalated(signals):
             return ("In-app browser tests that pass reliably on pinned main fail "
                     "with this PR applied, but only in spec files the PR itself "
                     "edits — likely a deliberate UI change. A human must read the "

@@ -85,8 +85,10 @@ def classify(runs: list[E2eRun]) -> list[SpecCoverage]:
     keys = sorted(_non_skipped(counted))
     out: list[SpecCoverage] = []
     for key in keys:
+        # A test id reported twice in one run counts as its worst result.
         seen: list[SpecResult | None] = [
-            next((r for r in run.results if (r.file, r.title) == key), None)
+            min((r for r in run.results if (r.file, r.title) == key),
+                key=lambda r: r.status == "passed", default=None)
             for run in counted]
         passes = sum(1 for r in seen if r is not None and r.status == "passed")
         any_flaky = any(r is not None and r.status == "flaky" for r in seen)
@@ -116,7 +118,8 @@ def baseline(cov: list[SpecCoverage]) -> tuple[dict[str, list[str]], list[wire.V
         if c.verdict == "reliable":
             reliable.setdefault(c.file, []).append(c.title)
         else:
-            uncovered.append({"file": c.file, "title": c.title, "verdict": c.verdict,
+            uncovered.append({"file": c.file, "title": c.title,
+                              "verdict": "flaky" if c.verdict == "flaky" else "failing",
                               "cause": c.cause, "evidence": c.evidence})
     return reliable, uncovered
 

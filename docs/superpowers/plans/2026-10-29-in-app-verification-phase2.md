@@ -35,7 +35,8 @@ parser and the coverage command.
 3. **Pin refusal mirrors the suite baseline.** `prepare_base` refuses to pin
    when any of the 3 runs did not boot, or when more than
    `BASELINE_MAX_FAILING_SHARE` (25%) of the tests that ran (not skipped) are
-   flaky or failing (`implausible_e2e_baseline`). Cost: about 75 minutes added
+   flaky or failing (`implausible_e2e_baseline`), or when no test passed
+   reliably in a listed spec file. Cost: about 75 minutes added
    to each pin on a tier-1 e2e profile.
 4. **The base's `tests/e2e/` judges the PR.** The host drops every hunk under
    the config's directory from the PR's patch (`diffpaths.filter_diff`) before
@@ -50,11 +51,14 @@ parser and the coverage command.
 6. **A failure is confirmed by one re-run.** Run 1 runs the baseline files. A
    baseline test that is missing from the results, or whose status is not
    `passed`/`flaky`, fails. If any fail, run 2 re-runs only the files holding
-   them. A regression is a test failing in both runs. A run that does not boot
-   fails every baseline test it was asked for, so a PR whose app no longer
-   boots (twice) regresses with the boot problem shown. An e2e patch conflict
-   records `skipped_reason: "e2e-patch-conflict"` and gates nothing (the
-   apply-check already applied the full patch, so it is anomalous).
+   them. A regression is a test failing in both runs. A failing exit whose
+   report shows nothing failed, or a run that does not boot, fails every
+   baseline test it was asked for. A regression that rests on an exit outside
+   the sentinel set (no report, a timeout, a container fault) holds the run as
+   a harness fault rather than blaming the PR. An e2e patch conflict (the
+   PR's app code will not apply without its suite changes) escalates.
+   Results are keyed by spec file and title path, with the Playwright project
+   leading the title when the config names one.
 7. **The gate.** `gates.e2e_verdict(e2e)` returns `"escalate"` when every
    confirmed regression is in a spec file the PR edits (a deliberate UI change
    for a human to read), `"regressed"` when any is not, else None.

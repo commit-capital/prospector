@@ -13,7 +13,8 @@ MAX_RESULTS = 5000
 MAX_TEXT = 300
 _MAX_ATTACHMENTS = 20
 _OUT_PREFIX = "/tmp/e2e-out/"
-_SEP = " › "
+# Joins a test's title path, and a spec file to its title in a test id.
+SEP = " › "
 _KEY = re.compile(r"[A-Za-z0-9._/-]+")
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -99,7 +100,7 @@ def _attachments(results: list[dict[str, object]]) -> list[str]:
 
 
 def _titles(path: tuple[str, ...], title: object) -> str:
-    return _text(_SEP.join((*path, title if isinstance(title, str) else "")))
+    return _text(SEP.join((*path, title if isinstance(title, str) else "")))
 
 
 def _tail_problem(output_tail: str) -> str:
@@ -153,10 +154,13 @@ def parse_report(report: bytes | None, *, output_tail: str) -> E2eRun:
                     capped = True
                     break
                 rs = _dicts(test.get("results"))
+                # One test runs once per project; the project tells the runs apart.
+                project = test.get("projectName")
+                path = (project, *here) if isinstance(project, str) and project else here
                 results.append(
                     SpecResult(
                         file=spec_file[:MAX_TEXT],
-                        title=_titles(here, spec.get("title")),
+                        title=_titles(path, spec.get("title")),
                         status=_status(test, rs),
                         error=_error(rs),
                         attachments=_attachments(rs),

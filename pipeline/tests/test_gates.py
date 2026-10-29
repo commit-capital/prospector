@@ -3348,6 +3348,7 @@ class TestE2eRelevant:
 
     def test_the_suite_root_is_a_directory_not_a_prefix(self):
         assert gates.e2e_owned("tests/e2e/a.spec.ts", self.CFG)
+        assert gates.e2e_owned("tests/e2e", self.CFG)
         assert not gates.e2e_owned("tests/e2e-extra/x.ts", self.CFG)
 
     def test_a_root_config_owns_only_its_config_and_specs(self):
@@ -3355,3 +3356,35 @@ class TestE2eRelevant:
         assert gates.e2e_owned("playwright.config.ts", cfg)
         assert gates.e2e_owned("e2e/a.spec.ts", cfg)
         assert not gates.e2e_owned("src/a.ts", cfg)
+
+
+class TestE2eGateHardening:
+    """Ways a PR or a sick machine could bend the e2e leg's reading."""
+
+    def _outcome(self, e2e, **kw):
+        return TestE2eGate._outcome(TestE2eGate(), e2e, **kw)
+
+    def test_a_patch_conflict_escalates_rather_than_passing(self):
+        # A PR that replaces the suite directory with a file applies whole but
+        # not without its suite changes; the leg cannot run, and a human reads it.
+        assert self._outcome({"ran": False, "skipped_reason": "e2e-patch-conflict"}) == "escalate"
+
+    @pytest.mark.parametrize("exits", [(1, 1), (124, 20), (20, 137), (125, 125)])
+    def test_a_regression_resting_on_an_infrastructure_exit_holds(self, exits):
+        e2e = {**_e2e_regressed("tests/e2e/a.spec.ts › boots"),
+               "exit_first": exits[0], "exit_confirm": exits[1]}
+        assert self._outcome(e2e) is None
+
+    def test_an_infrastructure_exit_that_confirmed_clean_does_not_hold(self):
+        e2e = _e2e(exit_first=124, exit_confirm=0, failing_first=["tests/e2e/a.spec.ts › boots"])
+        assert self._outcome(e2e) == "verified-fix"
+
+    def test_the_e2e_escalate_text_never_masks_an_earlier_escalate(self):
+        regressed = _e2e_regressed("tests/e2e/a.spec.ts › boots", edited=("tests/e2e/a.spec.ts",))
+        base = {"blind_adequacy": _blind(), "red_green": _host(),
+                "red_reason_match": {"matches": True, "confidence": "high"}, "e2e": regressed}
+        assert gates.e2e_escalated(base)
+        for over in ({"blind_adequacy": _blind(faithful=False)},
+                     {"red_reason_match": {"matches": True, "confidence": "low"}},
+                     {"red_green": _host(red_exit_confirm=0)}):
+            assert not gates.e2e_escalated({**base, **over})

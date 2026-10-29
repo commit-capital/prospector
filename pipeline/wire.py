@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -256,7 +256,7 @@ class VerifyRequest(TypedDict):
 class VerifyE2eUncovered(TypedDict):
     file: str
     title: str
-    verdict: str
+    verdict: Literal["flaky", "failing", "unlocated"]
     cause: str | None
     evidence: str | None
 

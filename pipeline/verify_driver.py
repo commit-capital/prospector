@@ -889,6 +889,9 @@ def capture_e2e_baseline(tag: str, *, tier: int, sha: str
         for title in reliable.pop(file):
             uncovered.append({"file": file, "title": title, "verdict": "unlocated", "cause": None,
                               "evidence": "the report names a file the spec listing does not hold"})
+    if not reliable:
+        raise RuntimeError("no e2e test passed reliably in a listed spec file — "
+                           "refusing to pin an empty e2e baseline")
     return reliable, uncovered, e2e_coverage.skipped_count(runs)
 
 
@@ -1731,20 +1734,25 @@ def e2e_patch(head_sha: str, full_patch: Path, cfg: profile.E2eConfig) -> Path |
 E2E_MAX_LISTED = 20
 
 
-def _e2e_failing(baseline: dict[str, list[str]], files: list[str],
+def _e2e_failing(baseline: dict[str, list[str]], files: list[str], rc: int,
                  run: e2e_report.E2eRun) -> list[tuple[str, str]]:
     """The baseline tests in `files` that `run` did not pass: missing from its
-    results, or any result neither passed nor flaky."""
+    results, or any result neither passed nor flaky. The report is the
+    sandbox's word, so a failing exit whose report shows nothing failed fails
+    every test."""
+    passing = ("passed", "flaky")
+    if rc != gates.SENTINEL_PASS and all(r.status in (*passing, "skipped") for r in run.results):
+        return [(f, t) for f in files for t in baseline.get(f, [])]
     seen: dict[tuple[str, str], list[str]] = {}
     for r in run.results:
         seen.setdefault((r.file, r.title), []).append(r.status)
     return [(f, t) for f in files for t in baseline.get(f, [])
             if not (statuses := seen.get((f, t)))
-            or any(st not in ("passed", "flaky") for st in statuses)]
+            or any(st not in passing for st in statuses)]
 
 
 def _e2e_id(test: tuple[str, str]) -> str:
-    return f"{test[0]}{gates.E2E_ID_SEP}{test[1]}"
+    return f"{test[0]}{e2e_report.SEP}{test[1]}"
 
 
 def e2e_leg(image: str, *, tier: int, base_sha: str, head_sha: str, patch: Path,
@@ -1771,7 +1779,7 @@ def e2e_leg(image: str, *, tier: int, base_sha: str, head_sha: str, patch: Path,
     rc1, run1 = run(files)
     if rc1 == gates.SENTINEL_PATCH_CONFLICT:
         return {"ran": False, "skipped_reason": "e2e-patch-conflict"}
-    failing = _e2e_failing(baseline, files, run1)
+    failing = _e2e_failing(baseline, files, rc1, run1)
     sig.update(exit_first=rc1, problem=run1.problem,
                failing_first=[_e2e_id(t) for t in failing[:E2E_MAX_LISTED]])
     if not failing:
@@ -1780,7 +1788,7 @@ def e2e_leg(image: str, *, tier: int, base_sha: str, head_sha: str, patch: Path,
     rc2, run2 = run(again)
     if rc2 == gates.SENTINEL_PATCH_CONFLICT:
         return {"ran": False, "skipped_reason": "e2e-patch-conflict"}
-    still = set(_e2e_failing(baseline, again, run2))
+    still = set(_e2e_failing(baseline, again, rc2, run2))
     regressions = [t for t in failing if t in still]
     changed = set(changed_paths)
     sig.update(exit_confirm=rc2, problem=run2.problem or run1.problem,
