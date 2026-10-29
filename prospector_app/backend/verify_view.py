@@ -186,7 +186,6 @@ _FINDING_TITLES = {
     "misrooted-repro-config": "Independent repro used a misrooted config",
     "vacuous-repro-name-filter": "Independent repro matched no test",
     "authored-test": "Agent-authored test did not verify the fix",
-    "regress": "Regression evidence",
     "e2e": "In-app regression evidence",
     "lane": "Merge-gate lane failed",
 }
@@ -261,8 +260,8 @@ _OUTCOME_COPY: dict[str, tuple[str, str, str]] = {
     "regressed": (
         "blocked",
         "Regressed — the merged tree gets worse with this PR applied",
-        "The fix itself works, but with the PR applied a full-suite test or a "
-        "merge-gate lane (compile/build) that passes on pinned main fails. The "
+        "The fix itself works, but with the PR applied a merge-gate lane "
+        "(compile/build) or an in-app test that passes on pinned main fails. The "
         "specifics are in the story and findings below."),
 }
 
@@ -388,27 +387,6 @@ def _confirm_step(rg: wire.VerifyRedGreenSignal) -> VerifyStep | None:
     return _step("confirm", label, "skip",
                  f"Did not complete cleanly (red {red2}, green {green2}) — the run "
                  "holds and re-runs.")
-
-
-def _regress_step(regress: wire.VerifyRegressSignal) -> VerifyStep:
-    label = "Full-suite regression check — the rest of the tests must not break"
-    if not regress.get("ran"):
-        reason = regress.get("skipped_reason")
-        note = ("Skipped — the red→green above was not clean, so there was "
-                "nothing to regression-check."
-                if reason == "red-green-not-clean"
-                else f"Skipped ({reason})." if reason else "Never ran.")
-        return _step("regress", label, "skip", note)
-    if regress.get("confirmed"):
-        return _step("regress", label, "fail",
-                     "With this PR applied, tests that pass on pinned main fail — "
-                     "confirmed on a second run. The failing tests are in the "
-                     "findings below.")
-    if regress.get("exit_first") == gates.SENTINEL_TEST_FAIL:
-        return _step("regress", label, "warn",
-                     "A failure appeared once but did not confirm on the second "
-                     "run — treated as flaky, not a regression.")
-    return _step("regress", label, "pass", "No regressions.")
 
 
 def _e2e_step(e2e: wire.VerifyE2eSignal) -> VerifyStep:
@@ -656,9 +634,6 @@ def _authored_steps(authored: wire.VerifyAuthoredSignal,
             return steps
 
     steps.extend(_lane_steps(signals))
-    regress = signals.get("regress") or {}
-    if regress:
-        steps.append(_regress_step(regress))
     if e2e := signals.get("e2e"):
         steps.append(_e2e_step(e2e))
     return steps
@@ -686,7 +661,6 @@ def _gated_steps(signals: wire.VerifySignals) -> list[VerifyStep]:
     blind = signals.get("blind_adequacy") or {}
     rg = signals.get("red_green") or {}
     judge = signals.get("red_reason_match") or {}
-    regress = signals.get("regress") or {}
 
     blind_label = ("Pre-run review: is the PR's test a faithful reproduction "
                    "of the claimed bug?")
@@ -740,8 +714,6 @@ def _gated_steps(signals: wire.VerifySignals) -> list[VerifyStep]:
     if confirm_step:
         steps.append(confirm_step)
     steps.extend(_lane_steps(signals))
-    if regress:
-        steps.append(_regress_step(regress))
     if e2e := signals.get("e2e"):
         steps.append(_e2e_step(e2e))
     return steps
@@ -822,8 +794,7 @@ def _cause(outcome: str | None, signals: wire.VerifySignals) -> str | None:
             return (f"The fix works, but the {failed} lane fails with the PR "
                     f"applied — the merged tree does not pass "
                     f"`{lanes[failed].get('cmd')}`.")
-        if not (signals.get("regress") or {}).get("confirmed") \
-                and gates.e2e_verdict(signals.get("e2e")) == "regressed":
+        if gates.e2e_verdict(signals.get("e2e")) == "regressed":
             return ("The fix works, but with the PR applied in-app browser tests "
                     "that pass reliably on pinned main fail — confirmed on a "
                     "second run.")

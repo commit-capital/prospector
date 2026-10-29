@@ -169,8 +169,7 @@ case "$PHASE" in
   baseline)
     # The base's own full-suite run — over the pre-patch's tree when one is
     # mounted: the failing set it reports is the regress phase's exclusion
-    # list. Failures are data — the phase fails only on infrastructure, and the
-    # host refuses to pin on that.
+    # list. Failures are data — the phase fails only on infrastructure.
     apply_pre_patch || exit "$SENTINEL_PATCH_CONFLICT"
     node /verify-suite.mjs plan > /tmp/verify-plan.json || exit "$SENTINEL_NO_PLAN"
     run_test_setup

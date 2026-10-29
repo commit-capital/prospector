@@ -12,8 +12,8 @@ Repository-specific policy vocabulary — the subsystem taxonomy the CLUSTER
 phase and issue triage classify against, the path→risk-tier map, the
 CODEOWNERS gated paths/owners, trusted/automation authors, dependency
 manifests, test/artifact path conventions, review-harness PR-template policy,
-and VERIFY full-suite adapter — lives in a JSON **repository profile** selected
-by `TRIAGE_PROFILE` (see `profile.example.json` for the shape;
+and the issue-fix lane's full-suite adapter — lives in a JSON **repository
+profile** selected by `TRIAGE_PROFILE` (see `profile.example.json` for the shape;
 `pipeline/profile.py` validates it strictly and fails loudly on any malformed
 or unknown field). Every worker machine against one store must use the same
 profile: each heartbeat records a fingerprint of its machine's profile, and
@@ -29,8 +29,8 @@ default applies: no subsystem vocabulary, so every PR and issue classifies as
 ranking knows only the shared supply-chain surface, no path is
 CODEOWNERS-gated, no author is trusted, dependency/test/artifact conventions
 fall back to cross-ecosystem defaults, the review harness enforces no
-PR-template sections, and the baseline/regress leg is skipped until
-`verify.suite` is configured. The `dependency_manifests` list also drives the
+PR-template sections, and the issue-fix lane's full-suite check is skipped
+until `verify.suite` is configured. The `dependency_manifests` list also drives the
 VERIFY sandbox's dependency-refusal gate — narrowing it below the generic
 default weakens that protection. The real profile lives beside `.env` as the
 gitignored `profile.json` at the repo root.

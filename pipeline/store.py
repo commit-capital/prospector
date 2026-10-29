@@ -1304,15 +1304,12 @@ class Store:
             raise ValidationError("author_baseline.authors: required dict")
         self._save_registry("author_baseline", registry)
 
-    # One machine's absent pin. `baseline_failing` of None means no baseline was
-    # ever captured there — distinct from [], the suite passed clean.
-    _NO_PIN: wire.VerifyPin = {
-        "base_sha": None, "tier": None, "pinned_at": None,
-        "baseline_failing": None, "baseline_captured_at": None}
+    # One machine's absent pin.
+    _NO_PIN: wire.VerifyPin = {"base_sha": None, "tier": None, "pinned_at": None}
 
     def load_verify_base_hosts(self) -> dict[str, wire.VerifyPin]:
         """Every machine's pinned base, keyed by hostname (`{<hostname>:
-        {base_sha, tier, pinned_at, baseline_failing, baseline_captured_at}}`).
+        {base_sha, tier, pinned_at, ...}}`).
 
         A pin names a Docker image and a scrubbed clone on that machine's own
         disk, so each verification machine carries its own and tracks the
@@ -1708,10 +1705,7 @@ class Store:
         built them, so a pin naming no machine tells another one nothing it can
         act on. base_sha and tier are required because together they name one
         built image (pr-verify-base:<sha12>-t<tier>), and a pin missing either
-        names no image the sandbox could boot. baseline_failing and
-        baseline_captured_at are required too: a pin without a captured baseline
-        names no exclusion set, and the regression gate fails closed by refusing
-        the pin."""
+        names no image the sandbox could boot."""
         if not record.get("host"):
             raise ValidationError("verify_base.host: required")
         if not record.get("base_sha"):
@@ -1719,12 +1713,6 @@ class Store:
         if record.get("tier") not in VERIFY_TIERS:
             raise ValidationError(
                 f"verify_base.tier: {record.get('tier')!r} not in {sorted(VERIFY_TIERS)}")
-        baseline = record.get("baseline_failing")
-        if not isinstance(baseline, list) or not all(isinstance(f, str) for f in baseline):
-            raise ValidationError(
-                "verify_base.baseline_failing: required list of test file paths")
-        if not record.get("baseline_captured_at"):
-            raise ValidationError("verify_base.baseline_captured_at: required")
         e2e = record.get("e2e_baseline")
         if e2e is not None and not (isinstance(e2e, dict) and all(
                 isinstance(f, str) and isinstance(ts, list)

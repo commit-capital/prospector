@@ -116,14 +116,13 @@ uv run python pipeline/verify_driver.py build-image
 uv run python pipeline/verify_driver.py prepare-base --tier 1
 ```
 
-`prepare-base` also runs the suite once on the pristine tree, so a regression
-can be told from a pre-existing failure. The operator queues a PR from the app,
+The operator queues a PR from the app,
 and the `TRIAGE_VERIFY_WORKER` machine runs `pipeline/verify_pr.py` for one PR
 at a time:
 
 - the blind adequacy verdict is committed before any sandbox boots;
 - apply-check → [repro] → red → green run in separate containers, then the
-  regress phase on a clean red→green;
+  confirm re-run, the compile/build lanes and the e2e leg on a clean red→green;
 - the judge's ratings and the host-observed exit codes go to
   `gates.verify_outcome`, which computes the outcome.
 

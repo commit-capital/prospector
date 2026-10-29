@@ -37,10 +37,9 @@ hand or debugging a machine that will not come up:
    change reaches every worker with its next base.
 3. **Pin a base:** `uv run python pipeline/verify_driver.py prepare-base
    [--tier 1]` — clones the pinned default-branch SHA, scrubs it, builds the
-   per-batch base image, and (when the profile has a `verify.suite` contract)
-   captures the full-suite baseline. The pin lands in the shared store under
-   this hostname; the clone and image it names are on local disk, so a machine
-   verifies only against the base it prepared itself.
+   per-batch base image, and captures its e2e baseline. The pin lands in the
+   shared store under this hostname; the clone and image it names are on local
+   disk, so a machine verifies only against the base it prepared itself.
 4. **Enable the worker:** set `TRIAGE_VERIFY_WORKER=1` (and optionally
    `TRIAGE_VERIFY_AUTOHUNT=1`) in this machine's `.env`, then restart the app
    backend. Two machines' pins sit a few hours apart at worst, and every run
@@ -159,8 +158,7 @@ image fails identically in both legs). The exemption only ever upgrades a
 failing green whose author could more simply have exited 0, so output still
 cannot manufacture a verdict the exit code alone would not grant, and it can
 never turn a pass into a fail; its accuracy is bounded by the confirm re-run,
-the diff-membership check, the regress leg, and the dirty-green finding the
-record carries.
+the diff-membership check, and the dirty-green finding the record carries.
 
 The code under test is baked into the base image (`verify_driver.py
 prepare-base` builds it from a scrubbed clone at a pinned default-branch SHA), so a
@@ -168,10 +166,10 @@ phase container mounts no source at all — untrusted writes land in its own
 copy-on-write layer. Each phase runs in its own container from that image, so
 a red phase's writes cannot appear in the green phase's container.
 
-## Full-suite regression gate: `baseline` and `regress`
+## Full-suite regression check: `baseline` and `regress`
 
 Two more phases, run the same way (`sandbox-run.sh --phase baseline|regress`),
-layer a full-suite regression check on top of the four phases above. Both drive
+check an issue fix against the whole suite (`pipeline/prove.py`). Both drive
 `verify-suite.mjs`, a trusted Node script mounted read-only at
 `/verify-suite.mjs` (alongside `run-phase.sh` and `boot-probe.sh`) — the one
 phase where no agent-authored string runs; its entire command surface is trusted
@@ -180,16 +178,14 @@ path, server project, and per-invocation state environment names. The Python
 driver validates them and passes them through the launcher's explicit allowlist;
 the runner validates them again before reading target code.
 
-- **`baseline` — once per batch, inside `prepare-base`.** No patch. The phase
-  derives the plan (`node /verify-suite.mjs plan`) against the pristine pinned
-  tree, then runs it (`node /verify-suite.mjs run --mode baseline`) with no
-  exclusions. Exit 0 means the plan ran to completion — failing tests are data
-  in the trailer, not a phase failure; anything else is infrastructure.
-  `verify_driver.py`'s `prepare_base` refuses to write the `verify_base` pin
-  unless this phase exits 0 and the trailer parses, so a pinned base always
-  carries a captured baseline.
-- **`regress` — per PR, only after a clean red→green.** Requires both `--patch`
-  and `--exclude-file` (the pinned baseline's failing-test set). The phase
+- **`baseline` — once per tree, cached (`prove.suite_baseline`).** No patch.
+  The phase derives the plan (`node /verify-suite.mjs plan`) against the
+  pristine tree, then runs it (`node /verify-suite.mjs run --mode baseline`)
+  with no exclusions. Exit 0 means the plan ran to completion — failing tests
+  are data in the trailer, not a phase failure; anything else is
+  infrastructure.
+- **`regress` — per fix.** Requires both `--patch` and `--exclude-file` (the
+  tree's baseline failing-test set). The phase
   derives the plan pre-patch — before the patch applies — so a PR cannot
   influence which tests run, applies the full patch, then runs
   `verify-suite.mjs` in regress mode with the exclusion set. Exit 0 = no
@@ -233,16 +229,15 @@ Notable properties, all enforced in code and covered by
   set, and counts — inside the host's 8192-byte capture tail.
 
 `EXCLUDE_FILE` (`sandbox-run.sh --exclude-file F`) is a host-written JSON
-array of the pinned baseline's failing tests, mounted read-only at
+array of the tree's baseline failing tests, mounted read-only at
 `/verify/exclude.json`. It carries a file path the host wrote from the
-`verify_base` pin, never agent-authored content, the same trust shape as
+baseline run, never agent-authored content, the same trust shape as
 `PATCH_FILE`. `SUITE_CONFIG` (`--suite-config F`, required for the
 baseline/regress phases) is the same shape again: the profile's `verify.suite`
 repository contract — wrapper path, server project, optional preflight script,
 fixture env-var names — mounted read-only at `/verify/suite-config.json`.
 A repository whose profile has no `verify.suite` section runs no suite phases
-at all: `prepare-base` pins without a baseline and the regress leg records a
-deliberate `no-suite-config` skip.
+at all.
 
 The `coverage` phase (`--coverage-tool DIR --coverage-request F`, both mounted
 read-only) measures a PR's changed-line coverage for the design review
@@ -274,32 +269,6 @@ dependencies. `tier` is a property of the batch's base image, chosen by
   refused before a sandbox boots by the deps-touched gate, so the base image's
   deps are the only thing ever installed.
 - **Tier 2 (live agent):** OUT OF SCOPE — deferred behind a krunkit VM rebuild.
-
-## Before the gate blocks anything
-
-**Measurement checkpoint.** The first `prepare-base` baseline run on the
-target machine IS the measurement of a complete stabilized full-suite run —
-upstream's own wrapper truncates at its first failing invocation on a red
-the default branch, so `baseline` mode is what makes a complete run observable at all. If
-that run exceeds ~20 minutes, the number goes back to the operator before
-`regress` is relied on for anything — a 5-PR batch would then cost over two
-hours of regress runs, and parallelizing the independent workspace-project
-invocations inside `verify-suite.mjs` is a decision made with that number in
-hand, not ahead of it.
-
-**Validation protocol.** Four sandbox runs, all against the same pinned base,
-before a `regressed` outcome is allowed to block a merge:
-
-1. a known-good PR — must come out clean;
-2. the same PR again — must come out clean **again**;
-3. a deliberate in-tree break (an unconditional throw added to a component the
-   suite covers) — must come out regressed;
-4. the same break again — must come out regressed **again**.
-
-Both directions, twice. 4/4 or the substrate is not ready and the outcome
-stays non-blocking until it is — this is the control that caught the
-regression gate's previous, abandoned attempt (#563): flaky under raw
-parallelism, quiet on a known-good PR only sometimes.
 
 ## Test
 

@@ -98,12 +98,12 @@ class AuthoringPolicy:
     contributor_docs: tuple[str, ...] = DEFAULT_CONTRIBUTOR_DOCS
 
 
-# The full-suite regression lane's repository contract: the stabilized-wrapper
+# The issue-fix lane's full-suite repository contract: the stabilized-wrapper
 # script the plan derives from, the vitest project its serialized/general-server
 # suites run under, an optional preflight npm script, and the names of the
 # per-invocation fixture env vars (a fresh home dir and an instance id) the
 # repository's tests expect. A profile without this section has no full-suite
-# lane — prepare-base captures no baseline and the regress phase is skipped.
+# check.
 @dataclass(frozen=True)
 class SuiteConfig:
     wrapper: str

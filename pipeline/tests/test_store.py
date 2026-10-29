@@ -618,22 +618,16 @@ class TestDesignReview:
 
 class TestVerifyBaseRegistry:
     """A pin names the base image `run` looks for on ONE machine: its SHA and
-    the tier it was built at, plus the captured baseline that names the regress
-    exclusion set. host, base_sha, tier, baseline_failing and
-    baseline_captured_at are all required, so a pin can never disagree with
-    itself, omit the baseline, or fail to name the machine holding it."""
+    the tier it was built at. host, base_sha and tier are all required, so a
+    pin can never disagree with itself or fail to name the machine holding it."""
 
     def _pin(self, **over) -> dict:
         return {"host": "mac", "base_sha": "deadbeef", "tier": 1,
-                "pinned_at": "2026-07-14T00:00:00+00:00",
-                "baseline_failing": [], "baseline_captured_at": "2026-07-15",
-                **over}
+                "pinned_at": "2026-07-14T00:00:00+00:00", **over}
 
     def test_default_is_unpinned(self, tmp_path):
         assert Store(tmp_path).load_verify_base("mac") == {"base_sha": None, "tier": None,
-                                                           "pinned_at": None,
-                                                           "baseline_failing": None,
-                                                           "baseline_captured_at": None}
+                                                           "pinned_at": None}
 
     def test_roundtrip(self, tmp_path):
         s = Store(tmp_path)
@@ -676,7 +670,6 @@ class TestVerifyBaseRegistry:
         s = Store(tmp_path)
         s._save_registry("verify_base",
                          {"base_sha": "deadbeef", "tier": 1, "pinned_at": None,
-                          "baseline_failing": [], "baseline_captured_at": "2026-07-15",
                           "prepared_on": "mac"})
         assert list(s.load_verify_base_hosts()) == ["mac"]
         assert s.load_verify_base("mac")["base_sha"] == "deadbeef"
@@ -687,8 +680,7 @@ class TestVerifyBaseRegistry:
         a disk is one no machine may boot from."""
         s = Store(tmp_path)
         s._save_registry("verify_base",
-                         {"base_sha": "deadbeef", "tier": 1, "pinned_at": None,
-                          "baseline_failing": [], "baseline_captured_at": "2026-07-15"})
+                         {"base_sha": "deadbeef", "tier": 1, "pinned_at": None})
         assert s.load_verify_base_hosts() == {}
 
     def test_missing_host_rejected(self, tmp_path):
@@ -710,32 +702,6 @@ class TestVerifyBaseRegistry:
     def test_unknown_tier_rejected(self, tmp_path):
         with pytest.raises(ValidationError):
             Store(tmp_path).save_verify_base(self._pin(tier=7))
-
-    def test_verify_base_requires_a_captured_baseline(self, tmp_path):
-        pin = self._pin(tier=0)
-        del pin["baseline_failing"]
-        with pytest.raises(ValidationError, match="baseline_failing"):
-            Store(tmp_path).save_verify_base(pin)
-
-    def test_verify_base_baseline_must_be_a_list_of_paths(self, tmp_path):
-        with pytest.raises(ValidationError, match="baseline_failing"):
-            Store(tmp_path).save_verify_base(
-                self._pin(tier=0, baseline_failing="x.test.ts"))
-
-    def test_verify_base_requires_the_baseline_timestamp(self, tmp_path):
-        pin = self._pin(tier=0)
-        del pin["baseline_captured_at"]
-        with pytest.raises(ValidationError, match="baseline_captured_at"):
-            Store(tmp_path).save_verify_base(pin)
-
-    def test_verify_base_an_all_green_baseline_is_a_valid_pin(self, tmp_path):
-        s = Store(tmp_path)
-        s.save_verify_base(self._pin(tier=0))
-        assert s.load_verify_base("mac")["baseline_failing"] == []
-
-    def test_verify_base_default_has_no_baseline(self, tmp_path):
-        assert Store(tmp_path).load_verify_base("mac")["baseline_failing"] is None
-
 
 class TestSetPrSection:
     def test_replaces_one_section_and_keeps_the_rest(self, store):
@@ -824,8 +790,7 @@ class TestWorkerRegistries:
         store.save_worker_health({"host": "mac", "lanes": {}})
         store.save_worker_health({"host": "linux", "lanes": {}})
         store.save_verify_base({"host": "mac", "base_sha": "a" * 12, "tier": 1,
-                                "pinned_at": None, "baseline_failing": [],
-                                "baseline_captured_at": "2026-07-15"})
+                                "pinned_at": None,})
         statements: list[str] = []
 
         def count(conn, cursor, statement, *rest) -> None:
@@ -844,7 +809,6 @@ class TestWorkerRegistries:
         store._save_registry("verify_worker", {"host": "mac", "last_beat": "t"})
         store._save_registry("verify_base",
                              {"base_sha": "deadbeef", "tier": 1, "pinned_at": None,
-                              "baseline_failing": [], "baseline_captured_at": "2026-07-15",
                               "prepared_on": "mac"})
         got = store.load_worker_registries()
         assert got == self._individually(store)
