@@ -476,7 +476,9 @@ def auto_verifiable(pr: Pr) -> bool:
     adversarial review has not cleared), no current verify record, and no
     verify_request in flight or deliberately stopped. A cancel waits for an
     operator; an error waits unless gates.verify_retry_allowed says the
-    harness, not the PR, is what failed and a retry is due."""
+    harness, not the PR, is what failed and a retry is due. The judgment-less
+    record an errored run leaves behind (outcome None) is not a current verify
+    record, so the retry rule, with its per-head cap, decides."""
     status = (pr.verify_request or {}).get("status")
     if status in ("queued", "running", "waiting-for-base", "cancelled"):
         return False
@@ -485,7 +487,8 @@ def auto_verifiable(pr: Pr) -> bool:
         return False
     if not gates.security_cleared(pr):
         return False
-    if is_current(pr, "verify", max_age_days=settings.verify_max_age_days()):
+    interrupted = status == "error" and pr.verify_outcome is None
+    if not interrupted and is_current(pr, "verify", max_age_days=settings.verify_max_age_days()):
         return False
     return gates.verify_eligible(pr, _changed_paths(pr))
 

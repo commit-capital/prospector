@@ -65,6 +65,22 @@ VERIFY_RETRY_ATTEMPTS = 3
 VERIFY_RETRY_SECONDS = 6 * 3600
 
 
+def verify_retry_exhausted(pr: Pr) -> str | None:
+    """Why this PR's errored verify request never retries on its own, whatever
+    machine looks: the error is the PR's (not VERIFY_REQUEST_FAULT's system
+    kind), or its head has had VERIFY_RETRY_ATTEMPTS runs. None when a retry
+    is still due, now or after a rest."""
+    req = pr.verify_request or {}
+    kind = str(req.get("error_kind") or "")
+    if VERIFY_REQUEST_FAULT.get(kind) != "system":
+        return f"{kind or 'the error'} is the PR's to answer, not the harness's"
+    stamped = req.get("against_head_sha")
+    if stamped and pr.head_sha and stamped != pr.head_sha:
+        return None
+    runs = int(req.get("attempts") or 0) + 1
+    return f"this head has had {runs} runs" if runs >= VERIFY_RETRY_ATTEMPTS else None
+
+
 def verify_retry_allowed(pr: Pr, *, worker: str,
                          now: datetime | None = None) -> tuple[bool, str]:
     """May the idle hunter re-queue this PR's errored verify request?
@@ -79,15 +95,12 @@ def verify_retry_allowed(pr: Pr, *, worker: str,
     req = pr.verify_request or {}
     if req.get("status") != "error":
         return False, "not an errored request"
-    kind = str(req.get("error_kind") or "")
-    if VERIFY_REQUEST_FAULT.get(kind) != "system":
-        return False, f"{kind or 'the error'} is the PR's to answer, not the harness's"
+    final = verify_retry_exhausted(pr)
+    if final:
+        return False, final
     stamped = req.get("against_head_sha")
     if stamped and pr.head_sha and stamped != pr.head_sha:
         return True, "the head moved since the error"
-    runs = int(req.get("attempts") or 0) + 1
-    if runs >= VERIFY_RETRY_ATTEMPTS:
-        return False, f"this head has had {runs} runs"
     host = req.get("host")
     if host and host != worker:
         return True, f"a different worker than {host}, which errored it"
