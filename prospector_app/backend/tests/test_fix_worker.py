@@ -76,6 +76,14 @@ class _Probe:
         return type("R", (), {"returncode": rc, "stdout": out, "stderr": self.stderr})()
 
 
+def _failure_kind(store) -> str | None:
+    """The category the last ledger row books a machine failure under, which
+    its outcome's stage carries too."""
+    raw = [r for r in store.runs() if getattr(r, "phase", "") == "fix:single"][-1].raw
+    assert raw["outcome"]["stage"] == raw["stats"]["kind"]
+    return raw["stats"]["kind"]
+
+
 def _pushed(probe: _Probe) -> bool:
     """Whether anything the worker ran could have reached the contributor's
     branch: an explicit push, or a bare `update`, which merges AND pushes."""
@@ -625,6 +633,7 @@ def test_resolve_agent_with_blocked_edits_fails_instead_of_refusing(store, monke
     assert "edit grant" in req["error"]
     after_merge = fake.calls[fake.calls.index(("prepare", "--merge")):]
     assert ("abort",) in after_merge
+    assert _failure_kind(store) == "agent-edits"
 
 
 def test_resolve_preflight_failure_refuses_and_aborts(store, monkeypatch, tmp_path):
@@ -675,6 +684,7 @@ def test_a_resolution_whose_continue_stops_fails_a_crash_and_refuses_a_verdict(
     assert probe.calls[-1] == ("abort",) and not _pushed(probe)
     if status == "failed":
         assert req["result"]["output"] == stderr.strip()
+        assert _failure_kind(store) == "helper-crash"
 
 
 def test_a_resolution_that_leaves_no_change_rests_the_head(store, monkeypatch, tmp_path):
@@ -1117,6 +1127,7 @@ def test_a_pr_diff_that_cannot_be_fetched_fails_the_request_before_the_agent(sto
     req = store.load_pr(1).fix_request
     assert req["status"] == "failed" and "gh down" in req["error"]
     assert probe.calls == []
+    assert _failure_kind(store) == "github"
 
 
 def test_a_give_up_refuses_with_the_agents_reason(store, monkeypatch):
@@ -3308,3 +3319,24 @@ def test_a_patch_past_the_cap_keeps_its_start_and_says_so():
     patch = "diff --git a/a b/a\n" + "+x\n" * fix_worker.PATCH_CHARS
     shown = fix_worker._shown_patch(patch)
     assert shown["patch"] == patch[:fix_worker.PATCH_CHARS] and shown["patch_truncated"] is True
+
+
+@pytest.mark.parametrize("error, kind", [
+    (headless_agent.EditsBlockedError("no grant"), "agent-edits"),
+    (headless_agent.AgentTransient("overloaded"), "agent-overloaded"),
+    (fix_worker.capacity.CapacityPaused(fix_worker.capacity.Decision(False, "paused", None)),
+     fix_worker.capacity.PAUSED_KIND),
+    (ValueError("no JSON in the answer"), "agent-answer"),
+])
+def test_an_agent_error_books_the_category_of_what_went_wrong(error, kind):
+    assert fix_worker._agent_kind(error) == kind
+
+
+def test_an_overloaded_agent_never_trips_every_agent_lane(store, monkeypatch):
+    tripped: list[str] = []
+    monkeypatch.setattr(fix_worker.lane_health, "trip_agent_lanes", lambda why: tripped.append(why))
+    fix_queue.queue_pr(1, "rebase")
+    req = store.load_pr(1).fix_request
+    fix_worker._fail(1, req, "overloaded", kind=fix_worker._agent_kind(
+        headless_agent.AgentTransient("overloaded")))
+    assert tripped == []

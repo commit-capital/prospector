@@ -51,8 +51,11 @@ def test_a_cancelled_verify_has_no_outcome():
     ("cancelled", None, True, "cancelled", "judged"),
     ("cancelled", None, None, "cancelled", "subject"),
     ("failed", "run-failed", None, "run-failed", "machine"),
-    ("failed", "base-compile", None, "run-failed", "machine"),
+    ("failed", "base-compile", None, "base", "machine"),
     ("failed", "agent-unavailable", None, "agent-unavailable", "machine"),
+    ("failed", "helper-crash", None, "helper-crash", "machine"),
+    ("failed", "github", None, "github", "machine"),
+    ("failed", "sandbox", None, "sandbox", "machine"),
 ])
 def test_an_autofix_ending_maps_to_a_stage(status, kind, judged, stage, fault):
     got = pr_outcomes.autofix(7, HEAD, action="rebase", status=status, detail="d",

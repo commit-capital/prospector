@@ -629,7 +629,7 @@ def _fail_if_crashed(n: int, req: dict, rc: int, output: str,
     if crash_line(output) is None:
         return False
     _fail(n, req, plain_reason(rc, output),
-          result={**(result or {}), "output": output[-TAIL_CHARS:]})
+          result={**(result or {}), "output": output[-TAIL_CHARS:]}, kind="helper-crash")
     return True
 
 
@@ -671,6 +671,19 @@ def _log_run(n: int, req: dict, status: str, detail: str | None = None,
 # Failure kinds that ran nothing for the PR, so they do not count toward
 # HUNT_MAX_FAILURES.
 _NOTHING_RAN_KINDS = (capacity.PAUSED_KIND, "agent-unavailable")
+
+
+def _agent_kind(e: Exception) -> str:
+    """The failure category of an agent run that raised `e`: its edit grant
+    never reached it, the service was overloaded, the AI capacity paused it (a
+    deferral, not a failure), or it answered with nothing usable."""
+    if isinstance(e, headless_agent.EditsBlockedError):
+        return "agent-edits"
+    if isinstance(e, headless_agent.AgentTransient):
+        return "agent-overloaded"
+    if isinstance(e, capacity.CapacityPaused):
+        return capacity.PAUSED_KIND
+    return "agent-answer"
 
 
 def _fail(n: int, req: dict, message: str, result: dict | None = None, *,
@@ -883,7 +896,7 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
             return None
         diff = _resubmit(n, "diff")
         if diff.returncode != 0:
-            _fail(n, claimed, (diff.stderr or diff.stdout).strip())
+            _fail(n, claimed, (diff.stderr or diff.stdout).strip(), kind="git")
             return None
         patch = _diff_text(diff)
     if not patch:
@@ -1044,12 +1057,12 @@ def _author_fix(n: int, claimed: dict) -> None:
                              "needs a person.")
         return
     if not rec.head_sha:
-        _fail(n, claimed, "the PR has no recorded head SHA")
+        _fail(n, claimed, "the PR has no recorded head SHA", kind="record")
         return
     try:
         pr_patch = verify_driver.fetch_patch(n, rec.head_sha)
     except verify_driver.FetchFailure as e:
-        _fail(n, claimed, f"the pull request's diff could not be fetched: {e}")
+        _fail(n, claimed, f"the pull request's diff could not be fetched: {e}", kind="github")
         return
 
     prepared = _resubmit(n, "prepare")
@@ -1060,7 +1073,7 @@ def _author_fix(n: int, claimed: dict) -> None:
     worktree = _prepared_worktree(n)
     if not worktree:
         _resubmit(n, "abort")
-        _fail(n, claimed, "the prepared worktree could not be read")
+        _fail(n, claimed, "the prepared worktree could not be read", kind="git")
         return
 
     authored = _author_and_review(n, claimed, rec, worktree, goal, findings, checks,
@@ -1206,7 +1219,7 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
     except (RuntimeError, ValueError) as e:
         _resubmit(n, "abort")
         _fail(n, claimed, f"The agent attempt did not land: {e}",
-              result=_checks_only(sandbox_check.collect_checks(n)) or None)
+              result=_checks_only(sandbox_check.collect_checks(n)) or None, kind=_agent_kind(e))
         return None
     # The sandbox runs the agent made are its own evidence of whether the
     # change was exercised; they ride on every ending from here.
@@ -1222,7 +1235,7 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
     if diff.returncode != 0:
         _resubmit(n, "abort")
         _fail(n, claimed, f"reading the authored diff failed: "
-                          f"{(diff.stderr or diff.stdout).strip()[:500]}")
+                          f"{(diff.stderr or diff.stdout).strip()[:500]}", kind="git")
         return None
     patch = _diff_text(diff)
     if not patch.startswith("diff "):
@@ -1267,7 +1280,7 @@ def _author_and_review(n: int, claimed: dict, rec: Pr, worktree: str, goal: str,
         _fail(n, claimed, f"The reviewing agent did not reach a verdict: "
                           f"{review['reason']}",
               result={"patch": patch, "changes": verdict["changes"], "review_verdict": review,
-                      **_checks_only(verdict["checks"])})
+                      **_checks_only(verdict["checks"])}, kind="agent-answer")
         return None
     return verdict, patch, review
 
@@ -1365,7 +1378,7 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
         # The edit grant never reached the agent — this machine's fault, so the
         # ending is retryable rather than a verdict that rests the head.
         _resubmit(n, "abort")
-        _fail(n, claimed, f"The agent attempt did not land: {e}.")
+        _fail(n, claimed, f"The agent attempt did not land: {e}.", kind="agent-edits")
         return
     except (RuntimeError, ValueError) as e:
         _resubmit(n, "abort")
@@ -1397,7 +1410,7 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
     if diff.returncode != 0:
         _resubmit(n, "abort")
         _fail(n, claimed, f"reading the resolved diff failed: "
-                          f"{(diff.stderr or diff.stdout).strip()[:500]}")
+                          f"{(diff.stderr or diff.stdout).strip()[:500]}", kind="git")
         return
     if not (diff.stdout or "").strip():
         # The resolved merge equals the base: the PR's change is already there,
@@ -1443,7 +1456,7 @@ def _describe(n: int, claimed: dict) -> None:
         _decline(n, claimed, f"PR #{n} left the store")
         return
     if not rec.head_sha:
-        _fail(n, claimed, "the PR has no recorded head SHA")
+        _fail(n, claimed, "the PR has no recorded head SHA", kind="record")
         return
     template = describe_pr.fetch_template()
     if template is None:
@@ -1455,7 +1468,7 @@ def _describe(n: int, claimed: dict) -> None:
     try:
         diff = verify_driver.fetch_patch(n, rec.head_sha).read_text()
     except verify_driver.FetchFailure as e:
-        _fail(n, claimed, f"the pull request's diff could not be fetched: {e}")
+        _fail(n, claimed, f"the pull request's diff could not be fetched: {e}", kind="github")
         return
     findings = [f for r in review_policy.active_reviewers(reviewers.REVIEW)
                 for f in reviewers.open_findings(rec.review_entry(r.id))
@@ -1474,7 +1487,7 @@ def _describe(n: int, claimed: dict) -> None:
                              "description was written.")
         return
     except (RuntimeError, ValueError) as e:
-        _fail(n, claimed, f"The agent attempt did not land: {e}")
+        _fail(n, claimed, f"The agent attempt did not land: {e}", kind=_agent_kind(e))
         return
     if "give_up" in verdict:
         _decline(n, claimed, f"The agent declined to write a description: {verdict['give_up']}")
@@ -1494,7 +1507,8 @@ def _post_description(n: int, req: dict, result: dict) -> None:
     token = executor.mint_bot_token()
     if not token:
         _fail(n, req, "this machine cannot mint the bot token, so it cannot post the "
-                      "description — approve again from a machine that can, or re-queue")
+                      "description — approve again from a machine that can, or re-queue",
+              kind="credentials")
         return
     body = str(result.get("body") or "")
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
@@ -1508,7 +1522,7 @@ def _post_description(n: int, req: dict, result: dict) -> None:
         os.unlink(path)
     if r.returncode != 0:
         _fail(n, req, f"GitHub did not accept the new description: "
-                      f"{(r.stderr or r.stdout).strip()[:300]}")
+                      f"{(r.stderr or r.stdout).strip()[:300]}", kind="github")
         return
     activity.record("pr-edit", identity=settings.bot_login(), dry_run=False, pr=n,
                     action="DESCRIBE", status="executed",

@@ -28,7 +28,7 @@ const STAGES: Record<string, string> = {
   declined: "stopped before finishing",
   sandbox: "the sandbox broke",
   agent: "the agent was unavailable",
-  base: "the base doesn't build",
+  base: "the base doesn't build or pass its own checks",
   ci: "CI still failed after revisions",
   "ci-outside": "CI fails outside the change",
   reviewer: "a code reviewer kept objecting",
@@ -60,6 +60,14 @@ const STAGES: Record<string, string> = {
   exception: "the run crashed",
   refused: "refused the change",
   "run-failed": "the run failed on the machine",
+  "agent-edits": "the agent's edit permission never reached it",
+  "agent-answer": "the agent's answer was unusable",
+  "agent-overloaded": "the AI service was overloaded",
+  "helper-crash": "the resubmit helper crashed",
+  git: "a git step on the worker failed",
+  github: "GitHub refused a read or write",
+  credentials: "this machine can't mint the bot token",
+  record: "the PR's record has no head commit",
 };
 
 const FAULTS: Record<string, { label: string; tone: "red" | "yellow" | "muted" }> = {
