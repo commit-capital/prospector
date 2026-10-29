@@ -18,6 +18,7 @@ LABELS: dict[str, str] = {
     "stale-refresh": "Stale merge-candidate refresh",
     "rereview": "Re-review requests",
     "responses": "Author responses sweep",
+    "abandoned-close": "Abandoned PR closes",
     "cluster": "Clustering pass",
     "display": "PR summary cards",
     "issue-followup": "Issue follow-up",
@@ -37,6 +38,8 @@ HINTS: dict[str, str] = {
                 "conflicts or not, posting the reviewer's mention as the bot.",
     "responses": "Reads how authors answered our actions: replies, reopens, new commits and "
                  "resubmissions since a PR or issue was last acted on.",
+    "abandoned-close": "Closes a contributor's PR whose newest commit has blocking feedback its "
+                       "author has been silent on for two weeks, inviting them back.",
     "cluster": "Summarizes new and moved PRs, places them into clusters, and analyzes the "
                "clusters still waiting on a disposition.",
     "display": "Writes the plain-language summary card on PR pages, merge picks first.",

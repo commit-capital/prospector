@@ -97,8 +97,9 @@ _ACTIVITY_QUERY = """
 query {
   repository(owner: "%s", name: "%s") {
     pullRequest(number: %d) {
-      state headRefOid createdAt author { login }
-      commits(last: 50) { nodes { commit { committedDate authors(first: 5) { nodes { user { login } } } } } }
+      state headRefOid createdAt updatedAt lastEditedAt author { login } editor { login }
+      commits(last: 50) { nodes { commit { committedDate statusCheckRollup { state }
+        authors(first: 5) { nodes { user { login } } } } } }
       comments(last: 100) { nodes { createdAt author { login } } }
       reviews(last: 50) { nodes { submittedAt author { login } } }
     }
@@ -114,9 +115,11 @@ def _when(value: object) -> datetime | None:
 
 
 def live_state(n: int) -> dict | None:
-    """The PR's live {state, head, author, last_active} — last_active the
-    newest of its opening and its author's own commits, comments and reviews —
-    or None when GitHub did not answer."""
+    """The PR's live {state, head, head_committed, head_ci, updated_at,
+    author, last_active} — head_committed the newest commit's date, head_ci
+    its check rollup state, last_active the newest of its opening and its
+    author's own commits, comments, reviews and description edit — or None
+    when GitHub did not answer."""
     try:
         data = gh.gh_graphql_data(_ACTIVITY_QUERY % (settings.repo_owner(), settings.repo_name(),
                                                      int(n)), timeout=30)
@@ -125,7 +128,10 @@ def live_state(n: int) -> dict | None:
     pr = ((data.get("repository") or {}).get("pullRequest")) or {}
     author = (pr.get("author") or {}).get("login")
     times = [_when(pr.get("createdAt"))]
-    for node in (pr.get("commits") or {}).get("nodes") or []:
+    if author and (pr.get("editor") or {}).get("login") == author:
+        times.append(_when(pr.get("lastEditedAt")))
+    commits = (pr.get("commits") or {}).get("nodes") or []
+    for node in commits:
         commit = node.get("commit") or {}
         logins = {((a.get("user") or {}).get("login"))
                   for a in (commit.get("authors") or {}).get("nodes") or []}
@@ -136,7 +142,12 @@ def live_state(n: int) -> dict | None:
             if (node.get("author") or {}).get("login") == author:
                 times.append(_when(node.get(stamp)))
     known = [t for t in times if t is not None]
+    newest = (commits[-1].get("commit") or {}) if commits else {}
     return {"state": str(pr.get("state") or "").lower(), "head": pr.get("headRefOid"),
+            "head_committed": _when(newest.get("committedDate")) if newest else None,
+            "head_ci": str((newest.get("statusCheckRollup") or {}).get("state") or "").lower()
+                       or None,
+            "updated_at": _when(pr.get("updatedAt")),
             "author": author, "last_active": max(known) if known else None}
 
 

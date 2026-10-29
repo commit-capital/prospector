@@ -1,6 +1,8 @@
 """gates.py — the ONE clean/merge policy. Replaces v1's three divergent
 implementations (checks._tier0_is_clean, verdict.gate_decision, app
 merge_concerns)."""
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from pipeline import gates, profile, review_policy, reviewers, settings
@@ -3291,3 +3293,136 @@ class TestE2eGateHardening:
                      {"red_reason_match": {"matches": True, "confidence": "low"}},
                      {"red_green": _host(red_exit_confirm=0)}):
             assert not gates.e2e_escalated({**base, **over})
+
+
+class TestAbandonedClose:
+    """A PR closes as abandoned only on current blocking feedback at its newest
+    commit, newer than that commit, followed by two weeks of its author's
+    silence."""
+
+    PUSHED = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    FEEDBACK = PUSHED + timedelta(hours=2)
+    READ = FEEDBACK + timedelta(hours=1)
+    LATER = FEEDBACK + timedelta(days=gates.ABANDONED_QUIET_DAYS, hours=1)
+
+    def _abandoned(self, *, greptile: int | None = 3, design: bool = False, ci: bool = False,
+                   association: str = "NONE", author: str = "dev", **over) -> Pr:
+        g = {**_greptile(greptile), "observed_at": self.FEEDBACK.isoformat()}
+        entries: dict = {"greptile": g}
+        if design:
+            entries["design"] = {
+                "kind": "review", "reviewed_sha": HEAD, "observed_at": self.PUSHED.isoformat(),
+                "score": None, "summary": "s", "checks": [],
+                "findings": [{"path": "a.py", "line": 1, "severity": "major", "category": "reuse",
+                              "title": "dup", "body": "b", "resolved": False, "outdated": False,
+                              "verification": {"verdict": "confirmed"}}],
+                "extra": {"rubric": reviewers.DESIGN_RUBRIC,
+                          "comment": {"fingerprint": "f", "posted_at": self.FEEDBACK.isoformat()}}}
+        signals = {"ci": "failing" if ci else "passing", "mergeable": True,
+                   "checked_at": self.READ.isoformat(), "against_head_sha": HEAD}
+        if ci:
+            signals["ci_failures"] = {"failures": [{"name": "test",
+                                                    "started_at": self.FEEDBACK.isoformat()}],
+                                      "body_edited_at": None}
+        reviews = {**_reviews(**entries), "checked_at": self.READ.isoformat()}
+        meta = {"title": "t", "author": author, "author_association": association,
+                "state": "open", "draft": False, "head_sha": HEAD, "checked_at": NOW}
+        return _pr(**{"meta": meta, "signals": signals, "reviews": reviews, **over})
+
+    def _decide(self, pr: Pr, now: datetime | None = None, **live) -> tuple[bool, str]:
+        facts = gates.LivePr(**{"head": HEAD, "head_committed": self.PUSHED,
+                                "updated_at": self.FEEDBACK, "last_active": self.PUSHED,
+                                "ci_state": "failure", **live})
+        return gates.abandoned_close(pr, facts, now or self.LATER)
+
+    def test_greptile_under_the_bar_and_two_silent_weeks_close(self):
+        ok, why = self._decide(self._abandoned())
+        assert ok and "Greptile scored it 3/5" in why
+
+    def test_design_findings_posted_at_the_head_close(self):
+        ok, why = self._decide(self._abandoned(greptile=5, design=True))
+        assert ok and "design" in why
+
+    def test_failing_ci_at_the_head_closes(self):
+        ok, why = self._decide(self._abandoned(greptile=5, ci=True))
+        assert ok and "CI failed (test)" in why
+
+    def test_a_push_after_the_feedback_never_closes(self):
+        # The author pushed a new head; Greptile never re-ran on it.
+        assert self._decide(self._abandoned(), head="def456") == (
+            False, "its live head is not the ingested one")
+        pushed = self._abandoned(meta={"title": "t", "author": "dev", "state": "open",
+                                       "head_sha": "def456", "checked_at": NOW})
+        assert self._decide(pushed, head="def456")[0] is False
+
+    def test_feedback_older_than_the_newest_commit_never_closes(self):
+        ok, why = self._decide(self._abandoned(),
+                               head_committed=self.FEEDBACK + timedelta(minutes=1))
+        assert not ok and why == "no current blocking feedback newer than its newest commit"
+
+    def test_feedback_at_an_older_head_never_closes(self):
+        pr = self._abandoned(reviews=_reviews(greptile={**_greptile(3, "old"),
+                                                        "observed_at": self.FEEDBACK.isoformat()}))
+        assert self._decide(pr)[0] is False
+
+    def test_feedback_read_before_the_pr_last_changed_never_closes(self):
+        # Greptile may have re-scored the head since the store last read it.
+        assert self._decide(self._abandoned(),
+                            updated_at=self.READ + timedelta(minutes=1))[0] is False
+
+    def test_ci_no_longer_failing_live_never_closes(self):
+        # The author re-ran the failing job and it passed, with no push.
+        pr = self._abandoned(greptile=5, ci=True)
+        assert self._decide(pr, ci_state="success")[0] is False
+        assert self._decide(pr, ci_state=None)[0] is False
+
+    def test_an_author_reply_after_the_feedback_never_closes(self):
+        ok, why = self._decide(self._abandoned(), last_active=self.FEEDBACK + timedelta(days=1))
+        assert not ok and "after the feedback" in why
+
+    def test_under_two_weeks_of_silence_waits(self):
+        ok, why = self._decide(self._abandoned(), now=self.FEEDBACK + timedelta(days=13))
+        assert not ok and why.startswith("waiting since")
+
+    def test_the_quiet_clock_starts_at_the_newest_feedback(self):
+        pr = self._abandoned(design=True)
+        entry = pr.review_entry("design")
+        assert entry is not None
+        entry["extra"]["comment"]["posted_at"] = (self.FEEDBACK + timedelta(minutes=30)).isoformat()
+        assert self._decide(pr, now=self.LATER - timedelta(minutes=50))[0] is False
+        assert self._decide(pr)[0] is True
+
+    @pytest.mark.parametrize("association", ["MEMBER", "OWNER", "COLLABORATOR"])
+    def test_a_maintainer_teams_pr_never_closes(self, association):
+        assert self._decide(self._abandoned(association=association)) == (
+            False, "a maintainer's PR")
+
+    def test_a_bots_or_a_backed_pr_never_closes(self):
+        assert self._decide(self._abandoned(author="dependabot[bot]"))[0] is False
+        backed = self._abandoned(backing={"issue": 7})
+        assert self._decide(backed) == (False, "Prospector stands behind it")
+
+    def test_a_fix_in_flight_never_closes(self):
+        pr = self._abandoned(fix_request={"status": "running", "action": "rebase"})
+        assert self._decide(pr) == (False, "its rebase request is running")
+
+    def test_merge_conflicts_alone_never_close(self):
+        pr = self._abandoned(greptile=5)
+        assert pr.signals is not None
+        pr.signals["mergeable"] = False
+        assert self._decide(pr) == (
+            False, "no current blocking feedback newer than its newest commit")
+
+    def test_ci_that_may_be_stale_is_not_feedback(self):
+        pr = self._abandoned(greptile=5, ci=True)
+        assert pr.signals is not None
+        pr.signals["ci_failures"]["body_edited_at"] = (self.FEEDBACK
+                                                       + timedelta(minutes=5)).isoformat()
+        assert self._decide(pr)[0] is False
+
+    def test_unknown_activity_or_feedback_time_never_closes(self):
+        pr = self._abandoned(reviews=_reviews(greptile=_greptile(3)))  # no observed_at
+        assert self._decide(pr)[0] is False
+        assert self._decide(self._abandoned(), head_committed=None)[0] is False
+        assert self._decide(self._abandoned(), last_active=None)[0] is False
+        assert self._decide(self._abandoned(), updated_at=None)[0] is False

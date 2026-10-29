@@ -30,7 +30,7 @@ STALE_BEAT_SECONDS = 90.0
 
 # Statuses that mean a request is still working its way through the queue, so a
 # second request for the same PR would race it.
-IN_FLIGHT = ("queued", "running", "awaiting-review", "approved", "pushing")
+IN_FLIGHT = gates.FIX_IN_FLIGHT
 
 LEDGER_PHASE = "fix:single"
 

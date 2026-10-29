@@ -73,6 +73,7 @@ from prospector_app.backend import service
 from prospector_app.backend import suggested_actions
 from prospector_app.backend import pr_watch
 from prospector_app.backend import responses_sweep
+from prospector_app.backend import abandoned_close
 from prospector_app.backend import disk_watch
 from prospector_app.backend import subproc
 from prospector_app.backend import system_health
@@ -283,9 +284,9 @@ def _launch_fix_worker():
 def _launch_worker_cadences():
     """Start a worker machine's cadences: the stale merge-candidate refresh,
     the re-review hunter, the threat scan of new heads, the watch that records
-    new and pushed-to PRs from GitHub, the author-responses sweep, the Docker
-    disk check, the clustering lane and its PR summary cards. Skipped under
-    pytest."""
+    new and pushed-to PRs from GitHub, the author-responses sweep, the
+    abandoned-PR closes, the Docker disk check, the clustering lane and its PR
+    summary cards. Skipped under pytest."""
     import sys
     if "pytest" in sys.modules:
         return
@@ -294,6 +295,7 @@ def _launch_worker_cadences():
     threat_refresh.start()
     pr_watch.start()
     responses_sweep.start()
+    abandoned_close.start()
     disk_watch.start()
     cluster_refresh.startup()
     display_refresh.start()
