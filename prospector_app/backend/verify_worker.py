@@ -44,6 +44,7 @@ from pipeline import diff_cache
 from pipeline import gates
 from pipeline import headless_agent
 from pipeline import pr_outcomes
+from pipeline import review_policy
 from pipeline import reviewers
 from pipeline import security_review
 from pipeline import settings
@@ -589,11 +590,20 @@ def hunt_key(item: tuple[int, Pr]) -> tuple[int, bool, float, int]:
             pr.disposition != "merge", -_pain(pr), n)
 
 
-def design_hunt_key(item: tuple[int, Pr]) -> tuple[bool, tuple[int, bool, float, int]]:
-    """hunt_key, behind every head with no design review: a retry of a faulted
-    coverage run (design_review.retrying) waits, so a head that keeps faulting
-    never holds the lane."""
-    return (design_review.retrying(item[1]), hunt_key(item))
+def author_done(pr: Pr) -> bool:
+    """Whether the author has finished with `pr`'s head: Greptile's bar passes
+    at it and CI is not failing."""
+    return (pr.ci != "failing"
+            and review_policy.own_bar(pr, reviewers.GREPTILE).status == reviewers.PASS)
+
+
+def design_hunt_key(item: tuple[int, Pr]) -> tuple[bool, int, bool, bool, float, int]:
+    """hunt_key with an author-done head (author_done) right after the
+    maintainer and backed ranks, behind every head with no design review: a
+    retry of a faulted coverage run (design_review.retrying) waits, so a head
+    that keeps faulting never holds the lane."""
+    rank, unanalyzed, pain, n = hunt_key(item)
+    return (design_review.retrying(item[1]), rank, not author_done(item[1]), unanalyzed, pain, n)
 
 
 
@@ -646,8 +656,9 @@ def next_auto(open_lanes: frozenset[str] = frozenset({"security"})) -> tuple[str
     ("design", n) for the best head with no design review
     (design_review.huntable). Each lane orders a maintainer's PR
     (gates.priority_author) first, then an analyzed merge pick, then by
-    highest community pain, then lowest PR number; the design lane puts a
-    coverage retry behind them all (design_hunt_key).
+    highest community pain, then lowest PR number; the design lane puts an
+    author-done head ahead of the merge-pick rank and a coverage retry behind
+    them all (design_hunt_key).
 
     A maintainer's PR in either pool is picked first, in HUNT_ROTATION order,
     unless it is only a design coverage retry. Otherwise the lanes with work

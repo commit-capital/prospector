@@ -14,7 +14,7 @@ from prospector_app.backend import data
 from prospector_app.backend import service
 from prospector_app.backend import verify_worker
 from prospector_app.backend import worker_children
-from pipeline.testsupport import reviews_section, threat_section
+from pipeline.testsupport import greptile_entry, reviews_section, threat_section
 
 HEAD = "a" * 40
 
@@ -1357,6 +1357,20 @@ class TestDesignLane:
         data.refresh()
         picks = [verify_worker.next_auto(REVIEW_LANES) for _ in range(3)]
         assert picks == [("security", 1), ("design", 1), ("security", 1)]
+
+    @pytest.mark.parametrize("unfinished", ["greptile", "ci"])
+    def test_an_author_done_pr_is_reviewed_before_an_unfinished_one(self, store, unfinished):
+        """PR 1 is lower-numbered and more painful, but its author is not done:
+        Greptile is below the bar, or CI is failing."""
+        rec = _clean_merge_pr(1, pain=0.9)
+        if unfinished == "greptile":
+            rec["reviews"] = reviews_section(HEAD, greptile=greptile_entry(3, HEAD))
+        else:
+            rec["signals"]["ci"] = "failing"
+        store.save_pr(rec)
+        store.save_pr(_clean_merge_pr(2, pain=0.1))
+        data.refresh()
+        assert verify_worker.lane_order("design") == [2, 1]
 
     def test_design_alone(self, store):
         store.save_pr(_clean_merge_pr(1))
