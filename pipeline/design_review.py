@@ -130,7 +130,7 @@ def retrying(pr: Pr) -> bool:
     keeps, so a huntable head is in the pool only to retry a faulted coverage
     run."""
     entry = pr.review_entry(reviewers.DESIGN.id) or {}
-    return entry.get("reviewed_sha") == pr.head_sha and not reviewers.design_outdated(entry)
+    return freshness.same_patch(pr, entry.get("reviewed_sha")) and not reviewers.design_outdated(entry)
 
 
 def _within(clone: Path, path: str) -> bool:

@@ -76,7 +76,7 @@ def _design(rec: Pr) -> dict:
     if entry is None and not gating:
         return _c("design", d.label, "na", "not reviewed yet", None, advisory=True)
     b = review_policy.own_bar(rec, d)
-    detail = reviewers.digest(d, entry, b, rec.head_sha)["summary_line"]
+    detail = reviewers.digest(d, entry, b, review_policy.review_head(rec, d))["summary_line"]
     record = ((entry or {}).get("extra") or {}).get("coverage")
     covered = None if coverage.is_fault(record) else coverage.summary(record)
     if covered:
@@ -86,7 +86,7 @@ def _design(rec: Pr) -> dict:
              advisory=not gating)
     reviewed = (entry or {}).get("reviewed_sha")
     row["against"] = reviewed
-    row["stale"] = bool(reviewed and reviewed != rec.effective_head_sha)
+    row["stale"] = bool(reviewed and not freshness.same_patch(rec, reviewed))
     return row
 
 
