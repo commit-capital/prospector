@@ -196,7 +196,8 @@ class _Broker:
     `[tool, *args]` under `env` in `cwd`, answered with the tool's output (its
     last OUTPUT_BYTES) and exit code. When the agent's run ends, a tool still
     running for it is stopped and left unanswered: nobody is waiting, and its
-    spool is about to be removed."""
+    spool is about to be removed. The tool is the sandbox check, whose phase
+    container outlives it, so a stop sweeps the containers of dead checks."""
 
     def __init__(self, tools: Sequence[str], stand_ins: Path, tmp: Path, *,
                  env: Mapping[str, str], cwd: str) -> None:
@@ -212,6 +213,8 @@ class _Broker:
             self.spools[spool] = tool
             self.paths[tool] = str(stand_in)
         self._stop = threading.Event()
+        # Held to start a tool and to signal it, so a stop never misses one starting.
+        self._lock = threading.Lock()
         self._running: subprocess.Popen[bytes] | None = None
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
@@ -221,16 +224,33 @@ class _Broker:
         return self
 
     def __exit__(self, *exc: object) -> None:
-        self._stop.set()
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            if (proc := self._running) is not None:
-                try:
-                    os.killpg(proc.pid, sig)
-                except (ProcessLookupError, PermissionError):
-                    pass
-            if not self._thread.is_alive():
-                break
+        with self._lock:
+            self._stop.set()
+            stopped = self._signal(signal.SIGTERM)
+        if self._thread.is_alive():
             self._thread.join(timeout=10)
+        if self._thread.is_alive():
+            with self._lock:
+                self._signal(signal.SIGKILL)
+            self._thread.join(timeout=10)
+        if stopped:
+            from pipeline import verify_driver
+            try:
+                verify_driver.stop_orphaned_sandboxes()
+            except Exception as e:
+                print(f"[codex] removing a stopped check's sandbox containers failed: {e}",
+                      flush=True)
+
+    def _signal(self, sig: signal.Signals) -> bool:
+        """Send `sig` to the running tool's process group; whether one ran."""
+        proc = self._running
+        if proc is None or proc.returncode is not None:
+            return False
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+        return True
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -257,15 +277,19 @@ class _Broker:
 
     def _answer(self, spool: Path, name: str, tool: str, args: list[str]) -> None:
         try:
-            self._running = proc = subprocess.Popen(
-                [tool, *args], cwd=self.cwd, env=self.env, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+            with self._lock:
+                if self._stop.is_set():
+                    return
+                self._running = proc = subprocess.Popen(
+                    [tool, *args], cwd=self.cwd, env=self.env, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
             output = proc.communicate()[0][-OUTPUT_BYTES:]
             code = proc.returncode
         except OSError as e:
             output, code = f"the host could not run the check: {e}\n".encode(), 127
         finally:
-            self._running = None
+            with self._lock:
+                self._running = None
         if self._stop.is_set():
             return
         (spool / f"{name}.out").write_bytes(output)

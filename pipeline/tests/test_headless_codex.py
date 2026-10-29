@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import headless_agent, headless_codex
+from pipeline import headless_agent, headless_codex, verify_driver
 
 TOOL = str(headless_agent.REPO_ROOT / "prospector_app" / "agent" / "issue-sandbox-check")
 
@@ -75,33 +76,82 @@ def test_the_host_runs_a_brokered_tool_with_the_stand_in_s_arguments(tmp_path):
     assert done.stdout == f"test|a b.ts|$(cat /etc/passwd)|cwd={tmp_path} pin=7\n"
 
 
-def test_a_check_still_running_when_the_agent_exits_is_stopped_and_not_answered(
-        tmp_path, monkeypatch):
-    pid_file = tmp_path / "pid"
+def _broker_running(tmp_path, monkeypatch, script: str):
+    """A broker over a check `script`, the sweep of orphaned sandboxes it calls
+    recorded, and a crash in its thread caught."""
     tool = tmp_path / "check"
-    tool.write_text(f'#!/bin/sh\necho $$ > "{pid_file}"\nsleep 60\n')
+    tool.write_text(f"#!/bin/sh\n{script}\n")
     tool.chmod(0o755)
     (tmp_path / "bin").mkdir()
     (tmp_path / "tmp").mkdir()
+    swept: list[bool] = []
+    monkeypatch.setattr(verify_driver, "stop_orphaned_sandboxes", lambda: swept.append(True))
     crashed: list[BaseException | None] = []
     monkeypatch.setattr(threading, "excepthook", lambda args: crashed.append(args.exc_value))
-    with headless_codex._Broker([str(tool)], tmp_path / "bin", tmp_path / "tmp",
-                                env={"PATH": os.environ["PATH"]}, cwd=str(tmp_path)) as broker:
+    broker = headless_codex._Broker([str(tool)], tmp_path / "bin", tmp_path / "tmp",
+                                    env={"PATH": os.environ["PATH"]}, cwd=str(tmp_path))
+    return tool, broker, swept, crashed
+
+
+def _wait_for_true(ready) -> None:
+    deadline = time.monotonic() + 30
+    while not ready():
+        assert time.monotonic() < deadline, "the check never started"
+        time.sleep(0.05)
+
+
+def test_a_check_still_running_when_the_agent_exits_is_stopped_and_not_answered(
+        tmp_path, monkeypatch):
+    pid_file = tmp_path / "pid"
+    tool, broker, swept, crashed = _broker_running(
+        tmp_path, monkeypatch, f'echo $$ > "{pid_file}"\nsleep 60')
+    with broker:
         agent = subprocess.Popen([broker.paths[str(tool)]], stdout=subprocess.DEVNULL)
-        deadline = time.monotonic() + 30
-        while not pid_file.exists() and time.monotonic() < deadline:
-            time.sleep(0.1)
+        _wait_for_true(pid_file.exists)
         exiting = time.monotonic()
     try:
         assert time.monotonic() - exiting < 5
-        check = int(pid_file.read_text())
         with pytest.raises(ProcessLookupError):
-            os.kill(check, 0)
+            os.kill(int(pid_file.read_text()), 0)
         assert not broker._thread.is_alive()
         assert not list((tmp_path / "tmp").rglob("*.out"))
+        assert swept == [True]
         assert crashed == []
     finally:
         agent.kill()
+
+
+def test_a_check_starting_as_the_agent_exits_is_still_stopped(tmp_path, monkeypatch):
+    tool, broker, swept, crashed = _broker_running(tmp_path, monkeypatch, "sleep 60")
+    started: list[subprocess.Popen] = []
+    real_popen = subprocess.Popen
+
+    def slow_to_return(argv, *args, **kwargs):
+        proc = real_popen(argv, *args, **kwargs)
+        if argv[0] == str(tool):
+            started.append(proc)
+            time.sleep(1)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", slow_to_return)
+    with broker:
+        agent = real_popen([broker.paths[str(tool)]], stdout=subprocess.DEVNULL)
+        _wait_for_true(lambda: bool(started))
+        exiting = time.monotonic()
+    try:
+        assert time.monotonic() - exiting < 5
+        assert started[0].wait(timeout=5) == -signal.SIGTERM
+        assert swept == [True]
+        assert crashed == []
+    finally:
+        agent.kill()
+
+
+def test_an_agent_that_exits_with_no_check_running_sweeps_nothing(tmp_path, monkeypatch):
+    _, broker, swept, crashed = _broker_running(tmp_path, monkeypatch, "exit 0")
+    with broker:
+        pass
+    assert swept == [] and crashed == []
 
 
 def test_the_prompt_names_the_stand_in_in_place_of_the_tool():
