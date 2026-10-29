@@ -329,7 +329,7 @@ def issue_fix_worker_enabled() -> bool:
 
 
 def feature_screen() -> bool:
-    """Whether an idle issue-fix worker screens open feature requests."""
+    """Whether the issue-fix worker screens open feature requests."""
     return os.environ.get("TRIAGE_FEATURE_SCREEN", "") == "1"
 
 

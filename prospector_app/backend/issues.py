@@ -356,6 +356,7 @@ def get_issue(n: int) -> dict | None:
                              {**{k: v for k, v in screen.items() if k != "mockup"},
                               "has_mockup": bool(screen.get("mockup"))})
     row["feature_decision"] = i.feature_decision
+    row["is_feature_request"] = feature_screen.is_feature_request(i)
     return row
 
 

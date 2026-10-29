@@ -140,12 +140,13 @@ that changes the UI, a second agent writes an HTML mockup. The host checks it at
 write time (`feature_screen.check_mockup`) and the app shows it only in a
 sandboxed, CSP-locked frame.
 
-- **Unattended:** `TRIAGE_FEATURE_SCREEN=1`, run by an idle issue-fix worker.
+- **Unattended:** `TRIAGE_FEATURE_SCREEN=1` on an issue-fix worker, while its
+  lane is healthy and its AI capacity open.
 - **Backfill:** `uv run prospector feature-screen-backfill [--limit N]`, or the
   Control job `feature-screen`.
 - **Decide:** Home lists the requests worth considering, and the issue page
   carries the decision. *Implement* queues an operator solve in feature mode
-  through the fix lane; *Not for <repo>* declines, and *Reopen* undoes either.
+  through the fix lane; *Not for <repo>* declines, and *Reopen* clears a decline.
 
 Nothing is posted upstream.
 

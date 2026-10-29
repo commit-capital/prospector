@@ -412,7 +412,7 @@ def _judge(store: IssueStore, issue: Issue, base: prove.PinnedBase, trigger: str
 
 # Feature requests whose screen the agent failed this process, by when.
 _screen_failed: dict[int, float] = {}
-# Feature requests screened per idle pass.
+# Feature requests screened per coordinator pass.
 SCREEN_BATCH = 3
 
 
@@ -569,8 +569,8 @@ def _idle(store: IssueStore, slots: int) -> int:
 
 
 def _drain(slots: int) -> None:
-    """The coordinator: reclaim, replies, the ten-minute pass, triage and the
-    hunt, each on its own timer while the `slots` slot threads run."""
+    """The coordinator: reclaim, replies, the ten-minute pass, feature screening,
+    triage and the hunt, each on its own timer while the `slots` slot threads run."""
     store = IssueStore()
     last_replies = 0.0
     last_followup = 0.0
@@ -594,11 +594,11 @@ def _drain(slots: int) -> None:
                 if time.monotonic() - last_followup > FOLLOWUP_POLL_SECONDS:
                     _every_ten_minutes(store)
                     last_followup = time.monotonic()
+                if settings.feature_screen():
+                    screen_features(store, SCREEN_BATCH)
                 if (settings.issue_fix_hunt() and not _budget_spent(store)
                         and (idle := _idle(store, slots)) > 0):
                     triage(store, TRIAGE_BATCH)
-                    if settings.feature_screen():
-                        screen_features(store, SCREEN_BATCH)
                     fill(store, idle)
         except Exception:
             traceback.print_exc()

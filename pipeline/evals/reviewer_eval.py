@@ -515,7 +515,7 @@ def _summary(result: GateResult) -> str:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="python -m pipeline.evals.reviewer_eval")
     ap.add_argument("--init", action="store_true", help="pin every unpinned reviewer, provisionally")
-    ap.add_argument("--reviewer", choices=verdict_log.REVIEWERS)
+    ap.add_argument("--reviewer", choices=tuple(configs()))
     ap.add_argument("--live", action="store_true", help="run the gate, calling agents")
     ap.add_argument("--k", type=int, default=3, help="samples per side where they disagree")
     sub = ap.add_subparsers(dest="cmd")

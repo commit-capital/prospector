@@ -5,12 +5,12 @@ import { FlyoutIssueLink } from "./FlyoutIssueLink";
 
 const VERDICT_CHIP = { consider: "chip-green", "not-a-fit": "chip-muted", unclear: "chip-amber" } as const;
 
-// The feature-request screen and the maintainer's decision buttons, on every
-// feature request whatever the verdict. Nothing for an issue with neither.
+// The maintainer's decision buttons on every feature request, screened or not,
+// with the current screen when there is one.
 export function FeatureScreenPanel({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) {
   const screen = d.feature_screen;
   const decision = d.feature_decision;
-  if (!screen && !decision) return null;
+  if (!d.is_feature_request && !screen && !decision) return null;
   return (
     <section className="panel">
       <div className="panel-head"><h3>Feature request</h3></div>

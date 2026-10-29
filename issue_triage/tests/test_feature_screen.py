@@ -83,6 +83,10 @@ def _issue(tmp_path, labels: tuple[str, ...] = (), state: str = "open"):
     "<html><body><!-- --!> <img src=//evil.example/x.png> --></body></html>",
     "<html><body><? > <img src=//evil.example/x.png> ?></body></html>",
     "<html><body><![CDATA[x]]></body></html>",
+    "<html><body><svg><style><a href=https://evil.example/login><text>Sign in</text></a></style></svg></body></html>",
+    "<html><body><svg><title><image href=https://evil.example/x.png/></title></svg></body></html>",
+    "<html><body><math><style><img src=//evil.example/x.png></style></math></body></html>",
+    "<html><body><svg><textarea><a href=//evil.example>x</a></textarea></svg></body></html>",
 ])
 def test_check_mockup_refuses_escapes(html):
     assert feature_screen.check_mockup(html) is not None

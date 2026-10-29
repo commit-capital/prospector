@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+import urllib.parse
 from collections.abc import Iterable
 from datetime import timedelta
 from pathlib import Path
@@ -56,7 +57,8 @@ def _fetch_closed() -> list[dict] | None:
     None when any listing fails."""
     found: dict[int, dict] = {}
     for label in profile.active().feature_labels:
-        rows = gh.gh_list(f"repos/{config.repo()}/issues?state=closed&labels={label}"
+        quoted = urllib.parse.quote(label, safe="")
+        rows = gh.gh_list(f"repos/{config.repo()}/issues?state=closed&labels={quoted}"
                           "&sort=updated&per_page=100")
         if rows is None:
             return None

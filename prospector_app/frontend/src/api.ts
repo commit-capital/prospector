@@ -1737,6 +1737,7 @@ export interface FeatureRequestItem {
 export interface IssueDetail extends IssueRow {
   feature_screen: FeatureScreen | null;
   feature_decision: FeatureDecision | null;
+  is_feature_request: boolean;
   body: string | null;
   display: IssueDisplay | null;
   /** What happened to Prospector's fix and why it waits on you, in plain

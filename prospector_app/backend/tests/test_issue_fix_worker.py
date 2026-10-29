@@ -329,6 +329,24 @@ def test_no_idle_slot_hunts_nothing(hunting, monkeypatch, one_pass):
     assert calls == []
 
 
+@pytest.mark.parametrize("setting, screened", [("1", True), ("0", False)])
+def test_the_feature_screen_setting_alone_runs_the_screener(hunting, monkeypatch, one_pass,
+                                                             setting, screened):
+    monkeypatch.setenv("TRIAGE_FEATURE_SCREEN", setting)
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_HUNT", "0")
+    calls: list[str] = []
+    monkeypatch.setattr(issue_fix_worker, "IssueStore", lambda: hunting)
+    monkeypatch.setattr(issue_fix_worker, "_reclaim", lambda s: None)
+    monkeypatch.setattr(issue_fix_worker, "poll_replies", lambda s: 0)
+    monkeypatch.setattr(issue_fix_worker, "_every_ten_minutes", lambda s: None)
+    monkeypatch.setattr(lane_health, "open_or_retest", lambda lane: True)
+    monkeypatch.setattr(issue_fix_worker, "_idle", lambda s, slots: 0)
+    monkeypatch.setattr(issue_fix_worker, "screen_features",
+                        lambda s, n: calls.append("screen") or [])
+    issue_fix_worker._drain(3)
+    assert (calls == ["screen"]) is screened
+
+
 def test_a_fill_stops_when_capacity_closes_midway(hunting, capacity, monkeypatch):
     queue = fix_review.queue
 

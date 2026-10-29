@@ -46,12 +46,13 @@ BACKGROUND_HINTS: dict[str, str] = {
     "reingest": "Re-read PRs from GitHub to refresh their stored facts.",
     "threat-evidence:capture": "Preserved the diff and metadata of a PR head flagged malicious.",
 }
-# Phases a Control-tab job writes and the clustering lane writes too; the
-# lane's rows carry `trigger: worker`.
+# Phases a Control-tab job writes and a worker lane writes too; the lane's rows
+# carry `trigger: worker`.
 WORKER_BACKGROUND: dict[str, tuple[str, str]] = {
     "cluster:summaries": ("summary batch", "summary batches"),
     "cluster:assign": ("cluster placement", "cluster placements"),
-    "analyze:commit": ("cluster analysis", "cluster analyses")}
+    "analyze:commit": ("cluster analysis", "cluster analyses"),
+    "feature-screen:run": ("feature screen", "feature screens")}
 WORKER_TRIGGERS = frozenset({"worker", "autohunt", "hunter"})
 UNATTRIBUTED = "unattributed"
 WINDOW_HOURS = 24

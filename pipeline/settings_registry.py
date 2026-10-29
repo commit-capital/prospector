@@ -169,7 +169,7 @@ SETTINGS: tuple[Setting, ...] = (
     _b("TRIAGE_ISSUE_FIX_WORKER", "workers", "Issue-fix worker",
        "This machine runs the issue-fix factory."),
     _b("TRIAGE_FEATURE_SCREEN", "workers", "Feature request screening",
-       "An idle issue-fix worker screens open feature requests for the maintainers' shortlist."),
+       "The issue-fix worker screens open feature requests for the maintainers' shortlist."),
     _b("TRIAGE_CLUSTER_WORKER", "workers", "Clustering worker",
        "This machine summarizes, clusters, and analyzes new PRs every hour, within the "
        "daily limits. One machine runs it at a time."),

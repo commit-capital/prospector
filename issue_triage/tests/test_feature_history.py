@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -46,6 +47,15 @@ def test_refresh_is_fresh_for_a_day(monkeypatch: pytest.MonkeyPatch) -> None:
     assert (d / "closed-5.md").exists()
     feature_history.refresh([], force=True)
     assert len(calls) == 2
+
+
+def test_refresh_quotes_the_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(feature_history.profile, "active",
+                        lambda: SimpleNamespace(feature_labels=("type: feature & idea",)))
+    monkeypatch.setattr(gh, "gh_list", lambda path, **kw: calls.append(path) or [])
+    feature_history.refresh([])
+    assert calls[0].endswith("labels=type%3A%20feature%20%26%20idea&sort=updated&per_page=100")
 
 
 def test_refresh_drops_pull_requests_and_caps(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -217,7 +217,7 @@ JOB_SPECS: dict[str, JobSpec] = {
         "detail": "screen open feature requests against the product and past decisions. "
                   "Newest first; agents, store writes only.",
         "agentic": True,
-        "ledger": ("issue", ("feature-screen",)),
+        "ledger": ("issue", ("feature-screen:run",)),
         "needs_count": True,
         "count_default": 50,
         "count_noun": "requests",

@@ -157,6 +157,15 @@ def test_feature_mockup_returns_html_and_detail_omits_it(client):
     assert d["feature_decision"] is None
 
 
+def test_detail_marks_a_feature_request_whether_or_not_it_was_screened(client):
+    c, store = client
+    _issue(store, 7, screen=None)
+    _issue(store, 8, labels=("bug",), screen=None)
+    d = c.get("/api/issues/7").json()
+    assert d["is_feature_request"] is True and d["feature_screen"] is None
+    assert c.get("/api/issues/8").json()["is_feature_request"] is False
+
+
 def test_decisions_logged_to_activity(client):
     c, store = client
     _issue(store)
