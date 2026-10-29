@@ -460,3 +460,19 @@ def test_an_outsiders_pr_never_scans_issues(store, monkeypatch):
         raise AssertionError("an outsider's PR read the issues")
     monkeypatch.setattr(issue_data, "issues", boom)
     assert _classify(store, _rec())["bucket"] != "handed-back"
+
+
+def test_a_new_issue_snapshot_rebuilds_only_prospectors_own_pr_rows(store, monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_LOGIN", "commitperclip")
+    ours, theirs = _rec(1), _rec(2)
+    ours["meta"]["author"] = "app/commitperclip"
+    store.save_pr(ours)
+    store.save_pr(theirs)
+    data.refresh()
+    monkeypatch.setattr(issue_data, "issues", lambda: {})
+    monkeypatch.setattr(issue_data, "generation", lambda: 1)
+    snap = data.prs()
+    service._row_cache(snap).update({1: {"pr": 1}, 2: {"pr": 2}})
+    assert set(service._row_cache(snap)) == {1, 2}
+    monkeypatch.setattr(issue_data, "generation", lambda: 2)
+    assert set(service._row_cache(snap)) == {2}

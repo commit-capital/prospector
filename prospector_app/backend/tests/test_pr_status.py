@@ -106,12 +106,19 @@ def test_a_ledger_row_without_an_outcome_is_not_tried(store):
 
 @pytest.fixture
 def lanes(monkeypatch):
-    def setup(order: dict[str, list[int]], fix: list[tuple[str, int]], runs: list[dict]) -> None:
-        monkeypatch.setattr(pr_status.verify_worker, "hunt_candidates", lambda limit: order)
-        monkeypatch.setattr(pr_status.fix_worker, "hunt_candidates", lambda limit: fix)
-        monkeypatch.setattr(pr_status.data, "prs", lambda: {})
+    def setup(lane: str | None, order: list[int], runs: list[dict]) -> list[str]:
+        asked: list[str] = []
+
+        def lane_order(name: str) -> list[int]:
+            asked.append(name)
+            return order
+        monkeypatch.setattr(pr_status, "_lane", lambda pr, standing: lane)
+        monkeypatch.setattr(pr_status, "lane_order", lane_order)
+        monkeypatch.setattr(pr_status.data, "prs", lambda: {7: object(), 42: object()})
+        monkeypatch.setattr(pr_status.automation, "classify", lambda pr: {"bucket": "x"})
         monkeypatch.setattr(pr_status.data, "runs",
                             lambda since=None: [storekit.parse_run(r) for r in runs])
+        return asked
     return setup
 
 
@@ -120,25 +127,44 @@ def _run(phase: str) -> dict:
 
 
 def test_position_and_eta_come_from_the_pick_order_and_the_lane_rate(lanes):
-    lanes({"security": [3, 7, 9], "verify": [], "design": []}, [],
-          [_run("security:review-one") for _ in range(12)])
+    lanes("security", [3, 7, 9], [_run("security:review-one") for _ in range(12)])
     assert pr_status.next_step(7, days=1) == {"lane": "security", "position": 2, "of": 3,
                                               "eta_hours": 4.0}
 
 
 def test_a_lane_with_no_runs_has_no_eta(lanes):
-    lanes({"security": [], "verify": [], "design": [7]}, [], [])
+    lanes("design", [7], [])
     step = pr_status.next_step(7)
     assert step is not None and step["eta_hours"] is None
 
 
 def test_a_pr_in_no_pool_has_no_next_step(lanes):
-    lanes({"security": [3], "verify": [], "design": []}, [("rebase", 5)], [])
+    lanes("security", [3], [])
     assert pr_status.next_step(42) is None
 
 
-def test_an_autofix_pick_is_the_fix_lane(lanes):
-    lanes({"security": [], "verify": [], "design": []}, [("rebase", 5), ("fix", 7)],
-          [_run("fix:single") for _ in range(24)])
+def test_a_pr_no_lane_takes_orders_no_queue(lanes):
+    asked = lanes(None, [7], [])
+    assert pr_status.next_step(7) is None and asked == []
+
+
+def test_only_the_lane_the_standing_names_is_ordered(lanes):
+    asked = lanes("fix", [5, 7], [_run("fix:single") for _ in range(24)])
     assert pr_status.next_step(7, days=1) == {"lane": "fix", "position": 2, "of": 2,
                                               "eta_hours": 2.0}
+    assert asked == ["fix"]
+
+
+@pytest.mark.parametrize("bucket, lane", [("hunt", "fix"), ("budgeted", "fix")])
+def test_a_hunter_pick_waits_in_the_fix_lane(store, monkeypatch, bucket, lane):
+    pr = _load(store, _rec())
+    monkeypatch.setattr(pr_status.design_review, "huntable", lambda p: True)
+    assert pr_status._lane(pr, {"bucket": bucket}) == lane
+
+
+def test_an_unreviewed_head_waits_in_the_design_lane(store, monkeypatch):
+    pr = _load(store, _rec())
+    monkeypatch.setattr(pr_status.gates, "blocked_on_security", lambda p: False)
+    monkeypatch.setattr(pr_status.verify_worker, "auto_verifiable", lambda p: False)
+    monkeypatch.setattr(pr_status.design_review, "huntable", lambda p: True)
+    assert pr_status._lane(pr, {"bucket": "waiting"}) == "design"

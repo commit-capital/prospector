@@ -25,11 +25,12 @@ function eta(hours: number | null): string {
 /** The top of an open PR's page: its state, the one sentence why, the path
  *  through the stages, and the actions that fit (pr_status / automation). The
  *  merge, close and checks actions live on the page; the block points at them. */
-export function PRStatusBlock({ prNum, reload, onRun, onScrollTo }: {
+export function PRStatusBlock({ prNum, reload, onRun, onScrollTo, onActed }: {
   prNum: number;
   reload: number;
   onRun: (lane: NextStep["lane"]) => void;
   onScrollTo: (id: "pr-actions" | "pr-checks") => void;
+  onActed: () => void;
 }) {
   const { dryRun, pushToast } = useExec();
   const { askFresh } = useAgentPane();
@@ -54,9 +55,9 @@ export function PRStatusBlock({ prNum, reload, onRun, onScrollTo }: {
   const { standing, stages, tried, issue, seed } = status;
   const ours = issue !== null;
 
-  const act = async (what: string, call: () => Promise<unknown>) => {
+  const act = async (what: string, call: () => Promise<unknown>, tone: "green" | "yellow" = "green") => {
     setBusy(true);
-    try { await call(); pushToast(`#${prNum} · ${what}`, "green"); }
+    try { await call(); pushToast(`#${prNum} · ${what}`, tone); onActed(); }
     catch (e) { pushToast(`#${prNum} · ${what} failed`, "red", { detail: String(e) }); }
     finally { setBusy(false); }
   };
@@ -74,7 +75,7 @@ export function PRStatusBlock({ prNum, reload, onRun, onScrollTo }: {
   const quickClick = () => {
     if (standing.bucket === "approve-parked") {
       void act(dryRun ? "parked change approved (dry run)" : "parked change approved",
-        () => api.approveFix(prNum, dryRun));
+        () => api.approveFix(prNum, dryRun), dryRun ? "yellow" : "green");
     } else onScrollTo(standing.bucket === "malicious" ? "pr-actions" : "pr-checks");
   };
 
@@ -111,7 +112,8 @@ export function PRStatusBlock({ prNum, reload, onRun, onScrollTo }: {
         {actionsFor(standing.state, next?.lane ?? null).map((a) => {
           switch (a) {
             case "run-now": return next && (
-              <button key={a} className="btn-secondary sm" disabled={busy} onClick={() => onRun(next.lane)}>
+              <button key={a} className="btn-secondary sm" disabled={busy}
+                onClick={() => { onRun(next.lane); onActed(); }}>
                 Run {LANE_NAME[next.lane]} now</button>);
             case "merge": return <button key={a} className="btn-primary sm" onClick={() => onScrollTo("pr-actions")}>Merge…</button>;
             case "quick-click": return <button key={a} className="btn-primary sm" disabled={busy} onClick={quickClick}>

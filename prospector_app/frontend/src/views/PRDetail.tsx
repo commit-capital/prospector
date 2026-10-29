@@ -600,7 +600,8 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       <PRStatusBlock prNum={prNum} reload={actLog}
         onRun={(lane) => (lane === "security" ? runSecurity() : lane === "design" ? runDesign()
           : lane === "verify" ? void queueVerify() : undefined)}
-        onScrollTo={(id) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" })} />
+        onScrollTo={(id) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+        onActed={() => { run.refresh(); setActLog((k) => k + 1); reloadPr(); }} />
       {/* Problems first, loud, above the Summary: the security verdict when it
           is anything but a current GREEN, then the merge blocks. */}
       {sum && securityProblem && (

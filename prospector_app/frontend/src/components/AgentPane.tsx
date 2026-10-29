@@ -421,13 +421,18 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     return () => { stale = true; };
   }, [open]);
 
-  const send = useCallback((text: string) => {
-    if (!text.trim() || streaming) return;
+  // `fresh` sends `text` as the first message of a new session, leaving any
+  // thread on screen (and an answer it is streaming) to run on in the background.
+  const send = useCallback((text: string, fresh = false) => {
+    if (!text.trim() || (streaming && !fresh)) return;
     speech.stop();
     setFollowLatest(true);
-    setMsgs((m) => [...m, { role: "user", text: (anchor ? `[${anchor.file}:${anchor.line}] ` : "") + text }, { role: "assistant", text: "" }]);
+    const asked = [{ role: "user" as const, text: (anchor ? `[${anchor.file}:${anchor.line}] ` : "") + text },
+      { role: "assistant" as const, text: "" }];
+    setMsgs((m) => (fresh ? asked : [...m, ...asked]));
     setInput("");
-    let chatId = effectiveActiveId;
+    if (fresh) { esRef.current?.close(); esRef.current = null; setRecentOpen(false); }
+    let chatId = fresh ? null : effectiveActiveId;
     let key = currentTitleKey;
     if (chatId) {
       // Fresh activity floats a named session back to the top of Recent, under
@@ -445,7 +450,7 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
       setActiveSessionId(chatId);
     }
     // The thread's first message names it; later messages keep that name.
-    if (!hasConversation && !titles[key]) {
+    if ((fresh || !hasConversation) && !titles[key]) {
       api.chatTitle(text)
         .then(({ title }) => { if (title) setTitles((t) => ({ ...t, [key]: title })); })
         .catch(() => {});
@@ -559,20 +564,12 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
   }, [streaming, stop]);
 
   // Send a question another view handed off (the diff popup's "Explain", a
-  // status block's "Ask the agent"). A fresh one starts a new session first and
-  // is sent on the next render, once that session is the active one.
-  const [freshText, setFreshText] = useState<string | null>(null);
+  // status block's "Ask the agent"); a fresh one opens a new session.
   useEffect(() => {
-    if (!pending) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- act on the question handed off from another view
-    setOpen(true); if (pending.fresh) { createSession(); setFreshText(pending.text); } else send(pending.text); clearPending();
+    if (pending) { setOpen(true); send(pending.text, pending.fresh); clearPending(); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending]);
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- the handed-off question is sent once
-    if (freshText !== null) { send(freshText); setFreshText(null); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [freshText]);
 
   return (
     <div className={`agentpane ${open ? "open" : "collapsed"}`}>

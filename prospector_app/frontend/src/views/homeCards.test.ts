@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { AutomationOwner } from "../api.ts";
 import { LANES } from "../components/explorer/lanes.ts";
 import {
   breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
@@ -229,4 +230,14 @@ test("painLabel formats a score to two decimals and hides missing ones", () => {
   assert.equal(painLabel(0), "");
   assert.equal(painLabel(null), "");
   assert.equal(painLabel(undefined), "");
+});
+
+test("every standing a Prospector fix PR takes shows on a Home card", () => {
+  const covers = (bucket: string, owner: AutomationOwner) => HOME_CARDS.some((c) => {
+    const b = c.spec.automation_bucket, o = c.spec.automation_owner;
+    return (Array.isArray(b) ? b : [b]).includes(bucket) || (Array.isArray(o) ? o : [o]).includes(owner);
+  });
+  assert.ok(covers("followup", "worker"), "followup");
+  assert.ok(covers("handed-back", "you"), "handed-back");
+  assert.ok(covers("with-maintainers", "maintainers"), "with-maintainers");
 });

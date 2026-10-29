@@ -3,7 +3,7 @@
 was tried (the lanes' outcomes, `pipeline.outcomes`), and, for a stalled PR,
 the first message that asks the agent why. For a moving PR, `next_step`
 says where it stands in its lane's queue and roughly when its turn comes; it
-orders every hunter pool, so the page asks for it separately.
+orders that lane's whole pool, so the page asks for it separately.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 from issue_triage import fix_review, followup
-from pipeline import freshness, outcomes, storekit
+from pipeline import design_review, freshness, gates, outcomes, storekit
 from prospector_app.backend import (automation, data, fix_worker, issue_data, pr_checks,
                                     verify_worker)
 
@@ -144,18 +144,39 @@ def lane_rate(lane: str, *, days: int = 7) -> float | None:
     return count / (days * 24) if count else None
 
 
-def next_step(n: int, *, days: int = 7) -> NextStep | None:
-    """Where PR `n` stands in the first hunter queue that holds it, in the
-    order the hunters pick, and roughly how many hours until its turn at the
-    lane's recent pace. None when no queue holds it."""
-    limit = max(len(data.prs()), 1000)
-    order: dict[str, list[int]] = dict(verify_worker.hunt_candidates(limit))
-    order["fix"] = [pr for _, pr in fix_worker.hunt_candidates(limit)]
-    for lane in ("security", "verify", "design", "fix"):
-        queue = order.get(lane) or []
-        if n in queue:
-            position = queue.index(n) + 1
-            rate = lane_rate(lane, days=days)
-            return {"lane": lane, "position": position, "of": len(queue),
-                    "eta_hours": round(position / rate, 1) if rate else None}
+def _lane(pr: Pr, standing: dict) -> str | None:
+    """The hunter lane a moving PR waits in: the autofix hunter's pick its
+    standing names, else the first review lane whose pool it is in."""
+    if standing.get("bucket") in ("hunt", "budgeted"):
+        return "fix"
+    if gates.blocked_on_security(pr):
+        return "security"
+    if verify_worker.auto_verifiable(pr):
+        return "verify"
+    if design_review.huntable(pr):
+        return "design"
     return None
+
+
+def lane_order(lane: str) -> list[int]:
+    """Every PR in `lane`'s queue, in the order its hunter picks them."""
+    if lane == "fix":
+        return [n for _, n in fix_worker.hunt_candidates(len(data.prs()))]
+    return verify_worker.lane_order(lane)
+
+
+def next_step(n: int, *, days: int = 7) -> NextStep | None:
+    """Where PR `n` stands in the hunter queue it waits in, in the order that
+    hunter picks, and roughly how many hours until its turn at the lane's
+    recent pace. None when it waits in no queue."""
+    pr = data.prs().get(n)
+    lane = _lane(pr, automation.classify(pr) or {}) if pr is not None else None
+    if lane is None:
+        return None
+    queue = lane_order(lane)
+    if n not in queue:
+        return None
+    position = queue.index(n) + 1
+    rate = lane_rate(lane, days=days)
+    return {"lane": lane, "position": position, "of": len(queue),
+            "eta_hours": round(position / rate, 1) if rate else None}
