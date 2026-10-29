@@ -150,17 +150,14 @@ def _run(store: Store, pr: int) -> int:
         _say(f"✓ PR #{pr} is {rec.state}; refreshed its meta, nothing to re-analyze.")
         return 0
 
-    # 2. The agentic tail reads the diff and must judge the current head, so make
-    #    both the cached diff and the deterministic threat verdict track it. The
-    #    scan also records whether the head is the same patch as an earlier one,
-    #    whose summary and analysis then still hold.
-    sha = rec.head_sha or ""
-    _say("② Caching the diff for the current head…")
-    diff_cache.fetch_diff(pr, sha, store=store)
-    _say("③ Threat-rescanning the current head…")
-    _threat_rescan(pr)
-    rec = store.load_pr(pr)
-    assert rec is not None
+    # 2. The threat verdict must track the current head. Its scan also records
+    #    whether the head is the same patch as an earlier one, whose summary and
+    #    analysis then still hold.
+    if not is_current(rec, "threat"):
+        _say("② Threat-rescanning the current head…")
+        _threat_rescan(pr)
+        rec = store.load_pr(pr)
+        assert rec is not None
 
     needs_summary = not is_current(rec, "summary")
     needs_analysis = not is_current(rec, "analysis")
@@ -168,6 +165,11 @@ def _run(store: Store, pr: int) -> int:
         _say(f"✓ already current at {(rec.head_sha or '?')[:7]} — signals/drift refreshed; "
              f"summary + analysis unchanged. Nothing to reingest.")
         return 0
+
+    # The agentic tail reads the current head's diff.
+    sha = rec.head_sha or ""
+    _say("③ Caching the diff for the current head…")
+    diff_cache.fetch_diff(pr, sha, store=store)
 
     # 3. Re-summarize if the summary went stale (mechanism-level, feeds ANALYZE).
     if needs_summary:

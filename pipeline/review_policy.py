@@ -100,10 +100,15 @@ def review_head(pr: Pr, reviewer: Reviewer) -> str | None:
     """The head `reviewer`'s entry on `pr` is judged against. A review
     Prospector runs holds at an earlier head with the same patch; a GitHub
     reviewer reviews each push itself."""
-    reviewed = (pr.review_entry(reviewer.id) or {}).get("reviewed_sha")
-    if reviewer.id == reviewers.DESIGN.id and freshness.same_patch(pr, reviewed):
-        return reviewed
+    if reviewer.id == reviewers.DESIGN.id and design_carried(pr):
+        return (pr.review_entry(reviewer.id) or {}).get("reviewed_sha")
     return pr.head_sha
+
+
+def design_carried(pr: Pr) -> bool:
+    """Whether `pr`'s design review holds at its current head (freshness.carries)."""
+    entry = pr.review_entry(reviewers.DESIGN.id) or {}
+    return freshness.carries(pr, entry.get("reviewed_sha"), reviewers.open_findings(entry))
 
 
 def own_bar(pr: Pr, reviewer: Reviewer) -> Bar:

@@ -651,11 +651,10 @@ class Pr:
         if reviews is not None:
             _stamp(self.rec, "reviews", reviews, None)
 
-    def set_threat(self, result: dict | None, *, patch: dict | None = None) -> None:
-        """Set the threat-scan verdict section, the `patch` section, or both, in
-        one write."""
-        if result is not None:
-            _stamp(self.rec, "threat", result, None)
+    def set_threat(self, result: dict, patch: dict | None = None) -> None:
+        """Set the threat-scan verdict section and, when given, the head's
+        `patch` section, in one write."""
+        _stamp(self.rec, "threat", result, None)
         if patch is not None:
             _stamp(self.rec, "patch", patch, None)
         self._persist()

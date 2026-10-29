@@ -86,7 +86,7 @@ def _design(rec: Pr) -> dict:
              advisory=not gating)
     reviewed = (entry or {}).get("reviewed_sha")
     row["against"] = reviewed
-    row["stale"] = bool(reviewed and not freshness.same_patch(rec, reviewed))
+    row["stale"] = bool(reviewed and not review_policy.design_carried(rec))
     return row
 
 

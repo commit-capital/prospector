@@ -286,22 +286,16 @@ def scan_record(rec: Pr, registry: dict, diffs_dir: Path = diff_cache.DIFFS,
 SAME_AS_CAP = 10
 
 
-def patch_section(rec: Pr, pid: str | None, store: Store, diffs_dir: Path) -> dict | None:
+def patch_section(rec: Pr, pid: str | None) -> dict | None:
     """The `patch` section to stamp at `rec`'s head, whose whole diff hashes to
     `pid`, or None when there is nothing new to record. While the patch is
-    unchanged it names the earlier heads that shared it. A record with no
-    `patch` section yet compares against the head its threat stamp judged."""
+    unchanged it names the earlier heads that shared it."""
     prior = rec.section("patch") or {}
-    if pid is None or prior.get("against_head_sha") == rec.head_sha:
+    head = prior.get("against_head_sha")
+    if pid is None or head == rec.head_sha:
         return None
-    head, same, prior_id = prior.get("against_head_sha"), prior.get("same_as", []), prior.get("id")
-    if not head:
-        head, same = (rec.section("threat") or {}).get("against_head_sha"), []
-        text = (diff_cache.cached([head], store, diffs_dir).get(head)
-                if head and head != rec.head_sha else None)
-        prior_id = diff_cache.patch_id(text) if text else None
-    return {"id": pid,
-            "same_as": [*same, head][-SAME_AS_CAP:] if head and pid == prior_id else []}
+    return {"id": pid, "same_as": ([*prior["same_as"], head][-SAME_AS_CAP:]
+                                   if head and pid == prior.get("id") else [])}
 
 
 @dataclass
@@ -374,30 +368,25 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
                 out.unstamped.append(n)
                 continue
             result = {**result, "revision": threats.REVISION}
-            restamp = not already_stamped(rec, result)
-            if restamp or (diff.patch is not None and
-                           (rec.section("patch") or {}).get("against_head_sha") != rec.head_sha):
+            if not already_stamped(rec, result):
                 # stamped through a fresh read, and only while its head is the one
                 # scanned: the scan runs long, and by write time the startup
                 # snapshot's copy may lack other phases' writes or name a head
                 # INGEST has since moved past
                 current = store.edit_pr(n)
                 if current.head_sha == rec.head_sha:
-                    patch = patch_section(current, diff.patch, store, diffs_dir)
-                    if restamp:
-                        # the stamp this replaces judged the same head: an
-                        # operator's clearing stays, and a leak it named that
-                        # this scan does not find retires its open item
-                        prior = current.section("threat") if stamped_at_head(current) else None
-                        if prior and "cleared" in prior:
-                            result = {**result, "cleared": prior["cleared"]}
-                        if (prior and "secret-leak" in prior.get("signatures", [])
-                                and "secret-leak" not in result["signatures"]):
-                            item_ops.append(functools.partial(
-                                actions.withdraw, item_id=f"rotate-secret:{n}"))
-                        restamped += 1
-                    if restamp or patch is not None:
-                        current.set_threat(result if restamp else None, patch=patch)
+                    # the stamp this replaces judged the same head: an
+                    # operator's clearing stays, and a leak it named that
+                    # this scan does not find retires its open item
+                    prior = current.section("threat") if stamped_at_head(current) else None
+                    if prior and "cleared" in prior:
+                        result = {**result, "cleared": prior["cleared"]}
+                    if (prior and "secret-leak" in prior.get("signatures", [])
+                            and "secret-leak" not in result["signatures"]):
+                        item_ops.append(functools.partial(
+                            actions.withdraw, item_id=f"rotate-secret:{n}"))
+                    current.set_threat(result, patch_section(current, diff.patch))
+                    restamped += 1
                 else:
                     moved += 1
                     out.unstamped.append(n)

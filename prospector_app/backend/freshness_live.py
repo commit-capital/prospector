@@ -81,7 +81,9 @@ def check(prs: list[int]) -> dict:
         # because the remedy is a review re-trigger, not a re-analysis.
         for r in review_policy.active_reviewers(reviewers.REVIEW):
             reviewed = (rec.review_entry(r.id) or {}).get("reviewed_sha")
-            if lv["head"] and reviewed and reviewed != lv["head"]:
+            carried = (r.id == reviewers.DESIGN.id and lv["head"] == rec.head_sha
+                       and review_policy.design_carried(rec))
+            if lv["head"] and reviewed and reviewed != lv["head"] and not carried:
                 diverged.append({"kind": "review", "reviewer": r.id, "label": r.label,
                                  "was": reviewed[:7], "now": lv["head"][:7],
                                  "message": f"{r.label} reviewed an earlier commit — its verdict "

@@ -182,14 +182,16 @@ def is_complete(text: str) -> bool:
 
 _BLOB_LINE = re.compile(r"^index [^\n]*\n", re.M)
 _HUNK_RANGE = re.compile(r"^@@ [^@\n]+ @@", re.M)
+# A binary file's change shows only in the blob hashes the id drops.
+_BINARY = re.compile(r"^(Binary files |GIT binary patch)", re.M)
 
 
 def patch_id(text: str) -> str | None:
     """A hash of the change a whole diff makes, blind to where it sits: two
     heads whose diffs differ only in blob hashes and hunk line numbers, as
     after merging the base into the branch, share it. None for a diff that is
-    not whole."""
-    if not is_complete(text):
+    not whole or changes a binary file."""
+    if not is_complete(text) or _BINARY.search(text):
         return None
     body = _HUNK_RANGE.sub("@@", _BLOB_LINE.sub("", text))
     return hashlib.sha256(body.encode()).hexdigest()

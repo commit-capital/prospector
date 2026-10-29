@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 from pipeline.storekit import currency_failure_core
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from pipeline.model import Pr
 
 # sections whose facts are tied to the code at a specific head.
@@ -65,10 +67,19 @@ def same_patch(pr: Pr, sha: str | None) -> bool:
             and sha in patch.get("same_as", ()))
 
 
+def carries(pr: Pr, sha: str | None, findings: Iterable[dict]) -> bool:
+    """Whether a fact computed against head `sha`, with `findings`, holds at
+    `pr`'s current head. A base merge moves the lines a finding names, so a fact
+    with a line-anchored finding holds only at its own head."""
+    return same_patch(pr, sha) and (sha == pr.effective_head_sha or not any(
+        f.get("line") is not None or f.get("location") for f in findings))
+
+
 def _token(pr: Pr, section: str, sec: dict | None) -> str | None:
     """The head `section` must be stamped against to read current."""
     sha = (sec or {}).get("against_head_sha")
-    return sha if section in CARRIED and same_patch(pr, sha) else pr.effective_head_sha
+    findings = (sec or {}).get("findings") or ()
+    return sha if section in CARRIED and carries(pr, sha, findings) else pr.effective_head_sha
 
 
 def is_current(pr: Pr, section: str, max_age_days: int | None = None,
