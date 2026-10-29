@@ -1052,6 +1052,31 @@ class TestErroredRetry:
         self._errored(store, 2, kind="sandbox-error", host="laptop", hours_ago=7)
         assert verify_worker.auto_verifiable(data.prs()[2])
 
+    def _judgment_less(self, store, n):
+        rec = store.load_pr(n).raw
+        rec["verify"] = {"tier": "blind", "checked_at": _now(), "against_head_sha": HEAD,
+                         "against_base_sha": "b" * 40}
+        store.save_pr(rec)
+        data.refresh()
+
+    def test_an_interrupted_runs_leftover_record_does_not_block_the_retry(self, store,
+                                                                         monkeypatch):
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "laptop")
+        self._errored(store, 1, kind="interrupted", host="studio")
+        self._judgment_less(store, 1)
+        assert data.prs()[1].verify_outcome is None
+        assert verify_worker.auto_verifiable(data.prs()[1])
+
+    def test_an_interrupted_head_stops_at_the_retry_cap(self, store, monkeypatch):
+        from pipeline import gates
+        monkeypatch.setenv("TRIAGE_WORKER_ID", "laptop")
+        self._errored(store, 1, kind="interrupted", host="studio")
+        store.edit_pr(1).record_verify_request(
+            "error", error_kind="interrupted", error="x", host="studio",
+            attempts=gates.VERIFY_RETRY_ATTEMPTS - 1, finished_at=_iso_hours_ago(7))
+        self._judgment_less(store, 1)
+        assert not verify_worker.auto_verifiable(data.prs()[1])
+
     def test_the_prs_own_refusal_is_never_retried(self, store, monkeypatch):
         monkeypatch.setenv("TRIAGE_WORKER_ID", "laptop")
         self._errored(store, 1, kind="refused-safety", host="studio")

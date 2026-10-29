@@ -190,18 +190,20 @@ def _merge_pick_gap(pr: Pr, check: dict) -> dict:
     what fills the gap, and whose it is."""
     key, name, detail = check["key"], check["name"], str(check.get("detail") or "")
     if key == "verify":
-        if check["status"] == "warn":
+        if check["status"] == "warn" and pr.verify_outcome is not None:
             return _r("handed", "other", f"verification is partial evidence ({detail}); merge on "
                                           f"your judgment or ask for an independent repro")
         vr = pr.section("verify_request") or {}
+        if vr.get("status") in _VERIFY_QUEUE:
+            return _r("auto", "queued", f"in the verify queue ({vr.get('status')})")
         if vr.get("status") == "error":
-            allowed, why = gates.verify_retry_allowed(pr, worker=settings.worker_id())
-            if allowed or "moved" in why or "another" in why:
-                return _r("auto", "waiting", "verification hit a machine fault, not the PR; "
-                                             "it re-runs automatically")
-            return _r("handed", "other", f"verification could not run on this head "
-                                          f"{gates.VERIFY_RETRY_ATTEMPTS} times; re-queue it "
-                                          f"or merge on your own judgment ({vr.get('error') or why})")
+            final = gates.verify_retry_exhausted(pr)
+            if final:
+                return _r("handed", "other", f"verification will not re-run on its own ({final}); "
+                                              f"re-queue it or merge on your own judgment "
+                                              f"({vr.get('error') or 'no error recorded'})")
+            return _r("auto", "waiting", "verification hit a machine fault, not the PR; "
+                                         "it re-runs automatically")
         return _r("auto", "waiting", "verification has not run yet; the verify hunter picks it up")
     if key == "security":
         return _r("auto", "waiting", "the deep security review has not run yet; the security "

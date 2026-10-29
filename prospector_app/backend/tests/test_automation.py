@@ -284,6 +284,35 @@ def test_partial_verification_is_your_judgment_not_ready(store):
     assert "partial" in out["reason"]
 
 
+@pytest.mark.parametrize("request_, bucket, says", [
+    ({"status": "error", "error_kind": "interrupted", "host": "elsewhere"},
+     "waiting", "re-runs automatically"),
+    ({"status": "queued"}, "queued", "verify queue"),
+], ids=["interrupted", "re-queued"])
+def test_an_interrupted_verification_is_in_motion_not_partial_evidence(store, request_,
+                                                                       bucket, says):
+    rec = _merge_pick(_rec(), verify={"tier": "blind", "checked_at": _now(),
+                                      "against_head_sha": HEAD, "against_base_sha": "b" * 40},
+                      verify_request={**request_, "queued_at": _now(), "finished_at": _now(),
+                                      "against_head_sha": HEAD, "error": "restarted"})
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"]) == ("auto", bucket)
+    assert says in out["reason"]
+
+
+@pytest.mark.parametrize("request_, says", [
+    ({"error_kind": "interrupted", "attempts": 2}, "3 runs"),
+    ({"error_kind": "refused-safety"}, "the PR's to answer"),
+], ids=["out-of-runs", "the-prs-refusal"])
+def test_a_verification_that_will_not_re_run_is_handed_to_you(store, request_, says):
+    rec = _merge_pick(_rec(), verify_request={
+        "status": "error", "queued_at": _now(), "finished_at": _now(),
+        "against_head_sha": HEAD, "error": "x", **request_})
+    out = _classify(store, rec)
+    assert (out["column"], out["bucket"]) == ("handed", "other")
+    assert says in out["reason"]
+
+
 def test_a_merge_pick_whose_verification_never_ran_is_in_motion_not_ready(store):
     out = _classify(store, _merge_pick(_rec()))
     assert (out["column"], out["bucket"]) == ("auto", "waiting")
