@@ -662,3 +662,53 @@ def test_escalate_without_lanes_stays_a_judgment_fault():
     d = verify_view.verify_detail(_pr(_verify("escalate", signals=signals)))
     assert d is not None
     assert d["fault"] == "judgment"
+
+
+def _e2e_signals(e2e: dict) -> dict:
+    return {"blind_adequacy": {"faithful": True, "test_cmd": "t"},
+            "red_green": {"apply_exit": 0, "red_exit": 20, "green_exit": 0,
+                          "red_exit_confirm": 20, "green_exit_confirm": 0},
+            "red_reason_match": {"matches": True, "confidence": "high"},
+            "regress": {"ran": True, "exit_first": 0},
+            "e2e": e2e}
+
+
+def _e2e_detail(outcome: str, e2e: dict) -> dict:
+    d = verify_view.verify_detail(_pr(_verify(outcome, signals=_e2e_signals(e2e))))
+    assert d is not None
+    return dict(d)
+
+
+def _e2e_step(d: dict) -> dict:
+    return next(s for s in d["story"] if s["key"] == "e2e")
+
+
+def test_a_clean_e2e_leg_passes_its_step():
+    d = _e2e_detail("verified-fix", {"ran": True, "baseline_tests": 202, "exit_first": 0,
+                                     "regression_count": 0})
+    assert _e2e_step(d)["result"] == "pass" and "202" in _e2e_step(d)["note"]
+
+
+def test_an_e2e_regression_fails_its_step_and_names_the_cause():
+    d = _e2e_detail("regressed", {"ran": True, "baseline_tests": 202, "exit_first": 20,
+                                  "exit_confirm": 20, "regressions": ["tests/e2e/a.spec.ts › boots"],
+                                  "regression_count": 1, "edited": [],
+                                  "problem": "Error: webServer exited"})
+    step = _e2e_step(d)
+    assert step["result"] == "fail" and "1 of 202" in step["note"]
+    assert "Error: webServer exited" in step["note"]
+    assert "in-app browser tests" in d["cause"]
+
+
+def test_an_e2e_escalate_names_the_edited_specs():
+    d = _e2e_detail("escalate", {"ran": True, "baseline_tests": 202, "exit_first": 20,
+                                 "exit_confirm": 20, "regressions": ["tests/e2e/a.spec.ts › boots"],
+                                 "regression_count": 1, "edited": ["tests/e2e/a.spec.ts"]})
+    assert _e2e_step(d)["result"] == "warn" and "tests/e2e/a.spec.ts" in _e2e_step(d)["note"]
+    assert "spec files the PR itself edits" in d["cause"]
+
+
+def test_a_skipped_e2e_leg_says_why():
+    d = _e2e_detail("verified-fix", {"ran": False, "skipped_reason": "not-app-touching"})
+    assert _e2e_step(d) == {**_e2e_step(d), "result": "skip",
+                            "note": "Skipped — the PR changes no app code."}

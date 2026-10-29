@@ -3230,3 +3230,128 @@ class TestLintBlock:
     def test_a_base_compile_fault_is_not_a_lint_base_fault(self):
         assert gates.lint_block({"exit": 20, "error": "x", "error_kind": "base-compile"},
                                 "the fix") is not None
+
+
+def _e2e(**over) -> dict:
+    # A clean in-app run by default: every baseline test passed first time.
+    return dict({"ran": True, "baseline_tests": 200, "exit_first": 0, "exit_confirm": None,
+                 "failing_first": [], "regressions": [], "regression_count": 0,
+                 "edited": [], "problem": None}, **over)
+
+
+def _e2e_regressed(*ids: str, edited: tuple[str, ...] = (), **over) -> dict:
+    return _e2e(exit_first=20, exit_confirm=20, failing_first=list(ids),
+                regressions=list(ids), regression_count=len(ids), edited=list(edited), **over)
+
+
+class TestE2eGate:
+    """The in-app regression leg is host-observed evidence about the PR: a
+    baseline test that failed twice demotes a would-be pass, and only a failure
+    confined to specs the PR itself edits goes to a human instead."""
+
+    def _outcome(self, e2e, **kw) -> str | None:
+        return gates.verify_outcome(kw.pop("blind", _blind()), kw.pop("host", _host()),
+                                    kw.pop("judge", _judge()),
+                                    regress=kw.pop("regress", _regress()), e2e=e2e, **kw)
+
+    def test_a_clean_run_or_no_record_keeps_verified_fix(self):
+        assert self._outcome(_e2e()) == "verified-fix"
+        assert self._outcome(None) == "verified-fix"
+        assert self._outcome({"ran": False, "skipped_reason": "not-app-touching"}) == "verified-fix"
+
+    def test_a_confirmed_regression_demotes_verified_fix(self):
+        assert self._outcome(_e2e_regressed("tests/e2e/a.spec.ts › boots")) == "regressed"
+
+    def test_a_flake_does_not_gate(self):
+        assert self._outcome(_e2e(exit_first=20, exit_confirm=0,
+                                  failing_first=["tests/e2e/a.spec.ts › boots"])) == "verified-fix"
+
+    def test_a_regression_only_in_specs_the_pr_edits_escalates(self):
+        assert self._outcome(_e2e_regressed(
+            "tests/e2e/a.spec.ts › boots", "tests/e2e/a.spec.ts › chat",
+            edited=("tests/e2e/a.spec.ts",))) == "escalate"
+
+    def test_one_regression_outside_the_edited_specs_regresses(self):
+        assert self._outcome(_e2e_regressed(
+            "tests/e2e/a.spec.ts › boots", "tests/e2e/b.spec.ts › chat",
+            edited=("tests/e2e/a.spec.ts",))) == "regressed"
+
+    def test_an_edited_entry_naming_no_regression_does_not_escalate(self):
+        assert self._outcome(_e2e_regressed(
+            "tests/e2e/b.spec.ts › chat", edited=("tests/e2e/a.spec.ts",))) == "regressed"
+
+    def test_an_edited_entry_matching_by_title_prefix_does_not_escalate(self):
+        # The file is everything before the first separator, so a title that
+        # repeats an edited file's name does not make the test the PR's.
+        assert self._outcome(_e2e_regressed(
+            "tests/e2e/b.spec.ts › tests/e2e/a.spec.ts › x",
+            edited=("tests/e2e/a.spec.ts",))) == "regressed"
+
+    def test_a_count_without_names_still_regresses(self):
+        assert self._outcome(_e2e(regression_count=3)) == "regressed"
+
+    def test_names_without_a_count_still_regress(self):
+        assert self._outcome(_e2e(regressions=["tests/e2e/a.spec.ts › boots"],
+                                  regression_count=0)) == "regressed"
+
+    def test_a_capped_list_never_escalates(self):
+        # More regressions than listed: the unlisted ones could be anywhere.
+        e2e = _e2e_regressed("tests/e2e/a.spec.ts › boots", edited=("tests/e2e/a.spec.ts",))
+        e2e["regression_count"] = 25
+        assert self._outcome(e2e) == "regressed"
+
+    def test_a_suite_regression_beats_an_e2e_escalate(self):
+        assert self._outcome(
+            _e2e_regressed("tests/e2e/a.spec.ts › boots", edited=("tests/e2e/a.spec.ts",)),
+            regress=_regress(exit_first=20, exit_confirm=20, confirmed=True)) == "regressed"
+
+    def test_an_e2e_regression_beats_a_lane_escalate(self):
+        assert self._outcome(_e2e_regressed("tests/e2e/a.spec.ts › boots"),
+                             lanes={"build": {"cmd": "b", "exit": 1}}) == "regressed"
+
+    def test_the_earlier_escalates_keep_primacy(self):
+        regressed = _e2e_regressed("tests/e2e/a.spec.ts › boots")
+        assert self._outcome(regressed, blind=_blind(faithful=False)) == "escalate"
+        assert self._outcome(regressed, judge=_judge(confidence="low")) == "escalate"
+        assert self._outcome(regressed, host=_host(red_exit_confirm=0)) == "escalate"
+
+    def test_a_regression_never_turns_a_failed_reproduction_into_a_pass(self):
+        assert self._outcome(_e2e_regressed("tests/e2e/a.spec.ts › boots"),
+                             host=_host(red_exit=0)) == "not-verified"
+
+    def test_an_unconcluded_confirm_holds(self):
+        e2e = _e2e(exit_first=20, failing_first=["tests/e2e/a.spec.ts › boots"])
+        assert self._outcome(e2e) is None
+        assert gates.verify_run_errored(_blind(), _host(), regress=_regress(), e2e=e2e) is True
+
+    def test_the_authored_lane_reads_the_same_verdict(self):
+        blind = _blind(test_cmd=None, has_test=False)
+        regressed = _e2e_regressed("tests/e2e/a.spec.ts › boots")
+        assert self._outcome(regressed, blind=blind, authored=_authored()) == "regressed"
+        assert self._outcome(
+            _e2e_regressed("tests/e2e/a.spec.ts › boots", edited=("tests/e2e/a.spec.ts",)),
+            blind=blind, authored=_authored()) == "escalate"
+        assert self._outcome(_e2e(), blind=blind, authored=_authored()) == "agent-verified"
+
+
+class TestE2eRelevant:
+    CFG = profile.E2eConfig(config="tests/e2e/playwright.config.ts")
+
+    @pytest.mark.parametrize("paths, relevant", [
+        (["ui/src/App.tsx"], True),
+        (["README.md", "docs/x.md", ".github/workflows/ci.yml"], False),
+        (["server/src/__tests__/x.test.ts"], False),
+        (["tests/e2e/a.spec.ts", "tests/e2e/fixtures/f.mjs"], False),
+        (["tests/e2e/a.spec.ts", "server/src/index.ts"], True)])
+    def test_only_app_code_is_relevant(self, paths, relevant):
+        assert gates.e2e_relevant(paths, self.CFG) is relevant
+
+    def test_the_suite_root_is_a_directory_not_a_prefix(self):
+        assert gates.e2e_owned("tests/e2e/a.spec.ts", self.CFG)
+        assert not gates.e2e_owned("tests/e2e-extra/x.ts", self.CFG)
+
+    def test_a_root_config_owns_only_its_config_and_specs(self):
+        cfg = profile.E2eConfig(config="playwright.config.ts")
+        assert gates.e2e_owned("playwright.config.ts", cfg)
+        assert gates.e2e_owned("e2e/a.spec.ts", cfg)
+        assert not gates.e2e_owned("src/a.ts", cfg)

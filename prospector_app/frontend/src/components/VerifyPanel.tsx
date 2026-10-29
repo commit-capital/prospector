@@ -53,6 +53,23 @@ function LaneChips({ lanes }: { lanes: NonNullable<VerifySignals["lanes"]> | und
   );
 }
 
+/** The in-app regression leg: the base's reliable browser tests over the
+ *  PR's build. Green = all passed, red = confirmed regressions, muted = skipped. */
+function E2eChip({ e2e }: { e2e: VerifySignals["e2e"] }) {
+  if (!e2e) return null;
+  const count = e2e.regression_count ?? 0;
+  const [cls, text] = !e2e.ran
+    ? ["chip-muted", "in-app –"]
+    : count > 0
+      ? ["chip-red", `in-app ✗ ${count}`]
+      : ["chip-green", `in-app ✓ ${e2e.baseline_tests ?? 0}`];
+  const title = !e2e.ran
+    ? `in-app check skipped: ${e2e.skipped_reason ?? "unknown"}`
+    : [count > 0 ? `failed twice: ${(e2e.regressions ?? []).join("; ")}` : `${e2e.baseline_tests ?? 0} baseline tests passed`,
+       e2e.problem ? `Playwright: ${e2e.problem}` : null].filter(Boolean).join(" — ");
+  return <span className={`chip sm ${cls}`} style={{ marginLeft: 8 }} title={title}>{text}</span>;
+}
+
 const LEVEL_TONE: Record<VerifyLevel, string> = {
   verified: "v-safe", attention: "v-caution", blocked: "v-risk", info: "v-unknown", pending: "v-unknown",
 };
@@ -519,6 +536,7 @@ function VerifyRecord({ v, repo }: { v: VerifyDetail; repo: string | null }) {
               title={v.outcome ? `state: ${v.state} · raw outcome: ${v.outcome}` : v.state}>{v.state}</span>
             {v.stale_reason && <span className="chip chip-yellow sm" style={{ marginLeft: 6 }} title={`This record is ${v.stale_reason} — the merge gate treats it as not run.`}>⟳ stale</span>}
             <LaneChips lanes={v.signals?.lanes} />
+            <E2eChip e2e={v.signals?.e2e} />
           </div>
           {v.cause && <div className="vb-cause">{v.cause}</div>}
           <div className="vb-detail">{v.detail}</div>

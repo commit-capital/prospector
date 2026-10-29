@@ -187,6 +187,7 @@ _FINDING_TITLES = {
     "vacuous-repro-name-filter": "Independent repro matched no test",
     "authored-test": "Agent-authored test did not verify the fix",
     "regress": "Regression evidence",
+    "e2e": "In-app regression evidence",
     "lane": "Merge-gate lane failed",
 }
 
@@ -410,6 +411,35 @@ def _regress_step(regress: wire.VerifyRegressSignal) -> VerifyStep:
     return _step("regress", label, "pass", "No regressions.")
 
 
+def _e2e_step(e2e: wire.VerifyE2eSignal) -> VerifyStep:
+    label = "In-app check — the base's reliable browser tests must still pass"
+    if not e2e.get("ran"):
+        reason = e2e.get("skipped_reason")
+        note = {"not-app-touching": "Skipped — the PR changes no app code.",
+                "no-e2e-baseline": "Skipped — this machine's pinned base has no e2e baseline.",
+                "red-green-not-clean": "Skipped — the red→green above was not clean."
+                }.get(str(reason), f"Skipped ({reason})." if reason else "Never ran.")
+        return _step("e2e", label, "skip", note)
+    total = e2e.get("baseline_tests")
+    problem = e2e.get("problem")
+    said = f" Playwright reported: {problem}" if problem else ""
+    verdict = gates.e2e_verdict(e2e)
+    if verdict == "escalate":
+        return _step("e2e", label, "warn",
+                     f"{e2e.get('regression_count')} test(s) failed twice, all in "
+                     f"spec files this PR edits ({', '.join(e2e.get('edited') or [])}) — "
+                     f"a deliberate UI change a human must read.{said}")
+    if verdict == "regressed":
+        return _step("e2e", label, "fail",
+                     f"{e2e.get('regression_count')} of {total} test(s) that pass "
+                     f"reliably on pinned main failed twice with this PR applied.{said}")
+    if e2e.get("failing_first"):
+        return _step("e2e", label, "warn",
+                     "A failure appeared once but did not confirm on the re-run — "
+                     "treated as flaky, not a regression.")
+    return _step("e2e", label, "pass", f"All {total} test(s) passed.{said}")
+
+
 _LANE_LABELS: dict[str, str] = {
     "compile": "Compile lane — the whole repo must typecheck with the PR applied",
     "build": "Build lane — the whole repo must build with the PR applied",
@@ -627,6 +657,8 @@ def _authored_steps(authored: wire.VerifyAuthoredSignal,
     regress = signals.get("regress") or {}
     if regress:
         steps.append(_regress_step(regress))
+    if e2e := signals.get("e2e"):
+        steps.append(_e2e_step(e2e))
     return steps
 
 
@@ -708,6 +740,8 @@ def _gated_steps(signals: wire.VerifySignals) -> list[VerifyStep]:
     steps.extend(_lane_steps(signals))
     if regress:
         steps.append(_regress_step(regress))
+    if e2e := signals.get("e2e"):
+        steps.append(_e2e_step(e2e))
     return steps
 
 
@@ -765,6 +799,12 @@ def _cause(outcome: str | None, signals: wire.VerifySignals) -> str | None:
                     "nondeterministic reproduction, or a failure the first "
                     "green run did not carry. A human must judge; both runs "
                     "are in the steps below.")
+        if ((signals.get("red_reason_match") or {}).get("confidence") != "low"
+                and gates.e2e_verdict(signals.get("e2e")) == "escalate"):
+            return ("In-app browser tests that pass reliably on pinned main fail "
+                    "with this PR applied, but only in spec files the PR itself "
+                    "edits — likely a deliberate UI change. A human must read the "
+                    "spec changes and decide.")
         return ("The run went red→green, but the judge's failure-reason rating "
                 "is low-confidence — a human should read the red output and "
                 "decide.")
@@ -777,6 +817,11 @@ def _cause(outcome: str | None, signals: wire.VerifySignals) -> str | None:
             return (f"The fix works, but the {failed} lane fails with the PR "
                     f"applied — the merged tree does not pass "
                     f"`{lanes[failed].get('cmd')}`.")
+        if not (signals.get("regress") or {}).get("confirmed") \
+                and gates.e2e_verdict(signals.get("e2e")) == "regressed":
+            return ("The fix works, but with the PR applied in-app browser tests "
+                    "that pass reliably on pinned main fail — confirmed on a "
+                    "second run.")
         return ("The fix works, but with the PR applied other tests that pass "
                 "on pinned main fail — confirmed on a second run.")
     if outcome == "unverifiable-no-test":

@@ -781,7 +781,8 @@ class TestCaptureE2eBaseline:
         monkeypatch.setattr(vd.profile, "active", _profile_with_e2e)
         monkeypatch.setattr(vd, "playwright_version", lambda src: version)
         monkeypatch.setattr(vd, "e2e_config", lambda image: _cfg())
-        monkeypatch.setattr(vd, "e2e_specs", lambda src, cfg: ["tests/e2e/a.spec.ts"])
+        monkeypatch.setattr(vd, "e2e_specs", lambda src, cfg: [
+            f"tests/e2e/{n}.spec.ts" for n in ("a", "b", "c0", "c1", "c2")])
         it = iter(runs)
 
         def run_e2e(image, **kw):
@@ -797,13 +798,21 @@ class TestCaptureE2eBaseline:
                 for st in ("passed", "passed", "failed")]
         calls = self._setup(monkeypatch, runs)
         reliable, uncovered, skipped = vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
-        assert len(calls) == 3 and all(c["specs"] == ["tests/e2e/a.spec.ts"] for c in calls)
+        assert len(calls) == 3 and all(len(c["specs"]) == 5 for c in calls)
         assert all(c.get("patch") is None for c in calls)
-        assert reliable == {"a.spec.ts": ["boots"], "c0.spec.ts": ["t"],
-                            "c1.spec.ts": ["t"], "c2.spec.ts": ["t"]}
-        assert uncovered == [{"file": "a.spec.ts", "title": "chat", "verdict": "flaky",
+        assert reliable == {"tests/e2e/a.spec.ts": ["boots"], "tests/e2e/c0.spec.ts": ["t"],
+                            "tests/e2e/c1.spec.ts": ["t"], "tests/e2e/c2.spec.ts": ["t"]}
+        assert uncovered == [{"file": "tests/e2e/a.spec.ts", "title": "chat", "verdict": "flaky",
                               "cause": "unknown", "evidence": "boom"}]
         assert skipped == 1
+
+    def test_a_test_in_no_listed_spec_stays_out_of_the_baseline(self, monkeypatch):
+        tests = [(f"c{i}.spec.ts", "t", "passed") for i in range(3)]
+        self._setup(monkeypatch, [_e2e_run(("a.spec.ts", "t", "passed"), ("z.spec.ts", "t", "passed"),
+                                           *tests)] * 3)
+        reliable, uncovered, _ = vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
+        assert "z.spec.ts" not in reliable and "tests/e2e/a.spec.ts" in reliable
+        assert [(u["file"], u["verdict"]) for u in uncovered] == [("z.spec.ts", "unlocated")]
 
     def test_a_run_that_did_not_boot_refuses_the_pin(self, monkeypatch):
         ok = _e2e_run(("a.spec.ts", "boots", "passed"))
@@ -838,7 +847,7 @@ class TestCaptureE2eBaseline:
         self._setup(monkeypatch, [_e2e_run(("a.spec.ts", "boots", "passed"))] * 3)
         s = Store(tmp_path)
         vd.prepare_base(s, base_sha="a" * 12, tier=1)
-        assert vd.pinned_e2e_baseline(s) == {"a.spec.ts": ["boots"]}
+        assert vd.pinned_e2e_baseline(s) == {"tests/e2e/a.spec.ts": ["boots"]}
         assert vd.local_pin(s).get("e2e_skipped") == 0
 
     def test_prepare_base_refuses_the_pin_when_the_capture_does(self, tmp_path, monkeypatch):
@@ -2647,6 +2656,211 @@ class TestAuthoredPatches:
         text = combined.read_text()
         assert text.startswith("PRDIFF\n")
         assert "a.test.ts" in text
+
+
+_BASELINE = {"tests/e2e/a.spec.ts": ["boots", "chat"], "tests/e2e/b.spec.ts": ["settings"]}
+
+
+class TestE2eLeg:
+    """The PR's in-app leg runs only the base's reliable tests, confirms a
+    failure with one re-run of the failing files, and records what failed both
+    times. The host decides from the parsed report and exits alone."""
+
+    def _runs(self, monkeypatch, *runs: tuple[int, e2e_report.E2eRun]):
+        calls: list[dict] = []
+        it = iter(runs)
+
+        def run_e2e(image, **kw):
+            calls.append(kw)
+            rc, run = next(it)
+            return rc, run, e2e_artifacts.Artifacts(report=None, pngs={}, skipped=[])
+        monkeypatch.setattr(vd, "run_e2e", run_e2e)
+        return calls
+
+    def _leg(self, changed=("ui/src/App.tsx",)):
+        return vd.e2e_leg("img:t1", tier=1, base_sha="b", head_sha="h", patch=Path("/tmp/e.patch"),
+                          baseline=_BASELINE, changed_paths=list(changed))
+
+    @staticmethod
+    def _all(status_of: dict[tuple[str, str], str]) -> e2e_report.E2eRun:
+        # Playwright names files relative to its test directory.
+        return _e2e_run(*[(f.removeprefix("tests/e2e/"), t, status_of.get((f, t), "passed"))
+                          for f, ts in _BASELINE.items() for t in ts])
+
+    def test_a_clean_run_runs_once_over_the_baseline_files(self, monkeypatch):
+        calls = self._runs(monkeypatch, (0, self._all({})))
+        sig = self._leg()
+        assert [c["specs"] for c in calls] == [["tests/e2e/a.spec.ts", "tests/e2e/b.spec.ts"]]
+        assert calls[0]["patch"] == Path("/tmp/e.patch")
+        assert sig["ran"] is True and sig["baseline_tests"] == 3
+        assert sig["failing_first"] == [] and sig["regression_count"] == 0
+        assert gates.e2e_verdict(sig) is None
+
+    def test_a_failure_that_passes_on_confirm_is_a_flake(self, monkeypatch):
+        calls = self._runs(monkeypatch, (20, self._all({("tests/e2e/a.spec.ts", "chat"): "failed"})),
+                           (0, _e2e_run(("a.spec.ts", "boots", "passed"), ("a.spec.ts", "chat", "passed"))))
+        sig = self._leg()
+        assert calls[1]["specs"] == ["tests/e2e/a.spec.ts"]
+        assert sig["failing_first"] == ["tests/e2e/a.spec.ts › chat"]
+        assert sig["exit_confirm"] == 0 and sig["regressions"] == []
+        assert gates.e2e_verdict(sig) is None
+
+    def test_a_failure_in_both_runs_is_a_regression(self, monkeypatch):
+        bad = {("tests/e2e/b.spec.ts", "settings"): "timedOut"}
+        self._runs(monkeypatch, (20, self._all(bad)),
+                   (20, _e2e_run(("b.spec.ts", "settings", "failed"))))
+        sig = self._leg()
+        assert sig["regressions"] == ["tests/e2e/b.spec.ts › settings"]
+        assert sig["regression_count"] == 1 and sig["edited"] == []
+        assert gates.e2e_verdict(sig) == "regressed"
+
+    def test_a_regression_in_a_spec_the_pr_edits_escalates(self, monkeypatch):
+        bad = {("tests/e2e/b.spec.ts", "settings"): "failed"}
+        self._runs(monkeypatch, (20, self._all(bad)),
+                   (20, _e2e_run(("b.spec.ts", "settings", "failed"))))
+        sig = self._leg(changed=("ui/src/App.tsx", "tests/e2e/b.spec.ts"))
+        assert sig["edited"] == ["tests/e2e/b.spec.ts"]
+        assert gates.e2e_verdict(sig) == "escalate"
+
+    def test_an_app_that_does_not_boot_twice_regresses_every_test(self, monkeypatch):
+        down = _e2e_run(booted=False, problem="Error: Timed out waiting for config.webServer")
+        self._runs(monkeypatch, (1, down), (1, down))
+        sig = self._leg()
+        assert sig["regression_count"] == 3
+        assert sig["problem"] == "Error: Timed out waiting for config.webServer"
+        assert gates.e2e_verdict(sig) == "regressed"
+
+    def test_a_missing_baseline_test_counts_as_failed(self, monkeypatch):
+        partial = _e2e_run(("a.spec.ts", "boots", "passed"), ("b.spec.ts", "settings", "passed"))
+        self._runs(monkeypatch, (0, partial), (0, partial))
+        sig = self._leg()
+        assert sig["regressions"] == ["tests/e2e/a.spec.ts › chat"]
+
+    def test_a_test_passing_only_on_retry_is_not_a_failure(self, monkeypatch):
+        self._runs(monkeypatch, (0, self._all({("tests/e2e/a.spec.ts", "chat"): "flaky"})))
+        assert self._leg()["failing_first"] == []
+
+    def test_a_non_baseline_test_failing_is_ignored(self, monkeypatch):
+        run = self._all({})
+        run = e2e_report.E2eRun(booted=True, problem=None, results=[
+            *run.results, *_e2e_run(("a.spec.ts", "not in baseline", "failed")).results])
+        calls = self._runs(monkeypatch, (20, run))
+        assert self._leg()["failing_first"] == [] and len(calls) == 1
+
+    def test_a_duplicate_title_counts_any_failing_copy(self, monkeypatch):
+        run = self._all({})
+        run = e2e_report.E2eRun(booted=True, problem=None, results=[
+            *run.results, *_e2e_run(("a.spec.ts", "boots", "failed")).results])
+        self._runs(monkeypatch, (20, run), (20, run))
+        assert self._leg()["regressions"] == ["tests/e2e/a.spec.ts › boots"]
+
+    def test_an_unproven_sandbox_aborts(self, monkeypatch):
+        self._runs(monkeypatch, (gates.SENTINEL_PROBE_FAIL, _e2e_run(booted=False)))
+        with pytest.raises(vd.ProbeFailure):
+            self._leg()
+
+    def test_a_patch_conflict_is_recorded_and_does_not_gate(self, monkeypatch):
+        self._runs(monkeypatch, (gates.SENTINEL_PATCH_CONFLICT, _e2e_run(booted=False)))
+        sig = self._leg()
+        assert sig == {"ran": False, "skipped_reason": "e2e-patch-conflict"}
+        assert gates.e2e_verdict(sig) is None
+
+    def test_the_lists_are_capped_and_the_count_is_not(self, monkeypatch):
+        many = {f"tests/e2e/m{i:02d}.spec.ts": ["t"] for i in range(30)}
+        down = _e2e_run(booted=False, problem="x")
+        self._runs(monkeypatch, (1, down), (1, down))
+        sig = vd.e2e_leg("img", tier=1, base_sha="b", head_sha="h", patch=Path("/p"),
+                         baseline=many, changed_paths=[])
+        assert len(sig["regressions"]) == vd.E2E_MAX_LISTED == len(sig["failing_first"])
+        assert sig["regression_count"] == 30
+
+
+def test_e2e_patch_keeps_the_bases_suite(tmp_path, monkeypatch):
+    monkeypatch.setattr(vd, "SCRATCH", tmp_path)
+    full = tmp_path / "full.patch"
+    full.write_text("".join(f"diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n@@ -1 +1,2 @@\n+x\n"
+                            for p in ("ui/src/App.tsx", "tests/e2e/a.spec.ts",
+                                      "tests/e2e/playwright.config.ts", "tests/e2e/fixtures/f.mjs")))
+    out = vd.e2e_patch("h1", full, _cfg())
+    assert out is not None
+    assert "ui/src/App.tsx" in out.read_text() and "tests/e2e/" not in out.read_text()
+    only_suite = tmp_path / "suite.patch"
+    only_suite.write_text("diff --git a/tests/e2e/a.spec.ts b/tests/e2e/a.spec.ts\n"
+                          "--- a/tests/e2e/a.spec.ts\n+++ b/tests/e2e/a.spec.ts\n@@ -1 +1,2 @@\n+x\n")
+    assert vd.e2e_patch("h2", only_suite, _cfg()) is None
+
+
+def test_e2e_rooted_maps_report_files_to_listed_specs():
+    run = _e2e_run(("a.spec.ts", "t", "passed"), ("sub/c.spec.ts", "t", "passed"),
+                   ("x.spec.ts", "t", "passed"), ("dup.spec.ts", "t", "passed"))
+    specs = ["tests/e2e/a.spec.ts", "tests/e2e/sub/c.spec.ts",
+             "tests/e2e/one/dup.spec.ts", "tests/e2e/two/dup.spec.ts"]
+    assert [r.file for r in vd.e2e_rooted(run, specs).results] == [
+        "tests/e2e/a.spec.ts", "tests/e2e/sub/c.spec.ts", "x.spec.ts", "dup.spec.ts"]
+
+
+class TestVerifyPrE2e:
+    """verify_pr runs the e2e leg after a confirmed red->green and passing
+    lanes, only on app-touching PRs with a pinned e2e baseline."""
+
+    _blind = TestVerifyPr._blind
+    _phases = TestVerifyPr._phases
+
+    def _e2e(self, monkeypatch, *, profile_e2e: bool = True):
+        legs: list[dict] = []
+        monkeypatch.setattr(vd.profile, "active",
+                            _profile_with_e2e if profile_e2e else lambda: profile.GENERIC)
+        monkeypatch.setattr(vd, "e2e_patch", lambda head, patch, cfg: Path("/tmp/e2e.patch"))
+        monkeypatch.setattr(vd, "e2e_leg", lambda image, **kw: legs.append(kw) or {
+            "ran": True, "regression_count": 0})
+        return legs
+
+    def _run(self, s, **kw):
+        return vd.verify_pr(s.load_pr(1), "img:t1", "base1", 1, [], suite_config=SUITE_CFG, **kw)
+
+    def test_runs_after_regress_on_an_app_touching_pr(self, tmp_path, diffs, monkeypatch):
+        s = _pinned(tmp_path)
+        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts", "ui/src/App.tsx")
+        self._blind(s)
+        self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
+        legs = self._e2e(monkeypatch)
+        ev = self._run(s, e2e_baseline=_BASELINE)
+        assert ev["e2e"] == {"ran": True, "regression_count": 0}
+        assert legs[0]["patch"] == Path("/tmp/e2e.patch") and legs[0]["baseline"] == _BASELINE
+        assert legs[0]["changed_paths"] == ["src/a.test.ts", "ui/src/App.tsx"]
+
+    def test_runs_without_a_suite_contract_too(self, tmp_path, diffs, monkeypatch):
+        s = _pinned(tmp_path)
+        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts", "ui/src/App.tsx")
+        self._blind(s)
+        self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
+        legs = self._e2e(monkeypatch)
+        ev = vd.verify_pr(s.load_pr(1), "img:t1", "base1", 1, [], suite_config=None,
+                          e2e_baseline=_BASELINE)
+        assert ev["regress"]["skipped_reason"] == "no-suite-config" and len(legs) == 1
+
+    @pytest.mark.parametrize("paths, baseline, profile_e2e, reason", [
+        (("src/a.test.ts", "docs/x.md"), _BASELINE, True, "not-app-touching"),
+        (("src/a.test.ts", "ui/src/App.tsx"), None, True, "no-e2e-baseline"),
+        (("src/a.test.ts", "ui/src/App.tsx"), _BASELINE, False, "no-e2e-baseline")])
+    def test_skips_with_its_reason(self, tmp_path, diffs, monkeypatch, paths, baseline,
+                                   profile_e2e, reason):
+        s = _pinned(tmp_path)
+        _pr(s, 1); _diff(diffs, "h1", *paths)
+        self._blind(s)
+        self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
+        legs = self._e2e(monkeypatch, profile_e2e=profile_e2e)
+        ev = self._run(s, e2e_baseline=baseline)
+        assert ev["e2e"] == {"ran": False, "skipped_reason": reason} and legs == []
+
+    def test_a_reproduction_that_did_not_hold_runs_no_e2e(self, tmp_path, diffs, monkeypatch):
+        s = _pinned(tmp_path)
+        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts", "ui/src/App.tsx")
+        self._blind(s)
+        self._phases(monkeypatch, **{"apply-check": 0, "red": 0, "green": 0})
+        legs = self._e2e(monkeypatch)
+        ev = self._run(s, e2e_baseline=_BASELINE)
+        assert ev["e2e"] == {"ran": False, "skipped_reason": "red-green-not-clean"} and legs == []
 
 
 class TestVerifyPrAuthoredLane:
