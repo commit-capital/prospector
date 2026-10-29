@@ -88,6 +88,14 @@ class LaneSpec:
     notes: str | None = None
     # The subject the run's reviews are recorded under; None records nothing.
     verdict_subject: verdict_log.Subject | None = None
+    # A maintainer's approval of a feature run (`feature_screen.approval`), which
+    # every agent of the run reads after the report.
+    approved: str | None = None
+
+    @property
+    def feature(self) -> bool:
+        """A feature run: a give-up as no defect reads `no-fix`."""
+        return self.approved is not None
 
 
 @dataclass

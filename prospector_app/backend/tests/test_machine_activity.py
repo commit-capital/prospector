@@ -14,7 +14,8 @@ from prospector_app.backend import machine_activity as ma
 NOW = datetime(2026, 10, 3, 12, tzinfo=timezone.utc)
 JOB_PHASES = {("pr", "ingest"): ("ingest", "Ingest"),
               ("issue", "ingest"): ("issue-ingest", "Issue ingest"),
-              ("pr", "cluster:summaries"): ("cluster-new", "Cluster new PRs")}
+              ("pr", "cluster:summaries"): ("cluster-new", "Cluster new PRs"),
+              ("issue", "feature-screen:run"): ("feature-screen", "Feature-request screen")}
 
 
 def _at(hours_ago: float) -> str:
@@ -117,6 +118,19 @@ def test_background_labels_and_worker_cluster_rows():
                                {"label": "summary batch", "count": 1}]
     assert m["jobs"] == [{"label": "Cluster new PRs", "kind": "cluster-new",
                           "counts": {"done": 1}, "job_id": None, "running_id": None}]
+
+
+def test_feature_screens_read_as_worker_background_or_as_their_control_job():
+    rows = [_row("feature-screen:run", ledger="issue", trigger="worker"),
+            _row("feature-screen:run", ledger="issue", trigger="worker"),
+            _row("feature-screen:run", ledger="issue", trigger="backfill")]
+    m = _host(_summarize(rows), "studio")
+    assert m["background"] == [{"label": "feature screens", "count": 2}]
+    assert [j["kind"] for j in m["jobs"]] == ["feature-screen"]
+
+
+def test_the_feature_screen_job_reads_the_phase_its_runs_book():
+    assert ma._job_phases()[("issue", "feature-screen:run")][0] == "feature-screen"
 
 
 def test_job_phase_is_keyed_by_ledger():

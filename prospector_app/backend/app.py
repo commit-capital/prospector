@@ -1333,6 +1333,13 @@ def issues_already_fixed():
     return issues_mod.already_fixed()
 
 
+@app.get("/api/issues/features")
+def issue_features():
+    """The feature-request shortlist the Home card reads: screened `consider`,
+    undecided, smallest first."""
+    return issues_mod.feature_requests()
+
+
 # {n} matches any path segment, so this stays registered after every literal
 # /api/issues/* route.
 @app.get("/api/issues/{n}")
@@ -1367,6 +1374,48 @@ def issue_fix_request(n: int, payload: models.IssueFixBody):
     activity.record_issue_fix(n, payload.action, why)
     issue_data.refresh()
     return {"ok": True, "detail": why}
+
+
+@app.get("/api/issues/{n}/feature-mockup")
+def issue_feature_mockup(n: int):
+    """The current screen's mockup page for feature request #n; 404 without one."""
+    html = issues_mod.feature_mockup(n)
+    if html is None:
+        raise HTTPException(404, f"issue {n} has no feature mockup")
+    return {"html": html}
+
+
+@app.post("/api/issues/{n}/feature-decision")
+def issue_feature_decision(n: int, payload: models.FeatureDecisionBody):
+    """A maintainer's call on feature request #n: `implement` queues a solve
+    attempt, `decline` records the refusal, `reopen` clears the decision.
+    Nothing is posted upstream. 409 for an issue that is not a feature request
+    or an implement the fix queue refuses (no decision is then recorded)."""
+    from issue_triage import feature_screen, fix_review
+    st = issue_data.store()
+    issue = st.load_issue(n)
+    if issue is None:
+        raise HTTPException(404, f"issue {n} not in store")
+    if not feature_screen.is_feature_request(issue):
+        raise HTTPException(409, f"issue #{n} is not an open feature request")
+    who = activity.operator()["name"]
+    guidance = (payload.guidance or "").strip() or None
+    detail = f"{payload.decision} recorded"
+    if payload.decision == "reopen":
+        st.edit_issue(n).clear_feature_decision()
+    else:
+        if payload.decision == "implement":
+            ok, why = fix_review.queue(st, n, "solve", by=who, guidance=guidance, feature=True)
+            if not ok:
+                raise HTTPException(409, why)
+            detail = why
+        decision = {"decision": payload.decision, "by": who, "at": storekit.now()}
+        if guidance:
+            decision["guidance"] = guidance
+        st.edit_issue(n).record_feature_decision(decision)
+    activity.record_issue_fix(n, "feature-" + payload.decision, detail)
+    issue_data.refresh()
+    return {"ok": True, "detail": detail}
 
 
 @app.post("/api/issues/{n}/fix/approve")

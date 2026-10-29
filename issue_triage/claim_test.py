@@ -66,7 +66,7 @@ The repository checked out at __WORKTREE__ already holds a bot's fix for a repor
 
 ## The report
 
-__REPORT__
+__REPORT____APPROVED__
 
 ## The reviewer's claim
 
@@ -119,7 +119,8 @@ class Claim(TypedDict):
     agent_runs: int
 
 
-def author(worktree: str, *, title: str, body: str, defect: str, evidence: str,
+def author(worktree: str, *, title: str, body: str, approved: str | None = None,
+           defect: str, evidence: str,
            env: dict[str, str], contributor_docs: list[authoring.Doc],
            on_event: Callable[[tuple], None] | None = None) -> dict:
     """Run the claim agent over the clone at `worktree`: {"files",
@@ -130,6 +131,7 @@ def author(worktree: str, *, title: str, body: str, defect: str, evidence: str,
     prompt = headless_agent.fill(PROMPT, {
         "__WORKTREE__": worktree,
         "__REPORT__": reproduce_issue.report_block(title, body),
+        "__APPROVED__": reproduce_issue.approved_slot(approved),
         "__CLAIM__": json.dumps({"still_present": intake_audit.visible(defect)[:CLAIM_MAX],
                                  "evidence": intake_audit.visible(evidence)[:CLAIM_MAX]}),
         "__CHECK__": lane_check.TOOL,
@@ -183,6 +185,7 @@ def prove_claim(spec: LaneSpec, *, defect: issue_gates.CoverageEntry, tests: str
         runs += 1
         try:
             verdict = author(str(clone), title=spec.title, body=spec.body,
+                             approved=spec.approved,
                              defect=defect["defect"], evidence=defect["evidence"], env=env,
                              contributor_docs=authoring.docs_from_tree(spec.base.clone))
         except (RuntimeError, ValueError) as e:
@@ -213,7 +216,8 @@ def prove_claim(spec: LaneSpec, *, defect: issue_gates.CoverageEntry, tests: str
             return claim("unshown", "the claim test passes with the fix applied", patch, added,
                          tail)
         runs += 1
-        rating = judge_repro.judge(str(clone), title=spec.title, body=spec.body, files=files,
+        rating = judge_repro.judge(str(clone), title=spec.title, body=spec.body,
+                                   approved=spec.approved, files=files,
                                    claimed_symptom=verdict["claimed_symptom"],
                                    expected_red_signature=verdict["expected_red_signature"],
                                    red_tail=tail)

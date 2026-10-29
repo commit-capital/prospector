@@ -406,7 +406,7 @@ def _fits(action: str, run: dict | None, *, guidance: str | None, answer: dict |
 def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "operator",
           guidance: str | None = None, answer: dict | None = None,
           notes: str | None = None, rivals: list[int] | None = None,
-          dry_run: bool = False) -> tuple[bool, str]:
+          dry_run: bool = False, feature: bool = False) -> tuple[bool, str]:
     """Queue `action` on issue `n`'s fix attempt for the worker, recording the
     words it carries in the thread. `guidance` is an operator's or maintainer's
     instruction; `notes` are words from anyone else — the issue's author, the
@@ -414,7 +414,8 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
     authors' pull requests whose tests a `send-back` judges the fix by. A request that
     retries a failed one of the same action carries its attempt count on. The
     request, follow-up edit and thread entry land in one compare-and-swap, so a
-    request that lands first is never overwritten. (ok, reason)."""
+    request that lands first is never overwritten. `feature` marks a request a
+    maintainer chose to implement as a feature. (ok, reason)."""
     got = store.stamped_issue(n)
     if got is None:
         return False, f"issue #{n} is not in the store"
@@ -443,6 +444,8 @@ def queue(store: IssueStore, n: int, action: str, *, by: str, source: str = "ope
         section["notes"] = notes.strip()
     if rivals:
         section["rivals"] = list(rivals)
+    if feature:
+        section["feature"] = True
     issue.stage_fix_request(section)
     fu = issue.fix_followup
     if action == "send-back" and source == "operator" and fu and "approved" in fu:

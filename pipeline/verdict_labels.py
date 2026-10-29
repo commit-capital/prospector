@@ -32,7 +32,7 @@ MIN_CASES = 10
 # The least severe verdict that blocks, per reviewer.
 BLOCKING: dict[str, str] = {"design": "fail", "security": "RED", "fix-review": "unsafe",
                             "trust-boundary": "hold", "intake": "suspicious",
-                            "fixability": "skip"}
+                            "fixability": "skip", "feature-screen": "unclear"}
 SOURCES: tuple[str, ...] = ("operator", "case-study")
 NOTE_MAX = 4000
 

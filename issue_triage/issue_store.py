@@ -8,7 +8,7 @@ pipeline/store.py for PRs, over the shared storekit core.
 """
 from __future__ import annotations
 
-from collections.abc import Generator, Iterable
+from collections.abc import Generator, Iterable, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -36,10 +36,12 @@ FOLLOWUP_STATES = ("watching", "ready", "handed-back", "done")
 TRIAGE_VERDICTS = ("go", "ask", "skip")
 # How a `done` follow-up's pull request ended.
 FOLLOWUP_CLOSED_AS = ("merged", "closed")
+# The heavy paths a light read drops: candidate PRs and mockup pages.
+LIGHT_OMIT = [("links", "candidates"), ("feature_screen", "mockup")]
 ISSUE_SECTIONS = ("meta", "summary", "repro", "cluster", "analysis", "links", "resolution",
                   "fix_scan", "fix_request", "fix_run", "fix_thread", "fix_followup",
-                  "fix_public", "fix_triage", "fix_choice", "responses", "author_return",
-                  "display")
+                  "fix_public", "fix_triage", "fix_choice", "feature_screen", "feature_decision",
+                  "responses", "author_return", "display")
 
 
 def validate_issue(rec: dict) -> None:
@@ -252,10 +254,10 @@ class IssueStore:
                                           ["fix_run", "fix_request", "fix_public"])
         return self._issues.all(omit_paths=[("links", "candidates")], where=where)
 
-    def issues_since(self, watermark: str | None, *, omit_candidates: bool = False
+    def issues_since(self, watermark: str | None, *, light: bool = False
                      ) -> tuple[dict[int, issue_model.Issue], str | None]:
-        omit = [("links", "candidates")] if omit_candidates else None
-        return self._issues.since(watermark, omit_paths=omit)
+        """`light` drops the LIGHT_OMIT paths server-side."""
+        return self._issues.since(watermark, omit_paths=LIGHT_OMIT if light else None)
 
     def issues_matching(self, path: tuple[str, ...],
                         values: list[str]) -> dict[int, issue_model.Issue]:
@@ -284,13 +286,14 @@ class IssueStore:
         return self._issues.ids()
 
     def issue_rows(self, paths: list[tuple[str, ...]], *, states: Iterable[str] | None = None,
-                   numbers: Iterable[int] | None = None) -> list[tuple[dict, list]]:
+                   numbers: Iterable[int] | None = None,
+                   present: Sequence[tuple[str, ...]] = ()) -> list[tuple[dict, list]]:
         """Each issue's compact row (issue, state, state_reason, title, author,
         updated_at) plus the JSON value at each of `paths` (None where the
-        record has none), in number order. `states` keeps the issues in one of
-        those exact states and `numbers` those issues; both filter, and the
-        columns are projected, server-side, so a listing never ships the issue
-        records."""
+        record has none), then whether each of `present` holds a value, in
+        number order. `states` keeps the issues in one of those exact states and
+        `numbers` those issues; both filter, and the columns are projected,
+        server-side, so a listing never ships the issue records."""
         from sqlalchemy import and_
         c = schema.issues.c
         where = []
@@ -301,7 +304,8 @@ class IssueStore:
         rows = self._issues.rows(
             [c.state, c.data[("meta", "state_reason")].as_string(),
              c.data[("meta", "title")].as_string(), c.data[("meta", "author")].as_string(),
-             c.updated_at, *(c.data[p] for p in paths)],
+             c.updated_at, *(c.data[p] for p in paths),
+             *(c.data[p].as_string().is_not(None) for p in present)],
             where=and_(*where) if where else None)
         return [({"issue": r[0], "state": r[1], "state_reason": r[2], "title": r[3],
                   "author": r[4], "updated_at": r[5]}, list(r[6:])) for r in rows]

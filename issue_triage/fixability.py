@@ -94,7 +94,7 @@ __TEXT__
 """
 
 
-def _replies_block(replies: Sequence[Reply]) -> str:
+def replies_block(replies: Sequence[Reply]) -> str:
     if not replies:
         return ""
     text = "\n\n".join(f"{r.login} ({r.at}):\n{r.body}" for r in replies)
@@ -149,7 +149,7 @@ def review(clone: Path, *, title: str, body: str,
     """The agent's verdict on the report over `clone`, held to what the clone
     shows: cited paths that do not exist are dropped, and a `go` citing none
     reads `ask`. A reply that fails to parse twice raises ValueError."""
-    return review_rendered(clone, title=title, body=body, replies_block=_replies_block(replies),
+    return review_rendered(clone, title=title, body=body, replies_block=replies_block(replies),
                            model=model)
 
 
@@ -199,7 +199,7 @@ def judge(issue: Issue, clone: Path, *, base_sha: str, replies: Sequence[Reply] 
     `failed` and raises."""
     meta = issue.raw.get("meta") or {}
     title, body = str(meta.get("title") or ""), str(meta.get("body") or "")
-    inputs = {"title": title, "body": body, "replies": _replies_block(replies)}
+    inputs = {"title": title, "body": body, "replies": replies_block(replies)}
 
     def note(verdict: str, data: dict) -> None:
         verdict_log.record("fixability", subject, verdict=verdict, prompt_sha=PROMPT_SHA,

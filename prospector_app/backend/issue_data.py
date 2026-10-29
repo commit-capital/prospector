@@ -1,8 +1,8 @@
 """Cached read-side access for the Issue app.
 
-The default Issues table uses a light snapshot with candidate PR arrays omitted,
-then hydrates only the visible page with full rows. Duplicate triage can opt into
-the full issue cache lazily. The first load starts from this machine's on-disk
+The default Issues table uses a light snapshot with candidate PR arrays and
+mockup pages omitted (`issue_store.LIGHT_OMIT`), then hydrates only the visible
+page with full rows. Duplicate triage can opt into the full issue cache lazily. The first load starts from this machine's on-disk
 copy of the snapshot (`snapshot_cache`) and reads only what changed since it;
 the runs ledger starts from its own copy the same way.
 """
@@ -103,7 +103,7 @@ def _freshen(full: bool = False) -> None:
             _freshen(False)
             return
     issue_delta, issue_hi = st.issues_since(
-        None if full else _state.issue_watermark, omit_candidates=True)
+        None if full else _state.issue_watermark, light=True)
     cluster_delta, cluster_hi = st.issue_clusters_since(None if full else _state.cluster_watermark)
     _state.issues = dict(issue_delta) if full else {**_state.issues, **issue_delta}
     _state.clusters = dict(cluster_delta) if full else {**_state.clusters, **cluster_delta}

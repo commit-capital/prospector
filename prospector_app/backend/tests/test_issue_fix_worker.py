@@ -9,9 +9,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from issue_triage import dispute_question, fix_review, fix_review_runner, fixability, public_loop
+from issue_triage import dispute_question, feature_history, feature_screen, fix_review, fix_review_runner, fixability, public_loop
 from issue_triage.issue_store import IssueStore
-from pipeline import profile, prove, settings
+from pipeline import headless_agent, profile, prove, settings
 from pipeline import store as S
 from prospector_app.backend import data, issue_data, issue_fix_worker, lane_health
 
@@ -376,6 +376,24 @@ def test_no_idle_slot_hunts_nothing(hunting, monkeypatch, one_pass):
     assert calls == []
 
 
+@pytest.mark.parametrize("setting, screened", [("1", True), ("0", False)])
+def test_the_feature_screen_setting_alone_runs_the_screener(hunting, monkeypatch, one_pass,
+                                                             setting, screened):
+    monkeypatch.setenv("TRIAGE_FEATURE_SCREEN", setting)
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_HUNT", "0")
+    calls: list[str] = []
+    monkeypatch.setattr(issue_fix_worker, "IssueStore", lambda: hunting)
+    monkeypatch.setattr(issue_fix_worker, "_reclaim", lambda s: None)
+    monkeypatch.setattr(issue_fix_worker, "poll_replies", lambda s: 0)
+    monkeypatch.setattr(issue_fix_worker, "_every_ten_minutes", lambda s: None)
+    monkeypatch.setattr(lane_health, "open_or_retest", lambda lane: True)
+    monkeypatch.setattr(issue_fix_worker, "_idle", lambda s, slots: 0)
+    monkeypatch.setattr(issue_fix_worker, "screen_features",
+                        lambda s, n: calls.append("screen") or [])
+    issue_fix_worker._drain(3)
+    assert (calls == ["screen"]) is screened
+
+
 def test_a_fill_stops_when_capacity_closes_midway(hunting, capacity, monkeypatch):
     queue = fix_review.queue
 
@@ -505,6 +523,144 @@ def test_the_backfill_judges_every_untriaged_issue(hunting, triaging, monkeypatc
     triggers = [r.raw.get("trigger") for r in hunting.runs()
                 if hasattr(r, "raw") and r.raw.get("phase") == "issue-triage:run"]
     assert triggers == ["backfill", "backfill"]
+
+
+@pytest.fixture
+def screening(hunting, monkeypatch, tmp_path):
+    """Issues 3-6 beside the hunter's defects: an old `enhancement`, a decided
+    one, one screened fresh, and a defect; a pinned base, a digest and a
+    screener that answers from `screened["section"]`."""
+    old = "2025-01-01T00:00:00Z"
+    _issue(hunting, 3, created=old, labels=["enhancement"])
+    _issue(hunting, 4, created=old, labels=["enhancement"])
+    _issue(hunting, 5, created=old, labels=["enhancement"])
+    _issue(hunting, 6, created=old)
+    hunting.edit_issue(4).record_feature_decision({"decision": "decline"})
+    monkeypatch.setattr(prove, "pinned", lambda st: prove.PinnedBase(
+        sha="b" * 40, tier=2, image="img", clone=tmp_path))
+    monkeypatch.setattr(public_loop, "read_replies", lambda issue, after: [])
+    monkeypatch.setattr(feature_history, "refresh", lambda issues, *, force=False: tmp_path)
+    screened: dict = {"section": {"verdict": "consider", "size": "small", "mockup": "<html>"},
+                      "issues": []}
+
+    def screen(issue, clone, history, *, base_sha, replies, subject):
+        screened["issues"].append(issue.number)
+        if isinstance(screened["section"], Exception):
+            raise screened["section"]
+        return dict(screened["section"])
+
+    monkeypatch.setattr(feature_screen, "screen", screen)
+    hunting.edit_issue(5).record_feature_screen({"verdict": "unclear"})
+    return screened
+
+
+def test_screen_features_picks_unscreened_feature_requests_only(hunting, screening):
+    assert issue_fix_worker.screen_features(hunting, None) == [3]
+    assert screening["issues"] == [3]
+    assert hunting.load_issue(3).feature_screen["verdict"] == "consider"
+    assert issue_fix_worker.screen_features(hunting, None) == []
+
+
+def test_nothing_to_screen_never_asks_the_capacity(hunting, screening, capacity):
+    hunting.edit_issue(3).record_feature_decision({"decision": "decline"})
+    assert issue_fix_worker.screen_features(hunting, None) == []
+    assert capacity["asked"] == [] and screening["issues"] == []
+
+
+def test_screen_features_books_ledger_phase(hunting, screening):
+    issue_fix_worker.screen_features(hunting, 1, trigger="backfill")
+    runs = [r.raw for r in hunting.runs() if hasattr(r, "raw")
+            and r.raw.get("phase") == "feature-screen:run"]
+    assert len(runs) == 1 and runs[0]["issue"] == 3 and runs[0]["trigger"] == "backfill"
+    assert runs[0]["stats"] == {"verdict": "consider", "size": "small", "mockup": True}
+
+
+def test_screen_features_stops_when_capacity_closes(hunting, screening, capacity, monkeypatch):
+    _issue(hunting, 7, created="2025-02-01T00:00:00Z", labels=["enhancement"])
+    section = feature_screen.screen
+
+    def screen_then_close(*a, **kw):
+        capacity["open"] = False
+        return section(*a, **kw)
+
+    monkeypatch.setattr(feature_screen, "screen", screen_then_close)
+    assert issue_fix_worker.screen_features(hunting, None) == [7]
+
+
+def _age_screen(store: IssueStore, n: int, seconds: float) -> None:
+    rec = store.load_issue(n).raw
+    rec["feature_screen"]["checked_at"] = _ago(seconds=seconds)
+    store.save_issue(rec)
+
+
+def test_a_failed_screen_is_recorded_and_rests_until_the_retry_time(hunting, screening):
+    screening["section"] = ValueError("no JSON object found in agent output")
+    assert issue_fix_worker.screen_features(hunting, None) == []
+    screen = hunting.load_issue(3).feature_screen
+    assert screen["verdict"] == "failed" and "no JSON object" in screen["error"]
+    assert feature_screen.current(hunting.load_issue(3)) is None
+    assert issue_fix_worker.screen_features(hunting, None) == []
+    assert screening["issues"] == [3]
+    _age_screen(hunting, 3, issue_fix_worker.TRIAGE_RETRY_SECONDS + 60)
+    screening["section"] = {"verdict": "unclear"}
+    assert issue_fix_worker.screen_features(hunting, None) == [3]
+    assert screening["issues"] == [3, 3]
+
+
+def test_an_issue_another_worker_claimed_is_skipped(hunting, screening):
+    hunting.edit_issue(3).record_feature_screen({"verdict": "screening", "by": "studio"})
+    assert issue_fix_worker.screen_features(hunting, None) == []
+    assert screening["issues"] == []
+    assert feature_screen.current(hunting.load_issue(3)) is None
+
+
+def test_an_abandoned_claim_is_retaken(hunting, screening):
+    hunting.edit_issue(3).record_feature_screen({"verdict": "screening", "by": "studio"})
+    _age_screen(hunting, 3, issue_fix_worker.SCREEN_CLAIM_SECONDS + 60)
+    assert issue_fix_worker.screen_features(hunting, None) == [3]
+    assert hunting.load_issue(3).feature_screen["verdict"] == "consider"
+
+
+def test_a_screen_holds_its_claim_while_the_agent_runs(hunting, screening, monkeypatch):
+    seen = []
+
+    def screen(issue, *a, **kw):
+        seen.append(hunting.load_issue(issue.number).feature_screen)
+        return {"verdict": "unclear"}
+
+    monkeypatch.setattr(feature_screen, "screen", screen)
+    monkeypatch.setattr(settings, "worker_id", lambda: "studio")
+    assert issue_fix_worker.screen_features(hunting, None) == [3]
+    assert seen[0]["verdict"] == "screening" and seen[0]["by"] == "studio"
+
+
+def test_an_agent_outage_releases_the_claim(hunting, screening):
+    screening["section"] = headless_agent.AgentUnavailable("down")
+    with pytest.raises(headless_agent.AgentUnavailable):
+        issue_fix_worker.screen_features(hunting, None)
+    assert hunting.load_issue(3).feature_screen is None
+
+
+def test_an_outage_leaves_another_worker_s_newer_claim(hunting, screening, monkeypatch):
+    def screen(issue, *a, **kw):
+        hunting.edit_issue(3).record_feature_screen({"verdict": "screening", "by": "other"})
+        raise headless_agent.AgentUnavailable("down")
+
+    monkeypatch.setattr(feature_screen, "screen", screen)
+    with pytest.raises(headless_agent.AgentUnavailable):
+        issue_fix_worker.screen_features(hunting, None)
+    assert hunting.load_issue(3).feature_screen["by"] == "other"
+
+
+def test_the_feature_screen_backfill_prints_yes_rate(hunting, screening, monkeypatch, capsys):
+    from issue_triage import issue_store
+    from pipeline import cli
+    _issue(hunting, 7, created="2025-02-01T00:00:00Z", labels=["enhancement"])
+    monkeypatch.setattr(issue_store, "IssueStore", lambda: hunting)
+    answers = iter([{"verdict": "consider"}, {"verdict": "not-a-fit"}])
+    monkeypatch.setattr(feature_screen, "screen", lambda *a, **kw: next(answers))
+    assert cli.main(["feature-screen-backfill"]) == 0
+    assert "screened 2, consider 1 (50%)" in capsys.readouterr().out
 
 
 def test_a_triage_write_keeps_a_request_claimed_meanwhile(store):

@@ -129,6 +129,27 @@ condition, never a verdict — exits 1: `agent-unavailable`, `run-failed`,
 `sandbox`, `base-compile`. Exit 2 is no held base or an unknown issue, and
 writes no result file or ledger row.
 
+## Feature requests
+
+`feature_screen.py` screens every open issue that triage reads as a feature
+(fixability kind `feature`) or that carries a profile `feature_labels` label, at
+any age. One read-only agent over the base clone (README, docs, code) and the
+digest of past maintainer decisions (`feature_history.py`) answers `consider`,
+`not-a-fit` or `unclear`, citing the precedents it leaned on. For a `consider`
+that changes the UI, a second agent writes an HTML mockup. The host checks it at
+write time (`feature_screen.check_mockup`) and the app shows it only in a
+sandboxed, CSP-locked frame.
+
+- **Unattended:** `TRIAGE_FEATURE_SCREEN=1` on an issue-fix worker, while its
+  lane is healthy and its AI capacity open.
+- **Backfill:** `uv run prospector feature-screen-backfill [--limit N]`, or the
+  Control job `feature-screen`.
+- **Decide:** Home lists the requests worth considering, and the issue page
+  carries the decision. *Implement* queues an operator solve in feature mode
+  through the fix lane; *Not for <repo>* declines, and *Reopen* clears a decline.
+
+Nothing is posted upstream.
+
 ## History replay
 
 `pipeline/evals/issue_fix_replay.py` measures the fix lane against the past: it

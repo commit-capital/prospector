@@ -408,3 +408,9 @@ def test_replay_fix_review_hands_the_design_lens_the_recorded_alternatives(
                   "alternatives": "### Fix 2: reuse pad\n```\nRIVAL PATCH\n```"}, base=sha)
     re_.replay(case, evalrepo, store)
     assert any("RIVAL PATCH" in p for p in prompts)
+
+
+def test_the_gate_offers_only_the_reviewers_it_can_pin(capsys):
+    with pytest.raises(SystemExit) as e:
+        re_.main(["--reviewer", "feature-screen", "--live"])
+    assert e.value.code == 2 and "invalid choice" in capsys.readouterr().err

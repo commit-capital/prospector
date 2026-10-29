@@ -2,11 +2,13 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router";
 import {
   api, type AdvisoryQueryResult, type AlertQueryResult, type AutonomousItem,
-  type IssueRow,
+  type FeatureRequestItem, type IssueRow,
   type PRRow, type QueryResult,
 } from "../api";
 import { AuthorReturnNote } from "../components/AuthorReturn";
 import { HomeProgressRow } from "../components/HomeProgressRow";
+import { FeatureDecisionButtons } from "../components/FeatureDecisionButtons";
+import { FeatureMockup } from "../components/FeatureMockup";
 import { LinkedIssues } from "../components/LinkedIssues";
 import { PRLink } from "../components/PRLink";
 import { useIssueFlyout } from "../useIssueFlyout";
@@ -368,6 +370,66 @@ function HomeAutoFeedCard() {
   );
 }
 
+// Feature requests the screener thinks worth considering, smallest first. A
+// decision (implement or decline) takes the row off the shortlist.
+function HomeFeatureCard() {
+  const { issueUrl } = useRepoMeta();
+  const { openIssue } = useIssueFlyout();
+  const [data, setData] = useState<{ items: FeatureRequestItem[]; count: number } | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [generation, setGeneration] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    api.featureRequests()
+      .then((r) => { if (!cancelled) { setData(r); setFailed(false); } })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [generation]);
+  return (
+    <div className="act-card home-card">
+      <div className="home-card-head">
+        <div className={"act-card-n" + (data === null && !failed ? " home-count-loading" : "")}>
+          {failed ? "?" : data?.count ?? "…"}
+        </div>
+        <div className="home-card-text">
+          <div className="act-card-l">Feature requests worth considering</div>
+          <div className="small muted home-card-blurb">
+            Open requests the screener judged a fit, smallest first. Implement queues a fix
+            attempt; declining records the call here. Nothing is posted upstream.
+          </div>
+        </div>
+      </div>
+      <div className="home-card-side">
+        {failed && <div className="muted small">Failed to load the feature requests.</div>}
+        {data?.items.map((it) => (
+          <div key={it.issue} className="feature-row">
+            <div className="feature-row-text">
+              <div>
+                <a href={issueUrl(it.issue)} target="_blank" rel="noreferrer"
+                  title="Open in this panel (⌘-click for GitHub ↗)"
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+                    e.preventDefault();
+                    openIssue(it.issue);
+                  }}>
+                  #{it.issue} {it.title ?? "(no title)"}
+                </a>
+                {it.size && <span className="chip chip-muted sm feature-size">{it.size}</span>}
+              </div>
+              {it.why && <div className="small muted">{it.why}</div>}
+              <FeatureDecisionButtons issue={it.issue} onDone={() => setGeneration((g) => g + 1)} />
+            </div>
+            {it.has_mockup && <FeatureMockup issue={it.issue} title={it.title ?? `#${it.issue}`} />}
+          </div>
+        ))}
+        {data && data.items.length === 0 && (
+          <div className="muted small">Nothing to consider right now.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // One sample issue row: number (opens the issue flyout; ⌘-click for GitHub),
 // title, and pain rank.
 function SampleIssue({ r }: { r: IssueRow }) {
@@ -540,6 +602,7 @@ export default function Home() {
       <section key="issues" className="home-col">
         <div className="home-col-head muted">Triage picks to action</div>
         {HOME_ISSUE_CARDS.map((c) => <HomeIssueCardRow key={c.key} card={c} />)}
+        <HomeFeatureCard />
       </section>
     ),
     act: (

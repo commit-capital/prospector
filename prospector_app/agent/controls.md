@@ -97,6 +97,11 @@ comment.
   /api/issues/{n}/fix/approve → `fix_review.approve`. Store-only, unless "It
   fixes only part" edits the PR description.
 
+**Feature requests**
+- **Implement / Decline / Reopen**: POST /api/issues/{n}/feature-decision.
+  Implement queues a solve through `fix_review.queue`; the others record the
+  maintainer's call. Store-only; 409 on an issue that is not a feature request.
+
 **Auto-fix panel** (`IssueFixPanel.tsx`). Every button is POST
 /api/issues/{n}/fix → `fix_review.queue`, which answers 409 when the action
 doesn't fit. The issue-fix worker then does the work.

@@ -38,7 +38,7 @@ A reproduction test for a reported defect was written against the repository che
 
 ## The report
 
-__REPORT__
+__REPORT____APPROVED__
 
 ## The test file(s)
 
@@ -99,7 +99,7 @@ def _well_formed(ratings: dict) -> bool:
     return True
 
 
-def judge(worktree: str, *, title: str, body: str,
+def judge(worktree: str, *, title: str, body: str, approved: str | None = None,
           files: list[VerifyAuthoredFile], claimed_symptom: str,
           expected_red_signature: str, red_tail: str,
           on_event: Callable[[tuple], None] | None = None) -> dict:
@@ -112,6 +112,7 @@ def judge(worktree: str, *, title: str, body: str,
     prompt = headless_agent.fill(PROMPT, {
         "__WORKTREE__": worktree,
         "__REPORT__": reproduce_issue.report_block(title, body),
+        "__APPROVED__": reproduce_issue.approved_slot(approved),
         "__FILES__": _files_block(files),
         "__CLAIM__": claimed_symptom,
         "__SIGNATURE__": expected_red_signature,

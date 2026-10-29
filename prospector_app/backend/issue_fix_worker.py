@@ -39,15 +39,19 @@ import threading
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from issue_triage import (
     close_out,
     dispute_question,
+    feature_history,
+    feature_screen,
     fix_choice,
     fix_review,
     fix_review_runner,
     fixability,
     followup,
+    issue_freshness,
     public_loop,
 )
 from issue_triage.issue_model import Issue
@@ -428,6 +432,114 @@ def _judge(store: IssueStore, issue: Issue, base: prove.PinnedBase, trigger: str
     return True
 
 
+# Feature requests screened per coordinator pass.
+SCREEN_BATCH = 3
+# A screening claim this old is abandoned: the screener may run twice, then the mockup.
+SCREEN_CLAIM_SECONDS = 3 * feature_screen.AGENT_TIMEOUT_SECONDS
+
+
+def _screenable(issue: Issue) -> bool:
+    """An undecided feature request with no current screen, no live claim, and
+    no failed screen resting through TRIAGE_RETRY_SECONDS."""
+    if not feature_screen.is_feature_request(issue) or issue.feature_decision is not None:
+        return False
+    sec = issue.section("feature_screen")
+    if sec is None:
+        return True
+    age = storekit.seconds_since(sec.get("checked_at"))
+    if sec.get("verdict") == "screening":
+        return age is None or age >= SCREEN_CLAIM_SECONDS
+    if not issue_freshness.is_current(issue, "feature_screen"):
+        return True
+    return sec.get("verdict") == "failed" and (age is None or age >= TRIAGE_RETRY_SECONDS)
+
+
+def screen_features(store: IssueStore, limit: int | None, *, trigger: str = "worker") -> list[int]:
+    """Screen up to `limit` (None: every) screenable feature requests, the
+    newest first, over this machine's pinned base and one refresh of the taste
+    digest, each while the lane's AI capacity is open. The issues screened. A
+    base this machine lacks leaves every request unscreened; an agent outage
+    propagates."""
+    from prospector_app.backend import issue_data
+
+    issues = issue_data.issues()
+    pending = sorted(((i.raw.get("meta") or {}).get("created_at") or "", n)
+                     for n, i in issues.items() if _screenable(i))
+    pending = pending[::-1][:limit]
+    if not pending or not lane_health.capacity_open(LANE):
+        return []
+    try:
+        base = prove.pinned(Store())
+    except prove.NoBase:
+        return []
+    history = feature_history.refresh(issues.values())
+    screened = []
+    for _, n in pending:
+        if not lane_health.capacity_open(LANE):
+            break
+        if _screen(store, n, base, history, trigger):
+            screened.append(n)
+    return screened
+
+
+def _claim_screen(store: IssueStore, n: int) -> tuple[Issue, dict | None] | None:
+    """Claim issue `n` for this worker's screen under a compare-and-swap: the
+    claimed issue and the section the claim replaced, or None when it is no
+    longer screenable or another writer got there first."""
+    got = store.stamped_issue(n)
+    if got is None or not _screenable(got[0]):
+        return None
+    issue, stamp = got
+    prior = issue.section("feature_screen")
+    issue.stage_feature_screen({"verdict": "screening", "by": settings.worker_id()})
+    return (issue, prior) if store.save_issue_if(issue, stamp) else None
+
+
+def _release_screen(store: IssueStore, n: int, claim: dict | None, prior: dict | None) -> None:
+    """Put back the section `claim` replaced, while `claim` is still the one on
+    the record, under a compare-and-swap."""
+    got = store.stamped_issue(n)
+    if got is None or got[0].section("feature_screen") != claim:
+        return
+    issue, stamp = got
+    issue.raw.pop("feature_screen", None)
+    if prior is not None:
+        issue.raw["feature_screen"] = prior
+    store.save_issue_if(issue, stamp)
+
+
+def _screen(store: IssueStore, n: int, base: prove.PinnedBase, history: Path,
+            trigger: str) -> bool:
+    """Claim, screen and book one feature request. Whether the agent finished.
+    An unusable answer is recorded as a `failed` screen, which rests the
+    request; an agent outage releases the claim."""
+    claimed = _claim_screen(store, n)
+    if claimed is None:
+        return False
+    issue, prior = claimed
+    claim = issue.section("feature_screen")
+    started = storekit.now()
+    created = storekit.parse_ts((issue.raw.get("meta") or {}).get("created_at"))
+    replies = (public_loop.read_replies(issue, created) or []) if created else []
+    try:
+        with capacity.metered(LANE):
+            section = feature_screen.screen(issue, base.clone, history, base_sha=base.sha,
+                                            replies=replies, subject=verdict_log.Subject("issue", n))
+    except (ValueError, RuntimeError) as e:
+        if isinstance(e, headless_agent.AgentUnavailable):
+            _release_screen(store, n, claim, prior)
+            raise
+        traceback.print_exc()
+        issue.record_feature_screen({"verdict": "failed", "error": str(e)[:300]})
+        return False
+    issue.record_feature_screen(section)
+    store.append_run({"phase": "feature-screen:run", "issue": n, "started": started,
+                      "finished": storekit.now(), "trigger": trigger,
+                      "stats": {"verdict": section["verdict"], "size": section.get("size"),
+                                "mockup": bool(section.get("mockup"))}})
+    return True
+
+
 def fill(store: IssueStore, want: int) -> list[int]:
     """Queue up to `want` `solve`s for the most promising huntable issues the
     fixability triage judged `go` at their current content, a maintainer's
@@ -538,8 +650,8 @@ def _idle(store: IssueStore, slots: int) -> int:
 
 
 def _drain(slots: int) -> None:
-    """The coordinator: reclaim, replies, the ten-minute pass, triage and the
-    hunt, each on its own timer while the `slots` slot threads run."""
+    """The coordinator: reclaim, replies, the ten-minute pass, feature screening,
+    triage and the hunt, each on its own timer while the `slots` slot threads run."""
     store = IssueStore()
     last_replies = 0.0
     last_followup = 0.0
@@ -563,6 +675,8 @@ def _drain(slots: int) -> None:
                 if time.monotonic() - last_followup > FOLLOWUP_POLL_SECONDS:
                     _every_ten_minutes(store)
                     last_followup = time.monotonic()
+                if settings.feature_screen():
+                    screen_features(store, SCREEN_BATCH)
                 if (settings.issue_fix_hunt() and not _budget_spent(store)
                         and (idle := _idle(store, slots)) > 0):
                     triage(store, TRIAGE_BATCH)

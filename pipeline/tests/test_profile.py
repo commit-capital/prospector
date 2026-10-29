@@ -130,6 +130,7 @@ class TestParse:
         ({"version": 1, "risk_tiers": {"tier0_globs": [" ui/**"]}}, "whitespace"),
         ({"version": 1, "codeowners": {"owners": ["@owner-a "]}}, "whitespace"),
         ({"version": 1, "trusted_authors": "x"}, "list of strings"),
+        ({"version": 1, "feature_labels": "x"}, "list of strings"),
         ({"version": 1, "automation_bots": [""]}, "non-empty"),
         ({"version": 1, "dependency_manifests": {"a": 1}}, "list of strings"),
         ({"version": 1, "test_paths": []}, "must be an object"),
@@ -229,6 +230,11 @@ class TestSections:
         assert "tests?" in g.test_paths.dir_pattern
         assert any(r.category == "lockfile" for r in g.artifact_rules)
         assert not any(r.category == "migrations" for r in g.artifact_rules)
+
+    def test_feature_labels_default_and_parse(self):
+        assert profile.parse_profile({"version": 1}, "t").feature_labels == ("enhancement",)
+        p = profile.parse_profile({"version": 1, "feature_labels": ["idea", "feature"]}, "t")
+        assert p.feature_labels == ("idea", "feature")
 
     def test_sections_match_repo_profile_fields(self):
         # every allowed section key is a RepoProfile field, so a key cannot

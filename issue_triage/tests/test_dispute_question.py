@@ -153,6 +153,9 @@ def disputed(tmp_path, monkeypatch):
     monkeypatch.setattr(cross_lane, "judge_reading", judge)
 
     class Ledger:
+        def load_issue(self, n):
+            return None
+
         def append_run(self, rec):
             state["ledger"].append(rec)
 

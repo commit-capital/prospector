@@ -13,6 +13,7 @@ parameter is a validated integer cluster id, PR number, or count.
                     `count` lowest-id pending issues (store writes only, nothing
                     upstream)
   - issue-find-fixed : detect already-fixed open issues (gh-heavy, pain-ranked waves)
+  - feature-screen : screen open feature requests (agents, store writes only)
   - security-sweep : alert ingest → alert find-fixed → advisory ingest → advisory
                      find-fixed, one process (bot reads, store writes, agents)
   - design-review : design-review up to `count` PR heads now, merge-ready first
@@ -210,6 +211,18 @@ JOB_SPECS: dict[str, JobSpec] = {
         "argv_fn": lambda n: [*PIPELINE_PY, "-u",
                               str(REPO_ROOT / "issue_triage" / "find_fixed.py"),
                               "--limit", str(n)],
+    },
+    "feature-screen": {
+        "label": "Feature-request screen",
+        "detail": "screen open feature requests against the product and past decisions. "
+                  "Newest first; agents, store writes only.",
+        "agentic": True,
+        "ledger": ("issue", ("feature-screen:run",)),
+        "needs_count": True,
+        "count_default": 50,
+        "count_noun": "requests",
+        "argv_fn": lambda n: [*PIPELINE_PY, "-u", str(REPO_ROOT / "pipeline" / "cli.py"),
+                              "feature-screen-backfill", "--limit", str(n)],
     },
     "security-sweep": {
         "label": "Alert & advisory sweep",

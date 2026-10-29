@@ -247,6 +247,16 @@ class Issue:
         """Whether the issue is worth a fix attempt (`issue_triage.fixability`)."""
         return self._fix_section("fix_triage")
 
+    @property
+    def feature_screen(self) -> dict | None:
+        """The feature-request screen's verdict for the maintainers' shortlist."""
+        return self._fix_section("feature_screen")
+
+    @property
+    def feature_decision(self) -> dict | None:
+        """The maintainers' call on a feature request: implement or decline."""
+        return self._fix_section("feature_decision")
+
     def set_display(self, payload: dict) -> None:
         """Stamp the page's plain-language card (issue_triage/issue_display.py)."""
         _stamp(self.rec, "display", payload, None)
@@ -257,6 +267,29 @@ class Issue:
         assert self._store is not None, "a store-less Issue view is read-only"
         _stamp(self.rec, "fix_triage", section, None)
         self._store.set_issue_section(self.number, "fix_triage", self.rec["fix_triage"])
+
+    def record_feature_screen(self, section: dict) -> None:
+        """Write the screen alone, so a decision recorded meanwhile survives."""
+        assert self._store is not None, "a store-less Issue view is read-only"
+        _stamp(self.rec, "feature_screen", section, None)
+        self._store.set_issue_section(self.number, "feature_screen", self.rec["feature_screen"])
+
+    def stage_feature_screen(self, section: dict) -> None:
+        """Stage the screen without persisting, for a compare-and-swap."""
+        _stamp(self.rec, "feature_screen", section, None)
+
+    def record_feature_decision(self, section: dict) -> None:
+        """Write the decision alone, so a screen recorded meanwhile survives."""
+        assert self._store is not None, "a store-less Issue view is read-only"
+        _stamp(self.rec, "feature_decision", section, None)
+        self._store.set_issue_section(self.number, "feature_decision",
+                                      self.rec["feature_decision"])
+
+    def clear_feature_decision(self) -> None:
+        """Remove the decision alone, so a screen recorded meanwhile survives."""
+        assert self._store is not None, "a store-less Issue view is read-only"
+        self.rec.pop("feature_decision", None)
+        self._store.set_issue_section(self.number, "feature_decision", None)
 
     def stage_fix_public(self, section: dict) -> None:
         """Stage the public-loop record without persisting, for a

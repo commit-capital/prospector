@@ -161,6 +161,7 @@ def replay(case: Case, repo: EvalRepo, store: Store) -> str:
         with _worktree(repo, case) as (_, tree):
             return review_issue_fix.verdict_of(review_issue_fix.full_review(
                 str(tree), inputs["patch"], title=title, body=body,
+                approved=inputs.get("approved") or None,
                 root_cause=inputs.get("root_cause", ""),
                 test_paths=[p for p in inputs.get("test_paths", "").split("\n") if p],
                 evidence=inputs.get("evidence", ""),
@@ -172,7 +173,8 @@ def replay(case: Case, repo: EvalRepo, store: Store) -> str:
         title, body = _report(inputs)
         with _worktree(repo, case) as (base, tree):
             return trust_boundary.verdict_of(trust_boundary.judge(
-                str(tree), base, inputs["patch"], title=title, body=body))
+                str(tree), base, inputs["patch"], title=title, body=body,
+                approved=inputs.get("approved") or None))
     if reviewer == "design":
         from pipeline import design_review
         diff = _diff(store, case)
@@ -513,7 +515,7 @@ def _summary(result: GateResult) -> str:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="python -m pipeline.evals.reviewer_eval")
     ap.add_argument("--init", action="store_true", help="pin every unpinned reviewer, provisionally")
-    ap.add_argument("--reviewer", choices=verdict_log.REVIEWERS)
+    ap.add_argument("--reviewer", choices=tuple(configs()))
     ap.add_argument("--live", action="store_true", help="run the gate, calling agents")
     ap.add_argument("--k", type=int, default=3, help="samples per side where they disagree")
     sub = ap.add_subparsers(dest="cmd")
