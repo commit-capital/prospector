@@ -1239,7 +1239,7 @@ def _stop_timed_out_phase(proc: subprocess.Popen[bytes], container: str,
 # bigger, so every large phase on this machine takes one of
 # large_slots() host locks first, whichever worker thread or
 # orchestrator process is asking. The small phases (2g) run unserialized.
-LARGE_PHASES = frozenset({"compile", "build", "baseline", "regress"})
+LARGE_PHASES = frozenset({"compile", "build", "baseline", "regress", "e2e"})
 _LARGE_LOCK_NAME = "sandbox-large.lock"
 
 

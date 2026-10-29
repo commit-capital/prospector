@@ -195,6 +195,21 @@ case "$PHASE" in
     [ "$rc" -eq "$SENTINEL_TEST_FAIL" ] && exit "$SENTINEL_TEST_FAIL"
     exit 1
     ;;
+  e2e)
+    # The app's own browser suite, booted and driven inside the sandbox. PATCH_FILE,
+    # when set, is applied; unset tests the base tree as pinned. TEST_CMD is the
+    # profile's e2e command — host-authored policy, never agent text — and writes
+    # its report and screenshots to /tmp/e2e-out for the host to copy out. A run
+    # with no report.json never produced a result, so it is infrastructure (1),
+    # not a failed spec.
+    apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
+    mkdir -p /tmp/e2e-out
+    run_test_cmd
+    rc=$?
+    [ -f /tmp/e2e-out/report.json ] \
+      || { echo "the e2e run wrote no report.json" >&2; exit 1; }
+    [ "$rc" -eq 0 ] && exit 0 || exit "$SENTINEL_TEST_FAIL"
+    ;;
   coverage)
     # Changed-line coverage: the PR's diff applied, the coverage provider
     # Prospector fetched copied into the tree (its own dependencies nested

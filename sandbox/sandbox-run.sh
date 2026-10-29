@@ -11,7 +11,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NET="${PR_VERIFY_NET:-pr-verify-net}"
 
-IMAGE="" PHASE="" PATCH="" PRE="" EXCL="" SUITE_CFG="" COV_TOOL="" COV_REQ="" PROBE_DENY_ARG="" CONTAINER_NAME="" CPUS=2 TIER=0 TEST_CMD="pnpm -s test" TEST_SETUP="" BASE_SHA="unknown" HEAD_SHA="unknown" PRISTINE=0
+IMAGE="" PHASE="" PATCH="" PRE="" EXCL="" SUITE_CFG="" COV_TOOL="" COV_REQ="" PROBE_DENY_ARG="" CONTAINER_NAME="" CPUS=2 TIER=0 TEST_CMD="pnpm -s test" TEST_SETUP="" BASE_SHA="unknown" HEAD_SHA="unknown" PRISTINE=0 KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --image) IMAGE="$2"; shift 2;;
@@ -19,6 +19,7 @@ while [ $# -gt 0 ]; do
     --patch) PATCH="$2"; shift 2;;
     --pre-patch) PRE="$2"; shift 2;;
     --pristine) PRISTINE=1; shift;;
+    --keep) KEEP=1; shift;;
     --exclude-file) EXCL="$2"; shift 2;;
     --suite-config) SUITE_CFG="$2"; shift 2;;
     --coverage-tool) COV_TOOL="$2"; shift 2;;
@@ -35,15 +36,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$IMAGE" ] && [ -n "$PHASE" ] || {
-  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress|coverage [--patch F | --pristine] [--pre-patch F] [--cpus N] [--exclude-file F] [--suite-config F] [--coverage-tool DIR --coverage-request F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--test-setup C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
+  echo "usage: sandbox-run.sh --image IMG --phase apply-check|repro|red|green|compile|build|baseline|regress|coverage|e2e [--patch F | --pristine] [--keep] [--pre-patch F] [--cpus N] [--exclude-file F] [--suite-config F] [--coverage-tool DIR --coverage-request F] [--probe-deny LIST] [--tier 0|1] [--test-cmd C] [--test-setup C] [--base-sha S] [--head-sha S] [--container-name N]" >&2
   exit 2; }
-case "$PHASE" in apply-check|repro|red|green|compile|build|baseline|regress|coverage) ;; *) echo "bad --phase: $PHASE" >&2; exit 2;; esac
+case "$PHASE" in apply-check|repro|red|green|compile|build|baseline|regress|coverage|e2e) ;; *) echo "bad --phase: $PHASE" >&2; exit 2;; esac
 case "$CPUS" in ''|*[!0-9]*|0) echo "bad --cpus: $CPUS (a positive whole number)" >&2; exit 2;; esac
 # apply-check, green, compile, and build require a patch onto the base tree.
 # red takes one optionally — the test-only hunks, so it can run a test the
 # diff itself adds — and runs unpatched when omitted. repro always runs
 # against the base tree as pinned and never takes one. regress requires one
-# too, plus the exclusion file from the baseline phase's failing set.
+# too, plus the exclusion file from the baseline phase's failing set. e2e takes
+# one optionally and otherwise tests the base tree as pinned.
 # compile and build may instead run --pristine: the command over the base tree
 # as pinned, with no patch — how the host learns whether the base itself passes
 # the command before it reads a PR's failure as the PR's.
@@ -181,19 +183,29 @@ fi
 # phases (compile and build run a whole-repo command whose peak needs 10g —
 # the target repository's server type-check builds its Rust runner and a
 # plugin SDK before a whole-project tsc;
+# e2e boots the app and drives Chromium over it;
 # baseline and regress run the full suite, whose many node processes are
 # thread-heavy — and threads count against the pids cgroup, so a starved
 # worker dies in uv_thread_create before it can run a single test) get the
-# large class; every other phase runs a bounded test selection at 2g and 512
+# large class (e2e also gets the shared memory Chromium needs); every other phase runs a bounded test selection at 2g and 512
 # tasks, which still stops a fork bomb in PR code.
 MEM=2g
 PIDS=512
-case "$PHASE" in compile|build|baseline|regress) MEM=10g; PIDS=2048;; esac
+case "$PHASE" in compile|build|baseline|regress|e2e) MEM=10g; PIDS=2048;; esac
+shm_args=()
+case "$PHASE" in
+  e2e) shm_args=( --shm-size 1g );;
+esac
+# --keep leaves the stopped container so the host can `docker cp` its
+# /tmp/e2e-out; the host removes it. Otherwise the container is removed on exit.
+rm_args=( --rm )
+[ "$KEEP" = 1 ] && rm_args=()
 name_args=()
 if [ -n "$CONTAINER_NAME" ]; then
   name_args=( --name "$CONTAINER_NAME" )
 fi
-docker run --rm "${name_args[@]+"${name_args[@]}"}" --network "$NET" \
+docker run "${rm_args[@]+"${rm_args[@]}"}" "${shm_args[@]+"${shm_args[@]}"}" \
+  "${name_args[@]+"${name_args[@]}"}" --network "$NET" \
   --cap-drop ALL --security-opt no-new-privileges:true \
   --pids-limit "$PIDS" --memory "$MEM" --cpus "$CPUS" \
   "${env_args[@]}" \

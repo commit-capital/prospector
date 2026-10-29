@@ -2977,10 +2977,13 @@ class TestLargePhaseLock:
         with vd._LargePhaseLock("red"):
             assert not (tmp_path / vd._LARGE_LOCK_NAME).exists()
 
+    def test_e2e_is_a_large_phase(self):
+        assert "e2e" in vd.LARGE_PHASES
+
     def test_the_class_matches_the_launchers(self):
         import re
         text = (vd.SANDBOX / "sandbox-run.sh").read_text()
-        m = re.search(r'case "\$PHASE" in ([a-z|]+)\) MEM=10g', text)
+        m = re.search(r'case "\$PHASE" in ([a-z0-9|]+)\) MEM=10g', text)
         assert m is not None
         assert set(m.group(1).split("|")) == set(vd.LARGE_PHASES)
 
