@@ -184,9 +184,9 @@ export const HOME_CARDS: HomeCard[] = [
   {
     key: "author",
     title: "Someone else's turn",
-    blurb: "The automation cannot move these without the contributor: conflicts the bot will not rebase, red CI, verification that did not confirm the fix, an agent that tried and declined with its reasoning, or a stacked PR waiting on its base. Prospector's own green fix PRs wait here on the maintainers.",
+    blurb: "The automation cannot move these without the contributor: conflicts the bot will not rebase, red CI, verification that did not confirm the fix, an agent that tried and declined with its reasoning, or a stacked PR waiting on its base.",
     column: "handed",
-    spec: { automation_owner: ["author", "maintainers"] },
+    spec: { automation_owner: "author" },
     breakdown: [
       { label: "needs a rebase", spec: bucket("author-conflicts"), hint: HANDED_UNBLOCK["author-conflicts"] },
       { label: "red CI", spec: bucket("author-ci"), hint: HANDED_UNBLOCK["author-ci"] },

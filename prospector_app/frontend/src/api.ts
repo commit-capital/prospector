@@ -110,9 +110,8 @@ export interface FilterSpec {
 /** The Home column a PR's standing with the automation places it in: a click
  *  of yours moves it, a worker moves it, or the automation handed it back. */
 export type AutomationColumn = "act" | "auto" | "handed";
-/** Whose move a PR is: the operator, the automation itself, the author, or
- *  the repository's maintainers (who merge Prospector's own fix PRs). */
-export type AutomationOwner = "you" | "worker" | "author" | "maintainers";
+/** Whose move a PR is: the operator, the automation itself, or the author. */
+export type AutomationOwner = "you" | "worker" | "author";
 /** The status a PR leads with: a worker moves it, someone else's move, green
  *  and ready to merge, one quick click of yours, or stuck until you decide. */
 export type AutomationState = "moving" | "waiting" | "ready" | "needs-you" | "stalled";

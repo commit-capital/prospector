@@ -1004,13 +1004,14 @@ def test_an_approved_fix_leaves_the_review_queue_for_the_maintainers(store):
     assert "Approved #9" in issue.fix_thread[-1]["text"]
 
 
-def test_a_green_fix_goes_to_the_maintainers_unless_it_is_partial(store):
+def test_a_green_fix_goes_to_the_maintainers_partial_or_not(store):
     _handed_back(store, state="ready")
     assert fix_review.fix_status(store.load_issue(7)) == (
         "pr-open", "#9 is green; with the maintainers")
     _run(store, reviews=PARTIAL, proposal={"pr": 9, "url": "u"})
     status, reason = fix_review.fix_status(store.load_issue(7))
-    assert status == "review" and reason.endswith("#9 is green — ready for your review")
+    assert status == "pr-open" and reason.startswith("partial fix: 1 of 3")
+    assert reason.endswith("#9 is green; with the maintainers")
 
 
 def test_approving_a_partial_fix_asks_for_its_description_again(store):

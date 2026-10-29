@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import platform
+import posixpath
 import re
 import signal
 import shlex
@@ -31,11 +32,15 @@ import threading
 import time
 import tomllib
 from collections.abc import Callable
-from datetime import datetime
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from pipeline import diffpaths
+from pipeline import e2e_artifacts
+from pipeline import e2e_coverage
+from pipeline import e2e_report
 from pipeline import gates
 from pipeline import gh
 from pipeline import profile
@@ -287,6 +292,48 @@ def prefetch_store(src: Path, store: Path) -> None:
         env=launcher_env())
 
 
+_PLAYWRIGHT_KEY_RE = re.compile(r"^\s*'@playwright/test@([^']+)':", re.MULTILINE)
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
+
+
+def playwright_version(src: Path) -> str | None:
+    """The exact `@playwright/test` version `src`'s pnpm lockfile pins, or None
+    when it pins none or a version that is not plain semver (the value reaches
+    a shell command)."""
+    try:
+        text = (src / "pnpm-lock.yaml").read_text()
+    except OSError:
+        return None
+    m = _PLAYWRIGHT_KEY_RE.search(text)
+    return m.group(1) if m and _SEMVER_RE.fullmatch(m.group(1)) else None
+
+
+def prefetch_browsers(src: Path, dest: Path) -> None:
+    """Install into `dest` the Chromium build matching the Playwright version
+    `src` pins, for a profile that runs e2e. Browser builds are tied to the
+    Playwright version, so the browser follows the base. Like `prefetch_store`,
+    it runs inside the sandbox image, with egress; the phases that use the
+    browser are offline."""
+    version = playwright_version(src)
+    if profile.active().verify.e2e is None or version is None:
+        return
+    _run_build_step(
+        "prefetching Chromium",
+        ["docker", "run", "--rm", "-v", f"{dest}:/work/browsers", sandbox_image(),
+         "bash", "-lc",
+         f"PLAYWRIGHT_BROWSERS_PATH=/work/browsers npx -y playwright@{version} install chromium"],
+        env=launcher_env())
+
+
+def base_has_browser(image: str) -> bool:
+    """Whether `image` holds the full Chromium build under /work/browsers (the
+    `chromium-<rev>` directory, not `chromium_headless_shell-<rev>`)."""
+    p = subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "sh",
+                        image, "-c", "ls -d /work/browsers/chromium-* >/dev/null 2>&1"],
+                       capture_output=True, env=launcher_env(), timeout=120)
+    return p.returncode == 0
+
+
 # A toolchain channel or component a repository's toolchain file names: a
 # release, a dated or named channel, a component. Anything else is refused.
 _RUST_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -521,6 +568,15 @@ def _run_build_step(what: str, argv: list[str], *, env: dict[str, str],
 _BUILT_MARKER = "built"
 
 
+def _lacks_browser(sha: str, tier: int, tag: str) -> bool:
+    """Whether a finished tier-1 base for an e2e profile is missing the browser
+    its clone's Playwright pin calls for. A base without its clone counts as
+    complete."""
+    return (tier == 1 and profile.active().verify.e2e is not None
+            and playwright_version(base_clone_dir(sha)) is not None
+            and not base_has_browser(tag))
+
+
 def build_base_image(sha: str, *, tier: int) -> str:
     """Produce a scrubbed remote-stripped clone of `sha` under SCRATCH and build
     the per-batch base image from it (Tier 1 prefetches the pnpm store and the
@@ -537,7 +593,8 @@ def build_base_image(sha: str, *, tier: int) -> str:
     ctx = base_clone_dir(sha).parent
     tag = base_image_tag(sha, tier)
     with verify_gc.generation_lock(ctx):
-        if (ctx / _BUILT_MARKER).is_file() and image_parent(tag) == sandbox_image():
+        if ((ctx / _BUILT_MARKER).is_file() and image_parent(tag) == sandbox_image()
+                and not _lacks_browser(sha, tier, tag)):
             return tag
         _build_base_image(sha, tier, ctx, tag)
         (ctx / _BUILT_MARKER).touch()
@@ -555,11 +612,13 @@ def _build_base_image(sha: str, tier: int, ctx: Path, tag: str) -> None:
     src = base_clone_dir(sha)
     pnpm_store = ctx / "pnpm-store"
     rust = ctx / "rust"
+    browsers = ctx / "browsers"
     if ctx.exists():
         shutil.rmtree(ctx)
     ctx.mkdir(parents=True)
     pnpm_store.mkdir()
     rust.mkdir()
+    browsers.mkdir()
 
     cloning = ctx / f"clone-{os.getpid()}-{time.monotonic_ns()}"
     cloning.mkdir()
@@ -575,6 +634,7 @@ def _build_base_image(sha: str, tier: int, ctx: Path, tag: str) -> None:
     if tier == 1:
         prefetch_store(src, pnpm_store)
         prefetch_rust(src, rust)
+        prefetch_browsers(src, browsers)
 
     try:
         _run_build_step(
@@ -1194,7 +1254,7 @@ def _stop_timed_out_phase(proc: subprocess.Popen[bytes], container: str,
 # bigger, so every large phase on this machine takes one of
 # large_slots() host locks first, whichever worker thread or
 # orchestrator process is asking. The small phases (2g) run unserialized.
-LARGE_PHASES = frozenset({"compile", "build", "baseline", "regress"})
+LARGE_PHASES = frozenset({"compile", "build", "baseline", "regress", "e2e"})
 _LARGE_LOCK_NAME = "sandbox-large.lock"
 
 
@@ -1295,14 +1355,14 @@ def orphaned_sandbox_containers(names: list[str], *,
 
 
 def stop_orphaned_sandboxes() -> list[str]:
-    """Remove every running phase container whose host process is dead and
-    return their names, printing one line naming them. A Docker that cannot
-    be asked leaves everything alone: the phase about to launch fails on its
-    own with the daemon's message."""
+    """Remove every phase container, running or stopped, whose host process is
+    dead and return their names, printing one line naming them. A Docker that
+    cannot be asked leaves everything alone: the phase about to launch fails
+    on its own with the daemon's message."""
     env = launcher_env()
     try:
         ps = subprocess.run(
-            ["docker", "ps", "--filter", f"name={_CONTAINER_PREFIX}", "--format", "{{.Names}}"],
+            ["docker", "ps", "-a", "--filter", f"name={_CONTAINER_PREFIX}", "--format", "{{.Names}}"],
             capture_output=True, text=True, env=env, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -1333,7 +1393,8 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
               timeout: int = PHASE_TIMEOUT_SECONDS, pristine: bool = False,
               tail_bytes: int = OUTPUT_TAIL_BYTES, coverage_tool: Path | None = None,
               coverage_request: Path | None = None,
-              runs_tests: bool = False) -> tuple[int, str]:
+              runs_tests: bool = False, keep: bool = False,
+              container: str | None = None) -> tuple[int, str]:
     """Run ONE sandbox phase and return (exit_code, captured_output_tail).
     `pristine` runs a compile or build phase over the base tree as pinned,
     with no patch. A phase in TEST_PHASES, or one whose caller says its
@@ -1357,6 +1418,9 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
     the fetched coverage provider and the changed lines to measure
     (`pipeline/coverage.py`).
 
+    `keep` leaves the exited container, named `container`, for the caller to
+    copy from and remove (the e2e phase alone).
+
     The launcher gets launcher_env(), never os.environ. A phase in
     LARGE_PHASES holds the host's large-phase lock from launch to exit."""
     with _LargePhaseLock(phase):
@@ -1367,7 +1431,8 @@ def run_phase(phase: str, image: str, *, patch: Path | None = None, tier: int = 
                                  timeout=timeout, pristine=pristine, tail_bytes=tail_bytes,
                                  coverage_tool=coverage_tool,
                                  coverage_request=coverage_request,
-                                 runs_tests=runs_tests or phase in TEST_PHASES)
+                                 runs_tests=runs_tests or phase in TEST_PHASES,
+                                 keep=keep, container=container)
 
 
 def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
@@ -1376,8 +1441,9 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
                       timeout: int, pristine: bool, pre_patch: Path | None = None,
                       tail_bytes: int = OUTPUT_TAIL_BYTES, coverage_tool: Path | None = None,
                       coverage_request: Path | None = None,
-                      runs_tests: bool = False) -> tuple[int, str]:
-    container = container_name()
+                      runs_tests: bool = False, keep: bool = False,
+                      container: str | None = None) -> tuple[int, str]:
+    container = container or container_name()
     argv = [str(SANDBOX / "sandbox-run.sh"), "--phase", phase, "--image", image,
             "--tier", str(tier), "--test-cmd", test_cmd,
             "--base-sha", base_sha, "--head-sha", head_sha,
@@ -1393,6 +1459,8 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
         argv += ["--cpus", str(large_cpus())]
     if pristine:
         argv += ["--pristine"]
+    if keep:
+        argv += ["--keep"]
     if exclude_file is not None:
         argv += ["--exclude-file", str(exclude_file)]
     if suite_config is not None:
@@ -1430,6 +1498,142 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
         return _TIMEOUT_EXIT, f"phase {phase} timed out after {timeout}s"
     reader.join()
     return returncode, bytes(tail).decode("utf-8", errors="replace")
+
+
+# Where the e2e phase's Playwright writes its JSON report and screenshots.
+E2E_OUT = "/tmp/e2e-out"
+
+# How long before the host's phase timeout Playwright stops itself, so it can
+# shut its webServer down and write a partial report.
+E2E_STOP_MARGIN_S = 120
+_E2E_MIN_GLOBAL_TIMEOUT_MS = 60_000
+
+# One deadline for the whole artifact copy, and the most it reads past what the
+# artifact reader takes before giving the copy up.
+E2E_COPY_TIMEOUT_S = 120
+E2E_DRAIN_CAP_BYTES = 64 * 1024 * 1024
+
+
+def e2e_test_cmd(cfg: profile.E2eConfig, specs: list[str] | None = None) -> str:
+    """The e2e phase's bash command, built from the profile alone. With no
+    `specs` it runs every `*.spec.ts` under the config's directory but the
+    profile's excludes, listed into an array inside the container; an empty
+    selection exits 1. The line reporter's progress goes to stdout and the
+    JSON report to the file PLAYWRIGHT_JSON_OUTPUT_NAME names. Playwright drops
+    file filters after `--`, so a spec may not start with `-`."""
+    if specs == []:
+        raise ValueError("no e2e specs selected")
+    if specs and any(s.startswith("-") for s in specs):
+        raise ValueError("an e2e spec may not start with '-'")
+    global_timeout_ms = max(_E2E_MIN_GLOBAL_TIMEOUT_MS,
+                            (cfg.boot_timeout_s - E2E_STOP_MARGIN_S) * 1000)
+    run = f"PLAYWRIGHT_JSON_OUTPUT_NAME={E2E_OUT}/report.json"
+    if cfg.channel_env:
+        run = f"{cfg.channel_env}=chromium {run}"
+    run += (f" npx playwright test --config {shlex.quote(cfg.config)}"
+            f" --reporter=line,json --global-timeout={global_timeout_ms}"
+            f" --output {E2E_OUT}")
+    if specs is not None:
+        return f"{run} {' '.join(shlex.quote(s) for s in specs)}"
+    root = posixpath.dirname(cfg.config) or "."
+    prefix = "./" if root == "." else ""
+    listing = f"find {shlex.quote(root)} -type f -name '*.spec.ts' | sort"
+    if cfg.exclude:
+        listing += " | grep -vxF" + "".join(
+            f" -e {shlex.quote(prefix + e)}" for e in cfg.exclude)
+    return (f"mapfile -t specs < <({listing}); "
+            '[ ${#specs[@]} -gt 0 ] || { echo "no e2e specs selected" >&2; exit 1; }; '
+            f'{run} "${{specs[@]}}"')
+
+
+def _copy_e2e_out(container: str, env: dict[str, str]) -> e2e_artifacts.Artifacts:
+    """The kept container's E2E_OUT, streamed from `docker cp` into the
+    artifact reader. A copy that fails, is killed at E2E_COPY_TIMEOUT_S, or runs
+    past E2E_DRAIN_CAP_BYTES of leftover output collects nothing."""
+    empty = e2e_artifacts.Artifacts(report=None, pngs={}, skipped=[])
+    try:
+        proc = subprocess.Popen(["docker", "cp", f"{container}:{E2E_OUT}", "-"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+    except OSError:
+        return empty
+    assert proc.stdout is not None
+    out = proc.stdout
+    failed = threading.Event()
+
+    def give_up() -> None:
+        failed.set()
+        proc.kill()
+
+    timer = threading.Timer(E2E_COPY_TIMEOUT_S, give_up)
+    timer.start()
+    artifacts = empty
+    try:
+        artifacts = e2e_artifacts.read_artifacts(out)
+        # The reader can stop early; drain so `docker cp` exits on its own.
+        drained = 0
+        while chunk := out.read(_READ_CHUNK_BYTES):
+            drained += len(chunk)
+            if drained >= E2E_DRAIN_CAP_BYTES:
+                give_up()
+                break
+    except OSError:
+        give_up()
+    finally:
+        timer.cancel()
+        out.close()
+        try:
+            rc = proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = proc.wait()
+    return artifacts if rc == 0 and not failed.is_set() else empty
+
+
+def _remove_container(container: str, env: dict[str, str]) -> None:
+    try:
+        p = subprocess.run(["docker", "rm", "-f", container], check=False, env=env,
+                           capture_output=True, text=True, timeout=60)
+        problem = "" if p.returncode == 0 or "No such container" in p.stderr \
+            else p.stderr.strip()[:200]
+    except (OSError, subprocess.TimeoutExpired) as e:
+        problem = str(e)
+    if problem:
+        print(f"[sandbox] could not remove e2e container {container}: {problem}",
+              file=sys.stderr, flush=True)
+
+
+def e2e_config(image: str) -> profile.E2eConfig:
+    """The profile's e2e section. Raises RuntimeError when the profile has none
+    or `image` holds no browser."""
+    cfg = profile.active().verify.e2e
+    if cfg is None:
+        raise RuntimeError("no verify.e2e in the profile")
+    if not base_has_browser(image):
+        raise RuntimeError("no browser in this base: re-run prepare-base after adding "
+                           "verify.e2e to the profile")
+    return cfg
+
+
+def run_e2e(image: str, *, tier: int, patch: Path | None = None,
+            specs: list[str] | None = None, base_sha: str = "",
+            head_sha: str = "") -> tuple[int, e2e_report.E2eRun, e2e_artifacts.Artifacts]:
+    """Run the profile's e2e suite in `image` (the PR's `patch` applied, or the
+    base as pinned) and return the phase's exit code, the parsed run and the
+    collected artifacts. The container is kept for the copy and always
+    removed after."""
+    cfg = e2e_config(image)
+    test_cmd = e2e_test_cmd(cfg, specs)
+    container = container_name()
+    env = launcher_env()
+    try:
+        rc, tail = run_phase("e2e", image, patch=patch, tier=tier, test_cmd=test_cmd,
+                             base_sha=base_sha, head_sha=head_sha,
+                             timeout=cfg.boot_timeout_s, runs_tests=True, keep=True,
+                             container=container)
+        artifacts = _copy_e2e_out(container, env)
+    finally:
+        _remove_container(container, env)
+    return rc, e2e_report.parse_report(artifacts.report, output_tail=tail), artifacts
 
 
 class FetchFailure(RuntimeError):
@@ -2212,15 +2416,71 @@ def build_image() -> str:
     return tag
 
 
+def e2e_coverage_cmd(store: Store, *, runs: int) -> int:
+    """Run the e2e suite `runs` times on the pinned base and write the coverage
+    report and the failing specs' screenshots under SCRATCH. Non-zero when no
+    spec ran in any run that booted."""
+    if runs < 1:
+        print("--runs must be at least 1", file=sys.stderr)
+        return 2
+    try:
+        base_sha, tier = pinned_base(store), pinned_tier(store)
+        image = base_image_tag(base_sha, tier)
+        e2e_config(image)
+    except RuntimeError as e:
+        print(e, file=sys.stderr)
+        return 2
+    no_artifacts = e2e_artifacts.Artifacts(report=None, pngs={}, skipped=[])
+    results: list[tuple[int, e2e_report.E2eRun, e2e_artifacts.Artifacts]] = []
+    for i in range(1, runs + 1):
+        try:
+            results.append(run_e2e(image, tier=tier, base_sha=base_sha))
+        except (OSError, subprocess.SubprocessError, RuntimeError) as e:
+            problem = f"run {i} raised {type(e).__name__}: {e}"[:e2e_report.MAX_TEXT]
+            results.append((-1, e2e_report.E2eRun(booted=False, results=[], problem=problem),
+                            no_artifacts))
+    e2e_runs = [r[1] for r in results]
+    cov = e2e_coverage.classify(e2e_runs)
+    out_dir = SCRATCH / "e2e-coverage" / f"{base_sha[:12]}-{datetime.now(UTC):%Y%m%dT%H%M%SZ}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    root = out_dir.resolve()
+    shown: list[e2e_coverage.SpecCoverage] = []
+    notes: list[str] = []
+    for c in cov:
+        key = c.screenshot
+        png = next((r[2].pngs[key] for r in results if key in r[2].pngs), None) if key else None
+        if key is None or png is None:
+            shown.append(replace(c, screenshot=None))
+            continue
+        target = (root / "shots" / key).resolve()
+        assert target.is_relative_to(root), key
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(png)
+        except OSError as e:
+            notes.append(f"could not write shots/{key}: {e.strerror or e}")
+            shown.append(replace(c, screenshot=None))
+            continue
+        shown.append(replace(c, screenshot=f"shots/{key}"))
+    report = out_dir / "report.md"
+    report.write_text(e2e_coverage.render(
+        shown, base_sha=base_sha[:12], boot_failures=e2e_coverage.boot_failures(e2e_runs),
+        runs=len(e2e_runs), skipped=e2e_coverage.skipped_count(e2e_runs), notes=notes))
+    print(report.resolve())
+    return 0 if cov else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("cmd", choices=["prepare-base", "build-image", "gc", "teardown"])
+    ap.add_argument("cmd", choices=["prepare-base", "build-image", "gc", "teardown", "e2e-coverage"])
     ap.add_argument("--base-sha", default=None)
     ap.add_argument("--tier", type=int, default=0, choices=[0, 1],
                     help="the tier to build the base image at. verify_pr reads it "
                          "back from the pin.")
     ap.add_argument("--dry-run", action="store_true",
                     help="gc and teardown: report what would go, remove nothing")
+    ap.add_argument("--runs", type=int, default=3,
+                    help="e2e-coverage: how many times to run the suite")
     ap.add_argument("--store", default=None)
     args = ap.parse_args(argv)
 
@@ -2254,6 +2514,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"keeping {', '.join(result['keep']) or 'nothing'}; "
               f"{verb} {', '.join(gone) or 'nothing'}")
         return 0 if result["ok"] else 1
+
+    if args.cmd == "e2e-coverage":
+        return e2e_coverage_cmd(store, runs=args.runs)
 
     tag = prepare_base(store, base_sha=args.base_sha, tier=args.tier)
     print(f"base image ready: {tag}")

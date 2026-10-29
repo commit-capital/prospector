@@ -24,8 +24,7 @@ if TYPE_CHECKING:
 COLUMNS = ("act", "auto", "handed")
 
 # bucket -> owner. `you` is the operator, `author` the contributor, `worker`
-# the automation itself, `maintainers` the repository's own (who merge
-# Prospector's fix PRs).
+# the automation itself.
 OWNERS: dict[str, str] = {
     "malicious": "you", "merge-ready": "you", "approve-parked": "you", "approve-ci": "you",
     "rerun-ci": "you",
@@ -36,7 +35,7 @@ OWNERS: dict[str, str] = {
     "stacked": "author",
     "needs-human": "you", "security-red": "you", "security-yellow": "you", "asks": "you",
     "gated": "you", "other": "you",
-    "followup": "worker", "handed-back": "you", "with-maintainers": "maintainers",
+    "followup": "worker", "handed-back": "you",
 }
 
 # bucket -> the state a PR's status leads with: `moving` (a worker moves it),
@@ -46,7 +45,7 @@ OWNERS: dict[str, str] = {
 _NEEDS_YOU = ("malicious", "approve-parked", "approve-ci", "rerun-ci")
 STATES: dict[str, str] = {
     b: ("ready" if b == "merge-ready" else "needs-you" if b in _NEEDS_YOU
-        else {"worker": "moving", "author": "waiting", "maintainers": "waiting"}.get(o, "stalled"))
+        else {"worker": "moving", "author": "waiting"}.get(o, "stalled"))
     for b, o in OWNERS.items()}
 
 AUTHOR_BUCKETS = tuple(b for b, o in OWNERS.items() if o == "author")
@@ -92,24 +91,8 @@ def classify(pr: Pr) -> dict | None:
                                      "merge it once CI and the scanners pass")
     from prospector_app.backend import fix_queue, fix_worker, service
     req = pr.fix_request or {}
-    ok, why = gates.merge_eligibility(pr)
-    # A PR ANALYZE never reached is mergeable on the human gate alone.
-    if ok and pr.disposition in ("merge", None):
-        # The cached diff's paths, when there is one: a CODEOWNERS path is a
-        # code owner's merge, never the bot's.
-        paths = service.changed_paths(pr)
-        if paths:
-            ok, why = gates.merge_eligibility(pr, changed_paths=paths)
-            if not ok:
-                return _r("handed", "gated", why)
-        if pr.disposition is None:
-            # Not ready: the verify hunter runs only analyzed merge picks.
-            return _r("auto", "waiting", "not analyzed yet; once the clustering lane picks "
-                                         "it to merge, the verify hunter runs its Test Run")
-        gap = _unclear_check(pr)
-        if gap is None:
-            return _r("act", "merge-ready", "every check is clear; merge it")
-        return _merge_pick_gap(pr, gap)
+    if (merge := _merge_standing(pr)) is not None:
+        return merge
     if req.get("status") == "awaiting-review":
         return _r("act", "approve-parked", _parked_reason(req))
     if pr.disposition == "merge" and gates.pr_clean(pr)[1] == [gates.THREAT_SCAN_STALE]:
@@ -163,6 +146,32 @@ def classify(pr: Pr) -> dict | None:
     return _blocked(pr, action, why)
 
 
+def _merge_standing(pr: Pr) -> dict | None:
+    """A merge pick's standing once the human merge gate passes: ready, gated
+    on a code owner, or the check still missing. None when the gate refuses
+    or the PR is no merge pick. A PR ANALYZE never reached is mergeable on the
+    human gate alone."""
+    from prospector_app.backend import service
+    ok, why = gates.merge_eligibility(pr)
+    if not ok or pr.disposition not in ("merge", None):
+        return None
+    # The cached diff's paths, when there is one: a CODEOWNERS path is a code
+    # owner's merge, never the bot's.
+    paths = service.changed_paths(pr)
+    if paths:
+        ok, why = gates.merge_eligibility(pr, changed_paths=paths)
+        if not ok:
+            return _r("handed", "gated", why)
+    if pr.disposition is None:
+        # Not ready: the verify hunter runs only analyzed merge picks.
+        return _r("auto", "waiting", "not analyzed yet; once the clustering lane picks "
+                                     "it to merge, the verify hunter runs its Test Run")
+    gap = _unclear_check(pr)
+    if gap is None:
+        return _r("act", "merge-ready", "every check is clear; merge it")
+    return _merge_pick_gap(pr, gap)
+
+
 def fix_issue(pr: Pr) -> Issue | None:
     """The open issue a Prospector fix PR was proposed for, or None for anyone
     else's PR or one whose issue the snapshot does not hold."""
@@ -175,9 +184,11 @@ def fix_issue(pr: Pr) -> Issue | None:
 
 
 def _followup_standing(pr: Pr) -> dict | None:
-    """A Prospector fix PR's standing, from its issue's follow-up: handed back
-    to you, green and with the maintainers, or still being followed up. None
-    for anyone else's PR, or one whose issue the snapshot does not hold."""
+    """A Prospector fix PR's standing: handed back to you, or, once green or
+    approved, wherever the merge gates place it like any other PR, and
+    otherwise followed up by the issue-fix lane, which answers its reviewers,
+    CI and conflicts itself. None for anyone else's PR, or one whose issue the
+    snapshot does not hold."""
     issue = fix_issue(pr)
     if issue is None:
         return None
@@ -187,7 +198,8 @@ def _followup_standing(pr: Pr) -> dict | None:
     if fu.get("state") == "handed-back" and fix_review.approval(issue) is None:
         return _r("handed", "handed-back", line)
     if fu.get("state") == "ready" or fix_review.approval(issue) is not None:
-        return _r("handed", "with-maintainers", line)
+        if (merge := _merge_standing(pr)) is not None:
+            return merge
     return _r("auto", "followup", line)
 
 
