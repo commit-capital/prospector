@@ -1491,32 +1491,41 @@ def _run_phase_locked(phase: str, image: str, *, patch: Path | None, tier: int,
 # Where the e2e phase's Playwright writes its JSON report and screenshots.
 E2E_OUT = "/tmp/e2e-out"
 
+# One deadline for the whole artifact copy, and the most it reads past what the
+# artifact reader takes before giving the copy up.
+E2E_COPY_TIMEOUT_S = 120
+E2E_DRAIN_CAP_BYTES = 64 * 1024 * 1024
+
 
 def e2e_test_cmd(cfg: profile.E2eConfig, specs: list[str] | None = None) -> str:
-    """The e2e phase's Playwright command, built from the profile alone. With
-    no `specs` it runs every `*.spec.ts` under the config's directory but the
-    profile's excludes, listed inside the container."""
-    env = f"PLAYWRIGHT_JSON_OUTPUT_NAME={E2E_OUT}/report.json"
+    """The e2e phase's bash command, built from the profile alone. With no
+    `specs` it runs every `*.spec.ts` under the config's directory but the
+    profile's excludes, listed into an array inside the container; an empty
+    selection exits 1 rather than run the whole config."""
+    if specs == []:
+        raise ValueError("no e2e specs selected")
+    run = f"PLAYWRIGHT_JSON_OUTPUT_NAME={E2E_OUT}/report.json"
     if cfg.channel_env:
-        env = f"{cfg.channel_env}=chromium {env}"
+        run = f"{cfg.channel_env}=chromium {run}"
+    run += (f" npx playwright test --config {shlex.quote(cfg.config)}"
+            f" --reporter=json --output {E2E_OUT} --")
     if specs is not None:
-        targets = " ".join(shlex.quote(s) for s in specs)
-    else:
-        root = posixpath.dirname(cfg.config) or "."
-        prefix = "./" if root == "." else ""
-        listing = f"find {shlex.quote(root)} -type f -name '*.spec.ts'"
-        if cfg.exclude:
-            listing += " | grep -vxF" + "".join(
-                f" -e {shlex.quote(prefix + e)}" for e in cfg.exclude)
-        targets = f"$({listing} | sort)"
-    return (f"{env} npx playwright test --config {shlex.quote(cfg.config)} "
-            f"--reporter=json --output {E2E_OUT} {targets}")
+        return f"{run} {' '.join(shlex.quote(s) for s in specs)}"
+    root = posixpath.dirname(cfg.config) or "."
+    prefix = "./" if root == "." else ""
+    listing = f"find {shlex.quote(root)} -type f -name '*.spec.ts' | sort"
+    if cfg.exclude:
+        listing += " | grep -vxF" + "".join(
+            f" -e {shlex.quote(prefix + e)}" for e in cfg.exclude)
+    return (f"mapfile -t specs < <({listing}); "
+            '[ ${#specs[@]} -gt 0 ] || { echo "no e2e specs selected" >&2; exit 1; }; '
+            f'{run} "${{specs[@]}}"')
 
 
 def _copy_e2e_out(container: str, env: dict[str, str]) -> e2e_artifacts.Artifacts:
     """The kept container's E2E_OUT, streamed from `docker cp` into the
-    artifact reader. A copy that does not exit 0 (the container died before
-    writing it, say) collects nothing."""
+    artifact reader. A copy that fails, is killed at E2E_COPY_TIMEOUT_S, or runs
+    past E2E_DRAIN_CAP_BYTES of leftover output collects nothing."""
     empty = e2e_artifacts.Artifacts(report=None, pngs={}, skipped=[])
     try:
         proc = subprocess.Popen(["docker", "cp", f"{container}:{E2E_OUT}", "-"],
@@ -1525,19 +1534,48 @@ def _copy_e2e_out(container: str, env: dict[str, str]) -> e2e_artifacts.Artifact
         return empty
     assert proc.stdout is not None
     out = proc.stdout
+    failed = threading.Event()
+
+    def give_up() -> None:
+        failed.set()
+        proc.kill()
+
+    timer = threading.Timer(E2E_COPY_TIMEOUT_S, give_up)
+    timer.start()
+    artifacts = empty
     try:
         artifacts = e2e_artifacts.read_artifacts(out)
         # The reader can stop early; drain so `docker cp` exits on its own.
-        while out.read(_READ_CHUNK_BYTES):
-            pass
+        drained = 0
+        while chunk := out.read(_READ_CHUNK_BYTES):
+            drained += len(chunk)
+            if drained >= E2E_DRAIN_CAP_BYTES:
+                give_up()
+                break
+    except OSError:
+        give_up()
     finally:
+        timer.cancel()
         out.close()
         try:
-            rc = proc.wait(timeout=60)
+            rc = proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
             rc = proc.wait()
-    return artifacts if rc == 0 else empty
+    return artifacts if rc == 0 and not failed.is_set() else empty
+
+
+def _remove_container(container: str, env: dict[str, str]) -> None:
+    try:
+        p = subprocess.run(["docker", "rm", "-f", container], check=False, env=env,
+                           capture_output=True, text=True, timeout=60)
+        problem = "" if p.returncode == 0 or "No such container" in p.stderr \
+            else p.stderr.strip()[:200]
+    except (OSError, subprocess.TimeoutExpired) as e:
+        problem = str(e)
+    if problem:
+        print(f"[sandbox] could not remove e2e container {container}: {problem}",
+              file=sys.stderr, flush=True)
 
 
 def run_e2e(image: str, *, tier: int, patch: Path | None = None,
@@ -1552,20 +1590,17 @@ def run_e2e(image: str, *, tier: int, patch: Path | None = None,
         raise RuntimeError("no verify.e2e in the profile")
     if not base_has_browser(image):
         raise RuntimeError("no browser in this base")
+    test_cmd = e2e_test_cmd(cfg, specs)
     container = container_name()
     env = launcher_env()
     try:
-        rc, tail = run_phase("e2e", image, patch=patch, tier=tier,
-                             test_cmd=e2e_test_cmd(cfg, specs), base_sha=base_sha,
-                             head_sha=head_sha, timeout=cfg.boot_timeout_s,
-                             runs_tests=True, keep=True, container=container)
+        rc, tail = run_phase("e2e", image, patch=patch, tier=tier, test_cmd=test_cmd,
+                             base_sha=base_sha, head_sha=head_sha,
+                             timeout=cfg.boot_timeout_s, runs_tests=True, keep=True,
+                             container=container)
         artifacts = _copy_e2e_out(container, env)
     finally:
-        try:
-            subprocess.run(["docker", "rm", "-f", container], check=False, env=env,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        _remove_container(container, env)
     return rc, e2e_report.parse_report(artifacts.report, output_tail=tail), artifacts
 
 
