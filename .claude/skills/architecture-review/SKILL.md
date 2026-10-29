@@ -12,12 +12,13 @@ Stop and get the operator's OK before writing code that:
 - bumps `schema.STORE_SCHEMA_VERSION`, or adds a store table, record section or
   registry key;
 - adds a worker loop or sweep;
-- adds a cache;
+- caches store data, or shares a cache across processes;
 - adds an upstream write path.
 
 Say it in four or five sentences in chat, not a doc: where the data lives, what
 one read costs at live scale, how it is written, and how both grow with
-history. Anything else needs no sign-off.
+history. Anything else, such as an in-process cache of one value (a token, a
+probe result), needs no sign-off: name it in one line of the plan and proceed.
 
 ## Before the PR: review the diff
 
