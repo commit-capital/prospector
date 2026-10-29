@@ -23,6 +23,9 @@ from pathlib import Path
 from pipeline import settings
 
 PROFILE_VERSION = 1
+# Bumped when `stamp` changes how it fingerprints, so a machine whose stamp is
+# older reads as out of date rather than as holding another profile.
+STAMP_VERSION = 2
 _NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\Z")
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 
@@ -564,12 +567,25 @@ def active() -> RepoProfile:
     return _load(settings.profile_path())
 
 
+def _set_fields(value: object) -> object:
+    """`value` as plain data, keeping only the fields that differ from their
+    defaults, so code that adds a defaulted field fingerprints the same file
+    the same way."""
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {f.name: _set_fields(v) for f in dataclasses.fields(value)
+                if (v := getattr(value, f.name)) != f.default}
+    if isinstance(value, tuple):
+        return [_set_fields(v) for v in value]
+    return value
+
+
 def stamp(p: RepoProfile) -> dict[str, object]:
     """What a worker heartbeat records of `p`: a fingerprint of the whole
     profile, plus the fields that most often change a safety verdict, for the
     health strip to show when machines disagree."""
-    blob = json.dumps(dataclasses.asdict(p), sort_keys=True)
+    blob = json.dumps(_set_fields(p), sort_keys=True)
     t = p.risk_tiers
-    return {"fingerprint": hashlib.sha256(blob.encode()).hexdigest()[:12],
+    return {"version": STAMP_VERSION,
+            "fingerprint": hashlib.sha256(blob.encode()).hexdigest()[:12],
             "fixable_gates": list(p.autofix.fixable_gates),
             "tier_globs": [len(t.tier0_globs), len(t.tier1_globs), len(t.tier3_globs)]}
