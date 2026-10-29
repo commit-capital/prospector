@@ -20,14 +20,12 @@ author to rebase when that cannot work:
 - `ineligible`: `gates.fix_eligibility` keeps the bot off the branch.
 
 The classification is local git only: the base and every PR head are fetched
-into a gitignored bare repository and tested with `git merge-tree`, pushing nothing. Every action is one runs-ledger entry (PHASE),
-which is both the per-PR record that a head was already queued or asked (so the
-sweep queues, asks and closes a head at most once each) and the count the daily cap
-`TRIAGE_BACKLOG_SWEEP_DAILY` is spent against. The cap is 0 by default, which
-keeps the sweep a dry run.
+into a gitignored bare repository and tested with `git merge-tree`, pushing
+nothing. Every action is one runs-ledger entry (PHASE), the per-PR record that a
+head was already queued, asked or closed, so the sweep does each at most once.
 
-    uv run prospector backlog-sweep            # dry run: the plan for every PR
-    uv run prospector backlog-sweep --live     # act, up to today's cap
+    uv run prospector backlog-sweep                      # dry run: the plan for every PR
+    uv run prospector backlog-sweep --live --limit 10    # act on at most 10 PRs
 """
 from __future__ import annotations
 
@@ -267,11 +265,6 @@ def _steps_by_pr(prs: list[int] | None = None) -> dict[int, dict[str, dict[str, 
     return out
 
 
-def _spent_today() -> int:
-    midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    return len(data.store().runs(since=midnight.isoformat(), phase=PHASE))
-
-
 def plans() -> list[Plan]:
     """The sweep's plan for every PR in the population, the most recently
     active first: their authors are likeliest to answer, and their drift the
@@ -342,10 +335,13 @@ def main(argv: list[str] | None = None) -> int:
         description="Bring the stale, author-finished PR backlog current with the base branch, "
                     "or ask its authors to rebase. Dry run unless --live.")
     p.add_argument("--live", action="store_true",
-                   help="queue requests, post asks and close unanswered PRs, up to "
-                        "TRIAGE_BACKLOG_SWEEP_DAILY today")
+                   help="queue requests, post asks and close unanswered PRs")
+    p.add_argument("--limit", type=int, default=0,
+                   help="with --live, the most PRs to act on in this run (required)")
     p.add_argument("--json", help="also write every PR's plan to this file")
     args = p.parse_args(argv)
+    if args.live and args.limit <= 0:
+        p.error("--live needs --limit N, the most PRs to act on in this run")
     every = plans()
     counts: dict[str, int] = {}
     for plan in every:
@@ -359,10 +355,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"{plan.kind:<15} quiet since {(plan.quiet_since or '?')[:10]}  {plan.why}")
         print(json.dumps({"population": len(every), **counts}))
         return 0
-    left = settings.backlog_sweep_daily() - _spent_today()
-    if left <= 0:
-        print("TRIAGE_BACKLOG_SWEEP_DAILY is spent for today (or 0, the default); nothing done")
-        return 0
+    left = args.limit
     prs = data.prs()
     for plan in every:
         if left <= 0:

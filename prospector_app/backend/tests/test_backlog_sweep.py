@@ -1,5 +1,5 @@
 """The backlog sweep: its population, its local-git classification, and the
-live run's queueing, asking, daily cap and once-per-head bound."""
+live run's queueing, asking, limit and once-per-head bound."""
 from __future__ import annotations
 
 import os
@@ -129,20 +129,19 @@ def test_dry_run_writes_nothing(store, repo, capsys):
     assert store.runs(phase=backlog_sweep.PHASE) == []
 
 
-def test_live_is_off_until_the_daily_cap_is_set(store, repo, monkeypatch):
+def test_live_needs_a_limit(store, repo):
     _save(store, 1, repo.pr(1, {"d.txt": "1\n"}))
     repo.advance_base({"z.txt": "z\n"})
-    monkeypatch.delenv("TRIAGE_BACKLOG_SWEEP_DAILY", raising=False)
-    backlog_sweep.main(["--live"])
+    with pytest.raises(SystemExit):
+        backlog_sweep.main(["--live"])
     assert store.load_pr(1).fix_request is None
 
 
-def test_live_queues_then_asks_once_and_honours_the_cap(store, repo, monkeypatch):
+def test_live_queues_then_asks_once_and_honours_the_limit(store, repo, monkeypatch):
     asks: list[tuple[int, str]] = []
     monkeypatch.setattr(executor, "hand_back_comment",
                         lambda n, body, *, marker, dry_run: asks.append((n, body)) or
                         {"status": "executed"})
-    monkeypatch.setenv("TRIAGE_BACKLOG_SWEEP_DAILY", "2")
     heads = {1: repo.pr(1, {"a.txt": "one\n"}),
              2: repo.pr(2, {f"f{i}.txt": "mine\n" for i in range(7)}),
              3: repo.pr(3, {"d.txt": "3\n"})}
@@ -150,40 +149,37 @@ def test_live_queues_then_asks_once_and_honours_the_cap(store, repo, monkeypatch
     for n, head in heads.items():
         _save(store, n, head, updated_at=(datetime.now(timezone.utc)
                                           - timedelta(days=60 + n)).isoformat())
-    backlog_sweep.main(["--live"])
+    backlog_sweep.main(["--live", "--limit", "2"])
     assert store.load_pr(1).fix_request["action"] == "rebase"
     assert [n for n, _ in asks] == [2]
     assert "rebase it onto the latest" in asks[0][1]
-    assert store.load_pr(3).fix_request is None  # the cap of 2 is spent
+    assert store.load_pr(3).fix_request is None  # the limit of 2 is spent
 
-    # The queued resolve ends on its conflicts: the next run asks, but not today.
+    # The queued resolve ends on its conflicts: the next run asks.
     rec = store.edit_pr(1)
     rec.record_fix_request("refused", "rebase", head_sha=heads[1],
                            result={"conflict_paths": ["a.txt"]})
-    monkeypatch.setenv("TRIAGE_BACKLOG_SWEEP_DAILY", "4")
     data.refresh()
-    backlog_sweep.main(["--live"])
+    backlog_sweep.main(["--live", "--limit", "4"])
     assert [n for n, _ in asks] == [2, 1]
     assert store.load_pr(3).fix_request["action"] == "rebase"
 
     # Every head was acted on once each way; another run does nothing.
-    monkeypatch.setenv("TRIAGE_BACKLOG_SWEEP_DAILY", "50")
     data.refresh()
     before = len(store.runs(phase=backlog_sweep.PHASE))
-    backlog_sweep.main(["--live"])
+    backlog_sweep.main(["--live", "--limit", "50"])
     assert len(store.runs(phase=backlog_sweep.PHASE)) == before
     assert [n for n, _ in asks] == [2, 1]
 
 
-def test_an_ask_already_on_the_pr_is_recorded_without_spending_the_cap(store, repo, monkeypatch):
+def test_an_ask_already_on_the_pr_is_recorded_without_spending_the_limit(store, repo, monkeypatch):
     monkeypatch.setattr(executor, "hand_back_comment",
                         lambda n, body, *, marker, dry_run: {"status": "exists"})
-    monkeypatch.setenv("TRIAGE_BACKLOG_SWEEP_DAILY", "1")
     _save(store, 1, repo.pr(1, {f"f{i}.txt": "1\n" for i in range(7)}), updated_at=(
           datetime.now(timezone.utc) - timedelta(days=61)).isoformat())
     _save(store, 2, repo.pr(2, {"d.txt": "2\n"}))
     repo.advance_base({f"f{i}.txt": "base\n" for i in range(7)} | {"z.txt": "z\n"})
-    backlog_sweep.main(["--live"])
+    backlog_sweep.main(["--live", "--limit", "1"])
     assert [r.raw["stats"]["step"] for r in store.runs(phase=backlog_sweep.PHASE)] == ["asked", "queued"]
 
 
@@ -198,7 +194,6 @@ def test_an_unanswered_ask_closes_after_two_weeks_once(store, repo, monkeypatch)
     closes: list[tuple[int, str, str | None]] = []
     monkeypatch.setattr(executor, "execute_pr", lambda n, action, *, dry_run:
                         closes.append((n, action.action, action.comment)) or {"status": "executed"})
-    monkeypatch.setenv("TRIAGE_BACKLOG_SWEEP_DAILY", "10")
     heads = {n: repo.pr(n, {f"f{n}.txt": "x\n"}) for n in (1, 2, 3)}
     for n, head in heads.items():
         _save(store, n, head, updated_at=RECENT)  # the ask itself updated the PR
@@ -211,9 +206,9 @@ def test_an_unanswered_ask_closes_after_two_weeks_once(store, repo, monkeypatch)
         "last_active": asked_at + timedelta(days=3) if n == 2 else asked_at - timedelta(days=90)})
     plans = _plans()
     assert (plans[1].bucket, plans[2].bucket, plans[3].bucket) == ("close", "close", "waiting")
-    backlog_sweep.main(["--live"])
+    backlog_sweep.main(["--live", "--limit", "10"])
     assert [(n, a) for n, a, _ in closes] == [(1, "CLOSE_WONTFIX")]
     assert "reopen" in (closes[0][2] or "")
     data.refresh()
-    backlog_sweep.main(["--live"])
+    backlog_sweep.main(["--live", "--limit", "10"])
     assert len(closes) == 1
