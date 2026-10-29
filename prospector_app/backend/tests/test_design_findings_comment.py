@@ -81,21 +81,29 @@ def _post(dry_run: bool = False) -> dict:
     return executor.post_design_findings(5, dry_run=dry_run)
 
 
-def test_only_open_confirmed_blocking_and_major_findings_are_posted(gh_fake):
-    found = design_comment.findings(gh_fake.store.load_pr(5))
+def test_failing_findings_are_posted_with_the_minor_ones_as_optional(gh_fake):
+    pr = gh_fake.store.load_pr(5)
+    found, optional = design_comment.findings(pr), design_comment.minor(pr)
     assert [f["title"] for f in found] == ["dup helper", "wrong layer"]
-    text = design_comment.body(found, HEAD)
+    assert [f["title"] for f in optional] == ["a nit"]
+    text = design_comment.body(found, optional, HEAD)
     assert "**1. dup helper** (major, reuse)" in text and "**2. wrong layer**" in text
+    assert text.index("Smaller things, optional") < text.index("**3. a nit** (minor, reuse)")
     assert "<details><summary>Details</summary>" in text and "`src/a.py:3`" in text
-    for absent in ("refuted one", "a nit", "unsure one", "fixed one"):
+    for absent in ("refuted one", "unsure one", "fixed one"):
         assert absent not in text
     assert design_comment.head_marker(HEAD) in text
     assert text.endswith(design_comment.findings_marker(design_comment.fingerprint(found)) + " -->")
 
 
+def test_without_a_failing_finding_there_is_no_optional_section():
+    assert "Smaller things" not in design_comment.body([_finding("dup")], [], HEAD)
+
+
 def test_finding_text_cannot_mention_link_or_break_out_of_its_details():
     text = design_comment.body([_finding("ping @alice in #12", body=(
-        "</details><!-- x --> @bob [click](https://x.example) ![p](https://x.example/p.png)"))], HEAD)
+        "</details><!-- x --> @bob [click](https://x.example) ![p](https://x.example/p.png)"))],
+        [], HEAD)
     assert "@alice" not in text and "@bob" not in text and "#12" not in text
     assert text.count("</details>") == 1 and "<!-- x" not in text
     assert "[click](" not in text and "![p](" not in text
@@ -166,7 +174,7 @@ def test_the_switch_defaults_off(monkeypatch):
     assert settings.design_comment_audience() == "off"
 
 
-def test_no_confirmed_blocking_or_major_finding_posts_nothing(gh_fake):
+def test_minor_findings_alone_post_nothing(gh_fake):
     _save(gh_fake.store, findings=[f for f in FINDINGS if f["title"] not in
                                    ("dup helper", "wrong layer")])
     res = _post()

@@ -761,7 +761,7 @@ def post_design_findings(n: int, *, dry_run: bool, initiator: str = "operator") 
         return {**base, "status": "skipped", "detail": held}
     reviewed = str((rec.review_entry(reviewers.DESIGN.id) or {}).get("reviewed_sha") or "")
     fp = design_comment.fingerprint(found)
-    text = design_comment.body(found, reviewed)
+    text = design_comment.body(found, design_comment.minor(rec), reviewed)
 
     def attempt() -> dict[str, object]:
         url = _bot_comment_url(n, design_comment.head_marker(reviewed),
@@ -772,7 +772,7 @@ def post_design_findings(n: int, *, dry_run: bool, initiator: str = "operator") 
         r = bot_run(["gh", "pr", "comment", str(n), "--repo", settings.repo(), "--body", text])
         if r.returncode != 0:
             return {"status": "error", "detail": r.stderr.strip()[:160]}
-        return {"status": "executed", "detail": f"posted {len(found)} design finding(s) on #{n}",
+        return {"status": "executed", "detail": f"posted the design findings on #{n}",
                 "event_url": (r.stdout or "").strip() or None}  # gh prints the comment's URL
 
     def record(res: dict) -> None:

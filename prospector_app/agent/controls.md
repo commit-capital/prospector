@@ -46,7 +46,8 @@ except Re-verify.
   (Design row): queue an autofix. See Other actions.
 - **💬 Post to author** (Design row): POST /api/reviews/design/comment/pr/{n}
   → `executor.post_design_findings`. It posts the confirmed blocking and major
-  findings as `{bot}`, once per head and set of findings, on the PRs
+  findings as `{bot}`, with the open minor ones listed as optional (never a
+  refuted or unsure one), once per head and set of findings, on the PRs
   `TRIAGE_DESIGN_COMMENT` names (off, maintainers, everyone). The design lane
   posts them on its own after a review; once posted, the PR waits on its
   author. **💬 Posted ↗** links the comment.

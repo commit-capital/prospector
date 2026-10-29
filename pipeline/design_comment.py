@@ -1,8 +1,10 @@
 """The PR comment that shows an author the design findings holding their merge.
 
-Only the findings the design bar fails on are posted (`reviewers.design_standing`:
-open, blocking or major, and confirmed by the refuting verifier). The comment
-ends in a marker naming the reviewed head and the findings' fingerprint: a head
+It is posted only when the design bar fails (`reviewers.design_standing`: open,
+blocking or major, and confirmed by the refuting verifier), and then also lists
+the open minor findings, as optional, so one revision can take them all. A
+finding the verifier refuted or was unsure of is never posted. The comment ends
+in a marker naming the reviewed head and the failing findings' fingerprint: a head
 gets one comment however often it is re-reviewed, one set of findings is posted
 once whatever head it was found at, and a new head with different findings gets
 a new comment, which notifies the author where an edit would not.
@@ -32,6 +34,13 @@ def findings(pr: Pr) -> list[dict]:
             or review_policy.bar(pr, reviewers.DESIGN).status != reviewers.FAIL):
         return []
     return reviewers.design_standing(pr.review_entry(reviewers.DESIGN.id))
+
+
+def minor(pr: Pr) -> list[dict]:
+    """The open minor findings to post beside `findings(pr)`: the reviewer's
+    own minor ones, never one the verifier was unsure of."""
+    return [f for f in reviewers.open_findings(pr.review_entry(reviewers.DESIGN.id))
+            if f.get("severity") == "minor" and not f.get("verification")]
 
 
 def fingerprint(found: list[dict]) -> str:
@@ -74,19 +83,26 @@ def _inert(text: str) -> str:
     return _MENTION.sub(lambda m: m.group() + "\u200b", text)
 
 
-def body(found: list[dict], head_sha: str) -> str:
+def _item(i: int, f: dict) -> list[str]:
+    where = f"{f.get('path')}:{f['line']}" if f.get("line") is not None else str(f.get("path"))
+    return [f"**{i}. {_inert(str(f.get('title') or ''))}** ({f.get('severity')}, {f.get('category')})",
+            "", "<details><summary>Details</summary>", "",
+            f"`{_inert(where)}`", "", _inert(str(f.get("body") or "")), "", "</details>", ""]
+
+
+def body(found: list[dict], optional: list[dict], head_sha: str) -> str:
     count = f"{len(found)} design finding" + ("s" if len(found) != 1 else "")
     parts = [f"**Design review: {count} to address before this PR can merge**", "",
              f"An automated design review of `{head_sha[:7]}` found the problems below, each "
              "confirmed by a second reviewer. This PR is waiting on them: once a push "
              "addresses them, the next review of the new head clears the hold.", ""]
     for i, f in enumerate(found, 1):
-        where = f"{f.get('path')}:{f['line']}" if f.get("line") is not None else str(f.get("path"))
-        parts += [f"**{i}. {_inert(str(f.get('title') or ''))}** "
-                  f"({f.get('severity')}, {f.get('category')})", "",
-                  "<details><summary>Details</summary>", "",
-                  f"`{_inert(where)}`", "", _inert(str(f.get("body") or "")), "",
-                  "</details>", ""]
+        parts += _item(i, f)
+    if optional:
+        parts += ["**Smaller things, optional:** these do not hold the merge, but are worth "
+                  "fixing in the same revision.", ""]
+        for i, f in enumerate(optional, len(found) + 1):
+            parts += _item(i, f)
     parts.append(f"<!-- {head_marker(head_sha)} -->")
     parts.append(f"<!-- {findings_marker(fingerprint(found))} -->")
     return "\n".join(parts)
