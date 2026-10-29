@@ -61,12 +61,18 @@ def _seed(store: Store, diffs: Path, head: str, diff: str) -> None:
                             "checked_at": "2026-10-28T00:00:00+00:00"}})
 
 
-def _github(monkeypatch, parents: dict[str, list[str]], on_base: tuple[str, ...] = ("b1", "b2")):
-    """GitHub as `threat_scan.base_merge` reads it: each head's parents, and
-    which commits master contains."""
+def _github(monkeypatch, parents: dict[str, list[str]], on_base: tuple[str, ...] = ("b1", "b2"),
+            authors: dict[str, str] | None = None):
+    """GitHub as `threat_scan.base_merge` reads it: each head's parents and
+    author (a maintainer unless named), who can write, and which commits
+    master contains."""
     def gh_json(path: str) -> dict:
         if "/commits/" in path:
-            return {"parents": [{"sha": s} for s in parents.get(path.rsplit("/", 1)[1], [])]}
+            head = path.rsplit("/", 1)[1]
+            return {"parents": [{"sha": s} for s in parents.get(head, [])],
+                    "author": {"login": (authors or {}).get(head, "maintainer")}}
+        if path.endswith("/permission"):
+            return {"permission": "write" if "/maintainer/" in path else "read"}
         other = path.rsplit("/", 1)[1].split("...")[0]
         return {"status": "ahead" if other in on_base else "diverged"}
     monkeypatch.setattr(threat_scan.gh, "gh_json", gh_json)
@@ -93,13 +99,14 @@ class TestScanRecordsThePatch:
         _seed(store, diffs, "h4", _diff("cc..dd", 260, added="agents"))
         assert _scan(store, diffs)["same_as"] == []
 
-    def test_the_same_patch_without_a_base_merge_resets(self, tmp_path, monkeypatch):
-        _github(monkeypatch, {"h2": ["h1"], "h3": ["h2", "elsewhere"]})
+    def test_the_same_patch_without_a_maintainers_base_merge_resets(self, tmp_path, monkeypatch):
+        _github(monkeypatch, {"h2": ["h1"], "h3": ["h2", "elsewhere"], "h4": ["h3", "b1"]},
+                authors={"h4": "contributor"})
         store, diffs = Store(tmp_path), tmp_path / "diffs"
         diffs.mkdir()
         _seed(store, diffs, "h1", BEFORE)
         _scan(store, diffs)
-        for head in ("h2", "h3"):
+        for head in ("h2", "h3", "h4"):
             _seed(store, diffs, head, AFTER_BASE_MERGE)
             assert _scan(store, diffs)["same_as"] == []
 

@@ -301,13 +301,19 @@ def patch_section(rec: Pr, pid: str | None) -> dict | None:
 
 
 def base_merge(prev: str, head: str, base: str | None) -> bool:
-    """Whether `head` is a merge of branch `base` into `prev`: its first parent
-    is `prev` and `base` contains its other. Unknown reads as no."""
+    """Whether `head` is a maintainer's merge of branch `base` into `prev`: its
+    first parent is `prev`, `base` contains its other, and its author is the bot
+    or can write to the repository. Unknown reads as no."""
     repo = settings.repo()
-    parents = [p.get("sha") for p in (gh.gh_json(f"repos/{repo}/commits/{head}") or {})
-               .get("parents") or []]
-    if not base or len(parents) != 2 or parents[0] != prev:
+    commit = gh.gh_json(f"repos/{repo}/commits/{head}") or {}
+    parents = [p.get("sha") for p in commit.get("parents") or []]
+    author = (commit.get("author") or {}).get("login")
+    if not base or not author or len(parents) != 2 or parents[0] != prev:
         return False
+    if author != settings.bot_login():
+        role = gh.gh_json(f"repos/{repo}/collaborators/{author}/permission") or {}
+        if role.get("permission") not in ("admin", "write"):
+            return False
     compare = gh.gh_json(f"repos/{repo}/compare/{parents[1]}...{base}") or {}
     return compare.get("status") in ("ahead", "identical")
 
