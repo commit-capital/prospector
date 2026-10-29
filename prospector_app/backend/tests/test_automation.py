@@ -47,6 +47,20 @@ def test_a_parked_change_is_your_move(store):
                           "against_head_sha": HEAD, "host": "w", "queued_at": _now()}
     out = _classify(store, rec)
     assert (out["column"], out["bucket"], out["owner"]) == ("act", "approve-parked", "you")
+    assert out["state"] == "needs-you"
+
+
+def test_every_bucket_has_a_state():
+    assert set(automation.STATES) == set(automation.OWNERS)
+    assert set(automation.STATES.values()) <= {"moving", "waiting", "ready", "needs-you", "stalled"}
+
+
+def test_a_merge_ready_pr_reads_ready_and_a_parked_change_needs_you():
+    assert automation.STATES["merge-ready"] == "ready"
+    assert automation.STATES["approve-parked"] == "needs-you"
+    assert automation.STATES["needs-human"] == "stalled"
+    assert automation.STATES["author-ci"] == "waiting"
+    assert automation.STATES["hunt"] == "moving"
 
 
 def test_a_parked_change_names_the_bar_that_stopped_it(store, monkeypatch):

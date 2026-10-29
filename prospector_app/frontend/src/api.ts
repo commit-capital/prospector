@@ -103,11 +103,15 @@ export interface FilterSpec {
 export type AutomationColumn = "act" | "auto" | "handed";
 /** Whose move a PR is: the operator, the automation itself, or the author. */
 export type AutomationOwner = "you" | "worker" | "author";
+/** The status a PR leads with: a worker moves it, someone else's move, green
+ *  and ready to merge, one quick click of yours, or stuck until you decide. */
+export type AutomationState = "moving" | "waiting" | "ready" | "needs-you" | "stalled";
 /** One PR's standing with the automation, as the backend derives it. */
 export interface AutomationStanding {
   column: AutomationColumn;
   bucket: string;
   owner: AutomationOwner;
+  state: AutomationState;
   reason: string;
 }
 

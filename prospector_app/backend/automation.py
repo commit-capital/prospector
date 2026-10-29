@@ -4,8 +4,9 @@ One classification per PR, computed from the same gates and hunter predicates
 the workers decide by, into three columns: `act` (a click of yours moves it),
 `auto` (a worker queue or hunter moves it, nothing for a person to do), and
 `handed` (the automation gave it back — to its author, or to you). The
-`bucket` names the situation inside the column and `owner` says whose move it
-is; `reason` is the one-line why. Home counts, the Explorer's
+`bucket` names the situation inside the column, `owner` says whose move it
+is, `state` is the status a PR's page and the Explorer lead with (STATES), and
+`reason` is the one-line why. Home counts, the Explorer's
 `automation_*` filters, and every card link read this one derivation, so the
 number on a card is the row count its link opens. Pure: no network, no store
 writes.
@@ -35,6 +36,16 @@ OWNERS: dict[str, str] = {
     "gated": "you", "other": "you",
 }
 
+# bucket -> the state a PR's status leads with: `moving` (a worker moves it),
+# `waiting` (someone else's move), `ready` (green; merge it), `needs-you` (one
+# quick click of yours, nothing broken) and `stalled` (the automation gave up
+# or got stuck).
+_NEEDS_YOU = ("malicious", "approve-parked", "approve-ci", "rerun-ci")
+STATES: dict[str, str] = {
+    b: ("ready" if b == "merge-ready" else "needs-you" if b in _NEEDS_YOU
+        else {"worker": "moving", "author": "waiting"}.get(o, "stalled"))
+    for b, o in OWNERS.items()}
+
 AUTHOR_BUCKETS = tuple(b for b, o in OWNERS.items() if o == "author")
 YOU_HANDED_BUCKETS = ("needs-human", "security-red", "security-yellow", "asks", "gated", "other")
 
@@ -42,7 +53,8 @@ _VERIFY_QUEUE = ("queued", "running", "waiting-for-base")
 
 
 def _r(column: str, bucket: str, reason: str) -> dict:
-    return {"column": column, "bucket": bucket, "owner": OWNERS[bucket], "reason": reason[:800]}
+    return {"column": column, "bucket": bucket, "owner": OWNERS[bucket], "state": STATES[bucket],
+            "reason": reason[:800]}
 
 
 def bot_broke_ci(pr: Pr) -> bool:
