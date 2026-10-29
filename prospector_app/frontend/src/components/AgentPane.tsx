@@ -48,11 +48,15 @@ function AgentReadinessHelp({ ready }: { ready: ChatReady }) {
 }
 
 interface Anchor { file: string; line: number }
+// A question handed to the pane to send; `fresh` sends it as a new conversation.
+interface Pending { text: string; fresh: boolean }
 interface AgentCtx {
   anchor: Anchor | null;
   open: boolean;
   setOpen: (b: boolean) => void;
   askAbout: (file: string, line: number, question?: string) => void;
+  // Open the pane on a new conversation whose first message is `question`.
+  askFresh: (question: string) => void;
   clearAnchor: () => void;
   // The list view's current result (e.g. PR Explorer after its active
   // filters/search), so a general question can refer to "what I'm looking
@@ -66,7 +70,8 @@ interface AgentCtx {
  *  spec that produced it, which the backend re-evaluates to ground a session. */
 export type VisibleSet = { ids: number[]; spec: FilterSpec };
 const Ctx = createContext<AgentCtx>({
-  anchor: null, open: false, setOpen: () => {}, askAbout: () => {}, clearAnchor: () => {},
+  anchor: null, open: false, setOpen: () => {}, askAbout: () => {}, askFresh: () => {},
+  clearAnchor: () => {},
   visible: null, setVisible: () => {},
 });
 // eslint-disable-next-line react-refresh/only-export-components -- context hook co-located with its provider
@@ -151,7 +156,7 @@ function linkifyUserText(text: string): ReactNode[] {
 export function AgentPaneProvider({ children }: { children: ReactNode }) {
   const [anchor, setAnchor] = useState<Anchor | null>(null);
   const [open, setOpen] = useState(localStorage.getItem("agentpane-open") !== "0");
-  const [pending, setPending] = useState<string | null>(null);
+  const [pending, setPending] = useState<Pending | null>(null);
   const [visible, setVisible] = useState<VisibleSet | null>(null);
   const { meta } = useRepoMeta();
   // No pane on an unconfigured checkout (the wizard is the only page and the
@@ -161,12 +166,17 @@ export function AgentPaneProvider({ children }: { children: ReactNode }) {
   const askAbout = useCallback((file: string, line: number, question?: string) => {
     setAnchor({ file, line });
     setOpen(true);
-    if (question) setPending(question);
+    if (question) setPending({ text: question, fresh: false });
+  }, []);
+  const askFresh = useCallback((question: string) => {
+    setAnchor(null);
+    setOpen(true);
+    setPending({ text: question, fresh: true });
   }, []);
   const clearAnchor = useCallback(() => setAnchor(null), []);
 
   return (
-    <Ctx.Provider value={{ anchor, open, setOpen, askAbout, clearAnchor, visible, setVisible }}>
+    <Ctx.Provider value={{ anchor, open, setOpen, askAbout, askFresh, clearAnchor, visible, setVisible }}>
       {children}
       {enabled && (
         <AgentPane anchor={anchor} open={open} setOpen={setOpen} clearAnchor={clearAnchor}
@@ -178,7 +188,7 @@ export function AgentPaneProvider({ children }: { children: ReactNode }) {
 
 function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, visible }: {
   anchor: Anchor | null; open: boolean; setOpen: (b: boolean) => void; clearAnchor: () => void;
-  pending: string | null; clearPending: () => void; visible: VisibleSet | null;
+  pending: Pending | null; clearPending: () => void; visible: VisibleSet | null;
 }) {
   const loc = useLocation();
   const { meta } = useRepoMeta();
@@ -548,12 +558,21 @@ function AgentPane({ anchor, open, setOpen, clearAnchor, pending, clearPending, 
     return () => window.removeEventListener("keydown", onKey);
   }, [streaming, stop]);
 
-  // auto-send when the diff popup's "Explain" provided a question
+  // Send a question another view handed off (the diff popup's "Explain", a
+  // status block's "Ask the agent"). A fresh one starts a new session first and
+  // is sent on the next render, once that session is the active one.
+  const [freshText, setFreshText] = useState<string | null>(null);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- act on the question handed off from the diff popup
-    if (pending) { setOpen(true); send(pending); clearPending(); }
+    if (!pending) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- act on the question handed off from another view
+    setOpen(true); if (pending.fresh) { createSession(); setFreshText(pending.text); } else send(pending.text); clearPending();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the handed-off question is sent once
+    if (freshText !== null) { send(freshText); setFreshText(null); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freshText]);
 
   return (
     <div className={`agentpane ${open ? "open" : "collapsed"}`}>
