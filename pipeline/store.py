@@ -1701,6 +1701,20 @@ class Store:
         rec["reviews"] = {**(rec.get("reviews") or {}), reviewers.DESIGN.id: entry}
         return self._prs.save_if(rec, stamp)
 
+    def note_design_comment(self, n: int, comment: dict, *, reviewed_sha: str) -> bool:
+        """Record on PR `n`'s design review the bot comment that posted its
+        findings. Refused (False) when the review is no longer the one taken at
+        `reviewed_sha`."""
+        row = self._prs.stamped(n)
+        if row is None:
+            return False
+        rec, stamp = row
+        entry = (rec.get("reviews") or {}).get(reviewers.DESIGN.id)
+        if not entry or entry.get("reviewed_sha") != reviewed_sha:
+            return False
+        entry["extra"] = {**(entry.get("extra") or {}), "comment": comment}
+        return self._prs.save_if(rec, stamp)
+
     def save_verify_base(self, record: wire.VerifyPin) -> None:
         """Merge one machine's pin into the verify_base registry. host is
         required: the clone and image a pin names are local to the machine that

@@ -195,6 +195,17 @@ def design_review_mode() -> str:
     return value if value in ("off", "advisory", "gate") else "gate"
 
 
+DESIGN_COMMENT_AUDIENCES = ("off", "maintainers", "everyone")
+
+
+def design_comment_audience() -> str:
+    """Whose PRs get their confirmed blocking and major design findings posted
+    as a comment (`pipeline/design_comment.py`): `off` (the default),
+    `maintainers` (`gates.priority_author`), or `everyone`."""
+    value = os.environ.get("TRIAGE_DESIGN_COMMENT", "off").strip().lower()
+    return value if value in DESIGN_COMMENT_AUDIENCES else "off"
+
+
 def design_coverage() -> bool:
     """Whether the design lane measures a head's changed-line coverage in the
     sandbox before its review (`pipeline/coverage.py`; TRIAGE_DESIGN_COVERAGE,

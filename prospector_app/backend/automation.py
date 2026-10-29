@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pipeline import describe_pr, freshness, gates, settings
+from pipeline import describe_pr, design_comment, freshness, gates, settings
 
 if TYPE_CHECKING:
     from issue_triage.issue_model import Issue
@@ -31,7 +31,8 @@ OWNERS: dict[str, str] = {
     "queued": "worker", "hunt": "worker", "waiting": "worker", "retry": "worker",
     "budgeted": "worker",
     "author-conflicts": "author", "author-ci": "author", "author-declined": "author",
-    "author-verify": "author", "author-rejected": "author", "author-other": "author",
+    "author-verify": "author", "author-rejected": "author", "author-design": "author",
+    "author-other": "author",
     "stacked": "author",
     "needs-human": "you", "security-red": "you", "security-yellow": "you", "asks": "you",
     "gated": "you", "other": "you",
@@ -121,6 +122,9 @@ def classify(pr: Pr) -> dict | None:
     if pr.ci_stale_checks and freshness.is_current(pr, "signals"):
         return _r("act", "rerun-ci", gates.ci_stale_reason(pr.ci_stale_checks))
 
+    if design_comment.posted(pr) is not None:
+        return _r("handed", "author-design", "waiting on the author to address the design "
+                                             "findings posted on the PR")
     if pr.mergeable is False:
         action = "rebase"
     elif pr.drift_state == "conflicts" or pr.ci == "unreported":

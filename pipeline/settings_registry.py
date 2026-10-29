@@ -93,6 +93,10 @@ SETTINGS: tuple[Setting, ...] = (
             "conventions and test strength: gate (a merge requirement, passing with no "
             "open blocking or major finding), advisory (shown only), or off.",
             editable=True, choices=("gate", "advisory", "off")),
+    Setting("TRIAGE_DESIGN_COMMENT", "behavior", "choice", "Post design findings", "off",
+            "Post a PR's confirmed blocking and major design findings as a bot comment, so "
+            "its author can fix them: off, maintainers (the team's own PRs), or everyone.",
+            editable=True, choices=("off", "maintainers", "everyone")),
     _b("TRIAGE_DESIGN_COVERAGE", "behavior", "Measure changed-line coverage",
        "Before each design review, run the PR's related tests in the sandbox and record "
        "how many of its changed source lines they execute (advisory).",

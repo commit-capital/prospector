@@ -1392,6 +1392,25 @@ class TestDesignLane:
         assert row.raw["stats"]["coverage"] == "coverage: no related tests"
         assert store.claim_design_run(1, host="some-other-machine", stale_after=3600) is True
 
+    def test_a_review_with_confirmed_findings_posts_them_and_a_failed_post_is_harmless(
+            self, store, monkeypatch, tmp_path):
+        from prospector_app.backend import executor
+
+        def review(clone, diff, *, head_sha, **kw):
+            return {"kind": "review", "reviewed_sha": head_sha, "findings": [
+                {"severity": "major", "resolved": False, "outdated": False, "title": "dup",
+                 "verification": {"verdict": "confirmed", "reason": ""}}],
+                "checks": [], "summary": "s", "extra": {"rubric": reviewers.DESIGN_RUBRIC}}
+        self._ready(store, monkeypatch, tmp_path, review)
+        posted: list[tuple[int, str]] = []
+
+        def post(n, *, dry_run, initiator):
+            posted.append((n, initiator))
+            raise RuntimeError("GitHub is down")
+        monkeypatch.setattr(executor, "post_design_findings", post)
+        assert verify_worker.run_design(1) is True
+        assert posted == [(1, "worker")]
+
     def test_an_operator_run_claims_apart_and_books_no_lane_spend(self, store, monkeypatch,
                                                                    tmp_path):
         monkeypatch.setenv("TRIAGE_WORKER_ID", "mac")

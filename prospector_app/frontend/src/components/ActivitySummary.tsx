@@ -20,7 +20,7 @@ const REOPENED_PAGE_SIZE = 10;
 const WEEK_KINDS = ["close", "merge", "comment", "reopen", "issue-close"] as const;
 // The kinds that post text on a PR as the bot, tallied together as "comments"
 // (activity.py COMMENT_KINDS).
-const COMMENT_KINDS = ["comment", "review", "line-comment", "review-retrigger"];
+const COMMENT_KINDS = ["comment", "review", "line-comment", "review-retrigger", "design-findings"];
 const num = (b: ActivityBucket | undefined, k: string) => (b ? Number(b[k] ?? 0) : 0);
 
 // The local calendar day of `d` as YYYY-MM-DD. Not toISOString(), which is UTC:

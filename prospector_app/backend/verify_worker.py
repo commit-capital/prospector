@@ -814,6 +814,8 @@ def run_design(n: int, *, trigger: str = "autohunt", force: bool = False) -> boo
             stage, words = "reviewed", ""
         _book_design(st, n, head, {"findings": counts, "verification": verdicts, "saved": saved,
                                    "coverage": coverage.summary(measured)}, trigger, stage, words)
+        if saved and blocking:
+            _post_design_findings(n)
         design_failed.discard(n)
         # A faulted coverage run is retried with the whole review, so it
         # counts as a failure too.
@@ -842,6 +844,16 @@ def run_design(n: int, *, trigger: str = "autohunt", force: bool = False) -> boo
         return False
     finally:
         st.release_design_run(n, host=me, failed_at=head if failed else None)
+
+
+def _post_design_findings(n: int) -> None:
+    """Post the review's findings for the PR's author. A failure here is the
+    comment's, never the review's."""
+    from prospector_app.backend import executor
+    try:
+        executor.post_design_findings(n, dry_run=False, initiator="worker")
+    except Exception:
+        traceback.print_exc()
 
 
 def _note_verify_ending(n: int) -> None:
