@@ -156,7 +156,8 @@ def author(worktree: str, *, title: str, body: str, env: dict[str, str],
            model: str | None = None, guidance: str | None = None,
            notes: str | None = None, attempt: dict | None = None,
            contributor_docs: Sequence[authoring.Doc] = (),
-           on_event: Callable[[tuple], None] | None = None) -> dict:
+           on_event: Callable[[tuple], None] | None = None,
+           approved: str | None = None) -> dict:
     """Run the one agent over the clone at `worktree`: its answer, either
     `{"summary", "root_cause", "tests", "changes", "deleted"}` or `{"give_up", "kind"}`.
     Raises ValueError when the answer is neither. `model` pins the agent's
@@ -184,7 +185,8 @@ def author(worktree: str, *, title: str, body: str, env: dict[str, str],
                 "__FIXES__": review_issue_fix.fixes_block(attempt["alternatives"])})
             if attempt.get("alternatives") else ""}) if attempt else "",
         "__WORKTREE__": worktree,
-        "__REPORT__": reproduce_issue.report_block(title, body),
+        "__REPORT__": reproduce_issue.report_block(title, body)
+                      + reproduce_issue.approved_slot(approved),
         "__TEST_PATHS__": reproduce_issue.test_paths_note(),
         "__WITHHELD__": "\n".join(gates.fix_withheld_globs()),
         "__CHECK__": lane_check.TOOL,
@@ -344,7 +346,8 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         env["PROSPECTOR_ISSUE_CHECK_MAX_RUNS"] = str(MAX_RUNS)
         on_step("agent revising the fix" if start_patch else "agent reproducing and fixing")
         agent_runs += 1
-        verdict = author(str(clone), title=spec.title, body=spec.body, env=env, model=model,
+        verdict = author(str(clone), title=spec.title, body=spec.body, approved=spec.approved,
+                         env=env, model=model,
                          guidance=spec.guidance, notes=spec.notes, attempt=attempt,
                          contributor_docs=authoring.docs_from_tree(spec.base.clone))
         checks = check_records.collect(lane_check.records_path(workdir, "solo"), MAX_RUNS)
@@ -403,7 +406,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
         if review:
             reviews = review_issue_fix.full_review(
                 str(clone), fix_patch, title=spec.title, body=spec.body,
-                root_cause=str(verdict["root_cause"]), test_paths=test_paths,
+                approved=spec.approved, root_cause=str(verdict["root_cause"]), test_paths=test_paths,
                 evidence=f"- The change's tests fail on the base and pass with it; the "
                          f"compile, related tests and full suite pass.\n- {detail}.",
                 inventory_veto=result["tier"].get("tier") == 0,
@@ -426,6 +429,7 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
             agent_runs += 1
             result["boundary"] = trust_boundary.judge(str(clone), spec.base.clone, fix_patch,
                                                       title=spec.title, body=spec.body,
+                                                      approved=spec.approved,
                                                       subject=spec.verdict_subject, base_sha=spec.base.sha,
                                                       worktree_patch=patch, lane="solo")
         return finish("fixed", detail)

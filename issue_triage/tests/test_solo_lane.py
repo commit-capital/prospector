@@ -43,7 +43,7 @@ def solo(tmp_path, monkeypatch):
                    "related": None, "env": None, "commands": []}
 
     def fake_author(worktree, *, title, body, env, model=None, guidance=None, notes=None, attempt=None,
-                    contributor_docs=(), on_event=None):
+                    contributor_docs=(), on_event=None, approved=None):
         calls["env"] = env
         calls["guidance"], calls["notes"], calls["attempt"] = guidance, notes, attempt
         calls["contributor_docs"] = list(contributor_docs)

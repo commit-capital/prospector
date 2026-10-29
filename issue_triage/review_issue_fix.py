@@ -243,7 +243,7 @@ def _broken(changes: object) -> list[str] | None:
 
 
 def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
-           root_cause: str, test_paths: list[str], evidence: str,
+           approved: str | None = None, root_cause: str, test_paths: list[str], evidence: str,
            inventory_veto: bool = True, history: str | None = None,
            alternatives: Sequence[Fix] | str = (), model: str | None = None,
            on_event: Callable[[tuple], None] | None = None) -> dict:
@@ -270,7 +270,8 @@ def review(worktree: str, patch: str, *, lens: str, title: str, body: str,
     worktree = os.path.realpath(worktree)
     prompt = headless_agent.fill(PROMPT, {
         "__QUESTION__": _QUESTIONS[lens],
-        "__REPORT__": reproduce_issue.report_block(title, body),
+        "__REPORT__": reproduce_issue.report_block(title, body)
+                      + reproduce_issue.approved_slot(approved),
         "__ROOT_CAUSE__": root_cause.strip(),
         "__TEST_PATHS__": "\n".join(test_paths),
         "__EVIDENCE__": evidence.strip(),
@@ -345,7 +346,8 @@ PROMPT_SHA = verdict_log.prompt_sha(PROMPT, HISTORY, ALTERNATIVES, *_QUESTIONS.v
                                     *_OUTPUT.values(), logic=1)
 
 
-def preferred_fix(worktree: str, fixes: Sequence[Fix], *, title: str, body: str) -> dict:
+def preferred_fix(worktree: str, fixes: Sequence[Fix], *, title: str, body: str,
+                  approved: str | None = None) -> dict:
     """Which of `fixes`, each passing the same tests, a maintainer would rather
     merge, judged on the first review model over the unfixed `worktree`:
     {"pick": its index, or None when the comparison gave no usable answer,
@@ -353,7 +355,8 @@ def preferred_fix(worktree: str, fixes: Sequence[Fix], *, title: str, body: str)
     worktree = os.path.realpath(worktree)
     model = settings.issue_fix_review_model()
     prompt = headless_agent.fill(PREFER, {
-        "__REPORT__": reproduce_issue.report_block(title, body),
+        "__REPORT__": reproduce_issue.report_block(title, body)
+                      + reproduce_issue.approved_slot(approved),
         "__WORKTREE__": worktree,
         "__QUESTION__": _QUESTIONS["design"],
         "__FIXES__": fixes_block(fixes),
@@ -373,7 +376,8 @@ def preferred_fix(worktree: str, fixes: Sequence[Fix], *, title: str, body: str)
     return {**out, "pick": pick, "reason": str(answer.get("reason") or "")}
 
 
-def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause: str,
+def full_review(worktree: str, patch: str, *, title: str, body: str,
+                approved: str | None = None, root_cause: str,
                 test_paths: list[str], evidence: str, inventory_veto: bool = True,
                 history: str | None = None, alternatives: Sequence[Fix] | str = (),
                 on_step: Callable[[str], None] = lambda step: None,
@@ -390,10 +394,11 @@ def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause:
         for model in models:
             on_step(f"reviewing: {lens}" + (f" on {model}" if len(models) > 1 else ""))
             reviews.append(review(worktree, patch, lens=lens, title=title, body=body,
-                                  root_cause=root_cause, test_paths=test_paths,
+                                  approved=approved, root_cause=root_cause, test_paths=test_paths,
                                   evidence=evidence, inventory_veto=inventory_veto,
                                   history=history, alternatives=alternatives, model=model))
-    record(reviews, subject, patch=patch, title=title, body=body, root_cause=root_cause,
+    record(reviews, subject, patch=patch, title=title, body=body, approved=approved,
+           root_cause=root_cause,
            test_paths=test_paths, evidence=evidence, history=history,
            alternatives=alternatives, base_sha=base_sha,
            worktree_patch=worktree_patch, lane=lane, inventory_veto=inventory_veto)
@@ -401,7 +406,7 @@ def full_review(worktree: str, patch: str, *, title: str, body: str, root_cause:
 
 
 def record(reviews: list[dict], subject: verdict_log.Subject | None, *, patch: str, title: str,
-           body: str, root_cause: str, test_paths: list[str], evidence: str,
+           body: str, approved: str | None = None, root_cause: str, test_paths: list[str], evidence: str,
            history: str | None = None, alternatives: Sequence[Fix] | str = (),
            base_sha: str | None = None, worktree_patch: str | None = None,
            lane: str | None = None, inventory_veto: bool = True) -> None:
@@ -414,5 +419,6 @@ def record(reviews: list[dict], subject: verdict_log.Subject | None, *, patch: s
                 "history": history or "", "alternatives": rendered_fixes(alternatives),
                 "patch": patch, "title": title, "body": body,
                 "worktree_patch": worktree_patch or "", "lane": lane or "",
-                "inventory_veto": "1" if inventory_veto else "0"},
+                "inventory_veto": "1" if inventory_veto else "0",
+                **({"approved": approved} if approved else {})},
         base_sha=base_sha)

@@ -134,13 +134,14 @@ def _crossings(raw: object) -> list[dict] | None:
 
 
 def review(worktree: str, fix_patch: str, *, title: str, body: str,
-           on_event: Callable[[tuple], None] | None = None) -> dict:
+           approved: str | None = None, on_event: Callable[[tuple], None] | None = None) -> dict:
     """The crossings a reviewer finds in `fix_patch` over the code at
     `worktree`: {"crossings", "reason"}, or no crossings and `failed: True` when
     it gave no usable answer. An agent outage or a declined prompt propagates."""
     worktree = os.path.realpath(worktree)
     prompt = headless_agent.fill(PROMPT, {
-        "__REPORT__": reproduce_issue.report_block(title, body),
+        "__REPORT__": reproduce_issue.report_block(title, body)
+                      + reproduce_issue.approved_slot(approved),
         "__WORKTREE__": worktree,
         "__PATCH__": review_issue_fix.clip(fix_patch),
     })
@@ -164,7 +165,7 @@ PROMPT_SHA = verdict_log.prompt_sha(PROMPT)
 
 
 def judge(worktree: str, base_dir: Path, fix_patch: str, *, title: str, body: str,
-          on_event: Callable[[tuple], None] | None = None,
+          approved: str | None = None, on_event: Callable[[tuple], None] | None = None,
           subject: verdict_log.Subject | None = None, base_sha: str | None = None,
           worktree_patch: str | None = None, lane: str | None = None) -> dict:
     """The run's `boundary` record for `fix_patch`: the reviewer's crossings,
@@ -175,12 +176,14 @@ def judge(worktree: str, base_dir: Path, fix_patch: str, *, title: str, body: st
                 "what": f"adds a URL on {host}, a host the code never named before",
                 "source": "scan"}
                for path, host in new_hosts(base_dir, fix_patch)]
-    reviewed = review(worktree, fix_patch, title=title, body=body, on_event=on_event)
+    reviewed = review(worktree, fix_patch, title=title, body=body, approved=approved,
+                      on_event=on_event)
     out = {**reviewed, "crossings": [*reviewed["crossings"], *scanned]}
     verdict_log.record("trust-boundary", subject, verdict=verdict_of(out),
                        prompt_sha=PROMPT_SHA, model=settings.agent_model(), data=out,
                        inputs={"title": title, "body": body, "patch": fix_patch,
-                               "worktree_patch": worktree_patch or "", "lane": lane or ""},
+                               "worktree_patch": worktree_patch or "", "lane": lane or "",
+                               **({"approved": approved} if approved else {})},
                        base_sha=base_sha)
     return out
 

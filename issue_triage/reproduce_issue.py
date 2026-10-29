@@ -86,6 +86,13 @@ def report_block(title: str, body: str) -> str:
                        "body": intake_audit.visible(body)[:REPORT_MAX]})
 
 
+def approved_slot(approved: str | None) -> str:
+    """A maintainer's approval of a feature run (`feature_screen.approval`), set
+    apart after the report; empty for a defect run. A prompt pinned by
+    pipeline/evals takes it appended to its report, so its template is unchanged."""
+    return f"\n\n{approved}" if approved else ""
+
+
 def test_paths_note() -> str:
     """The active profile's test-path conventions, named for the agent."""
     tp = profile.active().test_paths

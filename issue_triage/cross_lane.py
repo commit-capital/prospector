@@ -132,7 +132,8 @@ def _author(spec: fix_lane.LaneSpec, workdir: Path, cand: Candidate,
         env = lane_check.check_env(issue=spec.issue, base=spec.base, worktree=clone,
                                    records=records, test_patch=None, pre_patch=pre_patch_file)
         env["PROSPECTOR_ISSUE_CHECK_MAX_RUNS"] = str(solo_lane.MAX_RUNS)
-        verdict = solo_lane.author(str(clone), title=spec.title, body=spec.body, env=env,
+        verdict = solo_lane.author(str(clone), title=spec.title, body=spec.body,
+                                   approved=spec.approved, env=env,
                                    model=cand.model, guidance=spec.guidance, notes=spec.notes,
                                    contributor_docs=authoring.docs_from_tree(spec.base.clone))
         cand.checks = check_records.collect(records, solo_lane.MAX_RUNS)
@@ -321,7 +322,8 @@ def _choose(spec: fix_lane.LaneSpec, workdir: Path, fits: list[Candidate], resul
     on_step("comparing the fixes' design")
     pref = review_issue_fix.preferred_fix(str(_pre_fix_tree(spec, workdir)),
                                           [_as_fix(c) for c in fits],
-                                          title=spec.title, body=spec.body)
+                                          title=spec.title, body=spec.body,
+                                          approved=spec.approved)
     result["preference"] = pref
     chosen = next((c for c in fits if c.index == pref["pick"]), None)
     if chosen is None:
@@ -365,6 +367,7 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         lane_tree.apply_patch(tree, test_patch + pick.fix_patch)
         reviews = review_issue_fix.full_review(
             str(tree), pick.fix_patch, title=spec.title, body=spec.body,
+            approved=spec.approved,
             root_cause=str(pick.verdict["root_cause"]), test_paths=test_paths,
             evidence=_evidence(result["proof"], shipped),
             inventory_veto=result["tier"].get("tier") == 0, alternatives=others,
@@ -383,6 +386,7 @@ def _judge_pick(spec: fix_lane.LaneSpec, workdir: Path, pick: Candidate,
         result["boundary"] = trust_boundary.judge(str(tree), _pre_fix_tree(spec, workdir),
                                                   pick.fix_patch,
                                                   title=spec.title, body=spec.body,
+                                                  approved=spec.approved,
                                                   subject=spec.verdict_subject, base_sha=spec.base.sha,
                                                   worktree_patch=result["patch"], lane="cross")
         return None, "", reproduction, len(reviews) + 1

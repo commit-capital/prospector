@@ -32,7 +32,6 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from issue_triage import (
-    config,
     cross_lane,
     dispute_question,
     feature_screen,
@@ -87,22 +86,17 @@ def route(comments: str) -> str:
 
 def _spec(store: IssueStore, n: int, base: prove.PinnedBase, guidance: str | None,
           notes: str | None = None, *, feature: bool = False) -> tuple[fix_lane.LaneSpec, str]:
-    """The lane's spec for issue `n` and its report's sha. The run is a feature
-    run when the request says so or a maintainer chose to implement the issue;
-    its body then carries the approved spec (`feature_screen.approved_report`)."""
+    """The lane's spec for issue `n`, carrying the approval of a feature run
+    (`feature_screen.approval`, `feature` when the request asks for one), and
+    its report's sha."""
     reported = fix_lane.reported_text(store, n)
     if reported is None:
         raise RequestFailed(f"issue #{n} is not in the store and could not be fetched")
     title, body = reported
-    issue = store.load_issue(n)
-    decision = issue.feature_decision if issue else None
-    feature = feature or (decision or {}).get("decision") == "implement"
-    lane_body = feature_screen.approved_report(
-        body, issue.feature_screen if issue else None, decision,
-        repo=config.repo_name()) if feature else body
-    return (fix_lane.LaneSpec(issue=n, title=title, body=lane_body, base=base,
-                              guidance=guidance, notes=notes, feature=feature,
-                              verdict_subject=verdict_log.Subject("issue", n)),
+    return (fix_lane.LaneSpec(issue=n, title=title, body=body, base=base, guidance=guidance,
+                              notes=notes, verdict_subject=verdict_log.Subject("issue", n),
+                              approved=feature_screen.approval(store.load_issue(n),
+                                                               requested=feature)),
             fix_lane.report_sha(title, body))
 
 
@@ -184,7 +178,8 @@ def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
         models=list(settings.issue_fix_models()), res=res, started=started,
         finished=storekit.now(), trigger=trigger, extra=_words(guidance, notes))
     if record["ending"] == "fixed":
-        record = _second_opinion(store, n, base, record, trigger=trigger, on_step=on_step)
+        record = _second_opinion(store, n, base, record, trigger=trigger, on_step=on_step,
+                                 approved=spec.approved)
     question = None
     if res.ending == "fix-disputed" and len((res.result or {}).get("readings") or []) >= 2:
         on_step("drafting the question")
@@ -199,10 +194,11 @@ def solve(store: IssueStore, n: int, *, guidance: str | None, trigger: str,
 
 
 def _second_opinion(store: IssueStore, n: int, base: prove.PinnedBase, record: dict, *,
-                    trigger: str, on_step: Callable[[str], None]) -> dict:
+                    trigger: str, on_step: Callable[[str], None],
+                    approved: str | None = None) -> dict:
     """`record`, a fixed run, judged by the tests of other authors' pull
     requests on issue `n` (`second_opinion`), and revised once when any fails
-    with it. The revision replaces the fix only when it ends `fixed`. The run
+    with it; a feature run's judges read its approval. The revision replaces the fix only when it ends `fixed`. The run
     written carries every rival's entry."""
     rivals, entries = second_opinion.rivals(n, exclude=set(), registry=Store().load_threats())
     if not rivals and not entries:
@@ -213,7 +209,7 @@ def _second_opinion(store: IssueStore, n: int, base: prove.PinnedBase, record: d
     for rival in rivals:
         on_step(f"second opinion: #{rival.pr}'s tests")
         entry = second_opinion.judge(base, rival, record["result"]["patch"], label=label,
-                                     title=title, body=body)
+                                     title=title, body=body, approved=approved)
         entries.append(entry)
         if entry["verdict"] == "gap":
             gaps.append((rival, entry))
@@ -222,7 +218,7 @@ def _second_opinion(store: IssueStore, n: int, base: prove.PinnedBase, record: d
         kept = result_file.read_text()
         on_step("revising against the other pull requests' tests")
         revised = revise(store, n, comments="", notes=second_opinion.notes(gaps),
-                         on_step=on_step, trigger=trigger)
+                         on_step=on_step, trigger=trigger, feature=approved is not None)
         if revised["ending"] == "fixed":
             record = revised
         else:
@@ -230,7 +226,7 @@ def _second_opinion(store: IssueStore, n: int, base: prove.PinnedBase, record: d
         for rival, entry in gaps:
             entries[entries.index(entry)] = second_opinion.recheck(
                 base, rival, record["result"]["patch"], entry, label=label, title=title,
-                body=body)
+                body=body, approved=approved)
     record["result"]["second_opinion"] = entries
     result_file.write_text(json.dumps(record, indent=2) + "\n")
     return record
@@ -238,7 +234,8 @@ def _second_opinion(store: IssueStore, n: int, base: prove.PinnedBase, record: d
 
 def revise(store: IssueStore, n: int, *, comments: str,
            on_step: Callable[[str], None], trigger: str = "send-back",
-           notes: str | None = None, advisory: frozenset[str] = frozenset()) -> dict:
+           notes: str | None = None, advisory: frozenset[str] = frozenset(),
+           feature: bool = False) -> dict:
     """One agent revises the last attempt's change under a maintainer's
     `comments` and anyone else's `notes`, proven on the attempt's base or, when
     this machine no longer holds it, the current pin. The revision keeps the
@@ -250,7 +247,7 @@ def revise(store: IssueStore, n: int, *, comments: str,
     if not res_prev.get("patch"):
         raise RequestFailed("the last attempt holds no change to revise")
     base = _revision_base(previous)
-    spec, report = _spec(store, n, base, comments or None, notes)
+    spec, report = _spec(store, n, base, comments or None, notes, feature=feature)
     review = "\n".join(f"- {c}" for c in
                        issue_gates.review_comments(res_prev.get("reviews"),
                                                    res_prev.get("claims"))[1])
@@ -306,7 +303,8 @@ def answer(store: IssueStore, n: int, answer_: dict, *, on_step: Callable[[str],
             models=previous.get("models") or [], res=res, started=started,
             finished=storekit.now(), trigger="answer", extra={"answer": answer_})
         if record["ending"] == "fixed":
-            record = _second_opinion(store, n, base, record, trigger="answer", on_step=on_step)
+            record = _second_opinion(store, n, base, record, trigger="answer", on_step=on_step,
+                                     approved=spec.approved)
         return record, {**question, "answered": answer_}
     asked = f"The fix attempt asked: {question.get('question') or '(no question)'}\n"
     return solve(store, n, guidance=asked + f"A maintainer answered: {text}" if text else None,
@@ -520,6 +518,7 @@ def _late_rivals(store: IssueStore, n: int, prs: list[int], *, live: bool,
     registry = Store().load_threats()
     related = {r["number"]: r for r in related_prs.search(n) or []}
     title, body = fix_lane.reported_text(store, n) or ("", "")
+    approved = feature_screen.approval(store.load_issue(n))
     label = f"second-{n}"
     entries: list[dict] = []
     gaps: list[tuple[second_opinion.Rival, dict]] = []
@@ -532,7 +531,8 @@ def _late_rivals(store: IssueStore, n: int, prs: list[int], *, live: bool,
         if isinstance(loaded, second_opinion.Rival):
             on_step(f"second opinion: #{pr}'s tests")
             loaded_entry = second_opinion.judge(base, loaded, record["result"]["patch"],
-                                                label=label, title=title, body=body)
+                                                label=label, title=title, body=body,
+                                                approved=approved)
             if loaded_entry["verdict"] == "gap":
                 gaps.append((loaded, loaded_entry))
             entries.append(loaded_entry)
@@ -545,7 +545,7 @@ def _late_rivals(store: IssueStore, n: int, prs: list[int], *, live: bool,
         for rival, entry in gaps:
             entries[entries.index(entry)] = second_opinion.recheck(
                 base, rival, revised["result"]["patch"], entry, label=label, title=title,
-                body=body)
+                body=body, approved=approved)
         revised["result"]["second_opinion"] = prior + entries
         result_file.write_text(json.dumps(revised, indent=2) + "\n")
         return any(e["verdict"] == "gap-closed" for e in entries)

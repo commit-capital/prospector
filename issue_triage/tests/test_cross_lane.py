@@ -132,7 +132,7 @@ def cross(tmp_path, monkeypatch):
                    "models": [], "docs": [], "green_runs": 0}
 
     def fake_author(worktree, *, title, body, env, model=None, guidance=None, notes=None,
-                    attempt=None, contributor_docs=(), on_event=None):
+                    attempt=None, contributor_docs=(), on_event=None, approved=None):
         if Path(worktree).parent.name == "solo":  # a revision round
             return state["agents"][0](worktree)
         index = int(Path(worktree).parent.name.split("-")[1])
@@ -188,7 +188,7 @@ def cross(tmp_path, monkeypatch):
     state["prefer"] = None
     state["compared"] = []
 
-    def fake_preferred_fix(worktree, fixes, *, title, body):
+    def fake_preferred_fix(worktree, fixes, *, title, body, approved=None):
         state["compared"].append([f.index for f in fixes])
         return {"pick": state["prefer"], "reason": "reuses the helper", "model": "opus"}
 
