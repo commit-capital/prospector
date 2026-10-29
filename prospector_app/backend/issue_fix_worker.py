@@ -424,8 +424,6 @@ def screen_features(store: IssueStore, limit: int | None, *, trigger: str = "wor
     every request unscreened; an agent outage propagates."""
     from prospector_app.backend import issue_data
 
-    if not lane_health.capacity_open(LANE):
-        return []
     now = time.monotonic()
     issues = issue_data.issues()
     pending = sorted(((i.raw.get("meta") or {}).get("created_at") or "", n, i)
@@ -434,7 +432,7 @@ def screen_features(store: IssueStore, limit: int | None, *, trigger: str = "wor
                      and feature_screen.current(i) is None and i.feature_decision is None
                      and now - _screen_failed.get(n, -TRIAGE_RETRY_SECONDS) >= TRIAGE_RETRY_SECONDS)
     pending = pending[::-1][:limit]
-    if not pending:
+    if not pending or not lane_health.capacity_open(LANE):
         return []
     try:
         base = prove.pinned(Store())

@@ -503,6 +503,12 @@ def test_screen_features_picks_unscreened_feature_requests_only(hunting, screeni
     assert issue_fix_worker.screen_features(hunting, None) == []
 
 
+def test_nothing_to_screen_never_asks_the_capacity(hunting, screening, capacity):
+    hunting.edit_issue(3).record_feature_decision({"decision": "decline"})
+    assert issue_fix_worker.screen_features(hunting, None) == []
+    assert capacity["asked"] == [] and screening["issues"] == []
+
+
 def test_screen_features_books_ledger_phase(hunting, screening):
     issue_fix_worker.screen_features(hunting, 1, trigger="backfill")
     runs = [r.raw for r in hunting.runs() if hasattr(r, "raw")
