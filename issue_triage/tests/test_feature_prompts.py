@@ -29,7 +29,7 @@ GOLDEN = {
     "trust_boundary": "61b88e8dc631cc353de31b57b9ab2f5142e9a63c29a52ec52661a4aef113d749",
     "claim_author": "e14c9888abc3a340d0b2fff221aa782188a07cfafcb9b5b1ea8e59bbe1016c67",
     "judge_repro": "ecb1328a6bf836c8ea7e69f2e0682b570e030a8f04d953371f6acbc09a989f71",
-    "compare": "0de6cd0acc7539a6c547181dc0e83323f336b5c5d2c2db93c51648f97a79bbd1",
+    "compare": "15612458e7b056228ac73b9d77b89429e2704af5d06c6d7c34d37f1a210a0635",
 }
 
 CALLS: dict[str, Callable[..., object]] = {
