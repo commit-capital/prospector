@@ -50,6 +50,10 @@ def marker(head: str) -> str:
     return f"<!-- prospector:handback:{head[:12]} -->"
 
 
+def rebase_ask_marker(head: str) -> str:
+    return f"<!-- prospector:rebase-ask:{head[:12]} -->"
+
+
 def evidence_judged(stamp: dict) -> bool:
     """Whether a resolve auto-review stamp holds a judgment against the change:
     a reviewer's considered rejection, a compile that failed, or related tests
@@ -181,7 +185,7 @@ def rebase_ask_body(author: str | None, paths: list[str], head: str) -> str:
             f"We normally keep open PRs up to date with `{base}` ourselves, but this one has "
             f"drifted too far for us to do that safely. Could you rebase it onto the latest "
             f"`{base}` and push? Once you do, we'll pick it up again promptly.\n\n"
-            f"{marker(head)}")
+            f"{rebase_ask_marker(head)}")
 
 
 def close_body(kind: str, author: str | None, paths: list[str]) -> str:

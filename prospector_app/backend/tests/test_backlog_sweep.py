@@ -173,3 +173,15 @@ def test_live_queues_then_asks_once_and_honours_the_cap(store, repo, monkeypatch
     backlog_sweep.main(["--live"])
     assert len(store.runs(phase=backlog_sweep.PHASE)) == before
     assert [n for n, _ in asks] == [2, 1]
+
+
+def test_an_ask_already_on_the_pr_is_recorded_without_spending_the_cap(store, repo, monkeypatch):
+    monkeypatch.setattr(executor, "hand_back_comment",
+                        lambda n, body, *, marker, dry_run: {"status": "exists"})
+    monkeypatch.setenv("TRIAGE_BACKLOG_SWEEP_DAILY", "1")
+    _save(store, 1, repo.pr(1, {f"f{i}.txt": "1\n" for i in range(7)}), updated_at=(
+          datetime.now(timezone.utc) - timedelta(days=61)).isoformat())
+    _save(store, 2, repo.pr(2, {"d.txt": "2\n"}))
+    repo.advance_base({f"f{i}.txt": "base\n" for i in range(7)} | {"z.txt": "z\n"})
+    backlog_sweep.main(["--live"])
+    assert [r.raw["stats"]["step"] for r in store.runs(phase=backlog_sweep.PHASE)] == ["asked", "queued"]

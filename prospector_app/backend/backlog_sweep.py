@@ -35,9 +35,9 @@ import os
 import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
-from pipeline import gates, review_policy, settings, storekit
+from pipeline import gates, review_policy, reviewers, settings, storekit
 from prospector_app.backend import data, executor, fix_queue, handback
 
 if TYPE_CHECKING:
@@ -50,6 +50,9 @@ QUIET_DAYS = 60
 RESOLVE_MAX_PATHS = 5
 REPO_DIR = settings.REPO_ROOT / "prospector_app" / "cache" / "backlog-sweep.git"
 FETCH_CHUNK = 200
+
+Bucket = Literal["clean", "resolvable", "author", "ineligible", "waiting", "done", "skip"]
+Kind = Literal["greptile-bar", "unreviewed-push"]
 
 
 @dataclass
@@ -66,16 +69,16 @@ class Probe:
 @dataclass
 class Plan:
     pr: int
-    bucket: str  # clean | resolvable | author | ineligible | waiting | done | skip
+    bucket: Bucket
     why: str
     action: str | None = None  # the request to queue, for clean and resolvable
     ask: bool = False
     conflicts: list[str] = field(default_factory=list)
     quiet_since: str | None = None
-    kind: str | None = None  # greptile-bar | unreviewed-push
+    kind: Kind | None = None
 
 
-def population_kind(rec: Pr, now: datetime) -> str | None:
+def population_kind(rec: Pr, now: datetime) -> Kind | None:
     """Why `rec` belongs to the backlog, from stored facts, or None. The head
     commit's own date is checked later, from git."""
     updated = _when(rec.updated_at)
@@ -86,8 +89,8 @@ def population_kind(rec: Pr, now: datetime) -> str | None:
     reviewed = rec.greptile_reviewed_sha
     if reviewed and reviewed != rec.head_sha:
         return "unreviewed-push"
-    if (reviewed == rec.head_sha and rec.greptile == review_policy.greptile_threshold()
-            and rec.ci != "failing"):
+    if (reviewed == rec.head_sha and rec.ci != "failing"
+            and review_policy.own_bar(rec, reviewers.GREPTILE).status == reviewers.PASS):
         return "greptile-bar"
     return None
 
@@ -178,13 +181,14 @@ def classify(rec: Pr, pr_probe: Probe) -> Plan:
                 conflicts=pr_probe.conflicts)
 
 
-def _ended_on_conflicts(req: dict, head: str | None) -> bool:
+def _ended_on_conflicts(req: dict[str, object], head: str | None) -> bool:
     """Whether the request at `head` ended without bringing the PR current
     because of its conflicts: a refusal naming them, a resolve an operator
     discarded, or a parked resolve the agents judged."""
     if req.get("against_head_sha") != head:
         return False
-    result = req.get("result") or {}
+    result = req.get("result")
+    result = result if isinstance(result, dict) else {}
     status, action = req.get("status"), req.get("action")
     if status == "refused" and action in ("rebase", "resolve"):
         return bool(result.get("conflict_paths")) or action == "resolve"
@@ -218,11 +222,11 @@ def plan_one(rec: Pr, steps: set[str], pr_probe: Probe | str) -> Plan:
     return classify(rec, pr_probe)
 
 
-def _steps_by_pr() -> dict[int, dict[str, set[str]]]:
-    """The sweep steps already taken, as {pr: {head_sha: {step}}}."""
+def _steps_by_pr(prs: list[int]) -> dict[int, dict[str, set[str]]]:
+    """The sweep steps already taken on `prs`, as {pr: {head_sha: {step}}}."""
     out: dict[int, dict[str, set[str]]] = {}
-    for run in data.store().runs(phase=PHASE):
-        if not isinstance(run, storekit.PhaseRun):
+    for run in data.store().runs(phase=PHASE, prs=prs):
+        if not isinstance(run, storekit.PhaseRun) or not isinstance(run.raw.get("pr"), int):
             continue
         stats = run.raw.get("stats") or {}
         out.setdefault(int(run.raw["pr"]), {}).setdefault(
@@ -240,11 +244,15 @@ def plans() -> list[Plan]:
     active first: their authors are likeliest to answer, and their drift the
     smallest."""
     now = datetime.now(timezone.utc)
-    members = [(rec, kind) for rec in data.prs().values()
-               if (kind := population_kind(rec, now)) is not None]
+    members: list[tuple[Pr, Kind]] = []
+    for rec in data.prs().values():
+        kind = population_kind(rec, now)
+        if kind is not None:
+            members.append((rec, kind))
     members.sort(key=lambda m: m[0].updated_at or "", reverse=True)
-    fetch([rec.number for rec, _ in members])
-    taken = _steps_by_pr()
+    numbers = [rec.number for rec, _ in members]
+    fetch(numbers)
+    taken = _steps_by_pr(numbers)
     out: list[Plan] = []
     for rec, kind in members:
         steps = taken.get(rec.number, {}).get(str(rec.head_sha), set())
@@ -260,11 +268,11 @@ def act(plan: Plan, rec: Pr) -> str:
     if plan.ask:
         res = executor.hand_back_comment(
             rec.number, handback.rebase_ask_body(rec.author, plan.conflicts, head),
-            marker=handback.marker(head), dry_run=False)
+            marker=handback.rebase_ask_marker(head), dry_run=False)
         status = str(res.get("status"))
         if status not in ("executed", "exists"):
             return f"ask failed: {res.get('detail')}"
-        step = "asked"
+        step = "asked" if status == "executed" else "already asked"
     else:
         assert plan.action is not None
         try:
@@ -275,7 +283,7 @@ def act(plan: Plan, rec: Pr) -> str:
     now = storekit.now()
     data.store().append_run({"phase": PHASE, "pr": rec.number, "started": now, "finished": now,
                              "trigger": "operator",
-                             "stats": {"step": step, "bucket": plan.bucket, "action": plan.action,
+                             "stats": {"step": "asked" if plan.ask else "queued", "bucket": plan.bucket, "action": plan.action,
                                        "head_sha": head, "status": status}})
     return step
 
