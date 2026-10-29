@@ -317,11 +317,15 @@ def prefetch_browsers(src: Path, dest: Path) -> None:
     version = playwright_version(src)
     if profile.active().verify.e2e is None or version is None:
         return
+    # From 1.49 Chromium ships a separate headless shell the phases never use.
+    major, minor = (int(n) for n in version.split(".")[:2])
+    no_shell = " --no-shell" if (major, minor) >= (1, 49) else ""
     _run_build_step(
         "prefetching Chromium",
         ["docker", "run", "--rm", "-v", f"{dest}:/work/browsers", sandbox_image(),
          "bash", "-lc",
-         f"PLAYWRIGHT_BROWSERS_PATH=/work/browsers npx -y playwright@{version} install chromium"],
+         f"PLAYWRIGHT_BROWSERS_PATH=/work/browsers npx -y playwright@{version} "
+         f"install chromium{no_shell}"],
         env=launcher_env())
 
 
@@ -1514,17 +1518,28 @@ E2E_COPY_TIMEOUT_S = 120
 E2E_DRAIN_CAP_BYTES = 64 * 1024 * 1024
 
 
-def e2e_test_cmd(cfg: profile.E2eConfig, specs: list[str] | None = None) -> str:
-    """The e2e phase's bash command, built from the profile alone. With no
-    `specs` it runs every `*.spec.ts` under the config's directory but the
-    profile's excludes, listed into an array inside the container; an empty
-    selection exits 1. The line reporter's progress goes to stdout and the
-    JSON report to the file PLAYWRIGHT_JSON_OUTPUT_NAME names. Playwright drops
-    file filters after `--`, so a spec may not start with `-`."""
-    if specs == []:
+def e2e_specs(src: Path, cfg: profile.E2eConfig) -> list[str]:
+    """The repo-relative `*.spec.ts` files under the config's directory in the
+    checkout `src`, less the profile's excludes."""
+    root = posixpath.dirname(cfg.config)
+    found = sorted(p.relative_to(src).as_posix()
+                   for p in (src / root).rglob("*.spec.ts") if p.is_file())
+    return [f for f in found if f not in cfg.exclude]
+
+
+def e2e_file_filter(spec: str) -> str:
+    """`spec` as the Playwright file filter that matches that file alone.
+    Playwright reads a filter as a case-insensitive unanchored regex over the
+    absolute path, so a bare `a.spec.ts` also matches `xa.spec.tsx`."""
+    return f"/(?:^|/){re.escape(spec)}$/"
+
+
+def e2e_test_cmd(cfg: profile.E2eConfig, specs: list[str]) -> str:
+    """The e2e phase's bash command for `specs`, built from the profile alone.
+    The line reporter's progress goes to stdout and the JSON report to the
+    file PLAYWRIGHT_JSON_OUTPUT_NAME names."""
+    if not specs:
         raise ValueError("no e2e specs selected")
-    if specs and any(s.startswith("-") for s in specs):
-        raise ValueError("an e2e spec may not start with '-'")
     global_timeout_ms = max(_E2E_MIN_GLOBAL_TIMEOUT_MS,
                             (cfg.boot_timeout_s - E2E_STOP_MARGIN_S) * 1000)
     run = f"PLAYWRIGHT_JSON_OUTPUT_NAME={E2E_OUT}/report.json"
@@ -1533,17 +1548,7 @@ def e2e_test_cmd(cfg: profile.E2eConfig, specs: list[str] | None = None) -> str:
     run += (f" npx playwright test --config {shlex.quote(cfg.config)}"
             f" --reporter=line,json --global-timeout={global_timeout_ms}"
             f" --output {E2E_OUT}")
-    if specs is not None:
-        return f"{run} {' '.join(shlex.quote(s) for s in specs)}"
-    root = posixpath.dirname(cfg.config) or "."
-    prefix = "./" if root == "." else ""
-    listing = f"find {shlex.quote(root)} -type f -name '*.spec.ts' | sort"
-    if cfg.exclude:
-        listing += " | grep -vxF" + "".join(
-            f" -e {shlex.quote(prefix + e)}" for e in cfg.exclude)
-    return (f"mapfile -t specs < <({listing}); "
-            '[ ${#specs[@]} -gt 0 ] || { echo "no e2e specs selected" >&2; exit 1; }; '
-            f'{run} "${{specs[@]}}"')
+    return f"{run} {' '.join(shlex.quote(e2e_file_filter(s)) for s in specs)}"
 
 
 def _copy_e2e_out(container: str, env: dict[str, str]) -> e2e_artifacts.Artifacts:
@@ -1614,11 +1619,11 @@ def e2e_config(image: str) -> profile.E2eConfig:
     return cfg
 
 
-def run_e2e(image: str, *, tier: int, patch: Path | None = None,
-            specs: list[str] | None = None, base_sha: str = "",
+def run_e2e(image: str, *, tier: int, specs: list[str], patch: Path | None = None,
+            base_sha: str = "",
             head_sha: str = "") -> tuple[int, e2e_report.E2eRun, e2e_artifacts.Artifacts]:
-    """Run the profile's e2e suite in `image` (the PR's `patch` applied, or the
-    base as pinned) and return the phase's exit code, the parsed run and the
+    """Run the e2e `specs` in `image` (the PR's `patch` applied, or the base as
+    pinned) and return the phase's exit code, the parsed run and the
     collected artifacts. The container is kept for the copy and always
     removed after."""
     cfg = e2e_config(image)
@@ -2426,7 +2431,7 @@ def e2e_coverage_cmd(store: Store, *, runs: int) -> int:
     try:
         base_sha, tier = pinned_base(store), pinned_tier(store)
         image = base_image_tag(base_sha, tier)
-        e2e_config(image)
+        specs = e2e_specs(base_clone_dir(base_sha), e2e_config(image))
     except RuntimeError as e:
         print(e, file=sys.stderr)
         return 2
@@ -2434,7 +2439,7 @@ def e2e_coverage_cmd(store: Store, *, runs: int) -> int:
     results: list[tuple[int, e2e_report.E2eRun, e2e_artifacts.Artifacts]] = []
     for i in range(1, runs + 1):
         try:
-            results.append(run_e2e(image, tier=tier, base_sha=base_sha))
+            results.append(run_e2e(image, tier=tier, specs=specs, base_sha=base_sha))
         except (OSError, subprocess.SubprocessError, RuntimeError) as e:
             problem = f"run {i} raised {type(e).__name__}: {e}"[:e2e_report.MAX_TEXT]
             results.append((-1, e2e_report.E2eRun(booted=False, results=[], problem=problem),
@@ -2445,7 +2450,8 @@ def e2e_coverage_cmd(store: Store, *, runs: int) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     root = out_dir.resolve()
     shown: list[e2e_coverage.SpecCoverage] = []
-    notes: list[str] = []
+    notes = [f"run {i}: {run.problem}" for i, run in enumerate(e2e_runs, 1)
+             if run.booted and run.problem]
     for c in cov:
         key = c.screenshot
         png = next((r[2].pngs[key] for r in results if key in r[2].pngs), None) if key else None

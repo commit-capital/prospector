@@ -126,6 +126,7 @@ def cli(tmp_path, monkeypatch):
     monkeypatch.setattr(profile, "active", lambda: profile.parse_profile(
         {"version": 1, "verify": {"e2e": {"config": "e2e/p.config.ts"}}}, "t"))
     monkeypatch.setattr(verify_driver, "base_has_browser", lambda image: True)
+    monkeypatch.setattr(verify_driver, "e2e_specs", lambda src, cfg: ["e2e/a.spec.ts"])
     return ["e2e-coverage", "--store", str(tmp_path / "s.db")]
 
 
@@ -228,3 +229,19 @@ def test_cli_writes_the_report_and_the_failing_screenshot(tmp_path, cli, monkeyp
     assert report.read_text().splitlines()[0] == (
         f"# E2E coverage at {'f' * 12}: 1 of 2 specs reliable")
     assert (report.parent / "shots" / "bad" / "shot.png").read_bytes() == PNG
+
+
+def test_cli_runs_the_listed_specs_and_notes_a_booted_runs_top_level_error(
+        cli, monkeypatch, capsys):
+    seen: list[object] = []
+
+    def run(image: str, **kw: object):
+        seen.append(kw["specs"])
+        e2e = E2eRun(booted=True, results=[_res("ok", "passed")],
+                     problem="Timed out waiting 1800s for the entire test run")
+        return 20, e2e, Artifacts(report=None, pngs={}, skipped=[])
+
+    monkeypatch.setattr(verify_driver, "run_e2e", run)
+    assert verify_driver.main([*cli, "--runs", "1"]) == 0
+    assert seen == [["e2e/a.spec.ts"]]
+    assert "- run 1: Timed out waiting 1800s for the entire test run" in _report_of(capsys)
