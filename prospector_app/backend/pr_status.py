@@ -1,15 +1,19 @@
 """What a PR page's status block shows beyond the PR's standing
 (`automation.classify`): the path through the stages to ready-to-merge, what
 was tried (the lanes' outcomes, `pipeline.outcomes`), and, for a stalled PR,
-the first message that asks the agent why.
+the first message that asks the agent why. For a moving PR, `next_step`
+says where it stands in its lane's queue and roughly when its turn comes; it
+orders every hunter pool, so the page asks for it separately.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 from issue_triage import fix_review, followup
 from pipeline import freshness, outcomes, storekit
-from prospector_app.backend import automation, data, issue_data, pr_checks
+from prospector_app.backend import (automation, data, fix_worker, issue_data, pr_checks,
+                                    verify_worker)
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -117,3 +121,41 @@ def status(pr: Pr) -> dict:
     return {"standing": standing, "stages": stages(pr, standing, blocked_by=by),
             "tried": tried_, "issue": issue.number if issue is not None else None,
             "seed": seed(pr, standing, tried_) if standing.get("state") == "stalled" else None}
+
+
+# Each hunter lane's ledger phase, whose finished runs measure its pace.
+LANE_PHASES: dict[str, str] = {"security": "security:review-one", "verify": "verify:single",
+                               "design": "design-review:run", "fix": "fix:single"}
+
+
+class NextStep(TypedDict):
+    lane: str
+    position: int
+    of: int
+    eta_hours: float | None
+
+
+def lane_rate(lane: str, *, days: int = 7) -> float | None:
+    """Finished runs of `lane` per hour over the last `days`, or None when
+    there were none."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    count = sum(1 for r in data.runs(since=since)
+                if isinstance(r, storekit.PhaseRun) and r.phase == LANE_PHASES[lane])
+    return count / (days * 24) if count else None
+
+
+def next_step(n: int, *, days: int = 7) -> NextStep | None:
+    """Where PR `n` stands in the first hunter queue that holds it, in the
+    order the hunters pick, and roughly how many hours until its turn at the
+    lane's recent pace. None when no queue holds it."""
+    limit = max(len(data.prs()), 1000)
+    order: dict[str, list[int]] = dict(verify_worker.hunt_candidates(limit))
+    order["fix"] = [pr for _, pr in fix_worker.hunt_candidates(limit)]
+    for lane in ("security", "verify", "design", "fix"):
+        queue = order.get(lane) or []
+        if n in queue:
+            position = queue.index(n) + 1
+            rate = lane_rate(lane, days=days)
+            return {"lane": lane, "position": position, "of": len(queue),
+                    "eta_hours": round(position / rate, 1) if rate else None}
+    return None

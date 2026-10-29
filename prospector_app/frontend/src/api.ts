@@ -131,6 +131,13 @@ export interface PRStatus {
   issue: number | null;
   seed: string | null;
 }
+/** Where a moving PR stands in its lane's queue (GET /api/prs/{n}/status/next). */
+export interface NextStep {
+  lane: "security" | "verify" | "design" | "fix";
+  position: number;
+  of: number;
+  eta_hours: number | null;
+}
 /** One PR's standing with the automation, as the backend derives it. */
 export interface AutomationStanding {
   column: AutomationColumn;
@@ -2731,6 +2738,7 @@ export const api = {
   },
   verifyRunner: () => get<VerifyRunner>("/api/verify/runner"),
   prStatus: (n: number) => get<PRStatus>(`/api/prs/${n}/status`),
+  prNextStep: (n: number) => get<NextStep | null>(`/api/prs/${n}/status/next`),
   queueFix: async (n: number, action: FixAction, guidance?: string) => {
     const r = await fetch(`/api/prs/${n}/fix/queue?action=${action}`, {
       method: "POST", headers: { "Content-Type": "application/json" },

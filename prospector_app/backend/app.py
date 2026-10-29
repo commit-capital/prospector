@@ -539,6 +539,13 @@ def pr_status_route(n: int):
     return pr_status.status(rec)
 
 
+@app.get("/api/prs/{n}/status/next")
+def pr_status_next(n: int):
+    """Where a moving PR stands in its lane's queue, and roughly when its turn
+    comes (pr_status.next_step), or null when no queue holds it."""
+    return pr_status.next_step(n)
+
+
 @app.post("/api/prs/{n}/verify/queue")
 def verify_queue_pr(n: int):
     """Queue PR #n for sandbox verification. The request lands in the shared

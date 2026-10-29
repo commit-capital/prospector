@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from pipeline import pr_outcomes
+from pipeline import pr_outcomes, storekit
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from pipeline.testsupport import greptile_entry, reviews_section
@@ -102,3 +102,43 @@ def test_a_ledger_row_without_an_outcome_is_not_tried(store):
     store.append_run({"phase": "ingest", "started": _now(), "finished": _now()})
     pr = _load(store, _rec())
     assert pr_status.tried(pr) == []
+
+
+@pytest.fixture
+def lanes(monkeypatch):
+    def setup(order: dict[str, list[int]], fix: list[tuple[str, int]], runs: list[dict]) -> None:
+        monkeypatch.setattr(pr_status.verify_worker, "hunt_candidates", lambda limit: order)
+        monkeypatch.setattr(pr_status.fix_worker, "hunt_candidates", lambda limit: fix)
+        monkeypatch.setattr(pr_status.data, "prs", lambda: {})
+        monkeypatch.setattr(pr_status.data, "runs",
+                            lambda since=None: [storekit.parse_run(r) for r in runs])
+    return setup
+
+
+def _run(phase: str) -> dict:
+    return {"phase": phase, "started": _now(), "finished": _now()}
+
+
+def test_position_and_eta_come_from_the_pick_order_and_the_lane_rate(lanes):
+    lanes({"security": [3, 7, 9], "verify": [], "design": []}, [],
+          [_run("security:review-one") for _ in range(12)])
+    assert pr_status.next_step(7, days=1) == {"lane": "security", "position": 2, "of": 3,
+                                              "eta_hours": 4.0}
+
+
+def test_a_lane_with_no_runs_has_no_eta(lanes):
+    lanes({"security": [], "verify": [], "design": [7]}, [], [])
+    step = pr_status.next_step(7)
+    assert step is not None and step["eta_hours"] is None
+
+
+def test_a_pr_in_no_pool_has_no_next_step(lanes):
+    lanes({"security": [3], "verify": [], "design": []}, [("rebase", 5)], [])
+    assert pr_status.next_step(42) is None
+
+
+def test_an_autofix_pick_is_the_fix_lane(lanes):
+    lanes({"security": [], "verify": [], "design": []}, [("rebase", 5), ("fix", 7)],
+          [_run("fix:single") for _ in range(24)])
+    assert pr_status.next_step(7, days=1) == {"lane": "fix", "position": 2, "of": 2,
+                                              "eta_hours": 2.0}
