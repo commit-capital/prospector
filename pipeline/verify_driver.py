@@ -658,7 +658,8 @@ def _build_base_image(sha: str, tier: int, ctx: Path, tag: str) -> None:
 def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) -> str:
     """Clone and build the base image for the resolved base commit
     (build_base_image), capture the pinned base's own failing-test set by
-    running the baseline phase against it, and save the pin. Returns the image
+    running the baseline phase against it and its e2e baseline
+    (capture_e2e_baseline), and save the pin. Returns the image
     tag.
 
     Reclaims superseded base artifacts on both sides of the build. The first
@@ -699,12 +700,16 @@ def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) ->
             print(f"baseline anomalies (nonzero vitest exit with no failing test): {anomalies}",
                   file=sys.stderr)
 
+    e2e_baseline, e2e_uncovered, e2e_skipped = capture_e2e_baseline(tag, tier=tier, sha=sha)
     store.save_verify_base({"host": settings.worker_id(), "base_sha": sha,
                             "tier": tier, "pinned_at": _now(),
                             "baseline_failing": failed,
                             "baseline_captured_at": _now(),
                             "suite": suite is not None,
-                            "arch": platform.machine()})
+                            "arch": platform.machine(),
+                            "e2e_baseline": e2e_baseline,
+                            "e2e_uncovered": e2e_uncovered,
+                            "e2e_skipped": e2e_skipped})
     collect_garbage(sha)
     return tag
 
@@ -837,6 +842,58 @@ def implausible_baseline(trailer: dict) -> str:
     if isinstance(planned, int) and len(failed) > planned * BASELINE_MAX_FAILING_SHARE:
         return f"the baseline failed {len(failed)} of {planned} planned files"
     return ""
+
+
+def implausible_e2e_baseline(cov: list[e2e_coverage.SpecCoverage]) -> str:
+    """Why an e2e baseline leaves out too many of the tests that ran, or ""."""
+    if not cov:
+        return "no e2e test ran on the base"
+    left_out = sum(1 for c in cov if c.verdict != "reliable")
+    if left_out > len(cov) * BASELINE_MAX_FAILING_SHARE:
+        return f"{left_out} of {len(cov)} e2e tests were flaky or failing on the base"
+    return ""
+
+
+# A test joins the e2e baseline only when it passes in every one of these runs.
+E2E_BASELINE_RUNS = 3
+
+
+def capture_e2e_baseline(tag: str, *, tier: int, sha: str
+                         ) -> tuple[dict[str, list[str]] | None, list[wire.VerifyE2eUncovered], int]:
+    """The pinned base's e2e baseline: the tests that passed in all
+    E2E_BASELINE_RUNS full runs as {spec file: titles}, the rest with their
+    reason, and how many skipped themselves. (None, [], 0) when this base has
+    no e2e lane: no verify.e2e, a tier-0 image (no browser) or a clone that
+    pins no Playwright. Raises RuntimeError on a run that did not boot or an
+    implausible baseline, so prepare_base refuses the pin."""
+    src = base_clone_dir(sha)
+    if profile.active().verify.e2e is None or tier != 1 or playwright_version(src) is None:
+        return None, [], 0
+    specs = e2e_specs(src, e2e_config(tag))
+    if not specs:
+        raise RuntimeError("the e2e baseline found no spec files — refusing to pin")
+    runs: list[e2e_report.E2eRun] = []
+    for i in range(1, E2E_BASELINE_RUNS + 1):
+        progress.say(f"  e2e baseline run {i} of {E2E_BASELINE_RUNS} ({len(specs)} spec files)…")
+        _, run, _ = run_e2e(tag, tier=tier, specs=specs, base_sha=sha)
+        if not run.booted:
+            raise RuntimeError(f"e2e baseline run {i} did not boot ({run.problem}) — "
+                               f"refusing to pin a base whose app cannot be checked")
+        runs.append(run)
+    cov = e2e_coverage.classify(runs)
+    if why := implausible_e2e_baseline(cov):
+        raise RuntimeError(f"{why} — refusing to pin an e2e baseline that thin")
+    reliable, uncovered = e2e_coverage.baseline(cov)
+    return reliable, uncovered, e2e_coverage.skipped_count(runs)
+
+
+def pinned_e2e_baseline(store: Store) -> dict[str, list[str]] | None:
+    """The pinned base's e2e baseline, or None when the pin has none."""
+    raw = local_pin(store).get("e2e_baseline")
+    if not isinstance(raw, dict):
+        return None
+    return {str(f): [str(t) for t in titles] for f, titles in raw.items()
+            if isinstance(titles, list) and titles}
 
 
 def write_exclude_file(base_sha: str, baseline: list[str]) -> Path:

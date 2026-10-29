@@ -22,6 +22,8 @@ from typing import Self
 import pytest
 
 from pipeline import analyze_driver as ad
+from pipeline import e2e_artifacts
+from pipeline import e2e_report
 from pipeline import gates
 from pipeline import profile
 from pipeline import progress
@@ -759,6 +761,110 @@ class TestPrepareBaseBaseline:
                             lambda *a, **kw: (0, _suite_tail([], mode="regress")))
         with pytest.raises(RuntimeError, match="refusing to pin"):
             vd.prepare_base(Store(tmp_path), base_sha="a" * 12, tier=0)
+
+
+def _e2e_run(*results: tuple[str, str, str], booted: bool = True,
+             problem: str | None = None) -> e2e_report.E2eRun:
+    return e2e_report.E2eRun(booted=booted, problem=problem, results=[
+        e2e_report.SpecResult(file=f, title=t, status=st,  # pyright: ignore[reportArgumentType]
+                              error=None if st == "passed" else "boom", attachments=[])
+        for f, t, st in results])
+
+
+class TestCaptureE2eBaseline:
+    """A pin's e2e baseline is the tests that passed in every one of three
+    full runs on the base; the pin is refused when the suite cannot be
+    trusted to judge a PR."""
+
+    def _setup(self, monkeypatch, runs: list[e2e_report.E2eRun], *, version: str | None = "1.62.1"):
+        calls: list[dict] = []
+        monkeypatch.setattr(vd.profile, "active", _profile_with_e2e)
+        monkeypatch.setattr(vd, "playwright_version", lambda src: version)
+        monkeypatch.setattr(vd, "e2e_config", lambda image: _cfg())
+        monkeypatch.setattr(vd, "e2e_specs", lambda src, cfg: ["tests/e2e/a.spec.ts"])
+        it = iter(runs)
+
+        def run_e2e(image, **kw):
+            calls.append(kw)
+            return 0, next(it), e2e_artifacts.Artifacts(report=None, pngs={}, skipped=[])
+        monkeypatch.setattr(vd, "run_e2e", run_e2e)
+        return calls
+
+    def test_tests_passing_every_run_form_the_baseline(self, monkeypatch):
+        ok = ("a.spec.ts", "boots", "passed")
+        rest = [("b.spec.ts", "s", "skipped"), *[(f"c{i}.spec.ts", "t", "passed") for i in range(3)]]
+        runs = [_e2e_run(ok, ("a.spec.ts", "chat", st), *rest)
+                for st in ("passed", "passed", "failed")]
+        calls = self._setup(monkeypatch, runs)
+        reliable, uncovered, skipped = vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
+        assert len(calls) == 3 and all(c["specs"] == ["tests/e2e/a.spec.ts"] for c in calls)
+        assert all(c.get("patch") is None for c in calls)
+        assert reliable == {"a.spec.ts": ["boots"], "c0.spec.ts": ["t"],
+                            "c1.spec.ts": ["t"], "c2.spec.ts": ["t"]}
+        assert uncovered == [{"file": "a.spec.ts", "title": "chat", "verdict": "flaky",
+                              "cause": "unknown", "evidence": "boom"}]
+        assert skipped == 1
+
+    def test_a_run_that_did_not_boot_refuses_the_pin(self, monkeypatch):
+        ok = _e2e_run(("a.spec.ts", "boots", "passed"))
+        self._setup(monkeypatch, [ok, _e2e_run(booted=False, problem="webServer timed out"), ok])
+        with pytest.raises(RuntimeError, match="run 2 did not boot .webServer timed out."):
+            vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
+
+    def test_a_baseline_leaving_out_over_a_quarter_is_refused(self, monkeypatch):
+        tests = [(f"t{i}.spec.ts", "x", "failed" if i < 3 else "passed") for i in range(10)]
+        self._setup(monkeypatch, [_e2e_run(*tests)] * 3)
+        with pytest.raises(RuntimeError, match="3 of 10 e2e tests were flaky or failing"):
+            vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
+
+    def test_an_all_skipped_suite_is_refused(self, monkeypatch):
+        self._setup(monkeypatch, [_e2e_run(("a.spec.ts", "s", "skipped"))] * 3)
+        with pytest.raises(RuntimeError, match="no e2e test ran"):
+            vd.capture_e2e_baseline("img", tier=1, sha="a" * 12)
+
+    @pytest.mark.parametrize("tier, version, e2e", [(0, "1.62.1", True), (1, None, True),
+                                                    (1, "1.62.1", False)])
+    def test_a_base_without_an_e2e_lane_runs_nothing(self, monkeypatch, tier, version, e2e):
+        calls = self._setup(monkeypatch, [], version=version)
+        if not e2e:
+            monkeypatch.setattr(vd.profile, "active", lambda: profile.GENERIC)
+        assert vd.capture_e2e_baseline("img", tier=tier, sha="a" * 12) == (None, [], 0)
+        assert calls == []
+
+    def test_prepare_base_pins_the_e2e_baseline(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
+        monkeypatch.setattr(vd, "build_base_image", lambda sha, tier: "img")
+        monkeypatch.setattr(vd.verify_gc, "collect", lambda pinned, **kw: {"ok": True})
+        self._setup(monkeypatch, [_e2e_run(("a.spec.ts", "boots", "passed"))] * 3)
+        s = Store(tmp_path)
+        vd.prepare_base(s, base_sha="a" * 12, tier=1)
+        assert vd.pinned_e2e_baseline(s) == {"a.spec.ts": ["boots"]}
+        assert vd.local_pin(s).get("e2e_skipped") == 0
+
+    def test_prepare_base_refuses_the_pin_when_the_capture_does(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
+        monkeypatch.setattr(vd, "build_base_image", lambda sha, tier: "img")
+        monkeypatch.setattr(vd.verify_gc, "collect", lambda pinned, **kw: {"ok": True})
+        self._setup(monkeypatch, [_e2e_run(booted=False, problem="x")])
+        s = Store(tmp_path)
+        with pytest.raises(RuntimeError, match="did not boot"):
+            vd.prepare_base(s, base_sha="a" * 12, tier=1)
+        assert vd.local_pin(s)["base_sha"] is None
+
+    def test_a_pin_without_an_e2e_baseline_reads_as_none(self, tmp_path):
+        s = Store(tmp_path)
+        s.save_verify_base({"host": socket.gethostname(), "base_sha": "b" * 12,
+                            "tier": 0, "pinned_at": NOW,
+                            "baseline_failing": [], "baseline_captured_at": NOW})
+        assert vd.pinned_e2e_baseline(s) is None
+
+    @pytest.mark.parametrize("bad", [["a.spec.ts"], {"a.spec.ts": "boots"}, {"a.spec.ts": [1]}])
+    def test_the_store_refuses_a_malformed_e2e_baseline(self, tmp_path, bad):
+        from pipeline.storekit import ValidationError
+        with pytest.raises(ValidationError, match="e2e_baseline"):
+            Store(tmp_path).save_verify_base({
+                "host": "h", "base_sha": "b" * 12, "tier": 1, "pinned_at": NOW,
+                "baseline_failing": [], "baseline_captured_at": NOW, "e2e_baseline": bad})
 
 
 class TestPrepareBaseGarbageCollection:

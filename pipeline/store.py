@@ -1724,6 +1724,12 @@ class Store:
                 "verify_base.baseline_failing: required list of test file paths")
         if not record.get("baseline_captured_at"):
             raise ValidationError("verify_base.baseline_captured_at: required")
+        e2e = record.get("e2e_baseline")
+        if e2e is not None and not (isinstance(e2e, dict) and all(
+                isinstance(f, str) and isinstance(ts, list)
+                and all(isinstance(t, str) for t in ts) for f, ts in e2e.items())):
+            raise ValidationError(
+                "verify_base.e2e_baseline: a map of spec file to test titles, or null")
         hosts = dict(self.load_verify_base_hosts())
         host = record.get("host")
         assert host is not None
