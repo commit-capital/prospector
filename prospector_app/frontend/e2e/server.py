@@ -145,10 +145,11 @@ from pipeline import capacity  # noqa: E402
 capacity._read_account = lambda: None
 
 from prospector_app.backend import app as appmod  # noqa: E402
-from prospector_app.backend import executor, instance, service  # noqa: E402
+from pipeline import bot_token  # noqa: E402
+from prospector_app.backend import instance, service  # noqa: E402
 
 # Missing token helper exercises the real no-token capability and dry-run paths.
-executor.GET_TOKEN = SCRATCH / "no-token-helper"
+bot_token.GET_TOKEN = SCRATCH / "no-token-helper"
 instance._cache = {"branch": "main", "worktree": "e2e"}
 service.DIFF_CACHE = SCRATCH / "diffs"
 service.PIPELINE_DIFF_CACHE = SCRATCH / "pipeline-diffs"
