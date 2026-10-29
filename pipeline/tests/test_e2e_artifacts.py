@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.e2e_artifacts import (
+    MAX_ENTRIES,
     MAX_PNG_BYTES,
     MAX_PNGS,
     MAX_REPORT_BYTES,
@@ -28,7 +29,7 @@ def _chunk(ctype: bytes, data: bytes = b"", crc: int | None = None) -> bytes:
 def _png_with_chunks(types: list[bytes]) -> bytes:
     out = SIG
     for t in types:
-        data = b"\x00" * 13 if t == b"IHDR" else b"x"
+        data = b"\x00" * 13 if t == b"IHDR" else b"" if t == b"IEND" else b"x"
         out += _chunk(t, data)
     return out
 
@@ -216,3 +217,52 @@ def test_never_writes_to_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     before = sorted(tmp_path.rglob("*"))
     read_artifacts(_hostile_tar())
     assert sorted(tmp_path.rglob("*")) == before
+
+
+def test_entry_count_is_capped_and_skipped_is_bounded() -> None:
+    n = MAX_ENTRIES + 500
+    a = read_artifacts(_tar([(f"e2e-out/{'z' * 2000}{i}.txt", b"x") for i in range(n)]))
+    assert len(a.skipped) == MAX_ENTRIES + 1
+    assert a.skipped[-1] == f"more than {MAX_ENTRIES} entries; the rest were not read"
+    assert all(len(line) < 300 for line in a.skipped)
+
+
+def test_skipped_lines_cannot_forge_log_lines() -> None:
+    a = read_artifacts(_tar([("e2e-out/a\nFORGED\x1b[0m\u202e.txt", b"x")]))
+    assert len(a.skipped) == 1
+    assert "\n" not in a.skipped[0] and "\x1b" not in a.skipped[0] and "\u202e" not in a.skipped[0]
+    assert "a?FORGED?[0m?.txt" in a.skipped[0]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "e2e-out/a\nX.png",
+        "e2e-out/a\\..\\b.png",
+        "e2e-out/\u202egnp.txt.png",
+        " ../x.png",
+        "e2e-out/ a.png",
+        "e2e-out/a//b.png",
+        "e2e-out/./a.png",
+        "e2e-out/a/../b.png",
+    ],
+)
+def test_unsafe_png_keys_are_skipped(name: str) -> None:
+    a = read_artifacts(_tar([(name, GOOD)]))
+    assert a.pngs == {}
+    assert len(a.skipped) == 1
+
+
+def test_clean_png_requires_13_byte_ihdr() -> None:
+    for n in (12, 14):
+        png = SIG + _chunk(b"IHDR", b"\x00" * n) + _chunk(b"IDAT", b"x") + _chunk(b"IEND")
+        assert clean_png(png) is None
+
+
+def test_clean_png_requires_an_idat() -> None:
+    assert clean_png(SIG + _chunk(b"IHDR", b"\x00" * 13) + _chunk(b"IEND")) is None
+
+
+def test_clean_png_requires_empty_iend() -> None:
+    png = SIG + _chunk(b"IHDR", b"\x00" * 13) + _chunk(b"IDAT", b"x") + _chunk(b"IEND", b"x")
+    assert clean_png(png) is None
