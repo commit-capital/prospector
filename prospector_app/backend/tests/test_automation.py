@@ -472,10 +472,28 @@ def test_a_handed_back_fix_pr_is_stalled_on_you(ours):
     assert issue is not None and out["reason"] == fix_review.status_line(issue)["text"]
 
 
-def test_a_green_fix_pr_waits_on_the_maintainers(ours):
-    out, _ = ours({"state": "ready"})
-    assert (out["bucket"], out["state"], out["owner"]) == (
-        "with-maintainers", "waiting", "maintainers")
+@pytest.mark.parametrize("followup", [{"state": "ready"},
+                                      {"state": "watching", "approved": {"by": "op"}}],
+                         ids=["green", "approved"])
+def test_a_green_fix_pr_that_clears_every_check_is_ready_to_merge(ours, store, monkeypatch,
+                                                                  followup):
+    from pipeline import gates
+    monkeypatch.setattr(gates, "verify_signals_incomplete", lambda pr: None)
+    rec = _merge_pick(store.load_pr(1).raw, verify={
+        "outcome": "verified-fix", "checked_at": _now(), "against_head_sha": HEAD,
+        "against_base_sha": "b" * 40, "signals": {}})
+    store.save_pr(rec)
+    data.refresh()
+    out, _ = ours(followup)
+    assert (out["column"], out["bucket"], out["owner"]) == ("act", "merge-ready", "you")
+
+
+def test_a_green_fix_the_merge_gates_refuse_stays_with_its_follow_up(ours):
+    # CI fails and the head conflicts: the issue lane answers those itself, so
+    # neither the author buckets nor the hunter take the bot's own PR.
+    out, issue = ours({"state": "ready"})
+    assert (out["bucket"], out["owner"]) == ("followup", "worker")
+    assert issue is not None and out["reason"] == fix_review.status_line(issue)["text"]
 
 
 def test_a_watching_fix_pr_is_moving(ours):
@@ -485,7 +503,7 @@ def test_a_watching_fix_pr_is_moving(ours):
 
 def test_a_fix_pr_whose_issue_is_missing_reads_as_any_pr(ours):
     out, _ = ours(None)
-    assert out["bucket"] not in ("handed-back", "with-maintainers", "followup")
+    assert out["bucket"] not in ("handed-back", "followup")
 
 
 def test_an_outsiders_pr_never_scans_issues(store, monkeypatch):
