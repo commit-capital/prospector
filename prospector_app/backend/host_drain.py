@@ -116,12 +116,14 @@ def runs(beats: dict[str, dict] | None = None) -> list[Run]:
             continue
         mine = st.prs_matching((path, "host"), [host])
         reqs = {k: getattr(p, path) or {} for k, p in mine.items()}
-        req = reqs.get(n) or {}
-        # The verify worker also runs security and design reviews, which hold no request.
-        running = req.get("status") == "running" or lane == "fix"
-        out.append(_run(lane if running else "review", f"PR #{n}", req if running else {},
-                        mine[n].title if n in mine else None,
-                        _typical(list(reqs.values()), active) if running else {}, now))
+        out.append(_run(lane, f"PR #{n}", reqs.get(n) or {},
+                        mine[n].title if n in mine else None, _typical(list(reqs.values()), active),
+                        now))
+    # The verify worker's security and design reviews hold no request.
+    if reviews := beats.get("verify", {}).get("current_reviews"):
+        prs = data.prs()
+        out.extend(_run("review", f"PR #{n}", {}, prs[n].title if n in prs else None, {}, now)
+                   for n in reviews)
     return sorted(out, key=lambda r: -_left(r))
 
 

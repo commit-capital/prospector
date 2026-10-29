@@ -143,6 +143,10 @@ SETTINGS: tuple[Setting, ...] = (
        "How many issue-fix requests this machine carries out at once. Each needs a large "
        "sandbox slot for its suite runs. Takes effect when the issue-fix lane next starts.",
        maximum=8),
+    _i("TRIAGE_REVIEW_SLOTS", "machine", "Reviews at once", "1",
+       "How many security and design reviews the verify worker's hunter runs at once, "
+       "beside its sandbox verification. Each is agent work against the machine's AI "
+       "capacity. Takes effect when the verify worker next starts.", maximum=4),
     _i("TRIAGE_SANDBOX_LARGE_CPUS", "machine", "CPUs per large phase", "auto",
        "CPUs each large phase gets; auto shares the Docker VM's CPUs.", maximum=32),
     _i("TRIAGE_DOCKER_MIN_FREE_GB", "machine", "Docker disk warning (GB free)", "20",

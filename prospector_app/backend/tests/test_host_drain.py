@@ -8,6 +8,7 @@ import pytest
 from issue_triage.issue_store import IssueStore
 from pipeline import store as S
 from prospector_app.backend import data, host_drain, lane_pause
+from prospector_app.backend.tests.test_autohunt import _clean_merge_pr
 
 
 def _ago(minutes: float) -> str:
@@ -82,3 +83,14 @@ def test_drained_waits_for_a_beat_after_the_pause(store, issues):
     assert not host_drain.drained()
     _beat(store, [])
     assert host_drain.drained()
+
+
+def test_a_verify_run_and_the_reviews_beside_it_are_each_a_run(store, issues):
+    for n in (5, 6, 7):
+        store.save_pr(_clean_merge_pr(n))
+    store.edit_pr(5).record_verify_request("running", queued_at=_ago(30), host="studio")
+    store.save_verify_worker({"host": "studio", "pid": 1, "last_beat": _ago(0),
+                              "current_pr": 5, "current_reviews": [6, 7], "autohunt": True})
+    data.refresh()
+    assert sorted((r["lane"], r["item"]) for r in host_drain.runs()) == [
+        ("review", "PR #6"), ("review", "PR #7"), ("verify", "PR #5")]

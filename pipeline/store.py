@@ -1340,9 +1340,10 @@ class Store:
 
     def load_verify_worker(self) -> dict:
         """Sandbox verification-worker heartbeats, one record per host
-        (`{hosts: {<hostname>: {host, pid, last_beat, schema, current_pr, autohunt,
-        security_failed}}}`) — which machines' workers exist, when each last
-        beat, the PR each is running (None when idle), whether each idle
+        (`{hosts: {<hostname>: {host, pid, last_beat, schema, current_pr,
+        current_reviews, autohunt, security_failed}}}`) — which machines'
+        workers exist, when each last beat, the PR each is verifying (None when
+        idle) and the PRs its review slots are reviewing, whether each idle
         auto-hunt is enabled, and each worker's this-process security-failure
         memory. Every worker merges its own record in each drain tick; any
         app reads the map to show which runners are online. An empty map

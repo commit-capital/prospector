@@ -185,6 +185,7 @@ export interface MachineBeat {
   current_pr: number | null;
   current_issue: number | null;
   current_issues: number[];
+  current_reviews: number[];
   autohunt: boolean;
 }
 /** One worker machine the shared store knows. */
