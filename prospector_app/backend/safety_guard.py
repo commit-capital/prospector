@@ -243,12 +243,9 @@ def assert_propose_write(payload: dict) -> None:
 
 def propose_bot_run(payload: dict, *, timeout: int = 60) -> subprocess.CompletedProcess:
     """Open a pull request on TRIAGE_REPO as the configured bot."""
-    token = _require_bot_token("open a pull request")
     assert_propose_write(payload)
-    assert_store_writes_safe()
     argv = ["gh", "api", "--method", "POST", f"repos/{settings.repo()}/pulls", "--input", "-"]
-    return subprocess.run(argv, input=json.dumps(payload), capture_output=True, text=True,
-                          timeout=timeout, env=bot_env(token))
+    return _run_as_bot("open a pull request", argv, input=json.dumps(payload), timeout=timeout)
 
 
 LABEL_OPS = ("add", "remove", "create")
@@ -280,9 +277,7 @@ def label_bot_run(op: str, label: str, *, number: int | None = None,
 
     from issue_triage.public_loop import LABELS
 
-    token = _require_bot_token("write a label")
     assert_label_write(op, label, number)
-    assert_store_writes_safe()
     repo = settings.repo()
     payload: str | None = None
     if op == "add":
@@ -296,8 +291,7 @@ def label_bot_run(op: str, label: str, *, number: int | None = None,
         color, description = LABELS[label]
         argv = ["gh", "api", "--method", "POST", f"repos/{repo}/labels", "--input", "-"]
         payload = json.dumps({"name": label, "color": color, "description": description})
-    return subprocess.run(argv, input=payload, capture_output=True, text=True,
-                          timeout=timeout, env=bot_env(token))
+    return _run_as_bot("write a label", argv, input=payload, timeout=timeout)
 
 
 # The GitHub state_reason each unattended close may carry.
@@ -317,13 +311,11 @@ def close_bot_run(number: int, reason: str, *, timeout: int = 60) -> subprocess.
     """Close issue `number` on TRIAGE_REPO as the configured bot. The command
     is built here from the checked arguments, so nothing but that one PATCH of
     the issue's state can run."""
-    token = _require_bot_token("close an issue")
     assert_close_write(number, reason)
-    assert_store_writes_safe()
     argv = ["gh", "api", "--method", "PATCH", f"repos/{settings.repo()}/issues/{number}",
             "--input", "-"]
-    return subprocess.run(argv, input=json.dumps({"state": "closed", "state_reason": reason}),
-                          capture_output=True, text=True, timeout=timeout, env=bot_env(token))
+    return _run_as_bot("close an issue", argv, timeout=timeout,
+                       input=json.dumps({"state": "closed", "state_reason": reason}))
 
 
 _MERGE_RE = re.compile(r"^gh\s+pr\s+merge\s+\d+\b")
@@ -349,28 +341,40 @@ def _require_bot_token(action: str) -> str:
     return token
 
 
+def bad_credentials(result: subprocess.CompletedProcess) -> bool:
+    detail = f"{result.stdout}\n{result.stderr}".lower()
+    return "http 401" in detail or "bad credentials" in detail
+
+
+def _run_as_bot(action: str, argv: list[str], *, timeout: int,
+                input: str | None = None) -> subprocess.CompletedProcess:
+    """Run a checked write with the bot's token. A token GitHub rejects (the
+    App reinstalled, its key rotated) is dropped, so the next write mints."""
+    token = _require_bot_token(action)
+    assert_store_writes_safe()
+    r = subprocess.run(argv, input=input, capture_output=True, text=True, timeout=timeout,
+                       env=bot_env(token))
+    if r.returncode != 0 and bad_credentials(r):
+        bot_token.forget()
+    return r
+
+
 def bot_run(argv: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess:
     """Run a sanctioned bot write as the configured bot via GH_TOKEN."""
-    token = _require_bot_token("write")
     assert_bot_write(argv)
-    assert_store_writes_safe()
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
+    return _run_as_bot("write", argv, timeout=timeout)
 
 
 def chat_bot_run(argv: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess:
     """Run a validated embedded-agent write as the configured bot."""
-    token = _require_bot_token("write")
     assert_chat_bot_write(argv)
-    assert_store_writes_safe()
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
+    return _run_as_bot("write", argv, timeout=timeout)
 
 
 def alert_bot_run(argv: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess:
     """Run a sanctioned alert dismissal/resolution as the configured bot."""
-    token = _require_bot_token("dismiss an alert")
     assert_alert_bot_write(argv)
-    assert_store_writes_safe()
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
+    return _run_as_bot("dismiss an alert", argv, timeout=timeout)
 
 
 def bot_merge_run(argv: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess:
@@ -378,13 +382,11 @@ def bot_merge_run(argv: list[str], *, timeout: int = 120) -> subprocess.Complete
 
     The command shape is limited to ``gh pr merge <n>``.
     """
-    token = _require_bot_token("merge")
     if not argv or argv[0].rsplit("/", 1)[-1] != "gh":
         raise WriteAttemptBlocked("merge must use gh")
     if not _MERGE_RE.match(" ".join(argv)):
         raise WriteAttemptBlocked(f"not a pr-merge command: {' '.join(argv)!r}")
-    assert_store_writes_safe()
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=bot_env(token))
+    return _run_as_bot("merge", argv, timeout=timeout)
 
 
 def bot_env(token: str) -> dict[str, str]:

@@ -120,11 +120,6 @@ def build_gh_argv(argv: list[str]) -> list[str]:
     return [*cmd, "--repo", settings.repo()]
 
 
-def _bad_credentials(stdout: str, stderr: str) -> bool:
-    detail = f"{stdout}\n{stderr}".lower()
-    return "http 401" in detail or "bad credentials" in detail
-
-
 def main(argv: list[str] | None = None) -> int:
     cmd = build_gh_argv(argv if argv is not None else sys.argv[1:])
     if not bot_token.available():
@@ -134,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
 
     result = safety_guard.chat_bot_run(cmd)
     if result.returncode != 0:
-        if _bad_credentials(result.stdout, result.stderr):
+        if safety_guard.bad_credentials(result):
             print(
                 "gh-write: bot installation token expired — retry the write to mint a fresh token",
                 file=sys.stderr,

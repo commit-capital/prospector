@@ -1,4 +1,6 @@
 """The safety guard is the load-bearing read-only enforcement. Test it hard."""
+import subprocess
+
 import pytest
 
 from prospector_app.backend import safety_guard as sg
@@ -111,10 +113,12 @@ def test_bot_write_blocked_shape(argv):
     lambda: sg.bot_merge_run(["gh", "pr", "merge", "123", "--squash"]),
     lambda: sg.label_bot_run("add", "needs answer", number=12),
     lambda: sg.close_bot_run(12, "completed"),
-    lambda: sg.propose_bot_run({}),
+    lambda: sg.propose_bot_run({"title": "t", "body": "b", "head": "pushbot:prospector/issue-7-0123abcd",
+                                "base": sg.settings.default_branch(), "maintainer_can_modify": False}),
 ])
 def test_every_bot_write_refuses_without_a_token(monkeypatch, write):
     # the load-bearing guarantee: no token → never write (would be default login)
+    monkeypatch.setenv("TRIAGE_PUSH_LOGIN", "pushbot")
     monkeypatch.setattr(
         sg.subprocess, "run",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("subprocess must not run")),
@@ -303,3 +307,17 @@ def test_an_unattended_close_refuses_a_store_ahead_of_this_checkout(monkeypatch)
     with pytest.raises(sg.WriteAttemptBlocked):
         sg.close_bot_run(12, "completed")
     assert seen == []
+
+
+@pytest.mark.parametrize("stderr, dropped", [
+    ("HTTP 401: Bad credentials (https://api.github.com/graphql)", True),
+    ("HTTP 422: Validation Failed", False),
+])
+def test_a_rejected_token_is_dropped_so_the_next_write_mints(monkeypatch, stderr, dropped):
+    forgot = []
+    monkeypatch.setattr("pipeline.bot_token.get", lambda: "tok")
+    monkeypatch.setattr("pipeline.bot_token.forget", lambda: forgot.append(True))
+    monkeypatch.setattr(sg.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(
+        argv, 1, stdout="", stderr=stderr))
+    sg.bot_run(["gh", "pr", "close", "123"])
+    assert forgot == ([True] if dropped else [])
