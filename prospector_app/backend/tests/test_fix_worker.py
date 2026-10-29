@@ -109,6 +109,7 @@ def test_update_parks_for_review_and_pushes_nothing(store, monkeypatch):
 
     req = store.load_pr(1).fix_request
     assert req["status"] == "awaiting-review"
+    assert req["result"]["autopush"] is False
     assert not _pushed(probe), "an unattended update must not reach the branch"
     assert ("update", "--probe") in probe.calls
 

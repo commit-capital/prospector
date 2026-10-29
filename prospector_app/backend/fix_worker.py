@@ -1524,9 +1524,13 @@ def _park(n: int, claimed: dict, action: str, result: dict, host: str) -> None:
     re-applies its reviewed patch to a fresh clone. Holding a clone would only
     accumulate them on one machine while a browsable backlog sits unreviewed —
     and would tie the approval to the machine that authored it. A `resolve` keeps
-    its tree, because the merge commit it holds is the thing being approved."""
+    its tree, because the merge commit it holds is the thing being approved.
+
+    `result.autopush` records whether this worker's TRIAGE_FIX_AUTOPUSH named
+    the action, so every reader says why it parked as the worker saw it."""
     if action not in ("resolve", "describe"):
         _resubmit(n, "abort")
+    result = {**result, "autopush": action in settings.fix_autopush()}
     data.store().edit_pr(n).record_fix_request(
         "awaiting-review", action, queued_at=claimed.get("queued_at"),
         started_at=claimed.get("started_at"), result=result,
