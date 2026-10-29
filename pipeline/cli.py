@@ -27,6 +27,7 @@ commands:
   activity-backfill  reconstruct missing activity-log entries for bot closes (dry-run default)
   triage-backfill  judge the fixability of every huntable issue not yet triaged, while AI capacity allows
   feature-screen-backfill  screen every open feature request not yet screened or decided, while AI capacity allows
+  backlog-sweep    bring stale author-finished PRs current, or ask their authors to rebase (dry-run default)
   drain            let this machine's worker lanes finish their runs before a restart
 
 `prospector <command> --help` shows the command's own options.
@@ -144,6 +145,12 @@ def _feature_screen_backfill(argv: list[str]) -> int:
     return 0
 
 
+def _backlog_sweep(argv: list[str]) -> int:
+    from prospector_app.backend import backlog_sweep
+
+    return backlog_sweep.main(argv)
+
+
 def _drain(argv: list[str]) -> int:
     from prospector_app.backend import host_drain
 
@@ -161,6 +168,7 @@ COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "activity-backfill": _activity_backfill,
     "triage-backfill": _triage_backfill,
     "feature-screen-backfill": _feature_screen_backfill,
+    "backlog-sweep": _backlog_sweep,
     "drain": _drain,
 }
 

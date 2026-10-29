@@ -439,6 +439,14 @@ def fix_hunt_limit() -> int:
     return positive_int("TRIAGE_FIX_HUNT_LIMIT", 3)
 
 
+def backlog_sweep_daily() -> int:
+    """The most PRs the backlog sweep acts on per UTC day; 0 keeps it a dry run."""
+    try:
+        return max(0, int(os.environ.get("TRIAGE_BACKLOG_SWEEP_DAILY", "0")))
+    except ValueError:
+        return 0
+
+
 def fix_objection_budget() -> int:
     """Continuations an objection may start per worker per UTC day."""
     return positive_int("TRIAGE_FIX_OBJECTION_BUDGET", 20)
