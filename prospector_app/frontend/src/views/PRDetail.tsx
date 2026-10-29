@@ -11,6 +11,7 @@ import { CHECKS_ID, checkRowId, diffFileId, flashTo, jumpToDiff } from "../compo
 import { Collapsible } from "../components/Collapsible";
 import { bannerFindings } from "../components/bannerFindings";
 import { PRActionBar } from "../components/PRActionBar";
+import { PRStatusBlock } from "../components/PRStatusBlock";
 import { AnalysisLine, PRStory, type AnalysisTarget } from "../components/PRStory";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixActionButton, FixBody } from "../components/FixPanel";
@@ -595,6 +596,11 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
         </>
       ) : (
        <>
+      {/* Where the PR stands and what moves it next, before anything else. */}
+      <PRStatusBlock prNum={prNum} reload={actLog}
+        onRun={(lane) => (lane === "security" ? runSecurity() : lane === "design" ? runDesign()
+          : lane === "verify" ? void queueVerify() : undefined)}
+        onScrollTo={(id) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" })} />
       {/* Problems first, loud, above the Summary: the security verdict when it
           is anything but a current GREEN, then the merge blocks. */}
       {sum && securityProblem && (
@@ -684,6 +690,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
 
       {/* #550/#581: what checks ran, when, and what they found — plus the
           action that unblocks each one, right there. */}
+      <div id="pr-checks" />
       <ChecksPanel c={checks} stages={pr.stages} headSha={pr.live_head_sha ?? pr.head_sha}
         actions={checksActions} bodies={checksBodies} opened={openedCheck} />
       <ReviewerVerdicts kind="pr" subject={prNum} />

@@ -207,7 +207,7 @@ export function PRActionBar({ pr, runState, onActed, summary }:
     : alreadyDone ? `already actioned at ${runState?.at} — click to act again` : "";
 
   return (
-    <section className={`suggestion summary-panel tone-${sug?.tone ?? "muted"}`}>
+    <section className={`suggestion summary-panel tone-${sug?.tone ?? "muted"}`} id="pr-actions">
       <h3 className="summary-title">Summary</h3>
       {summary}
       <div className="summary-action">
