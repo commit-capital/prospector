@@ -11,6 +11,8 @@ import socket
 import stat
 import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -71,6 +73,35 @@ def test_the_host_runs_a_brokered_tool_with_the_stand_in_s_arguments(tmp_path):
                               capture_output=True, text=True, timeout=30)
     assert done.returncode == 3
     assert done.stdout == f"test|a b.ts|$(cat /etc/passwd)|cwd={tmp_path} pin=7\n"
+
+
+def test_a_check_still_running_when_the_agent_exits_is_stopped_and_not_answered(
+        tmp_path, monkeypatch):
+    pid_file = tmp_path / "pid"
+    tool = tmp_path / "check"
+    tool.write_text(f'#!/bin/sh\necho $$ > "{pid_file}"\nsleep 60\n')
+    tool.chmod(0o755)
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "tmp").mkdir()
+    crashed: list[BaseException | None] = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: crashed.append(args.exc_value))
+    with headless_codex._Broker([str(tool)], tmp_path / "bin", tmp_path / "tmp",
+                                env={"PATH": os.environ["PATH"]}, cwd=str(tmp_path)) as broker:
+        agent = subprocess.Popen([broker.paths[str(tool)]], stdout=subprocess.DEVNULL)
+        deadline = time.monotonic() + 30
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        exiting = time.monotonic()
+    try:
+        assert time.monotonic() - exiting < 5
+        check = int(pid_file.read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(check, 0)
+        assert not broker._thread.is_alive()
+        assert not list((tmp_path / "tmp").rglob("*.out"))
+        assert crashed == []
+    finally:
+        agent.kill()
 
 
 def test_the_prompt_names_the_stand_in_in_place_of_the_tool():

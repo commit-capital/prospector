@@ -194,7 +194,9 @@ class _Broker:
     `stand_ins` and a spool directory inside the agent's writable temp
     directory; a request is the arguments the stand-in filed, run as
     `[tool, *args]` under `env` in `cwd`, answered with the tool's output (its
-    last OUTPUT_BYTES) and exit code."""
+    last OUTPUT_BYTES) and exit code. When the agent's run ends, a tool still
+    running for it is stopped and left unanswered: nobody is waiting, and its
+    spool is about to be removed."""
 
     def __init__(self, tools: Sequence[str], stand_ins: Path, tmp: Path, *,
                  env: Mapping[str, str], cwd: str) -> None:
@@ -210,6 +212,7 @@ class _Broker:
             self.spools[spool] = tool
             self.paths[tool] = str(stand_in)
         self._stop = threading.Event()
+        self._running: subprocess.Popen[bytes] | None = None
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
     def __enter__(self) -> _Broker:
@@ -219,7 +222,14 @@ class _Broker:
 
     def __exit__(self, *exc: object) -> None:
         self._stop.set()
-        if self._thread.is_alive():
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            if (proc := self._running) is not None:
+                try:
+                    os.killpg(proc.pid, sig)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            if not self._thread.is_alive():
+                break
             self._thread.join(timeout=10)
 
     def _loop(self) -> None:
@@ -232,6 +242,8 @@ class _Broker:
         served = 0
         for spool, tool in self.spools.items():
             for req in sorted(spool.glob("*.req")):
+                if self._stop.is_set():
+                    return served
                 name = req.name.removesuffix(".req")
                 taken = spool / f"{name}.taken"
                 try:
@@ -245,11 +257,17 @@ class _Broker:
 
     def _answer(self, spool: Path, name: str, tool: str, args: list[str]) -> None:
         try:
-            done = subprocess.run([tool, *args], cwd=self.cwd, env=self.env,
-                                  stdin=subprocess.DEVNULL, capture_output=True)
-            output, code = (done.stdout + done.stderr)[-OUTPUT_BYTES:], done.returncode
+            self._running = proc = subprocess.Popen(
+                [tool, *args], cwd=self.cwd, env=self.env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+            output = proc.communicate()[0][-OUTPUT_BYTES:]
+            code = proc.returncode
         except OSError as e:
             output, code = f"the host could not run the check: {e}\n".encode(), 127
+        finally:
+            self._running = None
+        if self._stop.is_set():
+            return
         (spool / f"{name}.out").write_bytes(output)
         (spool / f"{name}.done").write_text(str(code))
 
