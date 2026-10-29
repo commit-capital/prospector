@@ -347,11 +347,11 @@ class TestE2e:
         p = profile.parse_profile({"version": 1, "verify": {"e2e": {
             "config": "tests/e2e/playwright.config.ts",
             "boot_timeout_s": 900, "exclude": ["tests/e2e/agentmail.spec.ts"],
-            "channel_env": "PAPERCLIP_PLAYWRIGHT_CHANNEL"}}}, "t")
+            "channel_env": "APP_PLAYWRIGHT_CHANNEL"}}}, "t")
         assert p.verify.e2e == profile.E2eConfig(
             config="tests/e2e/playwright.config.ts", boot_timeout_s=900,
             exclude=("tests/e2e/agentmail.spec.ts",),
-            channel_env="PAPERCLIP_PLAYWRIGHT_CHANNEL")
+            channel_env="APP_PLAYWRIGHT_CHANNEL")
 
     @pytest.mark.parametrize("bad", [
         {"config": ""}, {"config": "/abs/p.ts"}, {"config": "../x.ts"},

@@ -4,12 +4,12 @@
 
 The operator's expectation (2026-10-28): the Verification queue runs the
 triaged app itself, not only its unit tests. Today VERIFY
-(`pipeline/verify_driver.py`, `pipeline/verify_pr.py`) runs Paperclip's own
+(`pipeline/verify_driver.py`, `pipeline/verify_pr.py`) runs the target app's own
 vitest commands in a `--network none` container, decides from exit codes, and
 never boots the server or opens a browser. The repro prompts tell the agent to
 give up on any bug that "needs a real browser session". `profile.py` rejects a
 `verify.e2e_cmd` key on purpose: the lane was reserved and never built. Fix PRs
-fill Paperclip's required "Screenshots" section with `- n/a` because nothing
+fill the target app's required "Screenshots" section with `- n/a` because nothing
 produces one (`issue_triage/fix_pr_body.py`).
 
 What the operator wants from a bug-fix PR:
@@ -22,20 +22,20 @@ What the operator wants from a bug-fix PR:
 3. **Real screenshots**: evidence for the operator, and actual images in the
    "Screenshots" section of fix PRs.
 
-## What Paperclip already gives us
+## What the target app already gives us
 
 Recon of the pinned base (`b22633676`, 2026-10-14):
 
 - `tests/e2e/` holds 44 Playwright specs plus `playwright.config.ts`. Its
   `webServer` builds the UI into `server/ui-dist` and runs
-  `paperclipai onboard --yes --run` in a throwaway `PAPERCLIP_HOME`, on
-  `127.0.0.1:3199`, with `PAPERCLIP_DEPLOYMENT_MODE=local_trusted` (no login)
+  `<app-cli> onboard --yes --run` in a throwaway `<APP>_HOME`, on
+  `127.0.0.1:3199`, with `<APP>_DEPLOYMENT_MODE=local_trusted` (no login)
   and fixed placeholder signing secrets.
 - Postgres is `embedded-postgres` (an npm dependency), so there's no external
   database.
 - `NODE_OPTIONS` imports fixtures (`fixtures/ai-connection-provider.mjs`,
   `agent-chat-github.mjs`) that stand in for the AI provider and GitHub.
-- Paperclip's CI never runs this suite on PRs. `e2e.yml` is
+- The target app's CI never runs this suite on PRs. `e2e.yml` is
   `workflow_dispatch`, allowlisted, `main` only. Nobody knows today which
   specs pass, which flake, or which quietly need the network.
 
@@ -84,7 +84,7 @@ Recon of the pinned base (`b22633676`, 2026-10-14):
 
 ## Non-goals
 
-- Writing a regression suite of our own. The suite is whatever Paperclip
+- Writing a regression suite of our own. The suite is whatever the target app
   ships that runs reliably offline.
 - Live AI providers, real GitHub, or any network access from a booted app.
   Specs that need them land in "not covered".
@@ -135,12 +135,12 @@ Recon of the pinned base (`b22633676`, 2026-10-14):
   embedded Postgres plus Chromium). It runs under the existing large-phase
   host lock (`_LargePhaseLock`). `setup-worker-machine.sh` and the Setup tab
   report whether a machine's image has the browser.
-- **Profile-driven, not Paperclip-hardcoded.** Paperclip-specific commands,
+- **Profile-driven, not app-hardcoded.** App-specific commands,
   paths and env live in `profile.json`'s `verify.e2e`, not in Prospector code.
 
 ## Coverage checkpoint
 
-Once the sandbox boots Paperclip and runs its suite, and before any outcome
+Once the sandbox boots the target app and runs its suite, and before any outcome
 signal is built on top, measure how much of the suite works:
 
 - Run all 44 specs on the pinned base, several times, and report each spec as
@@ -158,7 +158,7 @@ secrets stay out by design (Non-goals).
 ## Decided so far (operator)
 
 - Reproduce in-app before the fix, fail to reproduce after.
-- The regression suite is Paperclip's own specs that prove reliable offline.
+- The regression suite is the target app's own specs that prove reliable offline.
 - Measure how many specs are reliable in the sandbox before building on them,
   and fix sandbox gaps if too few are (Coverage checkpoint).
 - **An in-app red→green counts as proof.** A repro spec that fails twice on
@@ -201,7 +201,7 @@ secrets stay out by design (Non-goals).
 - An in-app repro that still fails with the PR applied makes the outcome
   `not-verified`. One that never reproduced on the base is recorded and
   doesn't gate. The PR then falls back to the test lanes.
-- Scope is profile-driven. The first profile is Paperclip's.
+- Scope is profile-driven. The first profile is the target app's.
 - **The base's specs judge the PR.** For the regression run, the base's
   `tests/e2e/` (specs, config, fixtures) is laid over the PR tree, so a
   contributor can't weaken a check or change the boot command. If a PR edits a

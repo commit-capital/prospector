@@ -39,7 +39,7 @@ operator has seen the checkpoint numbers.
   virtual display goes in the image.
 - Everything that comes out of a container is untrusted. Never `extractall`,
   never follow a link, and cap sizes and counts.
-- Paperclip specifics live in `profile.json` (`verify.e2e`), never in code.
+- Target-app specifics live in `profile.json` (`verify.e2e`), never in code.
 - No store writes and no schema bump in this phase.
 - AGENTS.md conventions: `from __future__ import annotations`, precise types,
   qualified imports, and every gate green (`uv run pytest`, `uv run ruff
@@ -98,11 +98,11 @@ class TestE2e:
         p = profile.parse_profile({"version": 1, "verify": {"e2e": {
             "config": "tests/e2e/playwright.config.ts",
             "boot_timeout_s": 900, "exclude": ["tests/e2e/agentmail.spec.ts"],
-            "channel_env": "PAPERCLIP_PLAYWRIGHT_CHANNEL"}}}, "t")
+            "channel_env": "APP_PLAYWRIGHT_CHANNEL"}}}, "t")
         assert p.verify.e2e == profile.E2eConfig(
             config="tests/e2e/playwright.config.ts", boot_timeout_s=900,
             exclude=("tests/e2e/agentmail.spec.ts",),
-            channel_env="PAPERCLIP_PLAYWRIGHT_CHANNEL")
+            channel_env="APP_PLAYWRIGHT_CHANNEL")
 
     @pytest.mark.parametrize("bad", [
         {"config": ""}, {"config": "/abs/p.ts"}, {"config": "../x.ts"},
@@ -119,7 +119,7 @@ class TestE2e:
 
 - [ ] **Step 2: Run** `uv run pytest pipeline/tests/test_profile.py -k E2e -v`. Expect a FAIL, because `E2eConfig` doesn't exist.
 - [ ] **Step 3: Implement `_parse_e2e(raw: object, source: str) -> E2eConfig`.** Follow `_parse_suite`'s shape: `_require_object` with keys `{"config", "boot_timeout_s", "exclude", "channel_env"}`. `channel_env` must match `^[A-Z][A-Z0-9_]*$`. Paths must be repo-relative, with no leading `/` and no `..` segment. Add a comment above `E2eConfig` in the file's style saying what a profile without the section means: no in-app lane.
-- [ ] **Step 4: Add the Paperclip-shaped example** to `profile.example.json` under `verify`: `"e2e": {"config": "tests/e2e/playwright.config.ts", "channel_env": "YOURAPP_PLAYWRIGHT_CHANNEL"}`. The local `profile.json` (gitignored) gets Paperclip's real values: `PAPERCLIP_PLAYWRIGHT_CHANNEL`.
+- [ ] **Step 4: Add the app-shaped example** to `profile.example.json` under `verify`: `"e2e": {"config": "tests/e2e/playwright.config.ts", "channel_env": "YOURAPP_PLAYWRIGHT_CHANNEL"}`. The local `profile.json` (gitignored) gets the target app's real values: `APP_PLAYWRIGHT_CHANNEL`.
 - [ ] **Step 5: Run** `uv run pytest pipeline/tests/test_profile.py -v`. Expect PASS.
 - [ ] **Step 6: Commit** the `profile.py`, `profile.example.json` and test changes with the message "Add the verify.e2e profile section".
 
@@ -299,7 +299,7 @@ Each test asserts concrete values, not just "no exception".
   def parse_report(report: bytes | None, *, output_tail: str) -> E2eRun
   ```
 
-- [ ] **Step 1: Write the failing tests** against a trimmed real report. Generate one fixture from Paperclip's own JSON reporter output for two specs, store it in `pipeline/tests/fixtures/playwright-report.json`, and redact absolute paths.
+- [ ] **Step 1: Write the failing tests** against a trimmed real report. Generate one fixture from the target app's own JSON reporter output for two specs, store it in `pipeline/tests/fixtures/playwright-report.json`, and redact absolute paths.
 
 ```python
 def test_parses_passed_and_failed_specs(): ...      # statuses, files, titles exact
@@ -350,9 +350,9 @@ def test_e2e_test_cmd_is_built_from_the_profile_only():
     assert "grep -vxF -e tests/e2e/x.spec.ts" in cmd
 
 def test_e2e_test_cmd_selects_full_chromium_when_the_repo_reads_a_channel():
-    cfg = profile.E2eConfig(config="c.ts", channel_env="PAPERCLIP_PLAYWRIGHT_CHANNEL")
+    cfg = profile.E2eConfig(config="c.ts", channel_env="APP_PLAYWRIGHT_CHANNEL")
     assert verify_driver.e2e_test_cmd(cfg).startswith(
-        "PAPERCLIP_PLAYWRIGHT_CHANNEL=chromium ")
+        "APP_PLAYWRIGHT_CHANNEL=chromium ")
 
 def test_e2e_test_cmd_quotes_spec_names():
     cmd = verify_driver.e2e_test_cmd(_cfg(), specs=["tests/e2e/a b.spec.ts"])

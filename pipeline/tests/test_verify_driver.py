@@ -3314,10 +3314,10 @@ def test_e2e_test_cmd_without_excludes_has_no_grep_stage():
 
 
 def test_e2e_test_cmd_selects_full_chromium_when_the_repo_reads_a_channel():
-    cfg = profile.E2eConfig(config="c.ts", channel_env="PAPERCLIP_PLAYWRIGHT_CHANNEL")
+    cfg = profile.E2eConfig(config="c.ts", channel_env="APP_PLAYWRIGHT_CHANNEL")
     assert vd.e2e_test_cmd(cfg, specs=["a.spec.ts"]).startswith(
-        "PAPERCLIP_PLAYWRIGHT_CHANNEL=chromium PLAYWRIGHT_JSON_OUTPUT_NAME=")
-    assert "; PAPERCLIP_PLAYWRIGHT_CHANNEL=chromium PLAYWRIGHT_JSON_OUTPUT_NAME=" in (
+        "APP_PLAYWRIGHT_CHANNEL=chromium PLAYWRIGHT_JSON_OUTPUT_NAME=")
+    assert "; APP_PLAYWRIGHT_CHANNEL=chromium PLAYWRIGHT_JSON_OUTPUT_NAME=" in (
         vd.e2e_test_cmd(cfg))
 
 
