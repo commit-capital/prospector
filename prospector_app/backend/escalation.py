@@ -77,7 +77,7 @@ def health_status(registries: WorkerRegistries | None = None) -> dict:
     out = []
     for host, rec in sorted(hosts.items()):
         lanes = {name: {k: entry.get(k) for k in
-                        ("consecutive_failures", "tripped", "retest",
+                        ("consecutive_failures", "tripped", "trips", "retest",
                          "recent", "last_success_at")}
                  for name, entry in (rec.get("lanes") or {}).items()}
         for entry in lanes.values():

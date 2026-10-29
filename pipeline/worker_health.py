@@ -13,6 +13,7 @@ one entry per lane in LANES:
     {"consecutive_failures": int, "recent": [failure, ...],
      "last_success_at": iso | None,
      "tripped": {"at", "kind", "reason"} | None,
+     "trips": [{"at", "kind", "reason"}, ...],
      "retest": {"at", "ok", "detail"} | None}
 
 and, on a machine that runs the sandbox, the latest reading of Docker's disk:
@@ -47,6 +48,11 @@ COOL_DOWN_SECONDS = 6 * 3600
 OFFLINE_AFTER_SECONDS = 3600
 # Failures kept on the record for the operator.
 RECENT_KEEP = 5
+# Trips within RETRIP_WINDOW_SECONDS that mark a lane as retripping: it keeps
+# reopening onto the same fault.
+RETRIP_ALERT = 3
+RETRIP_WINDOW_SECONDS = 24 * 3600
+TRIPS_KEEP = 10
 
 _lock = threading.Lock()
 
@@ -60,7 +66,7 @@ def lane(rec: dict, name: str) -> dict:
     lanes = rec.setdefault("lanes", {})
     return lanes.setdefault(name, {
         "consecutive_failures": 0, "recent": [], "last_success_at": None,
-        "tripped": None, "retest": None, "issue": None})
+        "tripped": None, "trips": [], "retest": None, "issue": None})
 
 
 def is_tripped(rec: dict, name: str) -> bool:
@@ -80,10 +86,22 @@ def record_failure(rec: dict, name: str, *, kind: str, reason: str,
     rec["updated_at"] = now
     if entry.get("tripped") or entry["consecutive_failures"] < TRIP_AFTER:
         return False
-    entry["tripped"] = {"at": now, "kind": kind,
-                        "reason": f"{entry['consecutive_failures']} machine failures in a row; "
-                                  f"last: {reason[:300]}"}
+    _mark_tripped(entry, {"at": now, "kind": kind,
+                          "reason": f"{entry['consecutive_failures']} machine failures in a row; "
+                                    f"last: {reason[:300]}"})
     return True
+
+
+def _mark_tripped(entry: dict, tripped: dict) -> None:
+    entry["tripped"] = tripped
+    entry["trips"] = [*(entry.get("trips") or []), tripped][-TRIPS_KEEP:]
+
+
+def trips_within(entry: dict, now: datetime | None = None) -> int:
+    """How many times the lane tripped in the last RETRIP_WINDOW_SECONDS."""
+    now = now or datetime.now(timezone.utc)
+    return sum(1 for t in entry.get("trips") or []
+               if _since(t.get("at"), now) < RETRIP_WINDOW_SECONDS)
 
 
 def record_success(rec: dict, name: str, *, now: str | None = None) -> None:
@@ -105,7 +123,7 @@ def trip(rec: dict, name: str, *, kind: str, reason: str,
     rec["updated_at"] = now
     if entry.get("tripped"):
         return False
-    entry["tripped"] = {"at": now, "kind": kind, "reason": reason[:600]}
+    _mark_tripped(entry, {"at": now, "kind": kind, "reason": reason[:600]})
     return True
 
 

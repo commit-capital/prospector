@@ -57,6 +57,33 @@ class TestTrip:
         assert rec["lanes"]["fix"]["consecutive_failures"] == 0
 
 
+class TestRetrips:
+    def test_each_trip_is_kept_through_reopens(self):
+        rec = wh.empty("w")
+        for h in range(3):
+            for _ in range(3):
+                wh.record_failure(rec, "design", kind="coverage", reason="diff too large",
+                                  now=_iso(T0 + timedelta(hours=6 * h)))
+            wh.reopen(rec, "design", by="cooled down")
+        wh.trip(rec, "design", kind="design-run", reason="crash",
+                now=_iso(T0 + timedelta(hours=18)))
+        trips = rec["lanes"]["design"]["trips"]
+        assert [t["kind"] for t in trips] == ["coverage"] * 3 + ["design-run"]
+        assert wh.trips_within(rec["lanes"]["design"], T0 + timedelta(hours=19)) == 4
+        assert wh.trips_within(rec["lanes"]["design"], T0 + timedelta(hours=25)) == 3
+
+    def test_only_the_last_few_trips_are_kept(self):
+        rec = wh.empty("w")
+        for i in range(wh.TRIPS_KEEP + 2):
+            wh.trip(rec, "fix", kind="k", reason=f"r{i}")
+            wh.reopen(rec, "fix", by="operator")
+        assert rec["lanes"]["fix"]["trips"][0]["reason"] == "r2"
+        assert len(rec["lanes"]["fix"]["trips"]) == wh.TRIPS_KEEP
+
+    def test_a_lane_from_before_trips_were_kept_counts_none(self):
+        assert wh.trips_within({"tripped": None}, T0) == 0
+
+
 class TestRetest:
     def test_first_retest_waits_the_full_interval(self):
         rec = wh.empty("w")

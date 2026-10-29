@@ -1,5 +1,6 @@
 """system_health: the strip's summary — lanes down across machines, stale
-ingests, and the stalled verdict Home's workers column reads."""
+ingests, and the stalled verdict Home's workers column reads — and the trip
+banner's alerts."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -32,7 +33,7 @@ def test_all_healthy_reads_ok():
     out = system_health.summarize(
         [], [], [("security", "mac"), ("verify", "mac"), ("fix", "mac")],
         FRESH, NOW_TS)
-    assert out == {"severity": "ok", "items": [], "lanes_total": 3,
+    assert out == {"severity": "ok", "items": [], "trip_alerts": [], "lanes_total": 3,
                    "lanes_down": 0, "workers_stalled": False}
 
 
@@ -44,11 +45,11 @@ def test_one_tripped_lane_among_several_is_amber_not_stalled():
     assert out["severity"] == "amber"
     assert (out["lanes_total"], out["lanes_down"]) == (3, 1)
     assert not out["workers_stalled"]
-    labels = [i["label"] for i in out["items"]]
-    assert "1/3 worker lanes down" in labels
-    assert "mac: fix paused · agent-unavailable" in labels
-    trip = next(i for i in out["items"] if i["kind"] == "trip")
-    assert trip["detail"] == "claude CLI is not authenticated"
+    assert [i["label"] for i in out["items"]] == ["1/3 worker lanes down"]
+    assert out["trip_alerts"] == [{
+        "host": "mac", "lane": "fix", "tripped": True, "at": _iso(1),
+        "kind": "agent-unavailable", "reason": "claude CLI is not authenticated",
+        "remedy": None, "trips_24h": 0}]
 
 
 def test_every_lane_down_is_red_and_stalled():
@@ -80,8 +81,8 @@ def test_an_offline_host_shows_its_silence_not_its_trips():
     out = system_health.summarize(
         [_tripped_host("mac", ["fix"])], offline, [("fix", "mac")],
         FRESH, NOW_TS)
-    kinds = [i["kind"] for i in out["items"]]
-    assert "offline" in kinds and "trip" not in kinds
+    assert [i["kind"] for i in out["items"]] == ["lanes", "offline"]
+    assert out["trip_alerts"] == []
     assert out["workers_stalled"]
 
 
@@ -109,7 +110,7 @@ def test_stale_ingest_turns_amber_then_red():
 def test_an_ingest_that_never_ran_reports_nothing():
     out = system_health.summarize(
         [], [], [], {"pr": None, "issues": None, "alerts": None}, NOW_TS)
-    assert out == {"severity": "ok", "items": [], "lanes_total": 0,
+    assert out == {"severity": "ok", "items": [], "trip_alerts": [], "lanes_total": 0,
                    "lanes_down": 0, "workers_stalled": False}
 
 
@@ -162,7 +163,8 @@ def test_status_composes_the_live_inputs(store, monkeypatch):
     assert out["severity"] == "red"
     assert (out["lanes_total"], out["lanes_down"]) == (1, 1)
     assert out["workers_stalled"]
-    assert [i["kind"] for i in out["items"]] == ["lanes", "trip"]
+    assert [i["kind"] for i in out["items"]] == ["lanes"]
+    assert [(a["host"], a["lane"], a["trips_24h"]) for a in out["trip_alerts"]] == [("mac", "fix", 1)]
 
 
 def test_status_counts_the_issue_fix_lane(store, monkeypatch):
@@ -180,12 +182,39 @@ def test_status_counts_the_issue_fix_lane(store, monkeypatch):
     assert not out["workers_stalled"]
 
 
-def test_trip_detail_carries_the_remedy():
+def test_a_trip_alert_carries_the_remedy():
     host = _tripped_host("mac", ["fix"])
     host["lanes"]["fix"]["remedy"] = "sign in with /login"
     out = system_health.summarize([host], [], [("fix", "mac")], FRESH, NOW_TS)
-    trip = next(i for i in out["items"] if i["kind"] == "trip")
-    assert trip["detail"] == "claude CLI is not authenticated\nsign in with /login"
+    assert out["trip_alerts"][0]["remedy"] == "sign in with /login"
+
+
+def _trips(*hours_ago: float) -> list[dict]:
+    return [{"at": _iso(h), "kind": "coverage", "reason": f"trip {h}h ago"} for h in hours_ago]
+
+
+def test_an_open_lane_that_keeps_retripping_is_alerted_with_its_last_trip():
+    host = {"host": "studio", "tripped": [],
+            "lanes": {"design": {"tripped": None, "trips": _trips(30, 18, 12, 6)},
+                      "fix": {"tripped": None, "trips": _trips(40, 30, 20)}}}
+    out = system_health.summarize([host], [], [("design", "studio"), ("fix", "studio")],
+                                  FRESH, NOW_TS)
+    assert out["severity"] == "ok" and out["items"] == []
+    assert out["trip_alerts"] == [{
+        "host": "studio", "lane": "design", "tripped": False, "at": _iso(6),
+        "kind": "coverage", "reason": "trip 6h ago", "remedy": None, "trips_24h": 3}]
+
+
+def test_tripped_lanes_lead_the_alerts():
+    host = {"host": "studio", "tripped": ["verify"],
+            "lanes": {"design": {"tripped": None, "trips": _trips(18, 12, 6)},
+                      "verify": {"tripped": {"at": _iso(40), "kind": "pin-stale",
+                                             "reason": "pin 5 days old"},
+                                 "trips": _trips(40)}}}
+    out = system_health.summarize([host], [], [("design", "studio"), ("verify", "studio")],
+                                  FRESH, NOW_TS)
+    assert [(a["lane"], a["tripped"], a["trips_24h"]) for a in out["trip_alerts"]] == [
+        ("verify", True, 0), ("design", False, 3)]
 
 
 def test_status_reads_every_worker_registry_in_one_statement(store, monkeypatch):
@@ -223,7 +252,8 @@ def test_status_reads_every_worker_registry_in_one_statement(store, monkeypatch)
         event.remove(store.engine, "before_cursor_execute", count)
     assert len(statements) == 1
     assert (out["lanes_total"], out["lanes_down"]) == (3, 3)
-    assert [i["kind"] for i in out["items"]] == ["lanes", "offline", "trip"]
+    assert [i["kind"] for i in out["items"]] == ["lanes", "offline"]
+    assert [a["host"] for a in out["trip_alerts"]] == ["mac"]
 
 
 def test_stood_down_host_drops_out_of_strip():
@@ -232,7 +262,7 @@ def test_stood_down_host_drops_out_of_strip():
         [{"host": "lap", "lane": "fix", "last_beat": _iso(5), "age_seconds": 5 * 3600}],
         [("fix", "lap"), ("verify", "mac")], FRESH, NOW_TS,
         stood_down=frozenset({"lap"}))
-    assert out["severity"] == "ok" and out["items"] == []
+    assert out["severity"] == "ok" and out["items"] == [] and out["trip_alerts"] == []
     assert out["lanes_total"] == 1 and out["lanes_down"] == 0
 
 
@@ -241,7 +271,8 @@ def test_other_hosts_still_report_when_one_is_stood_down():
         [_tripped_host("mac", ["verify"])], [],
         [("verify", "mac"), ("fix", "lap")], FRESH, NOW_TS,
         stood_down=frozenset({"lap"}))
-    assert [i["kind"] for i in out["items"]] == ["lanes", "trip"]
+    assert [i["kind"] for i in out["items"]] == ["lanes"]
+    assert [a["host"] for a in out["trip_alerts"]] == ["mac"]
     assert out["lanes_total"] == 1 and out["workers_stalled"] is True
 
 

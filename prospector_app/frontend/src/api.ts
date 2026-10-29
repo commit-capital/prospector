@@ -1195,12 +1195,12 @@ export interface WorkStatus {
  *  run history from the runs ledger over the selected window. */
 export interface VerifyQueue { queue: VerifyQueueEntry[]; history: AutohuntRun[]; }
 
-/** One problem the health strip names: a lane count, a tripped or offline
- *  worker, a worker whose Docker disk is filling, a stale ingest, or an AI
- *  account whose background work is paused.
+/** One problem the health strip names: a lane count, an offline worker, a
+ *  worker whose Docker disk is filling, a stale ingest, or an AI account whose
+ *  background work is paused.
  *  `detail` is the hover tooltip, shown inline on a capacity line. */
 export interface SystemHealthItem {
-  kind: "lanes" | "trip" | "offline" | "outdated" | "profile-drift" | "ingest" | "capacity" | "disk";
+  kind: "lanes" | "offline" | "outdated" | "profile-drift" | "ingest" | "capacity" | "disk";
   severity: "amber" | "red";
   label: string;
   detail?: string | null;
@@ -1210,9 +1210,23 @@ export interface SystemHealthItem {
 /** Systemwide health across every machine on this store: worker lanes down
  *  and stale ingests. `workers_stalled` means every known worker lane is
  *  down, so nothing "in motion" is actually moving. */
+/** A worker lane the trip banner names: tripped now, or open but tripped
+ *  repeatedly in the last day. `at`, `kind` and `reason` are its latest trip's. */
+export interface TripAlert {
+  host: string;
+  lane: string;
+  tripped: boolean;
+  at: string | null;
+  kind: string | null;
+  reason: string | null;
+  remedy: string | null;
+  trips_24h: number;
+}
+
 export interface SystemHealth {
   severity: "ok" | "amber" | "red";
   items: SystemHealthItem[];
+  trip_alerts: TripAlert[];
   lanes_total: number;
   lanes_down: number;
   workers_stalled: boolean;
