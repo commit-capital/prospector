@@ -262,7 +262,6 @@ def test_vacuous_red_names_the_cause_and_fails_the_red_step():
         "red_green": {"apply_exit": 0, "red_exit": 0, "green_exit": 0},
         "red_reason_match": {"matches": False, "confidence": "high",
                              "reasoning": "no red at all — the file was skipped"},
-        "regress": {"ran": False, "skipped_reason": "red-green-not-clean"},
         "independent_repro": {"ran": True, "exit_code": 20},
         "repro_reason_match": {"matches": True, "confidence": "high",
                                "reasoning": "matches the prediction"},
@@ -272,13 +271,12 @@ def test_vacuous_red_names_the_cause_and_fails_the_red_step():
     assert d["cause"] is not None
     assert "never failed on unfixed main" in d["cause"]
     by_key = {s["key"]: s for s in d["story"]}
-    assert set(by_key) == {"blind", "apply", "red", "green", "regress", "repro"}
+    assert set(by_key) == {"blind", "apply", "red", "green", "repro"}
     assert by_key["red"]["result"] == "fail"
     assert "did NOT fail" in by_key["red"]["note"]
     assert by_key["red"]["reasoning"] == "no red at all — the file was skipped"
     # a vacuous green never presents as a pass
     assert by_key["green"]["result"] == "info"
-    assert by_key["regress"]["result"] == "skip"
     assert by_key["repro"]["result"] == "pass"
 
 
@@ -538,7 +536,6 @@ def test_verified_fix_story_all_green_and_no_cause():
         "blind_adequacy": {"faithful": True, "test_cmd": "t"},
         "red_green": {"apply_exit": 0, "red_exit": 20, "green_exit": 0},
         "red_reason_match": {"matches": True, "confidence": "high"},
-        "regress": {"ran": True, "exit_first": 0},
     }
     d = verify_view.verify_detail(_pr(_verify("verified-fix", signals=signals)))
     assert d is not None
@@ -570,7 +567,6 @@ class TestAgentVerifiedView:
                               "red_exit_confirm": 20, "green_exit_confirm": 0,
                               "red_output_tail": "boom", "green_output_tail": "ok"},
             "red_reason_match": {"matches": True, "confidence": "high", "reasoning": "j"},
-            "regress": {"ran": True, "exit_first": 0, "confirmed": False, "flake": False},
             "independent_repro": {"ran": True, "exit_code": 20},
             "repro_reason_match": {"matches": True, "applicable": True,
                                    "confidence": "high"},
@@ -595,7 +591,6 @@ class TestAgentVerifiedView:
                               "red_exit_confirm": None, "green_exit_confirm": None,
                               "red_output_tail": "boom", "green_output_tail": None},
             "red_reason_match": {"matches": True, "confidence": "high", "reasoning": "j"},
-            "regress": {},
         }
         rec = _pr(_verify("unverifiable-no-test", signals=signals))
         v = verify_view.verify_detail(rec)
@@ -622,7 +617,6 @@ def test_lane_steps_appear_in_the_story():
                               "ok": False, "duration_s": 100.0,
                               "error_excerpt": "error TS2739: x"},
                   "build": {"cmd": "pnpm build", "skipped": "compile failed"}},
-        "regress": {"ran": False, "skipped_reason": "lane-compile-failed"},
     }
     d = verify_view.verify_detail(_pr(_verify("regressed", signals=signals)))
     assert d is not None
@@ -669,7 +663,6 @@ def _e2e_signals(e2e: dict) -> dict:
             "red_green": {"apply_exit": 0, "red_exit": 20, "green_exit": 0,
                           "red_exit_confirm": 20, "green_exit_confirm": 0},
             "red_reason_match": {"matches": True, "confidence": "high"},
-            "regress": {"ran": True, "exit_first": 0},
             "e2e": e2e}
 
 

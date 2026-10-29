@@ -36,7 +36,6 @@ from pipeline.testsupport import greptile_entry, reviews_section
 
 # A stand-in suite-config path for verify_pr calls whose run_phase is
 # monkeypatched — the path is threaded, never opened.
-SUITE_CFG = Path("suite-config-stub.json")
 
 # A profile whose verify section carries a full-suite contract, for tests of
 # the suite lane (the generic default has none).
@@ -518,12 +517,10 @@ def diffs(tmp_path, monkeypatch):
     return d
 
 
-def _pinned(tmp_path, base="base1", tier=0, baseline=()) -> Store:
+def _pinned(tmp_path, base="base1", tier=0) -> Store:
     s = Store(tmp_path)
     s.save_verify_base({"host": socket.gethostname(), "base_sha": base,
-                        "tier": tier, "pinned_at": NOW,
-                        "baseline_failing": list(baseline),
-                        "baseline_captured_at": NOW})
+                        "tier": tier, "pinned_at": NOW})
     return s
 
 
@@ -674,93 +671,22 @@ class _SubprocessOK:
     returncode = 0
 
 
-class TestPrepareBaseBaseline:
-    """prepare-base captures the pinned base's failing set and refuses to pin
-    without it — a pin with no baseline would run waves with the regression
-    gate silently off."""
-
-    def _quiet(self, tmp_path, monkeypatch):
+class TestPrepareBase:
+    def test_runs_no_full_suite(self, tmp_path, monkeypatch):
+        # Upstream CI runs the full suite; the pin captures no baseline of it.
         monkeypatch.setattr(vd.subprocess, "run", lambda *a, **k: _SubprocessOK())
         monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
         monkeypatch.setattr(vd.profile, "active", lambda: SUITE_PROFILE)
-
-    def test_pin_carries_the_captured_baseline(self, tmp_path, monkeypatch):
-        self._quiet(tmp_path, monkeypatch)
         phases = []
         monkeypatch.setattr(vd, "run_phase", lambda phase, image, **kw: (
-            phases.append(phase) or (0, _suite_tail(["server/src/__tests__/x.test.ts"]))))
-        s = Store(tmp_path)
-        vd.prepare_base(s, base_sha="a" * 12, tier=0)
-        assert phases == ["baseline"]
-        reg = vd.local_pin(s)
-        assert reg["baseline_failing"] == ["server/src/__tests__/x.test.ts"]
-        assert reg["baseline_captured_at"]
-        assert reg["suite"] is True
-        assert reg["host"]
-        assert reg["arch"]
-
-    def test_the_capture_keeps_a_trailer_naming_hundreds_of_files(self, tmp_path, monkeypatch):
-        self._quiet(tmp_path, monkeypatch)
-        failing = [f"server/src/__tests__/case-{i:03d}.test.ts" for i in range(300)]
-        tail = _suite_tail(failing, planned=2000)
-        assert len(tail.encode()) > vd.OUTPUT_TAIL_BYTES
-        monkeypatch.setattr(vd, "run_phase", lambda phase, image, tail_bytes=vd.OUTPUT_TAIL_BYTES,
-                            **kw: (0, tail.encode()[-tail_bytes:].decode()))
-        s = Store(tmp_path)
-        vd.prepare_base(s, base_sha="a" * 12, tier=0)
-        assert vd.local_pin(s)["baseline_failing"] == failing
-
-    def test_a_baseline_failing_most_of_its_plan_is_refused(self, tmp_path, monkeypatch):
-        self._quiet(tmp_path, monkeypatch)
-        monkeypatch.setattr(vd, "run_phase", lambda phase, image, **kw: (
-            0, _suite_tail([f"t{i}.test.ts" for i in range(30)], planned=100)))
-        s = Store(tmp_path)
-        with pytest.raises(RuntimeError, match="failed 30 of 100 planned files"):
-            vd.prepare_base(s, base_sha="a" * 12, tier=0)
-        assert vd.local_pin(s).get("baseline_failing") is None
-
-    def test_a_profile_without_a_suite_pins_without_a_baseline_run(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vd.subprocess, "run", lambda *a, **k: _SubprocessOK())
-        monkeypatch.setattr(vd, "SCRATCH", tmp_path / "scratch")
-        monkeypatch.setattr(vd.profile, "active", lambda: profile.GENERIC)
-        phases = []
-        monkeypatch.setattr(vd, "run_phase", lambda phase, image, **kw: (
-            phases.append(phase) or (0, _suite_tail([]))))
+            phases.append(phase) or (0, "")))
         s = Store(tmp_path)
         vd.prepare_base(s, base_sha="a" * 12, tier=0)
         assert phases == []
         reg = vd.local_pin(s)
-        assert reg["suite"] is False
-        assert reg["baseline_failing"] == []
-        assert vd.pinned_suite(s) is False
-
-    def test_a_pre_provenance_pin_reads_as_having_a_suite(self, tmp_path):
-        s = Store(tmp_path)
-        s.save_verify_base({"host": socket.gethostname(), "base_sha": "b" * 12,
-                            "tier": 0, "pinned_at": NOW,
-                            "baseline_failing": [], "baseline_captured_at": NOW})
-        assert vd.pinned_suite(s) is True
-
-    def test_refuses_to_pin_on_a_nonzero_baseline_phase(self, tmp_path, monkeypatch):
-        self._quiet(tmp_path, monkeypatch)
-        monkeypatch.setattr(vd, "run_phase", lambda *a, **kw: (1, _suite_tail([])))
-        s = Store(tmp_path)
-        with pytest.raises(RuntimeError, match="refusing to pin"):
-            vd.prepare_base(s, base_sha="a" * 12, tier=0)
-        assert vd.local_pin(s)["base_sha"] is None
-
-    def test_refuses_to_pin_on_an_unparsable_trailer(self, tmp_path, monkeypatch):
-        self._quiet(tmp_path, monkeypatch)
-        monkeypatch.setattr(vd, "run_phase", lambda *a, **kw: (0, "86 bytes of junk"))
-        with pytest.raises(RuntimeError, match="refusing to pin"):
-            vd.prepare_base(Store(tmp_path), base_sha="a" * 12, tier=0)
-
-    def test_refuses_a_trailer_of_the_wrong_mode(self, tmp_path, monkeypatch):
-        self._quiet(tmp_path, monkeypatch)
-        monkeypatch.setattr(vd, "run_phase",
-                            lambda *a, **kw: (0, _suite_tail([], mode="regress")))
-        with pytest.raises(RuntimeError, match="refusing to pin"):
-            vd.prepare_base(Store(tmp_path), base_sha="a" * 12, tier=0)
+        assert reg["base_sha"] == "a" * 12
+        assert reg["host"]
+        assert reg["arch"]
 
 
 def _e2e_run(*results: tuple[str, str, str], booted: bool = True,
@@ -869,8 +795,7 @@ class TestCaptureE2eBaseline:
     def test_a_pin_without_an_e2e_baseline_reads_as_none(self, tmp_path):
         s = Store(tmp_path)
         s.save_verify_base({"host": socket.gethostname(), "base_sha": "b" * 12,
-                            "tier": 0, "pinned_at": NOW,
-                            "baseline_failing": [], "baseline_captured_at": NOW})
+                            "tier": 0, "pinned_at": NOW})
         assert vd.pinned_e2e_baseline(s) is None
 
     @pytest.mark.parametrize("bad", [["a.spec.ts"], {"a.spec.ts": "boots"}, {"a.spec.ts": [1]}])
@@ -878,8 +803,7 @@ class TestCaptureE2eBaseline:
         from pipeline.storekit import ValidationError
         with pytest.raises(ValidationError, match="e2e_baseline"):
             Store(tmp_path).save_verify_base({
-                "host": "h", "base_sha": "b" * 12, "tier": 1, "pinned_at": NOW,
-                "baseline_failing": [], "baseline_captured_at": NOW, "e2e_baseline": bad})
+                "host": "h", "base_sha": "b" * 12, "tier": 1, "pinned_at": NOW, "e2e_baseline": bad})
 
 
 class TestPrepareBaseGarbageCollection:
@@ -910,8 +834,7 @@ class TestPrepareBaseGarbageCollection:
         self._quiet(tmp_path, monkeypatch, events)
         s = Store(tmp_path)
         s.save_verify_base({"host": socket.gethostname(), "base_sha": "o" * 12,
-                            "tier": 0, "pinned_at": NOW,
-                            "baseline_failing": [], "baseline_captured_at": NOW})
+                            "tier": 0, "pinned_at": NOW})
         monkeypatch.setattr(vd.verify_gc, "collect",
                             lambda pinned, **kw: events.append(("gc", pinned)) or {"ok": True})
         vd.prepare_base(s, base_sha="a" * 12, tier=0)
@@ -926,29 +849,6 @@ class TestPrepareBaseGarbageCollection:
         s = Store(tmp_path)
         assert vd.prepare_base(s, base_sha="a" * 12, tier=0)
         assert vd.local_pin(s)["base_sha"] == "a" * 12
-
-
-class TestPinnedBaseline:
-    def test_reads_the_pinned_exclusion_set(self, tmp_path):
-        s = _pinned(tmp_path, baseline=["a.test.ts"])
-        assert vd.pinned_baseline(s) == ["a.test.ts"]
-
-    def test_raises_when_the_pin_has_no_baseline(self, tmp_path):
-        # A registry written before the baseline fields existed reads back with
-        # baseline_failing None; running a wave on it must refuse, not skip the gate.
-        s = Store(tmp_path)
-        s._save_registry("verify_base", {"base_sha": "base1", "tier": 0,
-                                         "pinned_at": NOW})
-        with pytest.raises(RuntimeError, match="baseline"):
-            vd.pinned_baseline(s)
-
-
-class TestWriteExcludeFile:
-    def test_writes_a_sorted_json_array_keyed_by_sha12(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vd, "SCRATCH", tmp_path)
-        p = vd.write_exclude_file("a" * 40, ["b.test.ts", "a.test.ts"])
-        assert p.name == f"{'a' * 12}.json"
-        assert json.loads(p.read_text()) == ["a.test.ts", "b.test.ts"]
 
 
 class TestCommitBlind:
@@ -1437,23 +1337,16 @@ class TestVerifyPr:
              "test_cmd": "pnpm -s test", "expected_red_signature": "AssertionError",
              "reasoning": "r"}, **over))])
 
-    def _phases(self, monkeypatch, regress_exits=(0,), **codes):
+    def _phases(self, monkeypatch, **codes):
         calls = []
         self.patches: dict[str, Path | None] = {}
-        self.exclude_files: dict[str, Path | None] = {}
-        regress_seq = list(regress_exits)
 
         def fake(phase, image, **kw):
             calls.append(phase)
             self.patches[phase] = kw.get("patch")
-            self.exclude_files[phase] = kw.get("exclude_file")
-            if phase == "regress":
-                return regress_seq.pop(0), _suite_tail(["src/new.test.ts"], mode="regress")
             return codes.get(phase, 0), f"{phase}-output"
         monkeypatch.setattr(vd, "run_phase", fake)
         monkeypatch.setattr(vd, "fetch_patch", lambda pr, head: Path("/tmp/fake.patch"))
-        monkeypatch.setattr(vd, "write_exclude_file",
-                            lambda base, baseline: Path("/tmp/fake-exclude.json"))
         # A diff with test hunks by default — most tests exercise the ordinary
         # red->green flow, not the no-test-hunks edge case (covered separately).
         monkeypatch.setattr(vd, "test_only_patch",
@@ -1465,7 +1358,7 @@ class TestVerifyPr:
         s = _pinned(tmp_path)
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         calls = self._phases(monkeypatch)
-        assert vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG) is None
+        assert vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0) is None
         assert calls == []
 
     def test_clean_red_green_records_host_observed_exits(self, tmp_path, diffs, monkeypatch):
@@ -1473,9 +1366,9 @@ class TestVerifyPr:
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._blind(s)
         calls = self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
-        # a clean red->green confirms (a second red+green) before regress
-        assert calls == ["apply-check", "red", "green", "red", "green", "regress"]
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
+        # a clean red->green confirms (a second red+green); no full suite runs
+        assert calls == ["apply-check", "red", "green", "red", "green"]
         assert ev["red_green"] == {"apply_exit": 0, "red_exit": 20, "green_exit": 0,
                                    "red_output_tail": "red-output",
                                    "green_output_tail": "green-output",
@@ -1496,34 +1389,28 @@ class TestVerifyPr:
                 return 20, red
             if phase == "green":
                 return 20, next(greens)
-            if phase == "regress":
-                return 0, _suite_tail([], mode="regress")
             return 0, f"{phase}-output"
         monkeypatch.setattr(vd, "run_phase", fake)
         monkeypatch.setattr(vd, "fetch_patch", lambda pr, head: Path("/tmp/fake.patch"))
-        monkeypatch.setattr(vd, "write_exclude_file",
-                            lambda base, baseline: Path("/tmp/fake-exclude.json"))
         monkeypatch.setattr(vd, "test_only_patch",
                             lambda head, patch: Path("/tmp/fake-test.patch"))
         return calls
 
-    def test_a_contained_dirty_green_confirms_and_regresses(self, tmp_path, diffs, monkeypatch):
+    def test_a_contained_dirty_green_confirms(self, tmp_path, diffs, monkeypatch):
         # #3718/#3368: green fails only on a test that also failed red — the
-        # run proceeds to the confirm and regress legs, with the parsed facts
-        # on the record.
+        # run proceeds to the confirm, with the parsed facts on the record.
         s = _pinned(tmp_path)
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._blind(s)
         contained = _vitest_tail(["a.test.ts > s > contam"])
         calls = self._dirty_phases(monkeypatch, [contained, contained])
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
-        assert calls == ["apply-check", "red", "green", "red", "green", "regress"]
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
+        assert calls == ["apply-check", "red", "green", "red", "green"]
         rg = ev["red_green"]
         assert rg["red_failing"] == ["a.test.ts > s > target", "a.test.ts > s > contam"]
         assert rg["green_failing"] == ["a.test.ts > s > contam"]
         assert rg["green_failing_confirm"] == ["a.test.ts > s > contam"]
         assert rg["failing_in_diff"] == []
-        assert ev["regress"]["ran"] is True
 
     def test_a_load_error_in_both_legs_is_recorded_and_holds(
             self, tmp_path, diffs, monkeypatch):
@@ -1534,26 +1421,25 @@ class TestVerifyPr:
                     "Error: Failed to resolve entry for package \"@acme/sdk\".\n"
                     "      Tests  no tests\n")
         calls = self._dirty_phases(monkeypatch, [unloaded], red_tail=unloaded)
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
         assert calls == ["apply-check", "red", "green"]
         rg = ev["red_green"]
         assert rg["red_load_error"] == rg["green_load_error"] == (
             'Error: Failed to resolve entry for package "@acme/sdk".')
-        assert gates.verify_run_errored(ev["blind_adequacy"], rg, regress=ev["regress"]) is True
+        assert gates.verify_run_errored(ev["blind_adequacy"], rg) is True
 
     def test_an_uncontained_dirty_green_stops_after_the_first_run(
             self, tmp_path, diffs, monkeypatch):
-        # The green failure is not among red's — no confirm, no regress, and
+        # The green failure is not among red's — no confirm, no lanes, and
         # the parsed facts stay on the record as evidence.
         s = _pinned(tmp_path)
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._blind(s)
         calls = self._dirty_phases(
             monkeypatch, [_vitest_tail(["a.test.ts > s > brand-new-failure"])])
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
         assert calls == ["apply-check", "red", "green"]
         assert ev["red_green"]["green_failing"] == ["a.test.ts > s > brand-new-failure"]
-        assert ev["regress"] == {"ran": False, "skipped_reason": "red-green-not-clean"}
 
     def test_a_diff_named_contaminant_stops_after_the_first_run(
             self, tmp_path, diffs, monkeypatch):
@@ -1568,29 +1454,28 @@ class TestVerifyPr:
             "+  it(\"contam\", async () => {\n")
         self._blind(s)
         calls = self._dirty_phases(monkeypatch, [_vitest_tail(["a.test.ts > s > contam"])])
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
         assert calls == ["apply-check", "red", "green"]
         assert ev["red_green"]["failing_in_diff"] == ["a.test.ts > s > contam"]
 
-    def test_a_confirm_green_outside_the_red_set_skips_regress(
+    def test_a_confirm_green_outside_the_red_set_stops_after_the_confirm(
             self, tmp_path, diffs, monkeypatch):
         # First green contained, confirm green fails on a brand-new test — the
-        # runs disagree, so the regress leg never runs (gates escalate).
+        # runs disagree, so the lanes never run (gates escalate).
         s = _pinned(tmp_path)
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._blind(s)
         calls = self._dirty_phases(monkeypatch, [
             _vitest_tail(["a.test.ts > s > contam"]),
             _vitest_tail(["a.test.ts > s > brand-new-failure"])])
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
         assert calls == ["apply-check", "red", "green", "red", "green"]
         assert ev["red_green"]["green_failing_confirm"] == [
             "a.test.ts > s > brand-new-failure"]
-        assert ev["regress"]["ran"] is False
 
-    def test_a_flaky_red_green_confirms_and_skips_regress(self, tmp_path, diffs, monkeypatch):
+    def test_a_flaky_red_green_confirms_and_stops(self, tmp_path, diffs, monkeypatch):
         # First red->green clean, but the confirm red passes (flaky) — the
-        # confirm exits are recorded, regress does not run (gates escalate).
+        # confirm exits are recorded, the lanes do not run (gates escalate).
         s = _pinned(tmp_path)
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._blind(s)
@@ -1607,32 +1492,17 @@ class TestVerifyPr:
         monkeypatch.setattr(vd, "fetch_patch", lambda pr, head: Path("/tmp/fake.patch"))
         monkeypatch.setattr(vd, "test_only_patch",
                             lambda head, patch: Path("/tmp/fake-test.patch"))
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
-        assert calls == ["apply-check", "red", "green", "red", "green"]  # no regress
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
+        assert calls == ["apply-check", "red", "green", "red", "green"]
         assert ev["red_green"]["red_exit"] == 20
         assert ev["red_green"]["red_exit_confirm"] == 0
-        assert ev["regress"]["ran"] is False
-
-    def test_regress_alone_receives_the_written_exclude_file(
-            self, tmp_path, diffs, monkeypatch):
-        # write_exclude_file's return value is wired only to the regress
-        # phase; the earlier phases run against no exclusion set.
-        s = _pinned(tmp_path)
-        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
-        self._blind(s)
-        self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
-        vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
-        assert self.exclude_files["regress"] == Path("/tmp/fake-exclude.json")
-        assert self.exclude_files["apply-check"] is None
-        assert self.exclude_files["red"] is None
-        assert self.exclude_files["green"] is None
 
     def test_patch_conflict_short_circuits_before_any_test_runs(self, tmp_path, diffs, monkeypatch):
         s = _pinned(tmp_path)
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._blind(s)
         calls = self._phases(monkeypatch, **{"apply-check": 30})
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
         assert calls == ["apply-check"]
         assert ev["red_green"]["apply_exit"] == 30
         assert ev["red_green"]["red_exit"] is None
@@ -1644,7 +1514,7 @@ class TestVerifyPr:
         self._blind(s)
         self._phases(monkeypatch, **{"apply-check": 10})
         with pytest.raises(vd.ProbeFailure, match="isolation"):
-            vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+            vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
 
     def test_probe_failure_on_a_later_phase_also_aborts(self, tmp_path, diffs, monkeypatch):
         # The raise lives in one shared phase() helper, but each call site
@@ -1656,7 +1526,7 @@ class TestVerifyPr:
         self._phases(monkeypatch, **{"apply-check": 0, "red": 20,
                                      "green": gates.SENTINEL_PROBE_FAIL})
         with pytest.raises(vd.ProbeFailure, match="isolation"):
-            vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+            vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
 
     def test_runs_the_independent_repro_when_blind_supplies_one(self, tmp_path, diffs, monkeypatch):
         s = _pinned(tmp_path)
@@ -1664,7 +1534,7 @@ class TestVerifyPr:
         self._blind(s, repro_command="node -e 'require(\"./x\")'")
         calls = self._phases(monkeypatch, **{"apply-check": 0, "repro": 20,
                                              "red": 20, "green": 0})
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
         assert "repro" in calls
         assert ev["independent_repro"] == {"ran": True, "exit_code": 20,
                                            "from_linked_issue": False,
@@ -1682,7 +1552,7 @@ class TestVerifyPr:
             f"pnpm -s vitest run {vd.SCRATCH}/base/abcdef123456/src/server "
             "--testTimeout=30000"))
         calls = self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
         assert "repro" not in calls
         assert ev["independent_repro"]["ran"] is False
         assert ev["independent_repro"]["exit_code"] is None
@@ -1697,7 +1567,7 @@ class TestVerifyPr:
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._blind(s, repro_command='npx vitest run src/a.test.ts -t "anything"')
         calls = self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
         assert "repro" not in calls
         assert ev["independent_repro"]["ran"] is False
         assert ev["independent_repro"]["exit_code"] is None
@@ -1708,7 +1578,7 @@ class TestVerifyPr:
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._blind(s)
         calls = self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
         assert "repro" not in calls
         assert ev["independent_repro"]["ran"] is False
 
@@ -1719,7 +1589,7 @@ class TestVerifyPr:
         _pr(s, 1); _diff(diffs, "h1", "src/impl.ts")   # no test file
         self._blind(s)
         calls = self._phases(monkeypatch)
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
         assert calls == []
         assert ev["red_green"]["red_exit"] is None
 
@@ -1731,8 +1601,8 @@ class TestVerifyPr:
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._blind(s)
         calls = self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
-        vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
-        assert calls == ["apply-check", "red", "green", "red", "green", "regress"]
+        vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
+        assert calls == ["apply-check", "red", "green", "red", "green"]
         assert self.patches["apply-check"] == Path("/tmp/fake.patch")
         assert self.patches["green"] == Path("/tmp/fake.patch")
         assert self.patches["red"] == Path("/tmp/fake-test.patch")
@@ -1747,8 +1617,8 @@ class TestVerifyPr:
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._blind(s, from_linked_issue=True)
         calls = self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
-        vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
-        assert calls == ["apply-check", "red", "green", "red", "green", "regress"]
+        vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
+        assert calls == ["apply-check", "red", "green", "red", "green"]
         assert self.patches["red"] == Path("/tmp/fake-test.patch")  # test-only patch applied
 
     def test_no_test_hunks_in_the_diff_short_circuits_before_red(
@@ -1761,86 +1631,19 @@ class TestVerifyPr:
         self._blind(s)
         calls = self._phases(monkeypatch, **{"apply-check": 0})
         monkeypatch.setattr(vd, "test_only_patch", lambda head, patch: None)
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
         assert calls == ["apply-check"]
         assert ev["red_green"]["red_exit"] is None
         assert ev["red_green"]["green_exit"] is None
         assert ev["red_green"]["no_test_hunks"] is True
 
-    def test_no_suite_config_skips_regress_after_a_clean_confirm(
-            self, tmp_path, diffs, monkeypatch):
-        # suite_config None is the pin's declaration that the repository has no
-        # full-suite contract: the clean confirmed red->green records the leg
-        # as deliberately skipped rather than booting a suite that cannot run.
-        s = _pinned(tmp_path)
-        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
-        self._blind(s)
-        calls = self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=None)
-        assert calls == ["apply-check", "red", "green", "red", "green"]
-        assert ev["regress"] == {"ran": False, "skipped_reason": "no-suite-config"}
-
-    def test_clean_red_green_runs_regress_once_when_it_passes(self, tmp_path, diffs, monkeypatch):
-        s = _pinned(tmp_path)
-        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
-        self._blind(s)
-        calls = self._phases(monkeypatch, regress_exits=(0,),
-                             **{"apply-check": 0, "red": 20, "green": 0})
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, ["base-fail.test.ts"], suite_config=SUITE_CFG)
-        assert calls.count("regress") == 1
-        assert ev["regress"] == {"ran": True, "exit_first": 0, "exit_confirm": None,
-                                 "confirmed": False, "flake": False,
-                                 "excluded_count": 1, "new_failures": []}
-
-    def test_a_failing_regress_is_confirmed_by_one_fresh_run(self, tmp_path, diffs, monkeypatch):
-        s = _pinned(tmp_path)
-        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
-        self._blind(s)
-        calls = self._phases(monkeypatch, regress_exits=(20, 20),
-                             **{"apply-check": 0, "red": 20, "green": 0})
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
-        assert calls.count("regress") == 2
-        assert ev["regress"]["confirmed"] is True
-        assert ev["regress"]["flake"] is False
-        assert ev["regress"]["new_failures"] == ["src/new.test.ts"]
-
-    def test_a_20_then_0_is_a_flake_not_a_regression(self, tmp_path, diffs, monkeypatch):
-        s = _pinned(tmp_path)
-        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
-        self._blind(s)
-        self._phases(monkeypatch, regress_exits=(20, 0),
-                     **{"apply-check": 0, "red": 20, "green": 0})
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
-        assert ev["regress"]["confirmed"] is False
-        assert ev["regress"]["flake"] is True
-        # the first run's names stay recorded as advisory evidence of the flake
-        assert ev["regress"]["new_failures"] == ["src/new.test.ts"]
-
-    def test_regress_is_skipped_when_red_green_is_not_clean(self, tmp_path, diffs, monkeypatch):
+    def test_no_confirm_runs_when_red_green_is_not_clean(self, tmp_path, diffs, monkeypatch):
         s = _pinned(tmp_path)
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._blind(s)
         calls = self._phases(monkeypatch, **{"apply-check": 0, "red": 0, "green": 0})
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
-        assert "regress" not in calls
-        assert ev["regress"] == {"ran": False, "skipped_reason": "red-green-not-clean"}
-
-    def test_regress_applies_the_full_patch(self, tmp_path, diffs, monkeypatch):
-        s = _pinned(tmp_path)
-        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
-        self._blind(s)
-        self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
-        vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
-        assert self.patches["regress"] == Path("/tmp/fake.patch")
-
-    def test_a_probe_failure_in_regress_aborts_the_batch(self, tmp_path, diffs, monkeypatch):
-        s = _pinned(tmp_path)
-        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
-        self._blind(s)
-        self._phases(monkeypatch, regress_exits=(gates.SENTINEL_PROBE_FAIL,),
-                     **{"apply-check": 0, "red": 20, "green": 0})
-        with pytest.raises(vd.ProbeFailure, match="isolation"):
-            vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0, [], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
+        assert calls == ["apply-check", "red", "green"]
 
 
 class TestTestOnlyPatch:
@@ -1895,33 +1698,6 @@ def _blind_committed(s, n=1):
         {"pr": n, "head_sha": "h1", "has_test": True, "faithful": True,
          "test_cmd": "pnpm -s test", "expected_red_signature": "x",
          "reasoning": "r"})])
-
-
-def _clean_red_green() -> dict:
-    return {"apply_exit": 0, "red_exit": 20, "green_exit": 0,
-            "red_output_tail": "", "green_output_tail": "",
-            "red_exit_confirm": 20, "green_exit_confirm": 0}
-
-
-class TestRegressFailClosed:
-    def test_commit_writes_regressed_with_the_advisory_finding(self, tmp_path, diffs):
-        s = _pinned(tmp_path)
-        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
-        _blind_committed(s)
-        rec = s.load_pr(1)
-        signals = dict(rec.verify_signals)
-        signals["red_green"] = _clean_red_green()
-        signals["regress"] = {"ran": True, "exit_first": 20, "exit_confirm": 20,
-                              "confirmed": True, "flake": False,
-                              "excluded_count": 2, "new_failures": ["src/x.test.ts"]}
-        s.edit_pr(1).record_verify(None, signals, base_sha="base1", head_sha="h1")
-        ok, held, errs = vd.commit_outcomes(s, [JudgeItem.from_dict(
-            {"pr": 1, "red_reason_match": {"matches": True, "confidence": "high"}})])
-        assert (ok, held, errs) == (1, [], [])
-        rec = s.load_pr(1)
-        assert rec.verify_outcome == "regressed"
-        assert any(f.get("signal") == "regress" and f.get("tests") == ["src/x.test.ts"]
-                   for f in rec.verify_findings)
 
 
 class TestPinnedTier:
@@ -2074,11 +1850,6 @@ class TestCommitOutcomes:
         else:
             signals["independent_repro"] = {"ran": False, "exit_code": None,
                                             "from_linked_issue": False, "output_tail": ""}
-        # A completed, clean regress leg — the fail-closed rule only cares that a
-        # clean red->green carries one; these tests are exercising other outcomes.
-        signals["regress"] = {"ran": True, "exit_first": 0, "exit_confirm": None,
-                              "confirmed": False, "flake": False, "excluded_count": 0,
-                              "new_failures": []}
         store.edit_pr(n).record_verify(None, signals, base_sha="base1", head_sha="h1")
 
     def _judge(self, n=1, matches=True, confidence="high") -> JudgeItem:
@@ -2421,9 +2192,6 @@ class TestEscalateSurvivesReanalysis:
         signals["red_green"] = {"apply_exit": 0, "red_exit": 20, "green_exit": 0,
                                 "red_output_tail": "", "green_output_tail": "",
                                 "red_exit_confirm": 20, "green_exit_confirm": 0}
-        signals["regress"] = {"ran": True, "exit_first": 0, "exit_confirm": None,
-                              "confirmed": False, "flake": False, "excluded_count": 0,
-                              "new_failures": []}
         store.edit_pr(n).record_verify(None, signals, base_sha="base1", head_sha="h1")
         vd.commit_outcomes(store, [JudgeItem.from_dict({
             "pr": n, "red_reason_match": {"matches": True, "confidence": "high",
@@ -2831,9 +2599,9 @@ class TestVerifyPrE2e:
         return legs
 
     def _run(self, s, **kw):
-        return vd.verify_pr(s.load_pr(1), "img:t1", "base1", 1, [], suite_config=SUITE_CFG, **kw)
+        return vd.verify_pr(s.load_pr(1), "img:t1", "base1", 1, **kw)
 
-    def test_runs_after_regress_on_an_app_touching_pr(self, tmp_path, diffs, monkeypatch):
+    def test_runs_after_the_lanes_on_an_app_touching_pr(self, tmp_path, diffs, monkeypatch):
         s = _pinned(tmp_path)
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts", "ui/src/App.tsx")
         self._blind(s)
@@ -2843,16 +2611,6 @@ class TestVerifyPrE2e:
         assert ev["e2e"] == {"ran": True, "regression_count": 0}
         assert legs[0]["patch"] == Path("/tmp/e2e.patch") and legs[0]["baseline"] == _BASELINE
         assert legs[0]["changed_paths"] == ["src/a.test.ts", "ui/src/App.tsx"]
-
-    def test_runs_without_a_suite_contract_too(self, tmp_path, diffs, monkeypatch):
-        s = _pinned(tmp_path)
-        _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts", "ui/src/App.tsx")
-        self._blind(s)
-        self._phases(monkeypatch, **{"apply-check": 0, "red": 20, "green": 0})
-        legs = self._e2e(monkeypatch)
-        ev = vd.verify_pr(s.load_pr(1), "img:t1", "base1", 1, [], suite_config=None,
-                          e2e_baseline=_BASELINE)
-        assert ev["regress"]["skipped_reason"] == "no-suite-config" and len(legs) == 1
 
     @pytest.mark.parametrize("paths, baseline, profile_e2e, reason", [
         (("src/a.test.ts", "docs/x.md"), _BASELINE, True, "not-app-touching"),
@@ -2901,9 +2659,7 @@ class TestVerifyPrAuthoredLane:
         calls: list[tuple[str, str, str | None]] = []
 
         def fake_run_phase(name, image, *, tier, base_sha, head_sha, test_cmd,
-                           suite_config=None,
-                           patch=None, exclude_file=None, timeout=0, pristine=False,
-                           tail_bytes=0):
+                           patch=None, pristine=False):
             calls.append((name, test_cmd, str(patch) if patch else None))
             if name == "apply-check":
                 return 0, ""
@@ -2911,8 +2667,6 @@ class TestVerifyPrAuthoredLane:
                 return 20, "authored red tail"
             if name == "green":
                 return 0, "authored green tail"
-            if name == "regress":
-                return 0, ""
             raise AssertionError(name)
 
         monkeypatch.setattr(vd, "run_phase", fake_run_phase)
@@ -2923,7 +2677,7 @@ class TestVerifyPrAuthoredLane:
 
         s = _pinned(tmp_path)
         rec = self._rec_with_authored(s)
-        ev = vd.verify_pr(rec, "img", "basesha", 1, baseline=[], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(rec, "img", "basesha", 1)
 
         lane = ev["authored_test"]
         assert (lane["red_exit"], lane["green_exit"]) == (20, 0)
@@ -2937,8 +2691,6 @@ class TestVerifyPrAuthoredLane:
         assert len(red_calls) == 2 and len(green_calls) == 2
         assert all("authored" in c[2] for c in red_calls)
         assert all("combined" in c[2] for c in green_calls)
-        # regress ran (clean confirmed lane) with the PR patch, suite command
-        assert [c for c in calls if c[0] == "regress"]
 
     def test_a_dirty_authored_green_gets_no_containment(self, tmp_path, monkeypatch):
         # The authored file is new, so it has no pre-existing tests to be
@@ -2947,9 +2699,7 @@ class TestVerifyPrAuthoredLane:
         calls: list[str] = []
 
         def fake_run_phase(name, image, *, tier, base_sha, head_sha, test_cmd,
-                           suite_config=None,
-                           patch=None, exclude_file=None, timeout=0, pristine=False,
-                           tail_bytes=0):
+                           patch=None, pristine=False):
             calls.append(name)
             if name == "apply-check":
                 return 0, ""
@@ -2963,7 +2713,7 @@ class TestVerifyPrAuthoredLane:
 
         s = _pinned(tmp_path)
         rec = self._rec_with_authored(s)
-        ev = vd.verify_pr(rec, "img", "basesha", 1, baseline=[], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(rec, "img", "basesha", 1)
         lane = ev["authored_test"]
         assert (lane["red_exit"], lane["green_exit"]) == (20, 20)
         assert "red_failing" not in lane and "green_failing" not in lane
@@ -2979,7 +2729,7 @@ class TestVerifyPrAuthoredLane:
                                       "test_cmd": None, "requires_live_agent": False}}
         s.edit_pr(1).record_verify(None, signals, base_sha="basesha", head_sha="h1")
         rec = s.load_pr(1)
-        ev = vd.verify_pr(rec, "img", "basesha", 1, baseline=[], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(rec, "img", "basesha", 1)
         assert ev["red_green"]["apply_exit"] is None
         assert "authored_test" not in ev
 
@@ -2991,9 +2741,7 @@ class TestVerifyPrAuthoredLane:
         calls: list[tuple[str, str, str | None]] = []
 
         def fake_run_phase(name, image, *, tier, base_sha, head_sha, test_cmd,
-                           suite_config=None,
-                           patch=None, exclude_file=None, timeout=0, pristine=False,
-                           tail_bytes=0):
+                           patch=None, pristine=False):
             calls.append((name, test_cmd, str(patch) if patch else None))
             if name == "apply-check":
                 return 0, ""
@@ -3001,8 +2749,6 @@ class TestVerifyPrAuthoredLane:
                 return 20, "test-lane red tail"
             if name == "green":
                 return 0, "test-lane green tail"
-            if name == "regress":
-                return 0, ""
             raise AssertionError(name)
 
         monkeypatch.setattr(vd, "run_phase", fake_run_phase)
@@ -3028,7 +2774,7 @@ class TestVerifyPrAuthoredLane:
         }
         s.edit_pr(1).record_verify(None, signals, base_sha="basesha", head_sha="h1")
         rec = s.load_pr(1)
-        ev = vd.verify_pr(rec, "img", "basesha", 1, baseline=[], suite_config=SUITE_CFG)
+        ev = vd.verify_pr(rec, "img", "basesha", 1)
 
         red_calls = [c for c in calls if c[0] == "red"]
         assert red_calls and all("authored" not in (c[2] or "") for c in red_calls)
@@ -3041,8 +2787,7 @@ class TestRunLanes:
     def _phase_script(self, results):
         calls = []
 
-        def phase(name, *, test_cmd, patch=None, exclude_file=None,
-                  suite_config=None, timeout=0):
+        def phase(name, *, test_cmd, patch=None):
             calls.append((name, test_cmd))
             return results[name]
         return phase, calls

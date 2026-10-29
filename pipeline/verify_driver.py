@@ -9,7 +9,7 @@ leaf functions and pairs them with the headless blind/judge agents;
 gates.verify_outcome computes the outcome from the signals — never an agent.
 
 CLI:
-  prepare-base [--base-sha S] [--tier N]   pin main+tier, clone+scrub, build the base image, capture its baseline
+  prepare-base [--base-sha S] [--tier N]   pin main+tier, clone+scrub, build the base image, capture its e2e baseline
   gc [--dry-run]                           reclaim base images and clones outside the retention rule
 """
 from __future__ import annotations
@@ -657,10 +657,8 @@ def _build_base_image(sha: str, tier: int, ctx: Path, tag: str) -> None:
 
 def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) -> str:
     """Clone and build the base image for the resolved base commit
-    (build_base_image), capture the pinned base's own failing-test set by
-    running the baseline phase against it and its e2e baseline
-    (capture_e2e_baseline), and save the pin. Returns the image
-    tag.
+    (build_base_image), capture its e2e baseline (capture_e2e_baseline), and
+    save the pin. Returns the image tag.
 
     Reclaims superseded base artifacts on both sides of the build. The first
     sweep runs while the outgoing pin is still the pin, so it frees the disk the
@@ -671,41 +669,9 @@ def prepare_base(store: Store, *, base_sha: str | None = None, tier: int = 0) ->
     collect_garbage(local_pin(store).get("base_sha"))
     tag = build_base_image(sha, tier=tier)
 
-    suite = profile.active().verify.suite
-    if suite is None:
-        # No full-suite contract in the profile: there is no baseline to
-        # capture, and the pin records that so every verify run skips the
-        # regress leg deliberately rather than failing on a missing suite.
-        failed: list[str] = []
-    else:
-        rc, tail = run_phase("baseline", tag, tier=tier, base_sha=sha, test_cmd="true",
-                             suite_config=write_suite_config(),
-                             timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES)
-        trailer = parse_suite_trailer(tail)
-        trailer_failed = (trailer or {}).get("failed")
-        if (rc != gates.SENTINEL_PASS or trailer is None
-                or trailer.get("mode") != "baseline"
-                or not isinstance(trailer_failed, list)
-                or not all(isinstance(f, str) for f in trailer_failed)):
-            raise RuntimeError(
-                f"baseline capture failed (exit {rc}) — refusing to pin: a pin without "
-                f"a captured baseline leaves the regress phase no exclusion set, so the "
-                f"regression gate cannot tell a pre-existing failure from a regression")
-        if why := implausible_baseline(trailer):
-            raise RuntimeError(f"{why} — refusing to pin an exclusion set that wide")
-        failed = [str(f) for f in trailer_failed]
-
-        anomalies = trailer.get("anomalies")
-        if isinstance(anomalies, list) and anomalies:
-            print(f"baseline anomalies (nonzero vitest exit with no failing test): {anomalies}",
-                  file=sys.stderr)
-
     e2e_baseline, e2e_uncovered, e2e_skipped = capture_e2e_baseline(tag, tier=tier, sha=sha)
     store.save_verify_base({"host": settings.worker_id(), "base_sha": sha,
                             "tier": tier, "pinned_at": _now(),
-                            "baseline_failing": failed,
-                            "baseline_captured_at": _now(),
-                            "suite": suite is not None,
                             "arch": platform.machine(),
                             "e2e_baseline": e2e_baseline,
                             "e2e_uncovered": e2e_uncovered,
@@ -784,27 +750,6 @@ def pinned_tier(store: Store) -> int:
     return _pin(store)[1]
 
 
-def pinned_suite(store: Store) -> bool:
-    """Whether the pinned base carries a full-suite baseline. A pin stamped
-    `suite: false` was prepared for a repository with no verify.suite contract,
-    so the regress leg is deliberately skipped; any other pin captured a
-    baseline with the suite it names."""
-    return local_pin(store).get("suite") is not False
-
-
-def pinned_baseline(store: Store) -> list[str]:
-    """The pinned base's own failing-test set — the regress phase's exclusion
-    list. Raises when the pin carries none: None (never captured) is not []
-    (the suite passed clean), and the regress phase needs the exclusion set to
-    tell a pre-existing failure from a regression."""
-    baseline = local_pin(store).get("baseline_failing")
-    if not isinstance(baseline, list):
-        raise RuntimeError(
-            "this machine's pinned base has no captured baseline — run "
-            "`verify_driver.py prepare-base` here first")
-    return [str(f) for f in baseline]
-
-
 def write_suite_config() -> Path:
     """The active profile's full-suite contract (verify.suite) as a JSON file
     under SCRATCH, mounted read-only into the baseline/regress containers.
@@ -816,9 +761,7 @@ def write_suite_config() -> Path:
     if suite is None:
         raise RuntimeError(
             "the active profile has no verify.suite section — the full-suite "
-            "lane needs its repository contract (wrapper, server_project); add "
-            "it to the profile or re-run prepare-base so the pin records that "
-            "this repository has no suite")
+            "lane needs its repository contract (wrapper, server_project)")
     text = json.dumps({
         "wrapper": suite.wrapper, "server_project": suite.server_project,
         "preflight": suite.preflight, "home_env": suite.home_env,
@@ -912,16 +855,6 @@ def pinned_e2e_baseline(store: Store) -> dict[str, list[str]] | None:
         return None
     return {str(f): [str(t) for t in titles] for f, titles in raw.items()
             if isinstance(titles, list) and titles}
-
-
-def write_exclude_file(base_sha: str, baseline: list[str]) -> Path:
-    """The pin's exclusion set as a JSON file under SCRATCH, keyed by the same
-    sha12 as the image tag, mounted read-only into the regress container."""
-    out = SCRATCH / "exclude"
-    out.mkdir(parents=True, exist_ok=True)
-    path = out / f"{base_sha[:12]}.json"
-    storekit.atomic_write_text(path, json.dumps(sorted(baseline)))
-    return path
 
 
 # Longest issue-body excerpt carried per linked issue. The body is the claimed
@@ -1243,7 +1176,7 @@ def _run_lanes(ev: wire.VerifyEvidence, phase: Callable[..., tuple[int, str]],
                patch: Path, *, image: str = "") -> str | None:
     """Run every configured merge-gate lane over the patched tree, recording
     each under ev["lanes"]. Returns the first failing lane's name — later
-    lanes record a skip and the caller skips the regress leg — or None when
+    lanes record a skip and the caller skips the e2e leg — or None when
     every lane passed (or none are configured). The patch is the PR's own
     diff: an agent-authored test file is never part of the tree a lane
     measures. With `image` given, a lane the PR fails is re-run over the
@@ -1275,22 +1208,6 @@ def _run_lanes(ev: wire.VerifyEvidence, phase: Callable[..., tuple[int, str]],
                     entry["base_fails"] = why
         lanes[name] = entry
     return failed
-
-
-# Advisory names are capped: the store record must not grow with how many
-# tests a hostile patch can make fail.
-_ADVISORY_FAILURES_MAX = 50
-
-
-def _advisory_failures(tail: str) -> list[str]:
-    """Failing test files named by a regress run's trailer. ADVISORY: the
-    trailer came from a container that ran PR code, so these names inform the
-    judge and the app and never touch a verdict — the verdict is the exit
-    code alone. Unparsable output yields [] and changes nothing."""
-    failed = (parse_suite_trailer(tail) or {}).get("failed")
-    if not isinstance(failed, list):
-        return []
-    return [str(f) for f in failed][:_ADVISORY_FAILURES_MAX]
 
 
 # The size of each incremental read from the merged stdout+stderr pipe.
@@ -2082,8 +1999,7 @@ def run_canaries(image: str, base: str, tier: int) -> list[str]:
     return out
 
 
-def verify_pr(rec: Pr, image: str, base: str, tier: int,
-              baseline: list[str], *, suite_config: Path | None,
+def verify_pr(rec: Pr, image: str, base: str, tier: int, *,
               e2e_baseline: dict[str, list[str]] | None = None
               ) -> wire.VerifyEvidence | None:
     """Run the sandbox phases for one PR and return the evidence the judge reads.
@@ -2096,22 +2012,17 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
     `green_failing_confirm`) and the diff-membership fact (`failing_in_diff`);
     gates.green_accepted owns what those facts permit.
 
-    `baseline` is the pin's captured failing set — the regress phase's
-    exclusion list. `suite_config` is the full-suite contract file; None means
-    the pin declared no suite, so an accepted red->green records the regress
-    leg as deliberately skipped (`no-suite-config`) instead of running it.
-    With a contract, an accepted red->green always runs the regress phase, and
-    a first failing run is confirmed by exactly one fresh container:
-    `confirmed` means both exited 20.
+    The repository's full suite is not run: upstream CI runs it on every PR,
+    and the merge gate requires CI green at the current head.
 
     After a clean confirm, every configured merge-gate lane
     (gates.configured_lanes) runs over the PR-patched tree and records under
-    `lanes`; a failing lane skips the regress leg (`lane-<name>-failed`), a
+    `lanes`; a failing lane skips the e2e leg (`lane-<name>-failed`), a
     deliberate skip the outcome reads as the lane's own verdict.
 
-    After the regress leg, an app-touching PR (gates.e2e_relevant) runs the
-    pin's `e2e_baseline` tests over its build (e2e_leg) and records `e2e`; a
-    failing lane or a pin with no e2e baseline records why it did not.
+    After the lanes, an app-touching PR (gates.e2e_relevant) runs the pin's
+    `e2e_baseline` tests over its build (e2e_leg) and records `e2e`; a pin with
+    no e2e baseline records why it did not.
 
     Raises ProbeFailure on a probe failure: isolation is unproven, so no PR code
     runs.
@@ -2134,7 +2045,6 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
         "independent_repro": {"ran": False, "exit_code": None,
                               "from_linked_issue": bool(blind.get("from_linked_issue")),
                               "output_tail": ""},
-        "regress": {"ran": False, "skipped_reason": "red-green-not-clean"},
         "e2e": {"ran": False, "skipped_reason": "red-green-not-clean"},
     }
     red_green = ev["red_green"]
@@ -2151,18 +2061,12 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
         progress.say(f"  [{progress.duration(time.monotonic() - clock)}] {what}…")
 
     def phase(name: str, *, test_cmd: str, patch: Path | None = None,
-              exclude_file: Path | None = None,
-              suite_config: Path | None = None,
-              timeout: int = PHASE_TIMEOUT_SECONDS,
               pristine: bool = False,
-              tail_bytes: int = OUTPUT_TAIL_BYTES,
               what: str | None = None) -> tuple[int, str]:
         note(what or (f"{name} lane again over the pristine base: does the base fail it too"
                       if pristine else f"{name} lane over the patched tree"))
         rc, tail = run_phase(name, image, tier=tier, base_sha=base, head_sha=head,
-                             test_cmd=test_cmd, patch=patch,
-                             exclude_file=exclude_file, suite_config=suite_config,
-                             timeout=timeout, pristine=pristine, tail_bytes=tail_bytes)
+                             test_cmd=test_cmd, patch=patch, pristine=pristine)
         if rc == gates.SENTINEL_PROBE_FAIL:
             raise ProbeFailure(
                 f"sandbox isolation could not be proven (PR #{rec.n}, phase {name}) — "
@@ -2259,10 +2163,10 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
                 if record is red_green
                 else record.get("green_exit") == gates.SENTINEL_PASS)
     if not (red_rc == gates.SENTINEL_TEST_FAIL and accepted):
-        return ev   # not an accepted red->green — no confirm, no regress
+        return ev   # not an accepted red->green — no confirm, no lanes
 
     # Confirm the accepted red->green is not a flake: re-run both in fresh
-    # containers. The regress leg runs only once the confirm agrees.
+    # containers. The lanes run only once the confirm agrees.
     red2_rc, _ = phase("red", test_cmd=test_cmd, patch=red_patch,
                        what="confirm: red again in a fresh container")
     green2_rc, green2_tail = phase("green", patch=green_patch, test_cmd=test_cmd,
@@ -2285,39 +2189,8 @@ def verify_pr(rec: Pr, image: str, base: str, tier: int,
     if red2_rc == gates.SENTINEL_TEST_FAIL and confirm_accepted:
         lane_fail = _run_lanes(ev, phase, patch, image=image)
         if lane_fail is not None:
-            ev["regress"] = {"ran": False,
-                             "skipped_reason": f"lane-{lane_fail}-failed"}
             ev["e2e"] = {"ran": False, "skipped_reason": f"lane-{lane_fail}-failed"}
             return ev
-        if suite_config is None:
-            ev["regress"] = {"ran": False, "skipped_reason": "no-suite-config"}
-        else:
-            excl = write_exclude_file(base, baseline)
-            r1, t1 = phase("regress", patch=patch, test_cmd="true",
-                           exclude_file=excl, suite_config=suite_config,
-                           timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES,
-                           what="regress: the full suite over the patched tree"
-                                + (f", less the base's {len(baseline)} known failure(s)"
-                                   if baseline else "")
-                                + f" (up to {progress.duration(SUITE_TIMEOUT_SECONDS)})")
-            regress: wire.VerifyRegressSignal = {
-                "ran": True, "exit_first": r1, "exit_confirm": None,
-                "confirmed": False, "flake": False,
-                "excluded_count": len(baseline), "new_failures": []}
-            if r1 == gates.SENTINEL_TEST_FAIL:
-                regress["new_failures"] = _advisory_failures(t1)
-                r2, t2 = phase("regress", patch=patch, test_cmd="true",
-                               exclude_file=excl, suite_config=suite_config,
-                               timeout=SUITE_TIMEOUT_SECONDS, tail_bytes=SUITE_TAIL_BYTES,
-                               what=f"regress: confirming the suite failure in a fresh "
-                                    f"container (up to {progress.duration(SUITE_TIMEOUT_SECONDS)})")
-                regress["exit_confirm"] = r2
-                regress["confirmed"] = r2 == gates.SENTINEL_TEST_FAIL
-                regress["flake"] = r2 == gates.SENTINEL_PASS
-                if regress["confirmed"]:
-                    regress["new_failures"] = sorted(
-                        set(regress["new_failures"]) | set(_advisory_failures(t2)))
-            ev["regress"] = regress
         ev["e2e"] = _e2e_for(rec, image, tier, base, patch, e2e_baseline, note)
     return ev
 
@@ -2461,17 +2334,16 @@ def commit_outcomes(store: Store, items: list[JudgeItem]) -> tuple[int, list[int
                 signals["red_reason_match"] = it.red_reason_match
             if it.repro_reason_match:
                 signals["repro_reason_match"] = it.repro_reason_match
-            regress = signals.get("regress")
             authored = signals.get("authored_test")
             lanes = signals.get("lanes")
             e2e = signals.get("e2e")
             judgment: wire.VerifyJudgment = {
                 "red_reason_match": it.red_reason_match,
                 "repro_reason_match": it.repro_reason_match}
-            outcome = gates.verify_outcome(blind, host, judgment, regress=regress,
+            outcome = gates.verify_outcome(blind, host, judgment,
                 authored=authored, lanes=lanes, e2e=e2e)
             if outcome is None:
-                if gates.verify_run_errored(blind, host, regress=regress, e2e=e2e):
+                if gates.verify_run_errored(blind, host, e2e=e2e):
                     held.append(it.pr)
                 else:
                     errs.append(f"pr {it.pr}: the judge rated no usable red-reason "
@@ -2536,20 +2408,6 @@ def commit_outcomes(store: Store, items: list[JudgeItem]) -> tuple[int, list[int
                 note = authored_attempt_note(authored, it.red_reason_match)
                 if note is not None:
                     findings.append({"signal": "authored-test", "note": note})
-            if regress and regress.get("ran"):
-                if outcome == "regressed":
-                    findings.append({
-                        "signal": "regress",
-                        "note": "tests that pass on the pinned base fail with this PR "
-                                "applied; names are advisory, read from the suite's own "
-                                "report",
-                        "tests": regress.get("new_failures", [])})
-                elif regress.get("flake"):
-                    findings.append({
-                        "signal": "regress",
-                        "note": "the full suite failed once and passed the confirming "
-                                "re-run — recorded as a flake, not a regression",
-                        "tests": regress.get("new_failures", [])})
             if gates.e2e_verdict(e2e) is not None:
                 findings.append({
                     "signal": "e2e",
@@ -2724,13 +2582,6 @@ def main(argv: list[str] | None = None) -> int:
 
     tag = prepare_base(store, base_sha=args.base_sha, tier=args.tier)
     print(f"base image ready: {tag}")
-    reg = local_pin(store)
-    if reg.get("suite") is False:
-        print("no verify.suite contract in the profile — pinned without a "
-              "baseline; the regress leg is skipped for this repository")
-    else:
-        print(f"baseline: {len(reg.get('baseline_failing') or [])} failing on the pinned base "
-              f"(excluded from every regress run)")
     return 0
 
 

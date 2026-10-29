@@ -984,12 +984,6 @@ def _judge(**over) -> dict:
         {"matches": True, "confidence": "high"}, **over)})
 
 
-def _regress(**over) -> dict:
-    return dict({"ran": True, "exit_first": 0, "exit_confirm": None,
-                 "confirmed": False, "flake": False, "excluded_count": 9,
-                 "new_failures": []}, **over)
-
-
 def _authored(**over) -> dict:
     # A validated, confirmed-clean authored-test run by default.
     return dict({"attempted": True, "can_author": True,
@@ -1005,23 +999,22 @@ class TestVerifyOutcome:
 
     def test_all_signals_agree_is_verified_fix(self):
         assert gates.verify_outcome(
-            _blind(), _host(), _judge(), regress=_regress()) == "verified-fix"
+            _blind(), _host(), _judge()) == "verified-fix"
 
     def test_live_agent_requirement_short_circuits(self):
         # Tier 2 is out of scope; nothing else is evaluated.
         assert gates.verify_outcome(
-            _blind(requires_live_agent=True, test_cmd=None), _host(), _judge(),
-            regress=None
+            _blind(requires_live_agent=True, test_cmd=None), _host(), _judge()
         ) == "unverifiable-needs-live-agent"
 
     def test_no_test_command_is_unverifiable(self):
         assert gates.verify_outcome(
-            _blind(has_test=False, test_cmd=None), _host(), _judge(), regress=None
+            _blind(has_test=False, test_cmd=None), _host(), _judge()
         ) == "unverifiable-no-test"
 
     def test_patch_conflict_is_needs_rebase(self):
         assert gates.verify_outcome(
-            _blind(), _host(apply_exit=30), _judge(), regress=None) == "needs-rebase"
+            _blind(), _host(apply_exit=30), _judge()) == "needs-rebase"
 
     def test_no_test_hunks_in_the_diff_is_unverifiable(self):
         # #551: has_test claimed a PR-authored test, but the diff carried no test
@@ -1029,45 +1022,44 @@ class TestVerifyOutcome:
         null = {"apply_exit": 0, "red_exit": None, "green_exit": None,
                 "no_test_hunks": True}
         assert gates.verify_outcome(
-            _blind(), null, _judge(), regress=None) == "unverifiable-no-test"
-        assert gates.verify_outcome(_blind(), null, None, regress=None) == "unverifiable-no-test"
+            _blind(), null, _judge()) == "unverifiable-no-test"
+        assert gates.verify_outcome(_blind(), null, None) == "unverifiable-no-test"
 
     def test_red_that_passed_on_main_is_not_verified(self):
         # The author's test does not reproduce anything on pinned main.
         assert gates.verify_outcome(
-            _blind(), _host(red_exit=0), _judge(), regress=None) == "not-verified"
+            _blind(), _host(red_exit=0), _judge()) == "not-verified"
 
     def test_green_that_failed_is_not_verified(self):
         assert gates.verify_outcome(
-            _blind(), _host(green_exit=20), _judge(), regress=None) == "not-verified"
+            _blind(), _host(green_exit=20), _judge()) == "not-verified"
 
     def test_blind_disagreement_escalates_and_agent_cannot_resolve(self):
         # THE rule: the blind verdict says the test is unfaithful, yet it goes
         # clean red->green. A judge insisting the reason matches cannot override.
         assert gates.verify_outcome(
-            _blind(faithful=False), _host(), _judge(matches=True, confidence="high"),
-            regress=_regress()
+            _blind(faithful=False), _host(), _judge(matches=True, confidence="high")
         ) == "escalate"
 
     def test_red_for_the_wrong_reason_is_not_verified(self):
         assert gates.verify_outcome(
-            _blind(), _host(), _judge(matches=False), regress=_regress()) == "not-verified"
+            _blind(), _host(), _judge(matches=False)) == "not-verified"
 
     def test_low_confidence_red_reason_escalates(self):
         assert gates.verify_outcome(
-            _blind(), _host(), _judge(confidence="low"), regress=_regress()) == "escalate"
+            _blind(), _host(), _judge(confidence="low")) == "escalate"
 
     def test_a_flaky_red_escalates(self):
         # First run clean (red 20, green 0), but the confirm red PASSED — the
         # reproduction is nondeterministic, so it is not a reliable verified-fix.
         assert gates.verify_outcome(
-            _blind(), _host(red_exit_confirm=0), _judge(), regress=_regress()
+            _blind(), _host(red_exit_confirm=0), _judge()
         ) == "escalate"
 
     def test_a_flaky_green_escalates(self):
         # First run clean, but the confirm green FAILED — nondeterministic.
         assert gates.verify_outcome(
-            _blind(), _host(green_exit_confirm=20), _judge(), regress=_regress()
+            _blind(), _host(green_exit_confirm=20), _judge()
         ) == "escalate"
 
     def test_a_clean_red_green_without_a_confirm_run_holds(self):
@@ -1075,39 +1067,39 @@ class TestVerifyOutcome:
         # (fail-closed) rather than verify unconfirmed.
         host = {"apply_exit": 0, "red_exit": 20, "green_exit": 0,
                 "red_exit_confirm": None, "green_exit_confirm": None}
-        assert gates.verify_outcome(_blind(), host, _judge(), regress=_regress()) is None
+        assert gates.verify_outcome(_blind(), host, _judge()) is None
 
     def test_a_non_sentinel_confirm_holds(self):
         # The confirm re-run died (OOM/timeout) — its exit carries no meaning, so
         # hold rather than read it as agreement or disagreement.
         assert gates.verify_outcome(
-            _blind(), _host(red_exit_confirm=137), _judge(), regress=_regress()) is None
+            _blind(), _host(red_exit_confirm=137), _judge()) is None
 
     def test_non_sentinel_exit_holds(self):
         # 137 (killed) must never read as a red. None == hold, write nothing.
         assert gates.verify_outcome(
-            _blind(), _host(red_exit=137), _judge(), regress=None) is None
+            _blind(), _host(red_exit=137), _judge()) is None
         assert gates.verify_outcome(
-            _blind(), _host(green_exit=1), _judge(), regress=None) is None
+            _blind(), _host(green_exit=1), _judge()) is None
         assert gates.verify_outcome(
-            _blind(), _host(apply_exit=137), _judge(), regress=None) is None
+            _blind(), _host(apply_exit=137), _judge()) is None
 
     def test_missing_judge_holds(self):
-        assert gates.verify_outcome(_blind(), _host(), None, regress=_regress()) is None
+        assert gates.verify_outcome(_blind(), _host(), None) is None
 
     def test_blind_disagreement_escalates_with_missing_judge(self):
         # THE rule again, minus a judge: the blind-unfaithful check runs
         # before judge inspection and wins regardless.
         assert gates.verify_outcome(
-            _blind(faithful=False), _host(), None, regress=_regress()
+            _blind(faithful=False), _host(), None
         ) == "escalate"
 
     def test_judge_with_no_usable_rating_holds(self):
         # A judge dict with no red_reason_match, or an empty one, carries no
         # actual bool for `matches`: the run holds.
-        assert gates.verify_outcome(_blind(), _host(), {}, regress=_regress()) is None
+        assert gates.verify_outcome(_blind(), _host(), {}) is None
         assert gates.verify_outcome(
-            _blind(), _host(), {"red_reason_match": {}}, regress=_regress()
+            _blind(), _host(), {"red_reason_match": {}}
         ) is None
 
     def test_repro_reason_mismatch_does_not_prevent_verified_fix(self):
@@ -1117,13 +1109,13 @@ class TestVerifyOutcome:
         judge = dict(_judge(), repro_reason_match={
             "applicable": True, "matches": False, "confidence": "high"})
         assert gates.verify_outcome(
-            _blind(), _host(), judge, regress=_regress()) == "verified-fix"
+            _blind(), _host(), judge) == "verified-fix"
 
     def test_repro_reason_match_true_does_not_change_the_outcome(self):
         judge = dict(_judge(), repro_reason_match={
             "applicable": True, "matches": True, "confidence": "high"})
         assert gates.verify_outcome(
-            _blind(), _host(), judge, regress=_regress()) == "verified-fix"
+            _blind(), _host(), judge) == "verified-fix"
 
     def test_every_outcome_is_in_the_vocabulary(self):
         for blind, host, judge in (
@@ -1136,69 +1128,16 @@ class TestVerifyOutcome:
             (_blind(), _host(red_exit=None, green_exit=None, no_test_hunks=True), _judge()),
         ):
             assert gates.verify_outcome(
-                blind, host, judge, regress=_regress()) in gates.VERIFY_OUTCOMES
+                blind, host, judge) in gates.VERIFY_OUTCOMES
 
-    def test_confirmed_regress_blocks_a_would_be_verified_fix(self):
-        assert gates.verify_outcome(
-            _blind(), _host(), _judge(),
-            regress=_regress(exit_first=20, exit_confirm=20, confirmed=True,
-                             new_failures=["src/x.test.ts"])) == "regressed"
-
-    def test_a_flake_does_not_block(self):
-        assert gates.verify_outcome(
-            _blind(), _host(), _judge(),
-            regress=_regress(exit_first=20, exit_confirm=0, flake=True)
-        ) == "verified-fix"
-
-    def test_escalate_outranks_regressed(self):
-        # A blind-unfaithful clean red->green stays the human's, even regressed.
-        assert gates.verify_outcome(
-            _blind(faithful=False), _host(), _judge(),
-            regress=_regress(exit_first=20, exit_confirm=20, confirmed=True)
-        ) == "escalate"
-
-    def test_clean_red_green_with_no_regress_leg_holds(self):
-        # Fail-closed: a clean red->green that never ran the suite is an
-        # incomplete run, and an incomplete run re-runs rather than passing.
-        assert gates.verify_outcome(_blind(), _host(), _judge(), regress=None) is None
-        assert gates.verify_run_errored(_blind(), _host(), regress=None) is True
-
-    def test_a_non_sentinel_regress_exit_holds(self):
-        r = _regress(exit_first=137)
-        assert gates.verify_outcome(_blind(), _host(), _judge(), regress=r) is None
-        assert gates.verify_run_errored(_blind(), _host(), regress=r) is True
-
-    def test_an_unconfirmed_first_failure_holds(self):
-        # exit_first 20 with no confirming run recorded is an interrupted
-        # confirmation, not a verdict.
-        r = _regress(exit_first=20, exit_confirm=None)
-        assert gates.verify_outcome(_blind(), _host(), _judge(), regress=r) is None
-        assert gates.verify_run_errored(_blind(), _host(), regress=r) is True
-
-    def test_a_skipped_regress_on_a_dirty_red_green_is_not_an_error(self):
-        host = _host(red_exit=0)
-        skipped = {"ran": False, "skipped_reason": "red-green-not-clean"}
-        assert gates.verify_run_errored(_blind(), host, regress=skipped) is False
-        assert gates.verify_outcome(_blind(), host, _judge(), regress=skipped) == "not-verified"
-
-    def test_a_no_suite_config_skip_is_a_complete_run(self):
-        # The pin declared the repository has no full-suite contract: the
-        # driver's deliberate skip settles a clean confirmed red->green as
-        # verified-fix rather than holding forever on a suite that cannot run.
-        skipped = {"ran": False, "skipped_reason": "no-suite-config"}
-        assert gates.verify_run_errored(_blind(), _host(), regress=skipped) is False
-        assert gates.verify_outcome(_blind(), _host(), _judge(),
-                                    regress=skipped) == "verified-fix"
-
-    def test_any_other_skip_reason_on_a_clean_run_holds(self):
-        skipped = {"ran": False, "skipped_reason": "mystery"}
-        assert gates.verify_run_errored(_blind(), _host(), regress=skipped) is True
-        assert gates.verify_outcome(_blind(), _host(), _judge(), regress=skipped) is None
+    def test_a_clean_red_green_needs_no_full_suite_run(self):
+        # Upstream CI runs the full suite; a clean confirmed red->green settles.
+        assert gates.verify_outcome(_blind(), _host(), _judge()) == "verified-fix"
+        assert gates.verify_run_errored(_blind(), _host()) is False
 
     def test_regressed_never_reaches_the_unverifiable_paths(self):
         assert gates.verify_outcome(
-            _blind(has_test=False, test_cmd=None), _host(), _judge(),
-            regress=None) == "unverifiable-no-test"
+            _blind(has_test=False, test_cmd=None), _host(), _judge()) == "unverifiable-no-test"
 
 
 def _dirty_host(**over) -> dict:
@@ -1223,7 +1162,7 @@ class TestDirtyGreenContainment:
 
     def test_contained_dirty_green_is_verified_fix(self):
         assert gates.verify_outcome(
-            _blind(), _dirty_host(), _judge(), regress=_regress()) == "verified-fix"
+            _blind(), _dirty_host(), _judge()) == "verified-fix"
 
     def test_contained_first_run_with_clean_confirm_is_verified_fix(self):
         # The contaminant flaked away on the confirm green — a fully clean
@@ -1231,23 +1170,15 @@ class TestDirtyGreenContainment:
         host = _dirty_host(green_exit_confirm=0)
         del host["green_failing_confirm"]
         assert gates.verify_outcome(
-            _blind(), host, _judge(), regress=_regress()) == "verified-fix"
+            _blind(), host, _judge()) == "verified-fix"
 
     def test_the_judge_still_gates_a_contained_green(self):
         assert gates.verify_outcome(
-            _blind(), _dirty_host(), _judge(matches=False),
-            regress=_regress()) == "not-verified"
+            _blind(), _dirty_host(), _judge(matches=False)) == "not-verified"
 
     def test_blind_unfaithful_still_escalates_a_contained_green(self):
         assert gates.verify_outcome(
-            _blind(faithful=False), _dirty_host(), _judge(),
-            regress=_regress()) == "escalate"
-
-    def test_a_confirmed_regress_still_blocks_a_contained_green(self):
-        assert gates.verify_outcome(
-            _blind(), _dirty_host(), _judge(),
-            regress=_regress(exit_first=20, exit_confirm=20, confirmed=True)
-        ) == "regressed"
+            _blind(faithful=False), _dirty_host(), _judge()) == "escalate"
 
     def test_identical_red_and_green_failing_sets_are_not_contained(self):
         # Nothing flipped: the green set must be a PROPER subset of red's.
@@ -1256,52 +1187,52 @@ class TestDirtyGreenContainment:
             green_failing_confirm=["a.test.ts > suite > target",
                                    "a.test.ts > suite > contam"])
         assert gates.verify_outcome(
-            _blind(), host, _judge(), regress=_regress()) == "not-verified"
+            _blind(), host, _judge()) == "not-verified"
 
     def test_a_test_failing_only_in_green_is_not_contained(self):
         host = _dirty_host(green_failing=["a.test.ts > suite > brand-new-failure"])
         assert gates.verify_outcome(
-            _blind(), host, _judge(), regress=_regress()) == "not-verified"
+            _blind(), host, _judge()) == "not-verified"
 
     def test_a_diff_introduced_test_failing_in_green_is_not_contained(self):
         # The PR's own (added or retitled) test still fails with the fix applied.
         host = _dirty_host(failing_in_diff=["a.test.ts > suite > contam"])
         assert gates.verify_outcome(
-            _blind(), host, _judge(), regress=_regress()) == "not-verified"
+            _blind(), host, _judge()) == "not-verified"
 
     def test_an_unparsable_green_is_not_contained(self):
         host = _dirty_host(green_failing=None)
         assert gates.verify_outcome(
-            _blind(), host, _judge(), regress=_regress()) == "not-verified"
+            _blind(), host, _judge()) == "not-verified"
 
     def test_an_unparsable_red_is_not_contained(self):
         host = _dirty_host(red_failing=None)
         assert gates.verify_outcome(
-            _blind(), host, _judge(), regress=_regress()) == "not-verified"
+            _blind(), host, _judge()) == "not-verified"
 
     def test_a_missing_in_diff_fact_is_not_contained(self):
         # The diff could not be read at run time, so the diff-membership check
         # never happened — fail closed.
         host = _dirty_host(failing_in_diff=None)
         assert gates.verify_outcome(
-            _blind(), host, _judge(), regress=_regress()) == "not-verified"
+            _blind(), host, _judge()) == "not-verified"
 
     def test_an_empty_green_failing_set_is_not_contained(self):
         # Exit 20 with a report of zero failures is self-contradictory output.
         host = _dirty_host(green_failing=[])
         assert gates.verify_outcome(
-            _blind(), host, _judge(), regress=_regress()) == "not-verified"
+            _blind(), host, _judge()) == "not-verified"
 
     def test_a_record_without_parsed_sets_stays_not_verified(self):
         # The exact shape of the pre-existing #3718/#3368 records: both legs
         # exited 20 with no parsed facts. Nothing changes for them until re-run.
         assert gates.verify_outcome(
-            _blind(), _host(green_exit=20), _judge(), regress=None) == "not-verified"
+            _blind(), _host(green_exit=20), _judge()) == "not-verified"
 
     def test_a_contained_run_without_a_confirm_holds(self):
         host = _dirty_host(red_exit_confirm=None, green_exit_confirm=None)
-        assert gates.verify_outcome(_blind(), host, _judge(), regress=_regress()) is None
-        assert gates.verify_run_errored(_blind(), host, regress=_regress()) is True
+        assert gates.verify_outcome(_blind(), host, _judge()) is None
+        assert gates.verify_run_errored(_blind(), host) is True
 
     def test_a_confirm_green_outside_the_red_set_escalates(self):
         # The confirm green failed on a test red never failed on — the runs
@@ -1309,11 +1240,7 @@ class TestDirtyGreenContainment:
         host = _dirty_host(
             green_failing_confirm=["a.test.ts > suite > brand-new-failure"])
         assert gates.verify_outcome(
-            _blind(), host, _judge(), regress=_regress()) == "escalate"
-
-    def test_a_contained_run_without_a_regress_leg_holds(self):
-        assert gates.verify_outcome(_blind(), _dirty_host(), _judge(), regress=None) is None
-        assert gates.verify_run_errored(_blind(), _dirty_host(), regress=None) is True
+            _blind(), host, _judge()) == "escalate"
 
     def test_green_accepted_requires_a_red_that_failed(self):
         # Containment is meaningless without a host-observed red failure.
@@ -1359,56 +1286,55 @@ class TestVerifyRunErrored:
     so the PR is not settled and a re-queue runs it again."""
 
     def test_a_killed_container_errored(self):
-        assert gates.verify_run_errored(_blind(), _host(red_exit=137), regress=None) is True
-        assert gates.verify_run_errored(_blind(), _host(green_exit=1), regress=None) is True
-        assert gates.verify_run_errored(_blind(), _host(apply_exit=137), regress=None) is True
+        assert gates.verify_run_errored(_blind(), _host(red_exit=137)) is True
+        assert gates.verify_run_errored(_blind(), _host(green_exit=1)) is True
+        assert gates.verify_run_errored(_blind(), _host(apply_exit=137)) is True
 
     def test_a_timeout_errored(self):
-        assert gates.verify_run_errored(_blind(), _host(red_exit=124), regress=None) is True
+        assert gates.verify_run_errored(_blind(), _host(red_exit=124)) is True
 
     def test_an_unrecorded_phase_errored(self):
         assert gates.verify_run_errored(
-            _blind(), {"apply_exit": 0, "red_exit": 20, "green_exit": None},
-            regress=None) is True
+            _blind(), {"apply_exit": 0, "red_exit": 20, "green_exit": None}) is True
 
     def test_a_clean_red_green_did_not_error(self):
-        assert gates.verify_run_errored(_blind(), _host(), regress=_regress()) is False
+        assert gates.verify_run_errored(_blind(), _host()) is False
 
     def test_a_red_that_passed_on_main_did_not_error(self):
         # 0 is a sentinel: an honest "the test passed on main", not an error.
-        assert gates.verify_run_errored(_blind(), _host(red_exit=0), regress=None) is False
+        assert gates.verify_run_errored(_blind(), _host(red_exit=0)) is False
 
     def test_a_patch_conflict_did_not_error(self):
         # 30 is host-authoritative needs-rebase — a real result.
-        assert gates.verify_run_errored(_blind(), _host(apply_exit=30), regress=None) is False
+        assert gates.verify_run_errored(_blind(), _host(apply_exit=30)) is False
 
     def test_a_blind_verdict_that_asked_for_no_run_did_not_error(self):
         # No test to run and no live agent available: the outcome follows from the
         # blind verdict alone, so the absent exit codes are not a failed run.
         null = {"apply_exit": None, "red_exit": None, "green_exit": None}
         assert gates.verify_run_errored(
-            _blind(has_test=False, test_cmd=None), null, regress=None) is False
+            _blind(has_test=False, test_cmd=None), null) is False
         assert gates.verify_run_errored(
-            _blind(requires_live_agent=True), null, regress=None) is False
+            _blind(requires_live_agent=True), null) is False
 
     def test_no_test_hunks_in_the_diff_did_not_error(self):
         # #551: apply-check ran, but red/green never did — by policy, not failure.
         host = {"apply_exit": 0, "red_exit": None, "green_exit": None,
                 "no_test_hunks": True}
-        assert gates.verify_run_errored(_blind(), host, regress=None) is False
+        assert gates.verify_run_errored(_blind(), host) is False
 
     def test_a_failed_test_setup_errored(self):
         host = _host(red_exit=gates.SENTINEL_SETUP_FAIL)
-        assert gates.verify_run_errored(_blind(), host, regress=None) is True
-        assert gates.verify_outcome(_blind(), host, _judge(), regress=None) is None
+        assert gates.verify_run_errored(_blind(), host) is True
+        assert gates.verify_outcome(_blind(), host, _judge()) is None
 
     def test_a_test_file_that_failed_to_load_in_both_legs_errored(self):
         line = 'Error: Failed to resolve entry for package "@acme/sdk".'
         host = _host(red_exit=20, green_exit=20, red_load_error=line,
                      green_load_error=line)
         assert gates.shared_load_error(host) == line
-        assert gates.verify_run_errored(_blind(), host, regress=None) is True
-        assert gates.verify_outcome(_blind(), host, _judge(), regress=None) is None
+        assert gates.verify_run_errored(_blind(), host) is True
+        assert gates.verify_outcome(_blind(), host, _judge()) is None
 
     def test_different_load_errors_in_red_and_green_are_a_verdict(self):
         # Red cannot import what the fix adds; green fails on the PR's own
@@ -1417,7 +1343,7 @@ class TestVerifyRunErrored:
                      red_load_error="SyntaxError: does not provide an export named 'fix'",
                      green_load_error="Error: Cannot find module './helper'")
         assert gates.shared_load_error(host) is None
-        assert gates.verify_outcome(_blind(), host, _judge(), regress=None) == "not-verified"
+        assert gates.verify_outcome(_blind(), host, _judge()) == "not-verified"
 
     def test_a_load_error_with_a_passing_green_is_not_shared(self):
         line = "Error: Cannot find module './fix'"
@@ -1432,12 +1358,12 @@ class TestVerifyRunErrored:
         # follows however the judge rates the output.
         for host in (_host(red_exit=137), _host(green_exit=1), _host(apply_exit=137),
                      _host(red_exit=124)):
-            assert gates.verify_run_errored(_blind(), host, regress=None) is True
+            assert gates.verify_run_errored(_blind(), host) is True
             for judge in (_judge(), _judge(matches=False), _judge(confidence="low"), None):
-                assert gates.verify_outcome(_blind(), host, judge, regress=None) is None
+                assert gates.verify_outcome(_blind(), host, judge) is None
             # An errored run outranks even the escalate rule.
             assert gates.verify_outcome(
-                _blind(faithful=False), host, _judge(), regress=None) is None
+                _blind(faithful=False), host, _judge()) is None
 
 
 class TestVacuousNameFilter:
@@ -1486,7 +1412,7 @@ class TestVacuousNameFilter:
         # not-verified exactly like an unfiltered one.
         blind = _blind(test_cmd='npx vitest run f.ts -t "name"')
         assert gates.verify_outcome(
-            blind, _host(red_exit=0), _judge(), regress=None) == "not-verified"
+            blind, _host(red_exit=0), _judge()) == "not-verified"
 
 
 def _repro(**over) -> dict:
@@ -1777,71 +1703,65 @@ class TestAuthoredLaneOutcome:
 
     def test_clean_confirmed_run_is_agent_verified(self):
         assert gates.verify_outcome(
-            self.NO_TEST, self.LANE_HOST, _judge(), regress=_regress(),
+            self.NO_TEST, self.LANE_HOST, _judge(),
             authored=_authored()) == "agent-verified"
 
     def test_no_authored_section_stays_unverifiable(self):
         assert gates.verify_outcome(
-            self.NO_TEST, self.LANE_HOST, None, regress=None,
+            self.NO_TEST, self.LANE_HOST, None,
             authored=None) == "unverifiable-no-test"
 
     def test_validation_skip_stays_unverifiable(self):
         assert gates.verify_outcome(
-            self.NO_TEST, self.LANE_HOST, None, regress=None,
+            self.NO_TEST, self.LANE_HOST, None,
             authored=_authored(test_cmd=None, skipped_reason="path-not-a-test-path")
         ) == "unverifiable-no-test"
 
     def test_red_that_passed_stays_unverifiable(self):
         assert gates.verify_outcome(
-            self.NO_TEST, self.LANE_HOST, _judge(), regress=None,
+            self.NO_TEST, self.LANE_HOST, _judge(),
             authored=_authored(red_exit=0)) == "unverifiable-no-test"
 
     def test_green_that_failed_stays_unverifiable(self):
         assert gates.verify_outcome(
-            self.NO_TEST, self.LANE_HOST, _judge(), regress=None,
+            self.NO_TEST, self.LANE_HOST, _judge(),
             authored=_authored(green_exit=20)) == "unverifiable-no-test"
 
     def test_infra_error_settles_not_holds(self):
         assert gates.verify_outcome(
-            self.NO_TEST, self.LANE_HOST, None, regress=None,
+            self.NO_TEST, self.LANE_HOST, None,
             authored=_authored(red_exit=137, green_exit=None)
         ) == "unverifiable-no-test"
 
     def test_flaky_confirm_settles_not_escalates(self):
         assert gates.verify_outcome(
-            self.NO_TEST, self.LANE_HOST, _judge(), regress=None,
+            self.NO_TEST, self.LANE_HOST, _judge(),
             authored=_authored(red_exit_confirm=0)) == "unverifiable-no-test"
 
     def test_wrong_reason_red_stays_unverifiable(self):
         assert gates.verify_outcome(
-            self.NO_TEST, self.LANE_HOST, _judge(matches=False), regress=None,
+            self.NO_TEST, self.LANE_HOST, _judge(matches=False),
             authored=_authored()) == "unverifiable-no-test"
 
     def test_low_confidence_stays_unverifiable(self):
         assert gates.verify_outcome(
-            self.NO_TEST, self.LANE_HOST, _judge(confidence="low"), regress=None,
+            self.NO_TEST, self.LANE_HOST, _judge(confidence="low"),
             authored=_authored()) == "unverifiable-no-test"
 
     def test_missing_judge_stays_unverifiable(self):
         assert gates.verify_outcome(
-            self.NO_TEST, self.LANE_HOST, None, regress=None,
+            self.NO_TEST, self.LANE_HOST, None,
             authored=_authored()) == "unverifiable-no-test"
-
-    def test_confirmed_regression_is_regressed(self):
-        assert gates.verify_outcome(
-            self.NO_TEST, self.LANE_HOST, _judge(),
-            regress=_regress(exit_first=20, exit_confirm=20, confirmed=True),
-            authored=_authored()) == "regressed"
 
     def test_pr_patch_conflict_is_needs_rebase(self):
         assert gates.verify_outcome(
-            self.NO_TEST, {"apply_exit": 30}, None, regress=None,
+            self.NO_TEST, {"apply_exit": 30}, None,
             authored=_authored()) == "needs-rebase"
 
     def test_live_agent_still_short_circuits(self):
         blind = dict(self.NO_TEST, requires_live_agent=True)
         assert gates.verify_outcome(
-            blind, self.LANE_HOST, _judge(), regress=None,
+            blind, self.LANE_HOST, _judge(),
             authored=_authored()) == "unverifiable-needs-live-agent"
 
     def test_agent_verified_is_a_valid_outcome(self):
@@ -2451,11 +2371,9 @@ class TestLaneOutcomes:
     HOST = {"apply_exit": 0, "red_exit": 20, "green_exit": 0,
             "red_exit_confirm": 20, "green_exit_confirm": 0}
     JUDGE = {"red_reason_match": {"matches": True, "confidence": "high"}}
-    REGRESS = {"ran": True, "exit_first": 0, "confirmed": False}
 
     def _outcome(self, lanes):
-        return gates.verify_outcome(self.BLIND, self.HOST, self.JUDGE,
-                                    regress=self.REGRESS, lanes=lanes)
+        return gates.verify_outcome(self.BLIND, self.HOST, self.JUDGE, lanes=lanes)
 
     def test_all_lanes_green_is_verified_fix(self):
         lanes = {"compile": {"cmd": "c", "exit": 0, "ok": True},
@@ -2494,18 +2412,9 @@ class TestLaneOutcomes:
                     "red_exit": 20, "green_exit": 0,
                     "red_exit_confirm": 20, "green_exit_confirm": 0}
         lanes = {"compile": {"cmd": "c", "exit": 20, "ok": False}}
-        out = gates.verify_outcome(blind, {"apply_exit": 0}, self.JUDGE,
-                                   regress=self.REGRESS, authored=authored,
+        out = gates.verify_outcome(blind, {"apply_exit": 0}, self.JUDGE, authored=authored,
                                    lanes=lanes)
         assert out == "regressed"
-
-    def test_a_lane_skip_regress_is_not_an_errored_run(self):
-        # A regress leg skipped because a lane failed is a complete result,
-        # never a hold.
-        regress = {"ran": False, "skipped_reason": "lane-compile-failed"}
-        assert gates.verify_run_errored(self.BLIND, self.HOST,
-                                        regress=regress) is False
-
 
 class TestConfiguredLanes:
     def test_orders_compile_then_build(self, monkeypatch):
@@ -3251,8 +3160,7 @@ class TestE2eGate:
 
     def _outcome(self, e2e, **kw) -> str | None:
         return gates.verify_outcome(kw.pop("blind", _blind()), kw.pop("host", _host()),
-                                    kw.pop("judge", _judge()),
-                                    regress=kw.pop("regress", _regress()), e2e=e2e, **kw)
+                                    kw.pop("judge", _judge()), e2e=e2e, **kw)
 
     def test_a_clean_run_or_no_record_keeps_verified_fix(self):
         assert self._outcome(_e2e()) == "verified-fix"
@@ -3300,11 +3208,6 @@ class TestE2eGate:
         e2e["regression_count"] = 25
         assert self._outcome(e2e) == "regressed"
 
-    def test_a_suite_regression_beats_an_e2e_escalate(self):
-        assert self._outcome(
-            _e2e_regressed("tests/e2e/a.spec.ts › boots", edited=("tests/e2e/a.spec.ts",)),
-            regress=_regress(exit_first=20, exit_confirm=20, confirmed=True)) == "regressed"
-
     def test_an_e2e_regression_beats_a_lane_escalate(self):
         assert self._outcome(_e2e_regressed("tests/e2e/a.spec.ts › boots"),
                              lanes={"build": {"cmd": "b", "exit": 1}}) == "regressed"
@@ -3322,7 +3225,7 @@ class TestE2eGate:
     def test_an_unconcluded_confirm_holds(self):
         e2e = _e2e(exit_first=20, failing_first=["tests/e2e/a.spec.ts › boots"])
         assert self._outcome(e2e) is None
-        assert gates.verify_run_errored(_blind(), _host(), regress=_regress(), e2e=e2e) is True
+        assert gates.verify_run_errored(_blind(), _host(), e2e=e2e) is True
 
     def test_the_authored_lane_reads_the_same_verdict(self):
         blind = _blind(test_cmd=None, has_test=False)

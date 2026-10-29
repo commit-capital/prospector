@@ -159,17 +159,6 @@ class VerifyReproSignal(TypedDict, total=False):
     skipped_reason: str
 
 
-class VerifyRegressSignal(TypedDict, total=False):
-    ran: bool
-    skipped_reason: str
-    exit_first: int | None
-    exit_confirm: int | None
-    confirmed: bool
-    flake: bool
-    excluded_count: int
-    new_failures: list[str]
-
-
 class VerifyE2eSignal(TypedDict, total=False):
     ran: bool
     skipped_reason: str
@@ -213,7 +202,6 @@ class VerifySignals(TypedDict, total=False):
     blind_adequacy: VerifyBlindSignal
     red_green: VerifyRedGreenSignal
     independent_repro: VerifyReproSignal
-    regress: VerifyRegressSignal
     authored_test: VerifyAuthoredSignal
     red_reason_match: VerifyReasonMatch
     repro_reason_match: VerifyReasonMatch
@@ -229,7 +217,6 @@ class VerifyEvidence(TypedDict):
     blind_adequacy: VerifyBlindSignal
     red_green: VerifyRedGreenSignal
     independent_repro: VerifyReproSignal
-    regress: VerifyRegressSignal
     authored_test: NotRequired[VerifyAuthoredSignal]
     lanes: NotRequired[dict[str, VerifyLaneSignal]]
     e2e: NotRequired[VerifyE2eSignal]
@@ -265,10 +252,7 @@ class VerifyPin(TypedDict):
     base_sha: str | None
     tier: int | None
     pinned_at: str | None
-    baseline_failing: list[str] | None
-    baseline_captured_at: str | None
     host: NotRequired[str]
-    suite: NotRequired[bool]
     arch: NotRequired[str]
     refresh_attempted_at: NotRequired[str]
     refresh_ok: NotRequired[bool]

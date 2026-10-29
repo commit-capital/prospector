@@ -66,8 +66,7 @@ def test_roster_shows_the_issue_fix_lane_and_the_issue_it_is_on(store):
 
 
 def test_roster_marks_base_pinned_hosts(store):
-    store.save_verify_base({"host": "mac-3", "base_sha": "a" * 40, "tier": 1,
-                            "baseline_failing": [], "baseline_captured_at": _iso(60)})
+    store.save_verify_base({"host": "mac-3", "base_sha": "a" * 40, "tier": 1})
     out = machines.roster()
     assert [m["host"] for m in out["machines"]] == ["mac-3"]
     assert out["machines"][0]["base_pinned"] is True

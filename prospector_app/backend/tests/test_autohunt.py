@@ -410,8 +410,7 @@ def test_status_reads_every_worker_registry_in_one_statement(store):
     from prospector_app.backend import autohunt_view
     store.save_verify_worker({"host": "mac", "last_beat": _now(), "autohunt": True})
     store.save_verify_base({"host": "mac", "base_sha": "a" * 40, "tier": 1,
-                            "pinned_at": _now(), "baseline_failing": [],
-                            "baseline_captured_at": _now()})
+                            "pinned_at": _now()})
     statements: list[str] = []
 
     def count(conn, cursor, statement, *rest) -> None:
@@ -672,8 +671,7 @@ class TestBaseHealth:
 
     def _pin(self, store, host: str = "mac-studio", **extra: object) -> None:
         store.save_verify_base({"host": host, "base_sha": "a" * 40, "tier": 1,
-                                "pinned_at": _now(), "baseline_failing": [],
-                                "baseline_captured_at": _now(), **extra})
+                                "pinned_at": _now(), **extra})
 
     def test_a_fresh_pin_is_healthy(self, store):
         from prospector_app.backend import autohunt_view

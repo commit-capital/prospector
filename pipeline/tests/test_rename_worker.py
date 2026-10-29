@@ -9,8 +9,7 @@ OLD, NEW = "Laptop.local", "laptop"
 
 
 def _pin(host, when):
-    return {"host": host, "base_sha": "b" * 40, "tier": 1, "pinned_at": when,
-            "baseline_failing": [], "baseline_captured_at": when}
+    return {"host": host, "base_sha": "b" * 40, "tier": 1, "pinned_at": when}
 
 
 @pytest.fixture

@@ -58,8 +58,7 @@ def test_blind_agent_cannot_supply_driver_owned_test_fields(store, monkeypatch):
 
 
 def _ev(rec, base, tier, *, red=20, green=0):
-    """Host evidence in verify_driver.verify_pr's shape: a completed run with a
-    complete regress leg."""
+    """Host evidence in verify_driver.verify_pr's shape: a completed run."""
     return {"pr": rec.n, "head_sha": rec.head_sha, "base_sha": base, "tier": tier,
             "blind_adequacy": rec.verify_signals.get("blind_adequacy") or {},
             "red_green": {"apply_exit": 0, "red_exit": red, "green_exit": green,
@@ -68,10 +67,7 @@ def _ev(rec, base, tier, *, red=20, green=0):
                           "red_exit_confirm": red if (red == 20 and green == 0) else None,
                           "green_exit_confirm": green if (red == 20 and green == 0) else None},
             "independent_repro": {"ran": False, "exit_code": None,
-                                  "from_linked_issue": False, "output_tail": ""},
-            "regress": {"ran": True, "exit_first": 0, "exit_confirm": None,
-                        "confirmed": False, "flake": False, "excluded_count": 0,
-                        "new_failures": []}}
+                                  "from_linked_issue": False, "output_tail": ""}}
 
 
 @pytest.fixture
@@ -85,16 +81,10 @@ def store(tmp_path):
 @pytest.fixture
 def pinned(store, tmp_path, monkeypatch):
     """A usable pinned base: registry + clone dir + image, with the diff cached
-    and parseable, agents answering, and the sandbox stubbed to a clean run.
-    The pin carries a suite, so the profile supplies a matching contract."""
+    and parseable, agents answering, and the sandbox stubbed to a clean run."""
     store.save_verify_base({"host": socket.gethostname(), "base_sha": "b" * 40,
-                            "tier": 0, "pinned_at": _now(),
-                            "baseline_failing": [], "baseline_captured_at": _now()})
-    monkeypatch.setattr(
-        verify_driver.profile, "active",
-        lambda: profile.RepoProfile(verify=profile.VerifyPolicy(
-            suite=profile.SuiteConfig(wrapper="scripts/w.mjs",
-                                      server_project="@x/server"))))
+                            "tier": 0, "pinned_at": _now()})
+    monkeypatch.setattr(verify_driver.profile, "active", lambda: profile.GENERIC)
     monkeypatch.setattr(verify_driver, "SCRATCH", tmp_path / "scratch")
     clone = tmp_path / "clone"
     clone.mkdir()
@@ -120,7 +110,7 @@ def pinned(store, tmp_path, monkeypatch):
 
     sandbox = {"called": 0}
 
-    def fake_sandbox(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+    def fake_sandbox(rec, image, base, tier, *, e2e_baseline=None):
         sandbox["called"] += 1
         return _ev(rec, base, tier)
 
@@ -319,27 +309,6 @@ def test_deps_touched_records_the_wave_refusal(store, pinned, monkeypatch):
     assert pinned["agent_calls"] == []
 
 
-def test_a_suite_pin_with_a_suiteless_profile_errors_loudly(store, pinned, monkeypatch):
-    """The pin captured a baseline, so the profile must still carry the suite
-    contract — losing it must fail the run loudly, never silently skip the
-    regression gate."""
-    monkeypatch.setattr(verify_driver.profile, "active", lambda: profile.GENERIC)
-    assert vp.run(store, 1) == 1
-    req = _request(store)
-    assert req["error_kind"] == "sandbox-error"
-    assert "verify.suite" in req["error"]
-
-
-def test_a_no_suite_pin_runs_without_a_contract(store, pinned, monkeypatch):
-    monkeypatch.setattr(verify_driver.profile, "active", lambda: profile.GENERIC)
-    store.save_verify_base({"host": socket.gethostname(), "base_sha": "b" * 40,
-                            "tier": 0, "pinned_at": _now(),
-                            "baseline_failing": [], "baseline_captured_at": _now(),
-                            "suite": False})
-    assert vp.run(store, 1) == 0
-    assert _request(store)["status"] == "done"
-
-
 def test_happy_path_verified_fix(store, pinned):
     store.edit_pr(1).record_verify_request("queued", queued_at="2026-07-16T00:00:00+00:00")
     assert vp.run(store, 1, from_queue=True) == 0
@@ -373,7 +342,7 @@ def test_lanes_are_persisted_to_signals(store, pinned, monkeypatch):
     lanes) is copied into the PR's persisted verify signals, next to the
     authored_test copy — the shape gates.verify_outcome reads via
     commit_outcomes."""
-    def fake_sandbox(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+    def fake_sandbox(rec, image, base, tier, *, e2e_baseline=None):
         return {**_ev(rec, base, tier),
                 "lanes": {"compile": {"cmd": "c", "exit": 0, "ok": True,
                                       "duration_s": 1.0}}}
@@ -468,11 +437,10 @@ def test_no_test_resolves_without_judge_or_signal(store, pinned, monkeypatch):
     pinned["answers"]["blind adequacy"] = dict(BLIND_OK, has_test=False,
                                                test_cmd=None, faithful=False)
 
-    def no_run(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+    def no_run(rec, image, base, tier, *, e2e_baseline=None):
         return {**_ev(rec, base, tier),
                 "red_green": {"apply_exit": None, "red_exit": None, "green_exit": None,
-                              "red_output_tail": "", "green_output_tail": ""},
-                "regress": {"ran": False, "skipped_reason": "red-green-not-clean"}}
+                              "red_output_tail": "", "green_output_tail": ""}}
 
     monkeypatch.setattr(verify_driver, "verify_pr", no_run)
     assert vp.run(store, 1) == 0
@@ -492,7 +460,7 @@ def test_requires_live_agent_spends_no_sandbox_time(store, pinned):
 
 
 def test_errored_run_holds(store, pinned, monkeypatch):
-    def errored(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+    def errored(rec, image, base, tier, *, e2e_baseline=None):
         return {**_ev(rec, base, tier),
                 "red_green": {"apply_exit": 0, "red_exit": 20, "green_exit": 137,
                               "red_output_tail": "AssertionError: boom",
@@ -507,7 +475,7 @@ def test_errored_run_holds(store, pinned, monkeypatch):
 
 
 def test_probe_failure_is_sandbox_error(store, pinned, monkeypatch):
-    def probe_fail(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+    def probe_fail(rec, image, base, tier, *, e2e_baseline=None):
         raise verify_driver.ProbeFailure("isolation unproven")
 
     monkeypatch.setattr(verify_driver, "verify_pr", probe_fail)
@@ -515,7 +483,7 @@ def test_probe_failure_is_sandbox_error(store, pinned, monkeypatch):
     assert _request(store)["error_kind"] == "sandbox-error"
 
 
-def _probe_fail(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+def _probe_fail(rec, image, base, tier, *, e2e_baseline=None):
     raise verify_driver.ProbeFailure("isolation unproven")
 
 
@@ -536,7 +504,7 @@ def test_a_transient_sandbox_failure_parks_the_queued_request(store, pinned, mon
 
 
 def test_a_patch_fetch_failure_parks_as_fetch_error(store, pinned, monkeypatch):
-    def fetch_fail(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+    def fetch_fail(rec, image, base, tier, *, e2e_baseline=None):
         raise verify_driver.FetchFailure("cannot fetch patch for PR #1: HTTP 500")
 
     monkeypatch.setattr(verify_driver, "verify_pr", fetch_fail)
@@ -576,7 +544,7 @@ def test_transient_parking_gives_up_after_the_attempt_cap(store, pinned, monkeyp
 def test_a_direct_run_transient_failure_stays_terminal(store, pinned, monkeypatch):
     """A run outside the queue has no worker to re-pick it: the failure
     records a terminal error, exactly like the no-base preflight."""
-    def fetch_fail(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+    def fetch_fail(rec, image, base, tier, *, e2e_baseline=None):
         raise verify_driver.FetchFailure("HTTP 500")
 
     monkeypatch.setattr(verify_driver, "verify_pr", fetch_fail)
@@ -587,7 +555,7 @@ def test_a_direct_run_transient_failure_stays_terminal(store, pinned, monkeypatc
 
 
 def test_crash_records_exception_with_traceback(store, pinned, monkeypatch):
-    def boom(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+    def boom(rec, image, base, tier, *, e2e_baseline=None):
         raise KeyboardInterrupt  # escapes the sandbox-step except Exception
     monkeypatch.setattr(verify_driver, "verify_pr", boom)
     with pytest.raises(KeyboardInterrupt):
@@ -701,7 +669,7 @@ class TestBlindReproRejection:
         # blind verdict is already the vetted (nulled) one.
         sandbox_blind: dict = {}
 
-        def capture(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+        def capture(rec, image, base, tier, *, e2e_baseline=None):
             sandbox_blind.update(rec.verify_signals["blind_adequacy"])
             return _ev(rec, base, tier)
 
@@ -764,7 +732,7 @@ class TestAuthorPass:
         pinned["answers"]["author test"] = dict(AUTHOR_OK)
         captured: dict = {}
 
-        def fake_sandbox(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+        def fake_sandbox(rec, image, base, tier, *, e2e_baseline=None):
             captured["authored_test"] = rec.verify_signals.get("authored_test")
             return _ev(rec, base, tier)
 
@@ -784,11 +752,10 @@ class TestAuthorPass:
                                                     test_cmd=None, faithful=False)
         pinned["answers"]["author test"] = None
 
-        def no_run(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+        def no_run(rec, image, base, tier, *, e2e_baseline=None):
             return {**_ev(rec, base, tier),
                     "red_green": {"apply_exit": None, "red_exit": None, "green_exit": None,
-                                  "red_output_tail": "", "green_output_tail": ""},
-                    "regress": {"ran": False, "skipped_reason": "red-green-not-clean"}}
+                                  "red_output_tail": "", "green_output_tail": ""}}
 
         monkeypatch.setattr(verify_driver, "verify_pr", no_run)
         assert vp.run(store, 1) == 0
@@ -822,7 +789,7 @@ class TestAuthorPass:
             "findings": [],
         }
 
-        def fake_sandbox(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+        def fake_sandbox(rec, image, base, tier, *, e2e_baseline=None):
             authored = dict(rec.verify_signals.get("authored_test") or {},
                             red_exit=20, green_exit=0,
                             red_exit_confirm=20, green_exit_confirm=0,
@@ -911,7 +878,7 @@ class TestAgentReach:
 
 
 def test_a_diff_too_large_for_github_errors_without_a_requeue(store, pinned, monkeypatch):
-    def too_large(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+    def too_large(rec, image, base, tier, *, e2e_baseline=None):
         raise verify_driver.DiffTooLarge("GitHub refuses PR #1's diff for its size")
 
     monkeypatch.setattr(verify_driver, "verify_pr", too_large)
@@ -922,7 +889,7 @@ def test_a_diff_too_large_for_github_errors_without_a_requeue(store, pinned, mon
 
 
 def test_a_head_s_runs_stay_counted_through_its_error(store, pinned, monkeypatch):
-    def fetch_fail(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+    def fetch_fail(rec, image, base, tier, *, e2e_baseline=None):
         raise verify_driver.FetchFailure("HTTP 500")
 
     monkeypatch.setattr(verify_driver, "verify_pr", fetch_fail)
@@ -938,7 +905,7 @@ def test_a_head_s_runs_stay_counted_through_its_error(store, pinned, monkeypatch
 def test_a_running_request_keeps_its_attempt_count(store, pinned, monkeypatch):
     seen: list[int | None] = []
 
-    def watch(rec, image, base, tier, baseline, *, suite_config=None, e2e_baseline=None):
+    def watch(rec, image, base, tier, *, e2e_baseline=None):
         seen.append(_request(store).get("attempts"))
         raise verify_driver.FetchFailure("HTTP 500")
 

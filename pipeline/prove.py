@@ -373,6 +373,22 @@ def suite_baseline(base: PinnedBase, pre_patch: str | None, *, label: str) -> li
     return failed
 
 
+# Advisory names are capped: the store record must not grow with how many
+# tests a hostile patch can make fail.
+_ADVISORY_FAILURES_MAX = 50
+
+
+def _advisory_failures(tail: str) -> list[str]:
+    """Failing test files named by a regress run's trailer. ADVISORY: the
+    trailer came from a container that ran PR code, so these names inform the
+    fix's review and the app and never touch a verdict — the verdict is the exit
+    code alone. Unparsable output yields [] and changes nothing."""
+    failed = (verify_driver.parse_suite_trailer(tail) or {}).get("failed")
+    if not isinstance(failed, list):
+        return []
+    return [str(f) for f in failed][:_ADVISORY_FAILURES_MAX]
+
+
 class SuiteRegress(TypedDict):
     exit: int
     exit_confirm: int | None
@@ -419,7 +435,7 @@ def suite_regress(base: PinnedBase, pre_patch: str | None, patch: str, *,
                          "rebaselined": [], "new_failures": []}
     if first != gates.SENTINEL_TEST_FAIL:
         return out
-    out["new_failures"] = verify_driver._advisory_failures(tail)
+    out["new_failures"] = _advisory_failures(tail)
     second, tail2 = run()
     out["exit_confirm"] = second
     if second == gates.SENTINEL_PASS:
@@ -430,7 +446,7 @@ def suite_regress(base: PinnedBase, pre_patch: str | None, patch: str, *,
     if not added:
         out["confirmed"] = True
         out["new_failures"] = sorted(set(out["new_failures"])
-                                     | set(verify_driver._advisory_failures(tail2)))
+                                     | set(_advisory_failures(tail2)))
         return out
     baseline = sorted(set(baseline) | set(fresh))
     storekit.atomic_write_text(_baseline_cache(base, pre_patch), json.dumps(baseline))
@@ -441,6 +457,6 @@ def suite_regress(base: PinnedBase, pre_patch: str | None, patch: str, *,
     out["exit_rerun"] = third
     out["confirmed"] = third == gates.SENTINEL_TEST_FAIL
     out["flake"] = not out["confirmed"]
-    out["new_failures"] = (verify_driver._advisory_failures(tail3) if out["confirmed"]
+    out["new_failures"] = (_advisory_failures(tail3) if out["confirmed"]
                            else out["new_failures"])
     return out

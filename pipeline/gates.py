@@ -1544,7 +1544,7 @@ def green_accepted(host: wire.VerifyRedGreenSignal) -> bool:
     on the pinned base — poisons the whole-file exit code while the target test
     itself flips red->green). The ONE definition of an accepted green;
     verify_outcome and verify_run_errored read it, and the driver uses it to
-    decide whether a dirty first run earns the confirm and regress legs."""
+    decide whether a dirty first run earns the confirm and the lanes."""
     if host.get("green_exit") == SENTINEL_PASS:
         return True
     return (host.get("green_exit") == SENTINEL_TEST_FAIL
@@ -1594,16 +1594,16 @@ def shared_load_error(host: wire.VerifyRedGreenSignal) -> str | None:
 
 def verify_run_errored(blind: wire.VerifyBlindSignal,
                        host: wire.VerifyRedGreenSignal, *,
-                       regress: wire.VerifyRegressSignal | None,
                        e2e: wire.VerifyE2eSignal | None = None) -> bool:
     """True iff a PR's committed signals record a run that errored: the host saw a
     phase exit outside its sentinel set (a killed container, an OOM, a timeout, an
     image fault, a test setup that failed), red and green both failed on the same
     test-file load error (`shared_load_error` — neither reached the code under
-    test), or a clean red->green's confirm re-run, regress leg or e2e leg is
-    incomplete — missing, not run, a non-sentinel exit, or a first failure
-    whose confirming run never concluded. The e2e record is optional. Nothing follows from such a run however the
-    judge rates the output, because the exit code it reported carries no meaning.
+    test), or a clean red->green's confirm re-run or e2e leg is incomplete — a
+    non-sentinel exit, or a first failure whose confirming run never
+    concluded. The e2e record is optional. Nothing follows from such a run
+    however the judge rates the output, because the exit code it reported
+    carries no meaning.
 
     A blind verdict that settles the outcome by itself — no test to run, or a live
     agent required — asked for no sandbox, so its unrecorded exit codes are not a
@@ -1641,30 +1641,7 @@ def verify_run_errored(blind: wire.VerifyBlindSignal,
     if not (host.get("red_exit_confirm") == SENTINEL_TEST_FAIL
             and green_confirm_accepted(host)):
         return False
-    if _e2e_incomplete(e2e):
-        return True
-    # An accepted red->green must carry a completed regress leg. The full-suite
-    # run is part of the run itself, so a record without one — or with a
-    # non-sentinel exit, or a first failure whose confirming run never
-    # concluded — is an incomplete run, and an incomplete run holds
-    # (fail-closed) rather than passing unregression-checked. Two skips are
-    # accepted: `no-suite-config` (the pin declared the repository has no
-    # full-suite contract) and a `lane-`-prefixed reason (a merge-gate lane
-    # failed first).
-    if regress is None:
-        return True
-    if not regress.get("ran"):
-        reason = str(regress.get("skipped_reason") or "")
-        # Two deliberate skips are complete results, not failures: a pin with
-        # no suite contract, and a regress leg not reached because a merge-gate
-        # lane failed first (the lane's own record carries the verdict).
-        return reason != "no-suite-config" and not reason.startswith("lane-")
-    if regress.get("exit_first") not in accepted:
-        return True
-    if (regress.get("exit_first") == SENTINEL_TEST_FAIL
-            and regress.get("exit_confirm") not in accepted):
-        return True
-    return False
+    return _e2e_incomplete(e2e)
 
 
 def e2e_verdict(e2e: wire.VerifyE2eSignal | None) -> str | None:
@@ -1717,7 +1694,6 @@ def e2e_escalated(signals: wire.VerifySignals) -> bool:
 
 def _authored_lane_outcome(authored: wire.VerifyAuthoredSignal | None,
                            judge: wire.VerifyJudgment | None, *,
-                           regress: wire.VerifyRegressSignal | None,
                            lanes: dict[str, wire.VerifyLaneSignal] | None = None,
                            e2e: wire.VerifyE2eSignal | None = None) -> str:
     """The no-test lane's outcome, from the agent-authored test's committed
@@ -1730,7 +1706,7 @@ def _authored_lane_outcome(authored: wire.VerifyAuthoredSignal | None,
     low-confidence red — settles to unverifiable-no-test with the attempt on
     record. The lane never holds (a broken run is re-queued by the operator,
     not automatically) and never escalates: an agent-authored artifact moves
-    no policy state. A confirmed full-suite or e2e regression is host-observed
+    no policy state. A confirmed e2e regression is host-observed
     evidence about the PR itself, so it keeps `regressed` (e2e_verdict's
     `escalate` too).
 
@@ -1748,8 +1724,6 @@ def _authored_lane_outcome(authored: wire.VerifyAuthoredSignal | None,
     match = (judge or {}).get("red_reason_match") or {}
     if match.get("matches") is not True or match.get("confidence") == "low":
         return "unverifiable-no-test"
-    if regress is not None and regress.get("confirmed"):
-        return "regressed"
     e2e_says = e2e_verdict(e2e)
     if e2e_says == "regressed":
         return "regressed"
@@ -1764,7 +1738,6 @@ def _authored_lane_outcome(authored: wire.VerifyAuthoredSignal | None,
 def verify_outcome(blind: wire.VerifyBlindSignal,
                    host: wire.VerifyRedGreenSignal,
                    judge: wire.VerifyJudgment | None, *,
-                   regress: wire.VerifyRegressSignal | None,
                    authored: wire.VerifyAuthoredSignal | None = None,
                    lanes: dict[str, wire.VerifyLaneSignal] | None = None,
                    e2e: wire.VerifyE2eSignal | None = None) -> str | None:
@@ -1775,10 +1748,7 @@ def verify_outcome(blind: wire.VerifyBlindSignal,
     driver stores when both legs exit SENTINEL_TEST_FAIL (green_accepted /
     green_confirm_accepted own how those relax the green bar). `judge` is the
     post-run red-reason rating (`red_reason_match`), plus Signal 4's
-    repro-reason rating (`repro_reason_match`) when a repro ran. `regress` is
-    the full-suite signal:
-    a confirmed regression (both runs exited 20) demotes a would-be
-    `verified-fix` to `regressed`; escalate keeps primacy. Returns None to
+    repro-reason rating (`repro_reason_match`) when a repro ran. Returns None to
     HOLD, writing no section: either the run errored (verify_run_errored — the
     PR re-runs), or the judge's red-reason rating is unusable.
 
@@ -1801,14 +1771,14 @@ def verify_outcome(blind: wire.VerifyBlindSignal,
     gated only by the signals above.
 
     `e2e` is the in-app regression leg; e2e_verdict owns its reading. Its
-    `regressed` ranks with the suite's, ahead of the lanes; its `escalate`
+    `regressed` ranks ahead of the lanes; its `escalate`
     comes after them, so it never masks a regression."""
     if blind.get("requires_live_agent"):
         return "unverifiable-needs-live-agent"
     if not blind.get("test_cmd"):
         if host.get("apply_exit") == SENTINEL_PATCH_CONFLICT:
             return "needs-rebase"
-        return _authored_lane_outcome(authored, judge, regress=regress, lanes=lanes, e2e=e2e)
+        return _authored_lane_outcome(authored, judge, lanes=lanes, e2e=e2e)
     if host.get("no_test_hunks"):
         # has_test claimed a PR-authored test, but the diff carried no test hunk
         # to apply for red — no legitimate red was ever possible here.
@@ -1816,7 +1786,7 @@ def verify_outcome(blind: wire.VerifyBlindSignal,
 
     if host.get("apply_exit") == SENTINEL_PATCH_CONFLICT:
         return "needs-rebase"
-    if verify_run_errored(blind, host, regress=regress, e2e=e2e):
+    if verify_run_errored(blind, host, e2e=e2e):
         return None
     if not (host.get("red_exit") == SENTINEL_TEST_FAIL and green_accepted(host)):
         return "not-verified"
@@ -1841,8 +1811,6 @@ def verify_outcome(blind: wire.VerifyBlindSignal,
         return "not-verified"
     if match.get("confidence") == "low":
         return "escalate"
-    if regress is not None and regress.get("confirmed"):
-        return "regressed"
     e2e_says = e2e_verdict(e2e)
     if e2e_says == "regressed":
         return "regressed"
