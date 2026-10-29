@@ -12,7 +12,13 @@ from pipeline.testsupport import bump_section, greptile_entry, reviews_section
 from prospector_app.backend import data, rereview_hunt
 
 HEAD = "a" * 40
-OLD = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+
+
+def _ago(days: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+OLD = _ago(3)
 
 
 def _pr(n: int, *, reviewed_sha: str | None = "0" * 40, updated: str = OLD,
@@ -31,6 +37,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(data, "_store", st)
     monkeypatch.setenv("TRIAGE_FIX_HUNT_REREVIEW", "1")
     monkeypatch.delenv("TRIAGE_REREVIEW_BUDGET", raising=False)
+    monkeypatch.delenv("TRIAGE_REREVIEW_WINDOW_DAYS", raising=False)
     return st
 
 
@@ -68,15 +75,39 @@ def test_a_fresh_verdict_a_young_head_or_red_ci_is_left_alone(store, monkeypatch
     store.save_pr(_pr(1, reviewed_sha=HEAD))
     store.save_pr(_pr(2, updated=datetime.now(timezone.utc).isoformat()))
     store.save_pr(_pr(3, ci="failing"))
-    store.save_pr(_pr(4, mergeable=False))
+    store.save_pr(_pr(4, ci="failing", mergeable=False))
     store.save_pr({**_pr(5), "threat": bump_section(HEAD)})
     data.refresh()
     assert rereview_hunt.candidates() == []
 
 
+def test_a_conflicted_head_whose_ci_is_not_red_is_asked_for(store, monkeypatch):
+    store.save_pr(_pr(1, mergeable=False))
+    store.save_pr(_pr(2, mergeable=False, ci="pending"))
+    data.refresh()
+    assert [n for n, _ in rereview_hunt.candidates()] == [1, 2]
+
+
+def test_only_prs_updated_within_the_window_are_asked_about(store, monkeypatch):
+    store.save_pr(_pr(1, updated=_ago(29)))
+    store.save_pr(_pr(2, updated=_ago(31)))
+    data.refresh()
+    assert [n for n, _ in rereview_hunt.candidates()] == [1]
+    monkeypatch.setenv("TRIAGE_REREVIEW_WINDOW_DAYS", "40")
+    assert {n for n, _ in rereview_hunt.candidates()} == {1, 2}
+
+
+def test_the_most_recently_updated_pr_is_asked_about_first(store, monkeypatch):
+    store.save_pr(_pr(1, updated=_ago(2)))
+    store.save_pr(_pr(2, updated=_ago(9)))
+    store.save_pr(_pr(3, updated=_ago(1)))
+    data.refresh()
+    assert [n for n, _ in rereview_hunt.candidates()] == [3, 1, 2]
+
+
 def test_each_pass_and_each_day_are_bounded(store, monkeypatch):
     for n in range(1, 9):
-        store.save_pr(_pr(n))
+        store.save_pr(_pr(n, updated=_ago(1 + n), mergeable=n % 2 == 0))
     data.refresh()
     posted, _ = _wire(monkeypatch)
     assert rereview_hunt.request_rereviews(limit=3) == [1, 2, 3]
@@ -91,4 +122,14 @@ def test_nothing_is_posted_without_a_bot_token_or_with_the_lane_off(store, monke
     assert rereview_hunt.request_rereviews() == [] and posted == []
     posted, _ = _wire(monkeypatch)
     monkeypatch.setenv("TRIAGE_FIX_HUNT_REREVIEW", "0")
+    assert rereview_hunt.request_rereviews() == [] and posted == []
+
+
+def test_a_request_anywhere_in_the_window_counts(store, monkeypatch):
+    store.save_pr(_pr(1, updated=_ago(1)))
+    data.refresh()
+    stamp = _ago(20)
+    store.append_run({"phase": rereview_hunt.PHASE, "pr": 1, "started": stamp, "finished": stamp,
+                      "trigger": "autohunt", "stats": {"reviewer": "greptile", "head_sha": HEAD}})
+    posted, _ = _wire(monkeypatch)
     assert rereview_hunt.request_rereviews() == [] and posted == []

@@ -3,8 +3,10 @@
 A PR whose active reviewer's bar is stale or pending at its current head is
 neither clean nor fixable: the hunter's `fix` refuses it because the verdict
 describes a head the author moved past, or none yet, and nothing else asks
-the reviewer again. A worker machine asks on a cadence: for an open,
-mergeable, CI-green PR whose head is at least HEAD_AGE_SECONDS old, it posts
+the reviewer again. A reviewer reads the diff, so a merge conflict does not
+stop the ask. A worker machine asks on a cadence: for an open PR whose CI is
+not failing, whose head is at least HEAD_AGE_SECONDS old, and which GitHub
+last updated within `settings.rereview_window_days`, most recent first, it posts
 the reviewer's mention as the bot through `executor.retrigger_review`
 (Activity-logged), once per PR and head, a bounded number per pass and per
 UTC day, and starts the ingest wait for the verdict.
@@ -29,10 +31,8 @@ PER_PASS = 5
 # reviewer's own push-triggered review has had this long to arrive.
 HEAD_AGE_SECONDS = 6 * 3600
 # The ledger phase a request is booked under; the booking is what keeps a head
-# from being asked about twice.
+# from being asked about twice. The ledger is read back over the whole window.
 PHASE = "rereview:request"
-# How far back the ledger is read for earlier requests.
-LOOKBACK_DAYS = 14
 
 _thread: threading.Thread | None = None
 _stop = threading.Event()
@@ -40,26 +40,29 @@ _stop = threading.Event()
 
 def candidates(now: datetime | None = None) -> list[tuple[int, Reviewer]]:
     """(PR, reviewer) pairs whose verdict is missing at the current head: open,
-    mergeable, CI passing, not a dependency bump, signals current, head at least
-    HEAD_AGE_SECONDS old, and the reviewer's bar stale or pending. Lowest PR number first."""
+    CI not failing, not a dependency bump, signals current, last updated between
+    HEAD_AGE_SECONDS and the window ago, and the reviewer's bar stale or
+    pending. Most recently updated first, then lowest PR number."""
     now = now or datetime.now(timezone.utc)
-    out: list[tuple[int, Reviewer]] = []
+    oldest = now - timedelta(days=settings.rereview_window_days())
     askable = [r for r in review_policy.active_reviewers(reviewers.REVIEW) if r.retrigger_mention]
     if not askable:
-        return out
-    for n, pr in sorted(data.prs().items()):
-        if (pr.state != "open" or pr.mergeable is not True or pr.ci != "passing"
-                or gates.bump_exempt(pr)):
+        return []
+    dated: list[tuple[datetime, int, Reviewer]] = []
+    for n, pr in data.prs().items():
+        if pr.state != "open" or pr.ci == "failing" or gates.bump_exempt(pr):
             continue
         if not is_current(pr, "signals"):
             continue
         updated = storekit.parse_ts(pr.updated_at)
-        if updated is None or (now - updated).total_seconds() < HEAD_AGE_SECONDS:
+        if (updated is None or updated < oldest
+                or (now - updated).total_seconds() < HEAD_AGE_SECONDS):
             continue
         for r in askable:
             if review_policy.bar(pr, r).status in (reviewers.STALE, reviewers.PENDING):
-                out.append((n, r))
-    return out
+                dated.append((updated, n, r))
+    dated.sort(key=lambda d: (-d[0].timestamp(), d[1]))
+    return [(n, r) for _, n, r in dated]
 
 
 def _requests(since: datetime) -> list[dict]:
@@ -89,7 +92,7 @@ def request_rereviews(limit: int = PER_PASS) -> list[int]:
     if not picks:
         return []
     now = datetime.now(timezone.utc)
-    bookings = _requests(now - timedelta(days=LOOKBACK_DAYS))
+    bookings = _requests(now - timedelta(days=settings.rereview_window_days()))
     budget = settings.rereview_budget() - used_today(bookings, now)
     if budget <= 0:
         return []

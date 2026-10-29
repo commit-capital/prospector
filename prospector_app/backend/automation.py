@@ -301,9 +301,9 @@ def _blocked(pr: Pr, action: str, why: str) -> dict:
     if "signals or reviews stale" in low:
         return _r("auto", "waiting", "waiting on re-ingest")
     if action == "rebase" or (action == "update" and pr.drift_state == "conflicts"):
-        # The hunter rebases only at the review bar, and the re-review hunter
-        # asks only on a mergeable head, so a conflicted PR below or without a
-        # verdict waits on its author either way.
+        # The hunter rebases only at the review bar, so a conflicted PR below
+        # it waits on its author. The re-review hunter asks for a missing
+        # verdict on a recently updated conflicted head.
         return _r("handed", "author-conflicts",
                   f"needs a rebase, and the hunter leaves it to the author: {why}")
     if "stale or pending" in low or "awaiting" in low or "review stale" in low:

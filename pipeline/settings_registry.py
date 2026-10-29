@@ -106,7 +106,7 @@ SETTINGS: tuple[Setting, ...] = (
        "A worker re-reads, every 30 minutes, how authors answered the PRs and issues we acted on.",
        on_by_default=True),
     _b("TRIAGE_FIX_HUNT_REREVIEW", "behavior", "Ask reviewers to re-review",
-       "Post a reviewer's mention as the bot when its verdict is stale on a green PR.",
+       "Post a reviewer's mention as the bot when its verdict is stale on a PR whose CI is not failing.",
        on_by_default=True),
     _i("TRIAGE_FIX_HUNT_LIMIT", "behavior", "Hunted fixes in flight", "3",
        "The most hunter-queued agent fixes running at once."),
@@ -120,6 +120,8 @@ SETTINGS: tuple[Setting, ...] = (
        "Continuations from a machine objection, per worker per UTC day."),
     _i("TRIAGE_REREVIEW_BUDGET", "behavior", "Re-review requests per day", "40",
        "Reviewer re-review mentions, per worker per UTC day."),
+    _i("TRIAGE_REREVIEW_WINDOW_DAYS", "behavior", "Re-review window (days)", "30",
+       "The re-review hunter asks only about PRs updated within this many days."),
     _i("TRIAGE_FIX_AUTOPUSH_MIN_TIER", "behavior", "Lowest risk tier pushed unattended", "2",
        "An unattended fix push needs every touched path at or above this risk tier "
        "(0 is the highest risk).", maximum=3),

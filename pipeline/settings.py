@@ -473,6 +473,12 @@ def rereview_budget() -> int:
     return positive_int("TRIAGE_REREVIEW_BUDGET", 40)
 
 
+def rereview_window_days() -> int:
+    """How recently GitHub must have updated a PR for the re-review hunter to ask
+    about its head."""
+    return positive_int("TRIAGE_REREVIEW_WINDOW_DAYS", 30)
+
+
 def fix_hunt_security() -> bool:
     """Whether an idle fix worker may queue an objection fix against a current
     YELLOW security verdict on a mergeable, CI-green PR."""
