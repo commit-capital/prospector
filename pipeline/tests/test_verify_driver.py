@@ -671,7 +671,7 @@ class _SubprocessOK:
     returncode = 0
 
 
-class TestPrepareBase:
+class TestPrepareBaseSuite:
     def test_runs_no_full_suite(self, tmp_path, monkeypatch):
         # Upstream CI runs the full suite; the pin captures no baseline of it.
         monkeypatch.setattr(vd.subprocess, "run", lambda *a, **k: _SubprocessOK())
@@ -1642,7 +1642,7 @@ class TestVerifyPr:
         _pr(s, 1); _diff(diffs, "h1", "src/a.test.ts")
         self._blind(s)
         calls = self._phases(monkeypatch, **{"apply-check": 0, "red": 0, "green": 0})
-        ev = vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
+        vd.verify_pr(s.load_pr(1), "img:t0", "base1", 0)
         assert calls == ["apply-check", "red", "green"]
 
 

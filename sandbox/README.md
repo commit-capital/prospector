@@ -169,9 +169,7 @@ a red phase's writes cannot appear in the green phase's container.
 ## Full-suite regression check: `baseline` and `regress`
 
 Two more phases, run the same way (`sandbox-run.sh --phase baseline|regress`),
-check an issue fix against the whole suite (`pipeline/prove.py`). PR
-verification does not run them: upstream CI runs the full suite on every PR.
-Both drive
+check an issue fix against the whole suite (`pipeline/prove.py`). Both drive
 `verify-suite.mjs`, a trusted Node script mounted read-only at
 `/verify-suite.mjs` (alongside `run-phase.sh` and `boot-probe.sh`) — the one
 phase where no agent-authored string runs; its entire command surface is trusted

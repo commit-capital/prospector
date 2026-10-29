@@ -116,8 +116,7 @@ uv run python pipeline/verify_driver.py build-image
 uv run python pipeline/verify_driver.py prepare-base --tier 1
 ```
 
-Verification does not run the repository's full suite: upstream CI runs it on
-every PR, and the merge gate requires CI green at the current head. The operator queues a PR from the app,
+The operator queues a PR from the app,
 and the `TRIAGE_VERIFY_WORKER` machine runs `pipeline/verify_pr.py` for one PR
 at a time:
 

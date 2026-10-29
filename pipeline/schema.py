@@ -138,8 +138,8 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 44 — a PR's verify signals carry `e2e` (the in-app regression leg) and a pin
 #      its `e2e_baseline`; an older judge re-run ignores a confirmed e2e
 #      regression and writes verified-fix.
-# 45 — a PR's verify signals carry no `regress` (the full suite no longer runs)
-#      and a pin no `baseline_failing`; an older judge holds a red->green with no
+# 45 — a PR's verify signals carry no `regress` and a pin no
+#      `baseline_failing`; an older judge holds a red->green with no
 #      regress leg as an incomplete run, and an older verify refuses the pin.
 STORE_SCHEMA_VERSION = 45
 

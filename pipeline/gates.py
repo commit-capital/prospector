@@ -1973,7 +1973,7 @@ def verify_disposition(pr: Pr) -> tuple[str, str] | None:
                     "against current main.")
         return ("request-changes",
                 "Dynamic verification found a regression — with this PR applied, "
-                "tests (unit or in-app) that pass on the pinned main fail, confirmed on a second "
+                "tests that pass on the pinned main fail, confirmed on a second "
                 "run. The failing tests are in verify.findings. Update the PR "
                 "against current main.")
     return None
