@@ -1887,6 +1887,8 @@ export interface IssueDetail extends IssueRow {
   dup_comment: string | null;
   cluster_label: string | null;
   fix_request?: IssueFixRequest | null;
+  /** Whether an operator's action takes the queued request's place (fix_review.replaceable). */
+  fix_request_replaceable?: boolean;
   fix_run?: IssueFixRun | null;
   fix_thread?: IssueFixThreadEntry[];
   fix_followup?: IssueFixFollowup | null;

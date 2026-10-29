@@ -42,6 +42,13 @@ def test_the_issue_says_why_its_fix_waits_for_an_operator(client):
     assert hold["kind"] == "boundary" and "auth" in hold["text"]
 
 
+@pytest.mark.parametrize("source,want", [("public", True), ("operator", False)])
+def test_the_issue_says_whether_an_operator_action_replaces_its_queued_request(client, source, want):
+    c, store = client
+    store.edit_issue(7).record_fix_request({"action": "ask-reporter", "status": "queued", "source": source})
+    assert c.get("/api/issues/7").json()["fix_request_replaceable"] is want
+
+
 def test_an_action_that_does_not_fit_is_a_409_with_the_reason(client):
     c, _ = client
     r = c.post("/api/issues/7/fix", json={"action": "propose"})

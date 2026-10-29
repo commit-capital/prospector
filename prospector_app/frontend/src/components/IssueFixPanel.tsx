@@ -99,6 +99,9 @@ function FixBanner({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) 
             {req.requested_by && <>asked by {req.requested_by} · </>}
             {req.status === "queued" ? `queued ${when(req.queued_at)}` : `on ${req.host} since ${when(req.started_at)}`}
             {req.guidance && <div className="muted small">“{req.guidance}”</div>}
+            {d.fix_request_replaceable && (
+              <div className="muted small">Prospector queued this on its own; anything you do below takes its place.</div>
+            )}
           </div>
           {req.status === "queued" && (
             <button className="btn-secondary sm" onClick={cancel}>Cancel</button>
@@ -137,7 +140,8 @@ function FixActions({ d, onChanged }: { d: IssueDetail; onChanged: () => void })
   const status = d.fix_status;
   const run = d.fix_run;
   const req = d.fix_request;
-  if (d.state !== "open" || (req && (req.status === "queued" || req.status === "running"))) {
+  if (d.state !== "open"
+      || (req && (req.status === "queued" || req.status === "running") && !d.fix_request_replaceable)) {
     return null;
   }
 
@@ -145,7 +149,7 @@ function FixActions({ d, onChanged }: { d: IssueDetail; onChanged: () => void })
     setBusy(true);
     api.issueFix(d.number, body)
       .then(() => { pushToast(done, "green"); setText(""); onChanged(); })
-      .catch((e: Error) => pushToast("Couldn't queue that", "red", { detail: e.message }))
+      .catch((e: Error) => { pushToast("Couldn't queue that", "red", { detail: e.message }); onChanged(); })
       .finally(() => setBusy(false));
   };
 

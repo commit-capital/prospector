@@ -348,6 +348,7 @@ def get_issue(n: int) -> dict | None:
     cl = clusters.get(i.cluster_id) if i.cluster_id else None
     row["cluster_label"] = (cl.curation or {}).get("label") if cl else None
     row["fix_request"] = i.fix_request
+    row["fix_request_replaceable"] = fix_review.replaceable(i.fix_request)
     row["fix_run"] = i.fix_run
     row["fix_thread"] = i.fix_thread
     row["fix_followup"] = i.fix_followup
