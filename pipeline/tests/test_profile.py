@@ -338,11 +338,34 @@ class TestVerifyLaneKeys:
     def test_lint_cmd_defaults_to_none(self):
         assert profile.parse_profile({"version": 1}, "t").verify.lint_cmd is None
 
-    def test_e2e_cmd_is_rejected(self):
-        # Reserved lane: no key may promise coverage that does not exist yet.
+
+class TestE2e:
+    def test_e2e_defaults_to_none(self):
+        assert profile.parse_profile({"version": 1}, "t").verify.e2e is None
+
+    def test_e2e_parses(self):
+        p = profile.parse_profile({"version": 1, "verify": {"e2e": {
+            "config": "tests/e2e/playwright.config.ts",
+            "boot_timeout_s": 900, "exclude": ["tests/e2e/agentmail.spec.ts"],
+            "channel_env": "APP_PLAYWRIGHT_CHANNEL"}}}, "t")
+        assert p.verify.e2e == profile.E2eConfig(
+            config="tests/e2e/playwright.config.ts", boot_timeout_s=900,
+            exclude=("tests/e2e/agentmail.spec.ts",),
+            channel_env="APP_PLAYWRIGHT_CHANNEL")
+
+    @pytest.mark.parametrize("bad", [
+        {"config": ""}, {"config": "/abs/p.ts"}, {"config": "../x.ts"},
+        {"config": "a.ts", "boot_timeout_s": 0}, {"config": "a.ts", "exclude": "x"},
+        {"config": "a.ts", "exclude": ["/abs.ts"]}, {"config": "-x/p.ts"},
+        {"config": "a.ts", "exclude": ["--grep=x"]},
+        {"config": "a.ts", "cmd": "rm -rf /"}, {"config": "a.ts", "channel_env": "A=B"}])
+    def test_e2e_rejects_bad_values(self, bad):
+        with pytest.raises(SystemExit):
+            profile.parse_profile({"version": 1, "verify": {"e2e": bad}}, "t")
+
+    def test_e2e_cmd_stays_rejected(self):
         with pytest.raises(SystemExit, match="unknown key"):
-            profile.parse_profile(
-                {"version": 1, "verify": {"e2e_cmd": "pnpm test:e2e"}}, "t")
+            profile.parse_profile({"version": 1, "verify": {"e2e_cmd": "pnpm test:e2e"}}, "t")
 
 
 class TestAuthoring:

@@ -6,6 +6,7 @@
 # Build context layout (verify_driver.py prepare-base builds it):
 #   src/         the scrubbed, remote-stripped clone at the pinned main SHA
 #   pnpm-store/  prefetched pnpm store (Tier 1 only; empty dir at Tier 0)
+#   browsers/    the Chromium the base's pinned Playwright drives (empty when none)
 #
 # Build with --network none: egress during install is structurally impossible,
 # not merely unconfigured. The scrub runs on the host BEFORE this build, because
@@ -84,7 +85,10 @@ LABEL prospector.verify-base=1 prospector.sandbox-image=${BASE_IMAGE}
 # directory existing anywhere in this image.
 COPY --from=builder --chown=sandbox:sandbox /work/src /work/src
 COPY --from=builder --chown=sandbox:sandbox /work/rust /work/rust
-ENV CARGO_NET_OFFLINE=true
+# Only the final image runs a browser; the builder never does.
+COPY --chown=sandbox:sandbox browsers /work/browsers
+ENV CARGO_NET_OFFLINE=true \
+  PLAYWRIGHT_BROWSERS_PATH=/work/browsers
 
 WORKDIR /work/src
 

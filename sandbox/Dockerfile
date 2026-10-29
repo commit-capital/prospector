@@ -1,7 +1,9 @@
 # Hardened, secretless image for dynamic PR verification. Deliberately
 # WITHOUT agent CLIs (claude/codex) and gh — this container never holds
 # credentials and never talks to a model. It only builds and runs PR code.
-FROM node:lts-trixie-slim
+# Node 24: the target's engines require >=24.11.0, and corepack ships with Node 24
+# but not with later majors.
+FROM node:24-trixie-slim
 
 # postgresql-client supplies the psql binary the target repository's backup
 # tests spawn for their COPY-fallback restore path (#3718: its absence failed
@@ -11,15 +13,41 @@ FROM node:lts-trixie-slim
 # the tree pins (`verify_driver.prefetch_rust`). python3 is node-gyp's
 # interpreter: a native npm package with no prebuilt binary (cpu-features,
 # under ssh2) compiles from its install script, and a script that fails fails
-# the whole install.
+# the whole install. The libraries and fonts are what the Chromium a base bakes
+# in (`verify_driver.prefetch_browsers`) links against and renders text with.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
     build-essential \
     ca-certificates \
     cmake \
+    fonts-liberation \
+    fonts-noto-color-emoji \
     git \
     jq \
+    libasound2t64 \
+    libatk-bridge2.0-0t64 \
+    libatk1.0-0t64 \
+    libatspi2.0-0t64 \
+    libcairo2 \
+    libcups2t64 \
+    libdbus-1-3 \
+    libdrm2 \
+    libfontconfig1 \
+    libfreetype6 \
+    libgbm1 \
+    libglib2.0-0t64 \
+    libnspr4 \
+    libnss3 \
+    libpango-1.0-0 \
+    libx11-6 \
+    libxcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxkbcommon0 \
+    libxrandr2 \
     pkg-config \
     postgresql-client \
     python3 \
