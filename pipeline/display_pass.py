@@ -135,7 +135,7 @@ def source_hash(pr: Pr) -> str:
 def current(pr: Pr) -> dict | None:
     """The PR's display section while it describes the PR's head and verdict."""
     sec = pr.section("display")
-    if not sec or not freshness.same_patch(pr, sec.get("against_head_sha")):
+    if not sec or not freshness.carries(pr, sec.get("against_head_sha")):
         return None
     return sec if sec.get("source_hash") == source_hash(pr) else None
 

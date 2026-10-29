@@ -414,3 +414,16 @@ def test_ci_red_only_on_a_check_older_than_the_description_edit_says_so():
     ci = next(x for x in pr_checks.checks_for_record(rec)["checks"] if x["key"] == "ci")
     assert ci["status"] == "fail"
     assert "review" in ci["detail"] and "may be stale" in ci["detail"]
+
+
+def test_a_carried_design_review_row_agrees_with_its_bar(monkeypatch):
+    monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "gate")
+    review_policy.reset()
+    entry = {**_DESIGN_BLOCKING, "reviewed_sha": "old", "findings": []}
+    patch = {"id": "p", "same_as": ["old"], "against_head_sha": HEAD, "checked_at": NOW}
+    for carried in (True, False):
+        rec = _pr(reviews=reviews_section(HEAD, NOW, design=entry),
+                  **({"patch": patch} if carried else {}))
+        assert _design_check(rec)["stale"] is not carried
+        assert review_policy.own_bar(rec, reviewers.DESIGN).status == (
+            reviewers.PASS if carried else reviewers.STALE)

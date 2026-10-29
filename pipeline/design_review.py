@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pipeline import (authoring, capacity, coverage, design_verify, diffpaths, freshness, gates,
-                      headless_agent, reviewers, settings, storekit, verdict_log)
+                      headless_agent, review_policy, reviewers, settings, storekit, verdict_log)
 
 if TYPE_CHECKING:
     from pipeline.coverage import CoverageRecord
@@ -130,7 +130,8 @@ def retrying(pr: Pr) -> bool:
     keeps, so a huntable head is in the pool only to retry a faulted coverage
     run."""
     entry = pr.review_entry(reviewers.DESIGN.id) or {}
-    return freshness.same_patch(pr, entry.get("reviewed_sha")) and not reviewers.design_outdated(entry)
+    return (entry.get("reviewed_sha") == review_policy.review_head(pr, reviewers.DESIGN)
+            and not reviewers.design_outdated(entry))
 
 
 def _within(clone: Path, path: str) -> bool:

@@ -7,6 +7,7 @@ import pytest
 
 from prospector_app.backend import data
 from prospector_app.backend import freshness_live
+from pipeline import review_policy, reviewers
 from pipeline.model import Pr
 from pipeline.testsupport import greptile_entry
 
@@ -93,6 +94,22 @@ class TestReviewDivergence:
                {1: {"state": "open", "merged": False, "head": HEAD,
                     "mergeable": "MERGEABLE", "ci": "passing"}})
         assert freshness_live.check([1])["items"][0]["diverged"] == []
+
+    def test_a_carried_design_review_agrees_with_its_bar(self, monkeypatch):
+        monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "gate")
+        review_policy.reset()
+        for carried in (True, False):
+            rec = self._pr(HEAD)
+            rec.rec["reviews"]["design"] = {"kind": reviewers.REVIEW, "reviewed_sha": "old",
+                                            "findings": [],
+                                            "extra": {"rubric": reviewers.DESIGN_RUBRIC}}
+            if carried:
+                rec.rec["patch"] = {"id": "p", "same_as": ["old"], "against_head_sha": HEAD}
+            _patch(monkeypatch, {1: rec}, {1: LIVE})
+            flagged = [d["reviewer"] for d in freshness_live.check([1])["items"][0]["diverged"]
+                       if d["kind"] == "review"]
+            assert flagged == ([] if carried else ["design"])
+            assert (review_policy.own_bar(rec, reviewers.DESIGN).status == reviewers.PASS) is carried
 
     def test_quiet_when_greptile_never_reviewed(self, monkeypatch):
         _patch(monkeypatch, {1: _store_pr(1)},

@@ -42,6 +42,14 @@ class TestPatchId:
     def test_a_capped_diff_has_none(self):
         assert diff_cache.patch_id(BEFORE + "x" * diff_cache.MAX_DIFF_BYTES) is None
 
+    def test_a_binary_change_has_none(self):
+        changed = ("diff --git a/fixture.zip b/fixture.zip\nindex 1a..2b 100644\n"
+                   "Binary files a/fixture.zip and b/fixture.zip differ\n")
+        added = ("diff --git a/x.wasm b/x.wasm\nnew file mode 100644\nindex 0000000..3c\n"
+                 "Binary files /dev/null and b/x.wasm differ\n")
+        assert diff_cache.patch_id(BEFORE + changed) is None
+        assert diff_cache.patch_id(BEFORE + added) is None
+
 
 def _seed(store: Store, diffs: Path, head: str, diff: str) -> None:
     (diffs / f"{head}.diff").write_text(diff)
@@ -49,7 +57,25 @@ def _seed(store: Store, diffs: Path, head: str, diff: str) -> None:
     sections = {k: v for k, v in (rec.raw if rec else {}).items() if k not in ("pr", "meta")}
     store.save_pr({"pr": 1, **sections,
                    "meta": {"title": "t", "author": "alice", "state": "open", "draft": False,
-                            "head_sha": head, "checked_at": "2026-10-28T00:00:00+00:00"}})
+                            "head_sha": head, "base": "master",
+                            "checked_at": "2026-10-28T00:00:00+00:00"}})
+
+
+def _github(monkeypatch, parents: dict[str, list[str]], on_base: tuple[str, ...] = ("b1", "b2"),
+            authors: dict[str, str] | None = None):
+    """GitHub as `threat_scan.base_merge` reads it: each head's parents and
+    author (a maintainer unless named), who can write, and which commits
+    master contains."""
+    def gh_json(path: str) -> dict:
+        if "/commits/" in path:
+            head = path.rsplit("/", 1)[1]
+            return {"parents": [{"sha": s} for s in parents.get(head, [])],
+                    "author": {"login": (authors or {}).get(head, "maintainer")}}
+        if path.endswith("/permission"):
+            return {"permission": "write" if "/maintainer/" in path else "read"}
+        other = path.rsplit("/", 1)[1].split("...")[0]
+        return {"status": "ahead" if other in on_base else "diverged"}
+    monkeypatch.setattr(threat_scan.gh, "gh_json", gh_json)
 
 
 def _scan(store: Store, diffs: Path) -> dict:
@@ -60,7 +86,8 @@ def _scan(store: Store, diffs: Path) -> dict:
 
 
 class TestScanRecordsThePatch:
-    def test_base_merges_chain_and_a_real_change_resets(self, tmp_path):
+    def test_base_merges_chain_and_a_real_change_resets(self, tmp_path, monkeypatch):
+        _github(monkeypatch, {"h2": ["h1", "b1"], "h3": ["h2", "b2"], "h4": ["h3"]})
         store, diffs = Store(tmp_path), tmp_path / "diffs"
         diffs.mkdir()
         _seed(store, diffs, "h1", BEFORE)
@@ -72,7 +99,18 @@ class TestScanRecordsThePatch:
         _seed(store, diffs, "h4", _diff("cc..dd", 260, added="agents"))
         assert _scan(store, diffs)["same_as"] == []
 
-    def test_a_record_stamped_before_patches_compares_its_threat_head(self, tmp_path):
+    def test_the_same_patch_without_a_maintainers_base_merge_resets(self, tmp_path, monkeypatch):
+        _github(monkeypatch, {"h2": ["h1"], "h3": ["h2", "elsewhere"], "h4": ["h3", "b1"]},
+                authors={"h4": "contributor"})
+        store, diffs = Store(tmp_path), tmp_path / "diffs"
+        diffs.mkdir()
+        _seed(store, diffs, "h1", BEFORE)
+        _scan(store, diffs)
+        for head in ("h2", "h3", "h4"):
+            _seed(store, diffs, head, AFTER_BASE_MERGE)
+            assert _scan(store, diffs)["same_as"] == []
+
+    def test_a_record_stamped_before_patches_starts_its_chain_at_its_next_head(self, tmp_path):
         store, diffs = Store(tmp_path), tmp_path / "diffs"
         diffs.mkdir()
         _seed(store, diffs, "h1", BEFORE)
@@ -80,8 +118,9 @@ class TestScanRecordsThePatch:
         pr = store.edit_pr(1)
         del pr.rec["patch"]
         pr.set_threat(pr.section("threat"))
+        assert _scan(store, diffs) == {}
         _seed(store, diffs, "h2", AFTER_BASE_MERGE)
-        assert _scan(store, diffs)["same_as"] == ["h1"]
+        assert _scan(store, diffs)["same_as"] == []
 
     def test_a_capped_head_records_no_patch(self, tmp_path):
         store, diffs = Store(tmp_path), tmp_path / "diffs"
@@ -128,6 +167,13 @@ class TestCarriedFacts:
         pr.rec["patch"]["against_head_sha"] = "h2"
         assert not freshness.is_current(pr, "analysis")
 
+    def test_a_finding_anchored_to_a_line_keeps_the_fact_at_its_own_head(self):
+        finding = {"title": "t", "location": "a.ts, hunk @@ -1,2 +1,3 @@", "severity": "yellow"}
+        pr = _pr(security=_at("h1", verdict="YELLOW", findings=[finding]))
+        assert not freshness.is_current(pr, "security")
+        assert freshness.is_current(_pr(head="h1", security=_at("h1", verdict="YELLOW",
+                                                                  findings=[finding])), "security")
+
     def test_an_uningested_push_reads_stale(self):
         pr = _pr(live="h3", analysis=_at("h1", disposition="merge"))
         assert not freshness.is_current(pr, "analysis")
@@ -139,3 +185,13 @@ class TestCarriedFacts:
                                      reviewers.DESIGN).status == reviewers.PASS
         assert review_policy.own_bar(_pr(same_as=(), reviews={"design": entry}),
                                      reviewers.DESIGN).status == reviewers.STALE
+
+    def test_a_design_review_with_an_open_line_finding_holds_only_at_its_own_head(self):
+        finding = {"path": "a.ts", "line": 12, "severity": "minor", "title": "t"}
+        entry = {"kind": reviewers.REVIEW, "reviewed_sha": "h1", "findings": [finding],
+                 "extra": {"rubric": reviewers.DESIGN_RUBRIC}}
+        assert review_policy.own_bar(_pr(reviews={"design": entry}),
+                                     reviewers.DESIGN).status == reviewers.STALE
+        resolved = {**entry, "findings": [{**finding, "resolved": True}]}
+        assert review_policy.own_bar(_pr(reviews={"design": resolved}),
+                                     reviewers.DESIGN).status == reviewers.PASS

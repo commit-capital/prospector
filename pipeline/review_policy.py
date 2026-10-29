@@ -97,11 +97,12 @@ def bar(pr: Pr, reviewer: Reviewer) -> Bar:
 
 
 def review_head(pr: Pr, reviewer: Reviewer) -> str | None:
-    """The head `reviewer`'s entry on `pr` is judged against. A review
-    Prospector runs holds at an earlier head with the same patch; a GitHub
-    reviewer reviews each push itself."""
-    reviewed = (pr.review_entry(reviewer.id) or {}).get("reviewed_sha")
-    if reviewer.id == reviewers.DESIGN.id and freshness.same_patch(pr, reviewed):
+    """The head `reviewer`'s entry is judged at: the design review's own head
+    while freshness.carries it, else the ingested head."""
+    entry = pr.review_entry(reviewer.id) or {}
+    reviewed = entry.get("reviewed_sha")
+    if (reviewer.id == reviewers.DESIGN.id
+            and freshness.carries(pr, reviewed, reviewers.open_findings(entry))):
         return reviewed
     return pr.head_sha
 

@@ -88,9 +88,11 @@ from typing import TYPE_CHECKING, Literal
 from pipeline import actions
 from pipeline import diff_cache
 from pipeline import gates
+from pipeline import gh
 from pipeline import notify
 from pipeline import profile
 from pipeline import progress
+from pipeline import settings
 from pipeline import storekit
 from pipeline import threat_evidence
 from pipeline import threats
@@ -191,8 +193,7 @@ class DiffScan:
     the whole diff. `source` is what it read: `cached` (a whole cached diff),
     `fetched` (the whole diff, read from GitHub for this scan), `partial` (a
     capped cached copy alone, judged only when what it holds is already
-    malicious), or `uncached` (nothing). `patch` is the whole cached diff's
-    diff_cache.patch_id."""
+    malicious), or `uncached` (nothing). `patch` is its diff_cache.patch_id."""
     result: dict | None
     source: Literal["cached", "fetched", "partial", "uncached"]
     patch: str | None = None
@@ -286,22 +287,35 @@ def scan_record(rec: Pr, registry: dict, diffs_dir: Path = diff_cache.DIFFS,
 SAME_AS_CAP = 10
 
 
-def patch_section(rec: Pr, pid: str | None, store: Store, diffs_dir: Path) -> dict | None:
-    """The `patch` section to stamp at `rec`'s head, whose whole diff hashes to
-    `pid`, or None when there is nothing new to record. While the patch is
-    unchanged it names the earlier heads that shared it. A record with no
-    `patch` section yet compares against the head its threat stamp judged."""
+def patch_section(rec: Pr, pid: str | None) -> dict | None:
+    """The `patch` section for `rec`'s head, whose diff hashes to `pid`: the
+    earlier heads it carries facts from, while each move merged the base and
+    kept the patch. None when there is nothing new to record."""
     prior = rec.section("patch") or {}
-    if pid is None or prior.get("against_head_sha") == rec.head_sha:
+    head = prior.get("against_head_sha")
+    if pid is None or head == rec.head_sha:
         return None
-    head, same, prior_id = prior.get("against_head_sha"), prior.get("same_as", []), prior.get("id")
-    if not head:
-        head, same = (rec.section("threat") or {}).get("against_head_sha"), []
-        text = (diff_cache.cached([head], store, diffs_dir).get(head)
-                if head and head != rec.head_sha else None)
-        prior_id = diff_cache.patch_id(text) if text else None
-    return {"id": pid,
-            "same_as": [*same, head][-SAME_AS_CAP:] if head and pid == prior_id else []}
+    carry = (head and pid == prior.get("id") and rec.head_sha
+             and base_merge(head, rec.head_sha, rec.base_ref))
+    return {"id": pid, "same_as": [*prior["same_as"], head][-SAME_AS_CAP:] if carry else []}
+
+
+def base_merge(prev: str, head: str, base: str | None) -> bool:
+    """Whether `head` is a maintainer's merge of branch `base` into `prev`: its
+    first parent is `prev`, `base` contains its other, and its author is the bot
+    or can write to the repository. Unknown reads as no."""
+    repo = settings.repo()
+    commit = gh.gh_json(f"repos/{repo}/commits/{head}") or {}
+    parents = [p.get("sha") for p in commit.get("parents") or []]
+    author = (commit.get("author") or {}).get("login")
+    if not base or not author or len(parents) != 2 or parents[0] != prev:
+        return False
+    if author != settings.bot_login():
+        role = gh.gh_json(f"repos/{repo}/collaborators/{author}/permission") or {}
+        if role.get("permission") not in ("admin", "write"):
+            return False
+    compare = gh.gh_json(f"repos/{repo}/compare/{parents[1]}...{base}") or {}
+    return compare.get("status") in ("ahead", "identical")
 
 
 @dataclass
@@ -374,30 +388,25 @@ def scan(store: Store, prs: dict[int, Pr], diffs_dir: Path | None = None, *,
                 out.unstamped.append(n)
                 continue
             result = {**result, "revision": threats.REVISION}
-            restamp = not already_stamped(rec, result)
-            if restamp or (diff.patch is not None and
-                           (rec.section("patch") or {}).get("against_head_sha") != rec.head_sha):
+            if not already_stamped(rec, result):
                 # stamped through a fresh read, and only while its head is the one
                 # scanned: the scan runs long, and by write time the startup
                 # snapshot's copy may lack other phases' writes or name a head
                 # INGEST has since moved past
                 current = store.edit_pr(n)
                 if current.head_sha == rec.head_sha:
-                    patch = patch_section(current, diff.patch, store, diffs_dir)
-                    if restamp:
-                        # the stamp this replaces judged the same head: an
-                        # operator's clearing stays, and a leak it named that
-                        # this scan does not find retires its open item
-                        prior = current.section("threat") if stamped_at_head(current) else None
-                        if prior and "cleared" in prior:
-                            result = {**result, "cleared": prior["cleared"]}
-                        if (prior and "secret-leak" in prior.get("signatures", [])
-                                and "secret-leak" not in result["signatures"]):
-                            item_ops.append(functools.partial(
-                                actions.withdraw, item_id=f"rotate-secret:{n}"))
-                        restamped += 1
-                    if restamp or patch is not None:
-                        current.set_threat(result if restamp else None, patch=patch)
+                    # the stamp this replaces judged the same head: an
+                    # operator's clearing stays, and a leak it named that this
+                    # scan does not find retires its open item
+                    prior = current.section("threat") if stamped_at_head(current) else None
+                    if prior and "cleared" in prior:
+                        result = {**result, "cleared": prior["cleared"]}
+                    if (prior and "secret-leak" in prior.get("signatures", [])
+                            and "secret-leak" not in result["signatures"]):
+                        item_ops.append(functools.partial(
+                            actions.withdraw, item_id=f"rotate-secret:{n}"))
+                    current.set_threat(result, patch_section(current, diff.patch))
+                    restamped += 1
                 else:
                     moved += 1
                     out.unstamped.append(n)
