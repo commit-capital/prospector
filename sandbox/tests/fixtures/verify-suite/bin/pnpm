@@ -3,6 +3,7 @@
 # verify-suite.mjs emits: the preflight run, `vitest list`, and `vitest run`.
 # FIXTURE_FAIL: comma-separated repo-relative files to report as failed.
 # FIXTURE_DROP: one repo-relative file to omit from the report entirely.
+# FIXTURE_ARGS_LOG: a file each `vitest run` appends its arguments to.
 set -euo pipefail
 all="$*"
 case "$all" in
@@ -29,6 +30,7 @@ if [[ "$all" == *"vitest list"* ]]; then
 fi
 
 if [[ "$all" == *"vitest run"* ]]; then
+  [ -n "${FIXTURE_ARGS_LOG:-}" ] && echo "$all" >> "$FIXTURE_ARGS_LOG"
   out="" files=()
   for a in "$@"; do
     case "$a" in
