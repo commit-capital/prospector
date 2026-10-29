@@ -9,8 +9,8 @@ from collections.abc import Callable
 
 import pytest
 
-from issue_triage import (claim_test, judge_repro, reproduce_issue, review_issue_fix,
-                          second_opinion, solo_lane, trust_boundary)
+from issue_triage import (claim_test, judge_repro, lane_check, reproduce_issue,
+                          review_issue_fix, second_opinion, solo_lane, trust_boundary)
 from pipeline import headless_agent
 
 WT = "/nonexistent/prospector-prompt-test"
@@ -23,11 +23,11 @@ BOUNDARY_REVIEW, COMPARE = trust_boundary.review, second_opinion.compare
 # Each prompt, rendered for the report "x is wrong" / "x should be 2", by its
 # sha256 before the approval slot existed.
 GOLDEN = {
-    "solo_author": "f6440080e7d26c444107fe8efd79446737b2912e2ebca39e8459d7e4763dcf7b",
+    "solo_author": "ec5ee2f3bce71b536ef5b62e0e40b42dc6afa28fd527d4c04336b95ec413633f",
     "review": "425d42e886299d69b344668894b8e93437bead50af26c9a9852ce604826170b7",
     "preferred_fix": "4e8447f8002be851dcd4ada4a6cc4b5a3c7710e8239f9b8e3895a5ce0e832d13",
     "trust_boundary": "61b88e8dc631cc353de31b57b9ab2f5142e9a63c29a52ec52661a4aef113d749",
-    "claim_author": "e14c9888abc3a340d0b2fff221aa782188a07cfafcb9b5b1ea8e59bbe1016c67",
+    "claim_author": "48602724d4121c3321134789b5e05c2a7988ded0261acc935bd72dd9839e3716",
     "judge_repro": "ecb1328a6bf836c8ea7e69f2e0682b570e030a8f04d953371f6acbc09a989f71",
     "compare": "15612458e7b056228ac73b9d77b89429e2704af5d06c6d7c34d37f1a210a0635",
 }
@@ -56,6 +56,8 @@ CALLS: dict[str, Callable[..., object]] = {
 @pytest.fixture
 def prompts(monkeypatch):
     monkeypatch.delenv("TRIAGE_PROFILE", raising=False)
+    # The sandbox tool's path names the checkout, so it is pinned for the hashes.
+    monkeypatch.setattr(lane_check, "TOOL", "/sandbox/issue-sandbox-check")
     seen: list[str] = []
 
     def fake_run_agent(prompt: str, **kw) -> str:
