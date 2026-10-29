@@ -2,7 +2,7 @@
 
 ## Why
 
-Paperclip's maintainers asked that auto-fix build only defects: users are poor
+The target repository's maintainers asked that auto-fix build only defects: users are poor
 judges of features. Prospector honors that. Fixability calls a request
 `kind: feature` and skips it, and the hunter never triages issues labeled
 `enhancement` at all (`issue_fix_worker.HUNT_SKIP_LABELS`). The cost is that
@@ -17,18 +17,18 @@ only puts a request on a shortlist and never starts work.
 ## Goals
 
 - Every open feature request gets a screening verdict judged against what
-  Paperclip is and how its maintainers have treated feature requests before.
+  the product is and how its maintainers have treated feature requests before.
 - A Home card, "Feature requests worth considering", lists only the requests
   the agent likes. Each shows a short reason and a UI mockup.
 - "Implement this feature" queues the issue in the issue-fix lane, framed as a
   feature, and it runs through the same proof, review and propose steps a
   defect does.
-- "Not for Paperclip" removes it from the card, and that decision teaches the
+- "Not for <repo>" removes it from the card, and that decision teaches the
   screener.
 
 ## Non-goals
 
-- Running Paperclip itself (booting the app, a browser, real screenshots). A
+- Running the triaged product itself (booting the app, a browser, real screenshots). A
   later, separate project.
 - Posting anything upstream on screening, approval or rejection. Prospector
   stays silent on the issue until a PR exists, and that PR goes through the
@@ -40,7 +40,7 @@ only puts a request on a shortlist and never starts work.
 
 - An agent that likes everything. A card with 100 items is the black hole
   again. The screener should say yes rarely, with reasons a maintainer
-  recognizes as Paperclip's.
+  recognizes as the product's.
 - Treating the request's text as instructions. Requests are outsiders' text,
   so the screener and the mockup are data handled under the existing
   locked-down agent rules.
@@ -65,14 +65,14 @@ history directory as its read roots, no environment. It reads:
 
 - the request and its replies (as data, with the same trust section as
   fixability);
-- Paperclip's README, docs and code in the base clone;
+- the product's README, docs and code in the base clone;
 - the **taste digest** (below).
 
 It returns JSON:
 
 ```json
 {"verdict": "consider|not-a-fit|unclear",
- "why": "<two to four sentences: what it adds and why it fits Paperclip, citing docs or past decisions>",
+ "why": "<two to four sentences: what it adds and why it fits the product, citing docs or past decisions>",
  "precedents": [<issue numbers of past decisions it leaned on>],
  "size": "small|medium|large",
  "ui": true|false}
@@ -101,13 +101,13 @@ when stale. Ingest today fetches open issues only and keeps no comment bodies,
 so this fetch is new.
 
 The digest also includes this deployment's own "Implement" and "Not for
-Paperclip" decisions, read from the store, so the screener learns from the
+<repo>" decisions, read from the store, so the screener learns from the
 card too.
 
 ### The mockup
 
-The mockup agent reads Paperclip's UI components and styles in the base clone
-and writes one self-contained HTML file showing the proposed UI in Paperclip's
+The mockup agent reads the product's UI components and styles in the base clone
+and writes one self-contained HTML file showing the proposed UI in the product's
 look, with the new parts highlighted. It is a faithful sketch, not a
 screenshot.
 
@@ -137,7 +137,7 @@ buttons:
 
 - **Implement this feature** calls the existing `POST /api/issues/{n}/fix` with
   `{action: "solve"}` and a feature flag (below).
-- **Not for Paperclip** records the rejection.
+- **Not for <repo>** records the rejection.
 
 Both decisions are logged with `activity.record_issue_fix` (`FIX_FEATURE_GO`,
 `FIX_FEATURE_DECLINE`) and stored on the issue as a fact (who, when, which), so
@@ -159,11 +159,10 @@ that likes too much gets caught before the card is trusted (Claude's call).
 
 ### Scope
 
-The lane is general Prospector, not Paperclip-only. The repository's name in
+The lane is general Prospector, not specific to one repository. The repository's name in
 prompts comes from `TRIAGE_REPO`. The labels that mark a feature request come
 from the profile, defaulting to `enhancement`. A setting switches the lane on
-(Claude's call). "Not for Paperclip" in this document means "Not for
-<repo>" in the UI.
+(Claude's call).
 
 The issue page also shows the screening verdict and mockup, so a maintainer can
 read the requests the agent didn't like. It carries the same two buttons on

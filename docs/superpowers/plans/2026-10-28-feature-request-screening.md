@@ -17,7 +17,7 @@
 - Nothing in this plan writes upstream. Screening, decisions and mockups stay in the store.
 - The store is the only source of truth. Use `issue_store` / `issue_model` only.
 - Register every new environment variable in `pipeline/settings_registry.py`.
-- Repository name in prompts and UI comes from `TRIAGE_REPO` (`issue_triage.config.repo_name()`). Never hard-code "Paperclip".
+- Repository name in prompts and UI comes from `TRIAGE_REPO` (`issue_triage.config.repo_name()`). Never hard-code a repository name.
 - Mockups: one HTML document, inline styles only, at most `MOCKUP_MAX = 200_000` bytes. Rendered only in `<iframe sandbox srcdoc>` with no `allow-*` tokens, behind a CSP meta forbidding every fetch.
 - Gates: `uv run pytest`, `uv run ruff check .`, `uv run pyright pipeline issue_triage alert_triage prospector_app/backend review-new-pr/harness`, and `cd prospector_app/frontend && pnpm run build && pnpm exec eslint <changed files>`.
 
@@ -335,8 +335,8 @@ It then gives the screener's `why` (when there is one), the maintainer's guidanc
 ```python
 def test_approved_report_keeps_issue_text_and_cuts_mockup_first():
     body = "x" * 3000
-    out = feature_screen.approved_report(body, {"why": "fits", "mockup": "<html>" + "y" * 20000}, None, repo="paperclip")
-    assert out.startswith(body) and "Approved as a feature by a paperclip maintainer" in out
+    out = feature_screen.approved_report(body, {"why": "fits", "mockup": "<html>" + "y" * 20000}, None, repo="acme")
+    assert out.startswith(body) and "Approved as a feature by a acme maintainer" in out
     assert len(out) <= reproduce_issue.REPORT_MAX
 
 def test_feature_spec_built_from_request(...):  # _spec with req feature -> spec.feature and approved body
