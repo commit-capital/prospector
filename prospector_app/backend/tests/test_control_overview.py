@@ -262,3 +262,20 @@ def test_upcoming_loop_carries_its_hint():
     [loop] = out["loops"]
     [up] = [t for t in out["timeline"] if t["when"] == "upcoming"]
     assert loop["hint"] == up["hint"] == co.worker_loops.HINTS["pr-watch"]
+
+
+def test_hunter_now_lanes_each_review_in_flight_by_its_claim(tmp_path, monkeypatch):
+    from pipeline import store as S
+    from prospector_app.backend import data
+    from prospector_app.backend.tests.test_autohunt import _clean_merge_pr
+    st = S.Store(tmp_path / "store")
+    monkeypatch.setattr(data, "_store", st)
+    for n in (5, 6, 7):
+        st.save_pr(_clean_merge_pr(n))
+    st.claim_security_run(6, host="studio", stale_after=3600)
+    st.claim_design_run(7, host="studio", stale_after=3600)
+    data.refresh()
+    beat = {"last_beat": _iso(0.5), "online": True, "current_pr": 5, "current_reviews": [6, 7]}
+    now = co._hunter_now({"machines": [_machine("studio", 0.5, verify=beat)]})
+    assert [e["pr"] for e in now["security"]] == [6]
+    assert [e["pr"] for e in now["design"]] == [7]

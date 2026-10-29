@@ -167,8 +167,11 @@ def _from_roster(m: dict, local: str, now: datetime) -> MachineActivity:
     entry["tripped"] = sorted(lane for lane, h in (m.get("lanes") or {}).items()
                               if h.get("tripped"))
     for b in beats.values():
-        if b.get("online") and (b.get("current_pr") is not None or b.get("current_issue") is not None):
-            entry["current"] = {"pr": b.get("current_pr"), "issue": b.get("current_issue")}
+        pr = b.get("current_pr")
+        if pr is None and b.get("current_reviews"):
+            pr = b["current_reviews"][0]
+        if b.get("online") and (pr is not None or b.get("current_issue") is not None):
+            entry["current"] = {"pr": pr, "issue": b.get("current_issue")}
             break
     return entry
 

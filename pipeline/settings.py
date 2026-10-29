@@ -507,6 +507,11 @@ def issue_fix_slots() -> int:
     return positive_int("TRIAGE_ISSUE_FIX_SLOTS", 1)
 
 
+def review_slots() -> int:
+    """How many security and design reviews the verify worker runs at once."""
+    return positive_int("TRIAGE_REVIEW_SLOTS", 1)
+
+
 def sandbox_large_cpus() -> int | None:
     """The CPUs each large-class sandbox phase gets, as TRIAGE_SANDBOX_LARGE_CPUS
     names it; None sizes it from the Docker VM (`verify_driver.large_cpus`)."""

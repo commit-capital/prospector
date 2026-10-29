@@ -1,8 +1,9 @@
-"""The verify worker's idle auto-hunt: two-lane deterministic selection —
-security review for clean merge candidates lacking a current verdict, then
-sandbox verification for GREEN-cleared candidates — pain-ordered, gated by
-TRIAGE_VERIFY_AUTOHUNT."""
+"""The verify worker's auto-hunt: deterministic, pain-ordered selection —
+security and design review in the review slots, sandbox verification for
+GREEN-cleared candidates in the drain loop — gated by TRIAGE_VERIFY_AUTOHUNT."""
 from __future__ import annotations
+
+import threading
 
 import pytest
 
@@ -49,6 +50,15 @@ def _green(store: S.Store, n: int) -> None:
     rec["security"] = {"verdict": "GREEN", "findings": [], "checked_at": _now(),
                        "against_head_sha": HEAD}
     store.save_pr(rec)
+
+
+REVIEW_LANES = frozenset({"security", "design"})
+
+
+def _set_event() -> threading.Event:
+    ev = threading.Event()
+    ev.set()
+    return ev
 
 
 @pytest.fixture
@@ -123,7 +133,7 @@ def test_verify_lane_requires_current_green(store):
     store.save_pr(_clean_merge_pr(1))
     _green(store, 1)
     data.refresh()
-    assert verify_worker.next_auto() == ("verify", 1)
+    assert verify_worker.next_verify_hunt() == ("verify", 1)
 
 
 def test_verify_lane_orders_by_pain(store):
@@ -131,7 +141,7 @@ def test_verify_lane_orders_by_pain(store):
         store.save_pr(_clean_merge_pr(n, pain=pain))
         _green(store, n)
     data.refresh()
-    assert verify_worker.next_auto() == ("verify", 2)
+    assert verify_worker.next_verify_hunt() == ("verify", 2)
 
 
 def test_verify_lane_skips_current_verify_record(store):
@@ -143,7 +153,7 @@ def test_verify_lane_skips_current_verify_record(store):
                      "against_head_sha": HEAD}
     store.save_pr(rec)
     data.refresh()
-    assert verify_worker.next_auto() is None
+    assert verify_worker.next_verify_hunt() is None
 
 
 def test_verify_lane_waits_on_errored_or_cancelled_request(store):
@@ -154,10 +164,10 @@ def test_verify_lane_waits_on_errored_or_cancelled_request(store):
     for status in ("error", "cancelled"):
         store.edit_pr(1).record_verify_request(status, queued_at=_now())
         data.refresh()
-        assert verify_worker.next_auto() is None
+        assert verify_worker.next_verify_hunt() is None
     store.edit_pr(1).record_verify_request("done", queued_at=_now())
     data.refresh()
-    assert verify_worker.next_auto() == ("verify", 1)
+    assert verify_worker.next_verify_hunt() == ("verify", 1)
 
 
 def test_verify_lane_fails_closed_on_missing_diff(store, monkeypatch):
@@ -165,7 +175,7 @@ def test_verify_lane_fails_closed_on_missing_diff(store, monkeypatch):
     _green(store, 1)
     monkeypatch.setattr(verify_worker, "_changed_paths", lambda pr: [])
     data.refresh()
-    assert verify_worker.next_auto() is None
+    assert verify_worker.next_verify_hunt() is None
 
 
 def test_auto_queue_writes_source_auto_and_feeds_the_queue(store):
@@ -361,18 +371,19 @@ def test_next_queued_ranks_operator_ahead_of_auto(store):
     assert verify_worker.next_queued() == 2
 
 
-def test_next_auto_alternates_security_and_verify_while_both_have_work(store, monkeypatch):
-    """PR 1 lacks a security verdict; PR 2 is GREEN-cleared and
-    verify-eligible. Security takes the first pick, verify the next, so a
-    long security backlog never starves verification."""
+def test_next_auto_alternates_security_and_design_while_both_have_work(store, monkeypatch):
+    """PR 1 lacks a security verdict; PR 2 is cleared and lacks only a design
+    review. Security takes the first pick, design the next, so a long
+    security backlog never starves design review."""
     monkeypatch.setattr(verify_worker, "_last_auto_lane", None)
     store.save_pr(_clean_merge_pr(1))
     store.save_pr(_clean_merge_pr(2))
     _green(store, 2)
+    verify_worker.design_failed.add(1)
     data.refresh()
-    assert verify_worker.next_auto() == ("security", 1)
-    assert verify_worker.next_auto() == ("verify", 2)
-    assert verify_worker.next_auto() == ("security", 1)
+    assert verify_worker.next_auto(REVIEW_LANES) == ("security", 1)
+    assert verify_worker.next_auto(REVIEW_LANES) == ("design", 2)
+    assert verify_worker.next_auto(REVIEW_LANES) == ("security", 1)
 
 
 def test_next_auto_serves_the_only_lane_with_work(store, monkeypatch):
@@ -769,13 +780,13 @@ def _broken_repro_pr(store: S.Store, n: int, *, pain: float = 0.0,
 
 def test_resweep_lane_picks_a_harness_broken_repro(store):
     _broken_repro_pr(store, 1)
-    assert verify_worker.next_auto() == ("resweep", 1)
+    assert verify_worker.next_verify_hunt() == ("resweep", 1)
 
 
 def test_resweep_lane_orders_by_pain(store):
     _broken_repro_pr(store, 1, pain=0.2)
     _broken_repro_pr(store, 2, pain=0.9)
-    assert verify_worker.next_auto() == ("resweep", 2)
+    assert verify_worker.next_verify_hunt() == ("resweep", 2)
 
 
 def test_a_corroborated_verification_is_never_reswept(store):
@@ -787,14 +798,14 @@ def test_a_corroborated_verification_is_never_reswept(store):
         "repro_reason_match": {"matches": True, "applicable": True,
                                "confidence": "high"}})
     data.refresh()
-    assert verify_worker.next_auto() is None
+    assert verify_worker.next_verify_hunt() is None
 
 
 def test_a_repro_that_ran_correctly_and_did_not_reproduce_is_not_reswept(store):
     """No harness signal: the command ran as written and the defect did not
     show. That is evidence about the PR, and re-running only repeats it."""
     _broken_repro_pr(store, 1, findings=())
-    assert verify_worker.next_auto() is None
+    assert verify_worker.next_verify_hunt() is None
 
 
 def test_a_never_authored_repro_is_not_reswept(store):
@@ -804,7 +815,7 @@ def test_a_never_authored_repro_is_not_reswept(store):
     _green(store, 1)
     _verified(store, 1, signals={"blind_adequacy": {"repro_command": None}})
     data.refresh()
-    assert verify_worker.next_auto() is None
+    assert verify_worker.next_verify_hunt() is None
 
 
 def test_an_authored_repro_that_never_ran_is_reswept(store):
@@ -814,7 +825,7 @@ def test_an_authored_repro_that_never_ran_is_reswept(store):
         "blind_adequacy": {"repro_command": "npx vitest run x"},
         "independent_repro": {"ran": False, "exit_code": None}})
     data.refresh()
-    assert verify_worker.next_auto() == ("resweep", 1)
+    assert verify_worker.next_verify_hunt() == ("resweep", 1)
 
 
 def test_a_repro_skipped_for_targeting_a_pr_test_is_not_reswept(store):
@@ -827,20 +838,20 @@ def test_a_repro_skipped_for_targeting_a_pr_test_is_not_reswept(store):
         "independent_repro": {"ran": False, "exit_code": None,
                               "skipped_reason": "repro-targets-pr-test"}})
     data.refresh()
-    assert verify_worker.next_auto() is None
+    assert verify_worker.next_verify_hunt() is None
 
 
 def test_the_resweep_is_spent_once_its_own_record_lands(store):
     """The loop guard: after a re-sweep writes a record that is STILL broken,
     the PR never queues itself again."""
     _broken_repro_pr(store, 1)
-    assert verify_worker.next_auto() == ("resweep", 1)
+    assert verify_worker.next_verify_hunt() == ("resweep", 1)
     store.load_pr(1).record_verify_request(
         "done", queued_at=_now(), source=verify_worker.RESWEEP_SOURCE)
     # The re-verified record lands after the re-sweep request was queued.
     _verified(store, 1, signals=_BROKEN_SIGNALS, findings=_MISROOTED)
     data.refresh()
-    assert verify_worker.next_auto() is None
+    assert verify_worker.next_verify_hunt() is None
 
 
 def test_the_retired_finding_spelling_still_resweeps(store):
@@ -848,20 +859,20 @@ def test_the_retired_finding_spelling_still_resweeps(store):
     the same unrunnable command, and must not be stranded by the rename."""
     _broken_repro_pr(store, 1, findings=(
         {"signal": "vacuous-repro-filter", "note": "unrunnable"},))
-    assert verify_worker.next_auto() == ("resweep", 1)
+    assert verify_worker.next_verify_hunt() == ("resweep", 1)
 
 
 def test_the_new_name_filter_finding_resweeps(store):
     _broken_repro_pr(store, 1, findings=(
         {"signal": "vacuous-repro-name-filter", "note": "matched no title"},))
-    assert verify_worker.next_auto() == ("resweep", 1)
+    assert verify_worker.next_verify_hunt() == ("resweep", 1)
 
 
 def test_an_in_flight_request_blocks_the_resweep(store):
     _broken_repro_pr(store, 1)
     store.load_pr(1).record_verify_request("queued", queued_at=_now())
     data.refresh()
-    assert verify_worker.next_auto() is None
+    assert verify_worker.next_verify_hunt() is None
 
 
 def test_the_verify_lane_outranks_the_resweep_lane(store):
@@ -871,7 +882,7 @@ def test_the_verify_lane_outranks_the_resweep_lane(store):
     store.save_pr(_clean_merge_pr(2, pain=0.1))
     _green(store, 2)
     data.refresh()
-    assert verify_worker.next_auto() == ("verify", 2)
+    assert verify_worker.next_verify_hunt() == ("verify", 2)
 
 
 class TestSecurityClaimedElsewhere:
@@ -903,17 +914,16 @@ class TestSecurityClaimedElsewhere:
         data.refresh()
         assert verify_worker.next_auto() == ("security", 1)
 
-    def test_drain_loop_rests_after_a_lost_claim(self, store, monkeypatch):
+    def test_review_slot_rests_after_a_lost_claim(self, store, monkeypatch):
         """The snapshot that picked the PR is behind the store that refused the
-        claim: the loop refreshes and rests a poll instead of re-picking the
+        claim: the slot refreshes and rests a poll instead of re-picking the
         same PR back to back."""
         store.save_pr(_clean_merge_pr(1))
         data.refresh()
         monkeypatch.setenv("TRIAGE_WORKER_ID", "mac")
         monkeypatch.setenv("TRIAGE_VERIFY_AUTOHUNT", "1")
-        monkeypatch.setattr(verify_worker, "maybe_refresh_base", lambda: None)
-        monkeypatch.setattr(verify_worker, "next_queued", lambda: None)
-        monkeypatch.setattr(verify_worker.verify_driver, "stop_orphaned_sandboxes", lambda: [])
+        monkeypatch.setenv("TRIAGE_DESIGN_REVIEW", "off")
+        monkeypatch.setattr(verify_worker, "_recovered", _set_event())
         monkeypatch.setattr(verify_worker.lane_health, "capacity_open", lambda lane: True)
         attempts: list[int] = []
         real_run_security = verify_worker.run_security
@@ -943,7 +953,7 @@ class TestSecurityClaimedElsewhere:
                 self._set = True
                 return True
         monkeypatch.setattr(verify_worker, "stop", StopAfterOneWait())
-        verify_worker._drain_loop()
+        verify_worker._review_loop()
         assert attempts == [1]
         assert waits == [verify_worker.POLL_SECONDS]
 
@@ -1002,8 +1012,9 @@ class TestLaneHealth:
 
     def test_a_tripped_security_lane_leaves_the_pool_alone(self, store):
         store.save_pr(_clean_merge_pr(1))
+        verify_worker.design_failed.add(1)
         data.refresh()
-        assert verify_worker.next_auto(frozenset({"verify"})) is None
+        assert verify_worker.next_auto(frozenset({"design"})) is None
         assert verify_worker.next_auto() == ("security", 1)
 
     def test_a_verify_ending_is_booked_by_its_fault(self, store, monkeypatch):
@@ -1098,14 +1109,15 @@ def test_a_maintainer_s_pr_leads_its_lane_whatever_the_pain(store):
 
 
 def test_a_maintainer_s_pr_takes_the_turn_from_the_alternation(store, monkeypatch):
-    monkeypatch.setattr(verify_worker, "_last_auto_lane", "verify")
+    monkeypatch.setattr(verify_worker, "_last_auto_lane", "design")
     store.save_pr(_clean_merge_pr(1))
     store.save_pr(_clean_merge_pr(2))
     _green(store, 2)
     _maintainer(store, 2)
+    verify_worker.design_failed.add(1)
     data.refresh()
-    assert verify_worker.next_auto() == ("verify", 2)
-    assert verify_worker.next_auto() == ("verify", 2)
+    assert verify_worker.next_auto(REVIEW_LANES) == ("design", 2)
+    assert verify_worker.next_auto(REVIEW_LANES) == ("design", 2)
 
 
 def test_next_queued_ranks_a_maintainer_ahead_of_an_older_auto_pick(store):
@@ -1155,7 +1167,17 @@ class _Loop:
         return self.capacity
 
     def next_auto(self, open_lanes: frozenset[str] = frozenset()) -> tuple[str, int] | None:
-        return self.pick
+        return self.pick if self.pick and self.pick[0] in open_lanes else None
+
+    def next_verify_hunt(self) -> tuple[str, int] | None:
+        return self.pick if self.pick and self.pick[0] in ("verify", "resweep") else None
+
+    def run(self, lane: str) -> None:
+        """One tick of the loop that serves `lane`."""
+        if lane in ("security", "design"):
+            verify_worker._review_loop()
+        else:
+            verify_worker._drain_loop()
 
 
 class TestCapacityGate:
@@ -1174,8 +1196,11 @@ class TestCapacityGate:
         monkeypatch.setattr(verify_worker, "maybe_refresh_base", lambda: None)
         monkeypatch.setattr(verify_worker, "beat", lambda: None)
         monkeypatch.setattr(verify_worker.lane_health, "open_or_retest", lambda lane: True)
+        monkeypatch.setattr(verify_worker.lane_health, "is_open", lambda lane: True)
         monkeypatch.setattr(verify_worker.lane_health, "capacity_open", lp.capacity_open)
         monkeypatch.setattr(verify_worker, "next_auto", lp.next_auto)
+        monkeypatch.setattr(verify_worker, "next_verify_hunt", lp.next_verify_hunt)
+        monkeypatch.setattr(verify_worker, "_recovered", _set_event())
         monkeypatch.setattr(verify_worker, "run_one", lambda n: lp.ran.append(n) or 0)
         monkeypatch.setattr(verify_worker, "_note_verify_ending", lambda n: None)
         monkeypatch.setattr(verify_worker, "run_security",
@@ -1246,7 +1271,7 @@ class TestCapacityGate:
                                             ("design", "design")])
     def test_a_paused_account_holds_the_hunters_pick(self, loop, lane, gate):
         loop.pick = (lane, 1)
-        verify_worker._drain_loop()
+        loop.run(lane)
         assert loop.asked == [gate]
         assert loop.reviewed == [] and loop.queued == [] and loop.designed == []
         assert loop.stop.waits == [verify_worker.POLL_SECONDS]
@@ -1259,18 +1284,19 @@ class TestCapacityGate:
     def test_an_open_account_takes_the_hunters_pick(self, loop, lane, reviewed, queued):
         loop.capacity = True
         loop.pick = (lane, 1)
-        verify_worker._drain_loop()
+        loop.run(lane)
         assert loop.reviewed == reviewed
         assert loop.queued == queued
 
     def test_an_open_account_takes_a_design_pick(self, loop):
         loop.capacity = True
         loop.pick = ("design", 1)
-        verify_worker._drain_loop()
+        verify_worker._review_loop()
         assert loop.designed == [1] and loop.reviewed == [] and loop.queued == []
 
-    def test_an_idle_hunter_never_asks_the_account(self, loop):
-        verify_worker._drain_loop()
+    @pytest.mark.parametrize("lane", ["security", "verify"])
+    def test_an_idle_hunter_never_asks_the_account(self, loop, lane):
+        loop.run(lane)
         assert loop.asked == []
         assert loop.stop.waits == [verify_worker.POLL_SECONDS]
 
@@ -1322,20 +1348,15 @@ def test_a_fix_run_held_for_ai_capacity_reads_as_waiting(store):
         "waiting-for-capacity": [1], "failed": [2]}
 
 
-ALL_LANES = frozenset({"security", "verify", "design"})
-
-
 class TestDesignLane:
-    """The design review rides the idle hunt as a third lane, round-robined
-    with security and verify so it progresses while either backlog is long."""
+    """The design review is a review lane, round-robined with security so it
+    progresses while the security backlog is long."""
 
-    def test_rotation_serves_all_three_lanes(self, store):
+    def test_rotation_serves_both_review_lanes(self, store):
         store.save_pr(_clean_merge_pr(1))
-        store.save_pr(_clean_merge_pr(2))
-        _green(store, 2)
         data.refresh()
-        picks = [verify_worker.next_auto(ALL_LANES) for _ in range(4)]
-        assert picks == [("security", 1), ("verify", 2), ("design", 1), ("security", 1)]
+        picks = [verify_worker.next_auto(REVIEW_LANES) for _ in range(3)]
+        assert picks == [("security", 1), ("design", 1), ("security", 1)]
 
     def test_design_alone(self, store):
         store.save_pr(_clean_merge_pr(1))

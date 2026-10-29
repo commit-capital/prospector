@@ -8,21 +8,22 @@ a click anywhere reaches a runner within one poll tick. Any number of machines
 may run one: the store's claim is a compare-and-swap, so two workers never pick
 up the same PR.
 
-Two daemon threads: a heartbeat (writes the verify_worker registry every tick,
-so any app can show runner liveness) and the drain loop (orphan recovery,
-then pick-oldest-queued → spawn the orchestrator → finalize). The orchestrator
-owns the request's transitions; the worker only recovers what a dead process
-left behind.
+Daemon threads: a heartbeat (writes the verify_worker registry every tick, so
+any app can show runner liveness), the drain loop (orphan recovery, then
+pick-oldest-queued → spawn the orchestrator → finalize), and
+`settings.review_slots()` review slots. The orchestrator owns the request's
+transitions; the worker only recovers what a dead process left behind.
 
-With TRIAGE_VERIFY_AUTOHUNT=1 an empty queue turns the drain loop into a
-hunter: it runs the headless security review on clean merge candidates that
-lack a current verdict (highest community pain first), then auto-queues
-sandbox verification for candidates whose security verdict is a current GREEN
-— the sandbox never executes code the adversarial review has not cleared —
-and runs the design review (`pipeline/design_review.py`) on PR heads that have
-none, the three lanes taking turns; it finally re-sweeps concluded
-verifications whose independent repro the harness itself broke, once each. Selection is pure gate policy; an
-operator-queued request always wins the next pick.
+With TRIAGE_VERIFY_AUTOHUNT=1 the worker also hunts. The review slots run the
+headless security review on clean merge candidates that lack a current verdict
+and the design review (`pipeline/design_review.py`) on PR heads that have none,
+the two lanes taking turns, so neither waits behind a sandbox run. An empty
+queue turns the drain loop into the verify hunter: it auto-queues sandbox
+verification for candidates whose security verdict is a current GREEN — the
+sandbox never executes code the adversarial review has not cleared — and
+otherwise re-sweeps concluded verifications whose independent repro the
+harness itself broke, once each. Selection is pure gate policy; an
+operator-queued request always wins the drain loop's next pick.
 """
 from __future__ import annotations
 
@@ -116,9 +117,17 @@ RESTART_MAX_ATTEMPTS = 3
 TAIL_CHARS = 4000
 
 # The PR the drain loop is currently running (None when idle) — read by the
-# heartbeat thread; `stop` ends both loops (tests set it).
+# heartbeat thread; `stop` ends every loop (tests set it).
 state: dict[str, int | None] = {"current_pr": None}
 stop = threading.Event()
+# The PRs this process's review slots hold. The store's review claims are per
+# host, so this is what keeps two slots off one PR; `_review_lock` makes a
+# slot's pick and its entry here one step (reentrant: the pick reads the set).
+_reviewing: set[int] = set()
+_review_lock = threading.RLock()
+# Set once the drain loop has released this host's leftover review claims, so
+# no slot takes a claim that release would drop.
+_recovered = threading.Event()
 
 
 # This backend's live worker threads. A restart reads them to tell a running
@@ -146,8 +155,9 @@ def shutdown(timeout: float = SHUTDOWN_TIMEOUT) -> bool:
         _clear_heartbeat()
         return True
     stop.set()
+    deadline = time.monotonic() + timeout
     for t in _threads:
-        t.join(timeout=timeout)
+        t.join(max(0.0, deadline - time.monotonic()))
     if running():
         return False
     _threads.clear()
@@ -171,12 +181,19 @@ def enabled() -> bool:
     return os.environ.get("TRIAGE_VERIFY_WORKER") == "1"
 
 
+def reviewing() -> list[int]:
+    """The PRs this process's review slots are reviewing."""
+    with _review_lock:
+        return sorted(_reviewing)
+
+
 def beat() -> None:
-    """Write this worker's liveness, autohunt opt-in, and security failure
-    memory into the shared store."""
+    """Write this worker's liveness, the verify run and reviews in flight,
+    autohunt opt-in, and security failure memory into the shared store."""
     data.store().save_verify_worker({
         "host": settings.worker_id(), "pid": os.getpid(),
         "last_beat": _now(), "current_pr": state["current_pr"],
+        "current_reviews": reviewing(),
         "autohunt": enabled_autohunt(), "security_failed": sorted(security_failed),
         "security_failed_reasons": security_failed.reasons()})
 
@@ -417,27 +434,35 @@ class _SkipSet:
     """Security auto-runs that failed this process, each with when and why,
     so the hunter skips them for SECURITY_FAILED_SECONDS and the heartbeat can
     say what went wrong. A restart clears it; the operator can re-run any PR
-    from the app meanwhile."""
+    from the app meanwhile. The review slots and the heartbeat share it, hence
+    the lock."""
 
     def __init__(self) -> None:
         self._entries: dict[int, tuple[float, str]] = {}
+        self._lock = threading.Lock()
 
     def add(self, n: int, reason: str = "the security run failed") -> None:
-        self._entries[n] = (time.monotonic(), reason)
+        with self._lock:
+            self._entries[n] = (time.monotonic(), reason)
 
     def discard(self, n: int) -> None:
-        self._entries.pop(n, None)
+        with self._lock:
+            self._entries.pop(n, None)
 
     def clear(self) -> None:
-        self._entries.clear()
+        with self._lock:
+            self._entries.clear()
+
+    def _live(self) -> dict[int, str]:
+        cutoff = time.monotonic() - SECURITY_FAILED_SECONDS
+        with self._lock:
+            return {n: why for n, (at, why) in self._entries.items() if at >= cutoff}
 
     def active(self) -> set[int]:
-        cutoff = time.monotonic() - SECURITY_FAILED_SECONDS
-        return {n for n, (at, _) in self._entries.items() if at >= cutoff}
+        return set(self._live())
 
     def reasons(self) -> dict[str, str]:
-        active = self.active()
-        return {str(n): why for n, (_, why) in self._entries.items() if n in active}
+        return {str(n): why for n, why in self._live().items()}
 
     def __contains__(self, n: object) -> bool:
         return n in self.active()
@@ -533,14 +558,14 @@ def auto_resweepable(pr: Pr) -> bool:
     return gates.verify_eligible(pr, _changed_paths(pr))
 
 
-# The lane the hunter last picked from, so a security pool that stays full
-# for hours cannot keep the verify pool waiting: the two alternate while both
-# have work, and either runs alone when the other is empty.
+# The review lane the slots last picked from, so a security pool that stays
+# full for hours cannot keep the design pool waiting: the two alternate while
+# both have work, and either runs alone when the other is empty.
 _last_auto_lane: str | None = None
 
 
-# The order the hunt's lanes take turns in, and break a maintainer tie in.
-HUNT_ROTATION = ("security", "verify", "design")
+# The order the review lanes take turns in, and break a maintainer tie in.
+HUNT_ROTATION = ("security", "design")
 
 
 def _rotate(live: list[str]) -> str | None:
@@ -573,13 +598,17 @@ def design_hunt_key(item: tuple[int, Pr]) -> tuple[bool, tuple[int, bool, float,
 
 
 def _pools(prs: dict[int, Pr], open_lanes: frozenset[str]) -> dict[str, list[tuple[int, Pr]]]:
-    """Each hunt lane's candidates, unordered: the PRs `next_auto` picks from."""
+    """Each hunt lane's candidates, unordered: the PRs `next_auto` and
+    `next_verify_hunt` pick from. A PR a review slot here holds is in neither
+    review pool."""
     me = settings.worker_id()
+    with _review_lock:
+        held = set(_reviewing)
     return {
         "security": [
             (n, pr) for n, pr in prs.items()
             if "security" in open_lanes
-            and n not in security_failed and gates.blocked_on_security(pr)
+            and n not in security_failed and n not in held and gates.blocked_on_security(pr)
             and store.run_failures(pr.raw.get("security_run"), pr.head_sha) < HUNT_MAX_FAILURES
             and not store.run_claim_held_elsewhere(
                 pr.raw.get("security_run"), host=me, stale_after=SECURITY_CLAIM_SECONDS)],
@@ -588,7 +617,7 @@ def _pools(prs: dict[int, Pr], open_lanes: frozenset[str]) -> dict[str, list[tup
         "design": [
             (n, pr) for n, pr in prs.items()
             if "design" in open_lanes
-            and n not in design_failed and design_review.huntable(pr)
+            and n not in design_failed and n not in held and design_review.huntable(pr)
             and store.run_failures(pr.raw.get("design_run"), pr.head_sha) < HUNT_MAX_FAILURES
             and not store.run_claim_held_elsewhere(
                 pr.raw.get("design_run"), host=me, stale_after=DESIGN_CLAIM_SECONDS)],
@@ -604,53 +633,56 @@ def lane_order(lane: str) -> list[int]:
 def hunt_candidates(limit: int = 5) -> dict[str, list[int]]:
     """Each hunt lane's next `limit` picks in the order the hunter takes them,
     read without picking; design review switched off has none."""
-    lanes = frozenset(lane for lane in HUNT_ROTATION
+    lanes = frozenset(lane for lane in ("security", "verify", "design")
                       if lane != "design" or settings.design_review_mode() != "off")
     pools = _pools(data.prs(), lanes)
     return {lane: [n for n, _ in sorted(pool, key=design_hunt_key if lane == "design" else hunt_key)[:limit]]
             for lane, pool in pools.items()}
 
 
-def next_auto(open_lanes: frozenset[str] = frozenset({"security", "verify"})
-              ) -> tuple[str, int] | None:
-    """The idle hunt's next pick, or None: ("security", n) for the best clean PR
-    lacking a current security verdict (gates.blocked_on_security), ("verify", n) for the
-    best GREEN-cleared unverified candidate, ("design", n) for the best head
-    with no design review (design_review.huntable), or ("resweep", n) for a
-    concluded verification whose repro the harness broke. Every lane orders a
-    maintainer's PR (gates.priority_author) first, then an analyzed merge pick,
-    then by highest community pain, then lowest PR number; the design lane
-    puts a coverage retry behind them all (design_hunt_key).
+def next_auto(open_lanes: frozenset[str] = frozenset({"security"})) -> tuple[str, int] | None:
+    """The review slots' next pick, or None: ("security", n) for the best clean
+    PR lacking a current security verdict (gates.blocked_on_security), or
+    ("design", n) for the best head with no design review
+    (design_review.huntable). Each lane orders a maintainer's PR
+    (gates.priority_author) first, then an analyzed merge pick, then by
+    highest community pain, then lowest PR number; the design lane puts a
+    coverage retry behind them all (design_hunt_key).
 
-    A maintainer's PR in any pool is picked before anything else, in
-    HUNT_ROTATION order, unless it is only a design coverage retry. Otherwise
-    the lanes with work take turns in that order — a first pick goes to
-    security — so no backlog starves the others;
-    a resweep runs only when every pool is empty, since a PR with no
-    verification at all buys more than a second opinion on one that already
-    concluded. A PR another machine holds the security or design claim on is
-    that machine's to finish: it leaves the pool here so this hunter moves on
-    to the next candidate. `open_lanes` names the lanes whose health allows a
+    A maintainer's PR in either pool is picked first, in HUNT_ROTATION order,
+    unless it is only a design coverage retry. Otherwise the lanes with work
+    take turns in that order — a first pick goes to security — so neither
+    backlog starves the other. A PR another machine holds the claim on is that
+    machine's to finish: it leaves the pool here so this hunter moves on to
+    the next candidate. `open_lanes` names the lanes whose health allows a
     pick; a tripped lane's pool is skipped."""
     global _last_auto_lane
-    prs = data.prs()
+    pools = _pools(data.prs(), open_lanes)
 
     def _has_priority(lane: str, pool: list[tuple[int, Pr]]) -> bool:
         return any(gates.priority_author(pr.author, pr.author_association)
                    and not (lane == "design" and design_review.retrying(pr))
                    for _, pr in pool)
 
-    pools = _pools(prs, open_lanes)
     lane = (next((name for name in HUNT_ROTATION if _has_priority(name, pools[name])), None)
             or _rotate([name for name in HUNT_ROTATION if pools[name]]))
-    if lane is not None:
-        _last_auto_lane = lane
-        return (lane, min(pools[lane], key=design_hunt_key if lane == "design" else hunt_key)[0])
-    if "verify" not in open_lanes:
+    if lane is None:
         return None
-    resweep_pool = [(n, pr) for n, pr in prs.items() if auto_resweepable(pr)]
-    if resweep_pool:
-        return ("resweep", min(resweep_pool, key=hunt_key)[0])
+    _last_auto_lane = lane
+    return (lane, min(pools[lane], key=design_hunt_key if lane == "design" else hunt_key)[0])
+
+
+def next_verify_hunt() -> tuple[str, int] | None:
+    """The verify hunter's next pick, or None: ("verify", n) for the best
+    GREEN-cleared unverified candidate (hunt_key order), else ("resweep", n)
+    for a concluded verification whose repro the harness broke — a PR with no
+    verification at all buys more than a second opinion on one that already
+    concluded."""
+    prs = data.prs()
+    for lane, pool in (("verify", _pools(prs, frozenset({"verify"}))["verify"]),
+                       ("resweep", [(n, pr) for n, pr in prs.items() if auto_resweepable(pr)])):
+        if pool:
+            return (lane, min(pool, key=hunt_key)[0])
     return None
 
 
@@ -952,10 +984,12 @@ def release_stale_claims() -> list[int]:
     return freed
 
 
-def _drain_loop() -> None:
-    # A run the previous process left running would race the recovery below
-    # for its request, and a phase container it left holds the VM's memory;
-    # both go before this process can launch a phase beside them.
+def _recover() -> None:
+    """Startup cleanup before any pick: end the runs and phase containers a
+    previous process left (they would race the recovery below for their
+    requests and hold the VM's memory), release this host's leftover review
+    claims, then resolve its orphaned verify requests. Each step's failure
+    leaves the next to run."""
     try:
         reaped = worker_children.reap()
         if reaped:
@@ -979,6 +1013,13 @@ def _drain_loop() -> None:
             print(f"[verify-worker] re-queued after restart: {requeued}", flush=True)
     except Exception:
         traceback.print_exc()
+
+
+def _drain_loop() -> None:
+    """Run queued verifications, operator picks first, and with the hunt on
+    queue the verify hunter's pick whenever the queue is empty."""
+    _recover()
+    _recovered.set()
     last_reclaim = time.monotonic()
     while not stop.is_set():
         if schema_gate.paused("verify-worker") or profile_gate.paused("verify-worker"):
@@ -1007,40 +1048,14 @@ def _drain_loop() -> None:
                 run_one(n)
                 _note_verify_ending(n)
                 continue
-            security_open = lane_health.open_or_retest("security")
-            design_open = (settings.design_review_mode() != "off"
-                           and lane_health.open_or_retest("design"))
-            open_lanes = frozenset(lane for lane, ok in (("security", security_open),
-                                                         ("verify", verify_open),
-                                                         ("design", design_open)) if ok)
-            pick = next_auto(open_lanes) if enabled_autohunt() and open_lanes else None
-            if pick is None:
+            pick = next_verify_hunt() if enabled_autohunt() and verify_open else None
+            # Queueing a verify costs nothing, but the run it leads to spends
+            # agents, so the pick waits on the account's capacity.
+            if pick is None or not lane_health.capacity_open("verify"):
                 stop.wait(POLL_SECONDS)
                 continue
             lane, n = pick
-            # Queueing a verify costs nothing, but the run it leads to spends
-            # agents, so every pick waits on the account's capacity.
-            if not lane_health.capacity_open(lane if lane in ("security", "design") else "verify"):
-                stop.wait(POLL_SECONDS)
-                continue
-            if lane == "security":
-                state["current_pr"] = n
-                beat()
-                print(f"[autohunt] security review for PR #{n}", flush=True)
-                if run_security(n) is None:
-                    data.refresh()
-                    stop.wait(POLL_SECONDS)
-            elif lane == "design":
-                state["current_pr"] = n
-                beat()
-                print(f"[autohunt] design review for PR #{n}", flush=True)
-                if run_design(n) is None:
-                    data.refresh()
-                    stop.wait(POLL_SECONDS)
-            elif lane == "resweep":
-                auto_queue_verify(n, source=RESWEEP_SOURCE)
-            else:
-                auto_queue_verify(n)
+            auto_queue_verify(n, source=RESWEEP_SOURCE if lane == "resweep" else "auto")
         except Exception:
             traceback.print_exc()
             stop.wait(POLL_SECONDS)
@@ -1048,22 +1063,77 @@ def _drain_loop() -> None:
             state["current_pr"] = None
 
 
+def _take_review(retest: bool) -> tuple[str, int] | None:
+    """The next review pick, entered in `_reviewing` so no other slot takes
+    it, or None while the hunt is off, both review lanes are closed, or the
+    account's capacity holds the pick's lane. Only the slot that `retest`s
+    runs a tripped lane's self-test; the others read the lane's health."""
+    if not enabled_autohunt():
+        return None
+    is_open = lane_health.open_or_retest if retest else lane_health.is_open
+    open_lanes = frozenset(
+        lane for lane in HUNT_ROTATION
+        if (lane != "design" or settings.design_review_mode() != "off") and is_open(lane))
+    if not open_lanes:
+        return None
+    with _review_lock:
+        pick = next_auto(open_lanes)
+        if pick is None or not lane_health.capacity_open(pick[0]):
+            return None
+        _reviewing.add(pick[1])
+    return pick
+
+
+def _review_loop(retest: bool = True) -> None:
+    """One review slot: take the next security or design pick and run it,
+    until `stop`. A slot starts picking once the drain loop's startup
+    cleanup has run."""
+    while not stop.is_set():
+        if (not _recovered.is_set() or schema_gate.paused("verify-worker")
+                or profile_gate.paused("verify-worker")):
+            stop.wait(POLL_SECONDS)
+            continue
+        pick: tuple[str, int] | None = None
+        try:
+            pick = _take_review(retest)
+            if pick is None:
+                stop.wait(POLL_SECONDS)
+                continue
+            lane, n = pick
+            print(f"[autohunt] {lane} review for PR #{n}", flush=True)
+            ran = (run_security(n) if lane == "security" else run_design(n)) is not None
+            if not ran:
+                data.refresh()
+                stop.wait(POLL_SECONDS)
+        except Exception:
+            traceback.print_exc()
+            stop.wait(POLL_SECONDS)
+        finally:
+            if pick is not None:
+                with _review_lock:
+                    _reviewing.discard(pick[1])
+
+
 def startup() -> bool:
-    """Start the heartbeat + drain threads when this backend is the runner.
-    Returns whether the worker is running afterwards, so calling it on a live
-    worker is a no-op rather than a second pair of loops."""
+    """Start the heartbeat, drain and review-slot threads when this backend is
+    the runner. Returns whether the worker is running afterwards, so calling it
+    on a live worker is a no-op rather than a second set of loops."""
     if not enabled():
         return False
     if running():
         return True
     stop.clear()
+    _recovered.clear()
     worker_log.install()
+    slots = settings.review_slots()
     _threads[:] = [
         threading.Thread(target=_beat_loop, daemon=True, name="verify-worker-beat"),
         threading.Thread(target=_drain_loop, daemon=True, name="verify-worker"),
+        *(threading.Thread(target=_review_loop, args=(i == 0,), daemon=True,
+                           name=f"verify-worker-review-{i}") for i in range(slots)),
     ]
     for t in _threads:
         t.start()
-    print(f"[verify-worker] enabled on {settings.worker_id()} "
-          f"(poll every {POLL_SECONDS:.0f}s)", flush=True)
+    print(f"[verify-worker] enabled on {settings.worker_id()} with {slots} review "
+          f"slot{'s' if slots > 1 else ''} (poll every {POLL_SECONDS:.0f}s)", flush=True)
     return True

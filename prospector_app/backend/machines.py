@@ -40,6 +40,7 @@ def roster() -> dict:
                 "current_pr": rec.get("current_pr"),
                 "current_issue": rec.get("current_issue"),
                 "current_issues": rec.get("current_issues") or [],
+                "current_reviews": rec.get("current_reviews") or [],
                 "autohunt": bool(rec.get("autohunt")),
             }
             e["online"] = e["online"] or online

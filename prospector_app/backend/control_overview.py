@@ -273,7 +273,8 @@ def build(inp: Inputs, now: datetime) -> Overview:
             lane_cells[lane].append({"host": host, "state": cell_state})
         beats = [b.get("last_beat") for b in (m.get("beats") or {}).values() if b.get("last_beat")]
         busy = any(b.get("online") and (b.get("current_pr") is not None
-                                        or b.get("current_issue") is not None)
+                                        or b.get("current_issue") is not None
+                                        or b.get("current_reviews"))
                    for b in (m.get("beats") or {}).values())
         n_on = sum(1 for s in cells.values() if s in ("on", "tripped", "ai-paused"))
         state: MachineState = ("off" if host in inp["stood_down"] or (m.get("online") and n_on == 0)
@@ -402,25 +403,25 @@ def _issue_queue() -> list[dict]:
     return sorted(out, key=lambda e: (e["status"] != "running", order.get(e["issue"], 1 << 30)))
 
 
-def _hunter_now(roster: dict, verify_running: set[int]) -> dict[str, list[NowItem]]:
-    """The security and design reviews in flight: a verify worker's current PR
-    that no verify request accounts for, laned by which claim its host holds."""
+def _hunter_now(roster: dict) -> dict[str, list[NowItem]]:
+    """The security and design reviews in flight: each verify worker's current
+    reviews, laned by which claim its host holds."""
     from prospector_app.backend import data
     prs = data.prs()
     out: dict[str, list[NowItem]] = {"security": [], "design": []}
     for m in roster.get("machines") or []:
         beat = (m.get("beats") or {}).get("verify") or {}
-        n = beat.get("current_pr")
-        if not beat.get("online") or n is None or n in verify_running:
+        if not beat.get("online"):
             continue
-        pr = prs.get(n)
-        design = (pr.raw.get("design_run") or {}) if pr else {}
-        lane = ("design" if design.get("host") == m["host"] and design.get("started_at")
-                else "security")
-        claim = design if lane == "design" else ((pr.raw.get("security_run") or {}) if pr else {})
-        out[lane].append({"host": m["host"], "pr": n, "issue": None,
-                          "title": pr.title if pr else None, "step": None,
-                          "started_at": claim.get("started_at")})
+        for n in beat.get("current_reviews") or []:
+            pr = prs.get(n)
+            design = (pr.raw.get("design_run") or {}) if pr else {}
+            lane = ("design" if design.get("host") == m["host"] and design.get("started_at")
+                    else "security")
+            claim = design if lane == "design" else ((pr.raw.get("security_run") or {}) if pr else {})
+            out[lane].append({"host": m["host"], "pr": n, "issue": None,
+                              "title": pr.title if pr else None, "step": None,
+                              "started_at": claim.get("started_at")})
     return out
 
 
@@ -519,7 +520,7 @@ def _gather() -> Overview:
         "tripped": _tripped(escalation.health_status(regs)["hosts"]),
         "pins": pins, "ai_paused": paused, "verify_queue": vq,
         "fix_queue": [dict(e) for e in fq], "issue_queue": iq,
-        "hunter_now": _hunter_now(roster, {int(str(e["pr"])) for e in vq if e["status"] == "running"}),
+        "hunter_now": _hunter_now(roster),
         "pools": {"security": hunt["security_pool"] if hunt else 0,
                   "verify": hunt["verify_pool"] if hunt else 0, "design": design_pool},
         "failed_runs": [{"lane": lane, "reason": reason, "prs": prs}
