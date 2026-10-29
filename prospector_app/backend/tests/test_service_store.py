@@ -6,6 +6,7 @@ import pytest
 
 from prospector_app.backend import data
 from prospector_app.backend import decisions
+from pipeline import gates
 from pipeline import model
 from prospector_app.backend import models
 from prospector_app.backend import pr_checks
@@ -397,6 +398,7 @@ class TestServiceRows:
         monkeypatch.setattr(service, "live_changed_paths", lambda n: None)
         gate = service.pr_detail(1)["merge_gate"]
         assert gate["ok"] is False and "greptile" in gate["reason"]
+        assert gate["blockers"] == gates.merge_blockers(rec) and len(gate["blockers"]) == 2
 
     def test_merge_gate_blocks_codeowners_path(self, patched, monkeypatch):
         rec = _pr()
@@ -407,6 +409,7 @@ class TestServiceRows:
                             lambda n: [".github/workflows/ci.yml", "src/other.ts"])
         gate = service.pr_detail(1)["merge_gate"]
         assert gate["ok"] is False and "code owner" in gate["reason"]
+        assert gate["blockers"] == [gate["reason"], *gates.merge_blockers(rec)]
 
     def test_pr_row_hides_greptile_severity_when_review_is_stale(self, patched):
         # greptile_review was stamped against an OLD head; the head has since

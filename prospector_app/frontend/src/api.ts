@@ -21,6 +21,15 @@ export type ResponsesFilter = "any" | "reopened" | "new_commits" | "replied" | "
  *  CheckClause below. */
 export type CheckStatus = "pass" | "fail" | "never_ran";
 
+/** The human merge gate (gates.merge_eligibility); `blockers` lists every reason it refuses. */
+export interface MergeGate {
+  ok: boolean;
+  reason: string;
+  blockers: string[];
+  overridable?: boolean;
+  override_kind?: "security" | "unreviewed" | "verify" | null;
+}
+
 /** Filter PRs on one named CI/vetting check (e.g. "security", "verify"):
  *  match if its rolled-up status falls in `status` (an array ORs; a bare
  *  value is shorthand for a one-element array). Multiple clauses in
@@ -470,7 +479,7 @@ export interface PRRow {
   safety_titles?: { severity: string; title: string; location: string }[];
   author_stats?: AuthorStats | null;
   checks?: ChecksRollup;
-  merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "unreviewed" | "verify" | null };
+  merge_gate?: MergeGate;
   age_days?: number | null;
   responses?: PRResponses | null;
   author_return?: OpenAuthorReturn | null;
@@ -1275,7 +1284,7 @@ export interface PRDetail extends PRRow {
   display?: PRDisplay | null;
   // the processing rows ahead of the checks: summary, cluster, analysis
   stages?: CheckItem[];
-  merge_gate?: { ok: boolean; reason: string; overridable?: boolean; override_kind?: "security" | "unreviewed" | "verify" | null };
+  merge_gate?: MergeGate;
   // the changed paths that pinned risk_tier (the detail view's "why this tier")
   risk_tier_paths?: string[];
   // each changed path above the leaf tier, with its tier (0 = core … 2)

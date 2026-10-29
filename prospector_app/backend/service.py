@@ -226,20 +226,28 @@ def _age_days(pr: Pr) -> int | None:
 
 def _merge_gate_fields(rec: Pr) -> dict:
     """The merge gate for the app: ok/reason from gates.merge_eligibility,
-    plus `overridable` (a reason at merge time clears the block) and
+    `blockers` from gates.merge_blockers, plus `overridable` (a reason at merge time clears the block) and
     `override_kind` naming which block ("security" for a YELLOW verdict,
     "unreviewed" for a PR no security review has reached, "verify" for an
     escalate outcome) so the UI labels the override and the executor logs it to
     the right place."""
     ok, reason = gates.merge_eligibility(rec)
     if ok:
-        return {"ok": ok, "reason": reason, "overridable": False, "override_kind": None}
+        return {"ok": ok, "reason": reason, "blockers": [], "overridable": False,
+                "override_kind": None}
     sec = gates.security_overridable(rec)
     waive = not sec and gates.security_waivable(rec)
     ver = gates.verify_overridable(rec)
     kind = "security" if sec else "unreviewed" if waive else "verify" if ver else None
-    return {"ok": ok, "reason": reason, "overridable": kind is not None,
-            "override_kind": kind}
+    return {"ok": ok, "reason": reason, "blockers": gates.merge_blockers(rec),
+            "overridable": kind is not None, "override_kind": kind}
+
+
+def _code_owner_gate(gate: dict, owners: list[str]) -> dict:
+    """`gate` refused for a CODEOWNERS path, which no reason overrides."""
+    block = f"requires manual merge by a code owner ({' '.join(owners)})"
+    return {**gate, "ok": False, "reason": block, "blockers": [block, *gate["blockers"]],
+            "overridable": False, "override_kind": None}
 
 
 def _row_merge_gate(rec: Pr) -> dict:
@@ -248,8 +256,7 @@ def _row_merge_gate(rec: Pr) -> dict:
     gate = _merge_gate_fields(rec)
     hm = _human_merge_from_cache(rec)
     if hm and hm.get("required"):
-        gate["ok"], gate["overridable"], gate["override_kind"] = False, False, None
-        gate["reason"] = f"requires manual merge by a code owner ({' '.join(hm.get('owners', []))})"
+        return _code_owner_gate(gate, hm.get("owners", []))
     return gate
 
 
@@ -869,10 +876,7 @@ def pr_detail(n: int) -> dict | None:
     # a gated path shows as blocked without a second round-trip.
     gate = _merge_gate_fields(rec)
     hm = row.get("human_merge")
-    if hm and hm.get("required"):
-        gate["ok"], gate["overridable"], gate["override_kind"] = False, False, None
-        gate["reason"] = f"requires manual merge by a code owner ({' '.join(hm['owners'])})"
-    row["merge_gate"] = gate
+    row["merge_gate"] = _code_owner_gate(gate, hm["owners"]) if hm and hm.get("required") else gate
     return row
 
 
