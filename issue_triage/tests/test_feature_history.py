@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,6 +74,79 @@ def test_refresh_keeps_old_files_when_fetch_fails(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(gh, "gh_list", lambda path, **kw: None)
     feature_history.refresh([], force=True)
     assert (d / "closed-5.md").exists()
+
+
+def _expire(d: Path) -> None:
+    os.utime(d / ".fetched", (0, 0))
+
+
+def test_a_refresh_with_nothing_changed_lists_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    lists: list[str] = []
+    comments: list[int] = []
+    rows = [_raw(5, updated_at="2026-01-05T00:00:00Z"), _raw(6, updated_at="2026-01-06T00:00:00Z")]
+    monkeypatch.setattr(gh, "gh_list", lambda path, **kw: lists.append(path) or rows)
+    monkeypatch.setattr(gh, "issue_comments", lambda n, **kw: comments.append(n) or [])
+    d = feature_history.refresh([])
+    assert sorted(comments) == [5, 6] and "since=" not in lists[0]
+    _expire(d)
+    rows = [rows[1]]
+    feature_history.refresh([])
+    assert sorted(comments) == [5, 6] and len(lists) == 2
+    assert lists[1].endswith("&since=2026-01-06T00%3A00%3A00Z")
+    assert (d / "closed-5.md").exists() and (d / "closed-6.md").exists()
+
+
+def test_a_changed_issue_refetches_its_comments(monkeypatch: pytest.MonkeyPatch) -> None:
+    comments: list[int] = []
+    rows = [_raw(5, updated_at="2026-01-05T00:00:00Z")]
+    monkeypatch.setattr(gh, "gh_list", lambda path, **kw: rows)
+    monkeypatch.setattr(gh, "issue_comments", lambda n, **kw: comments.append(n) or [
+        {"author_association": "OWNER", "user": {"login": "m"}, "body": f"call {len(comments)}"}])
+    d = feature_history.refresh([])
+    _expire(d)
+    rows = [_raw(5, updated_at="2026-01-09T00:00:00Z")]
+    feature_history.refresh([])
+    assert comments == [5, 5] and "call 2" in (d / "closed-5.md").read_text()
+
+
+def test_an_incremental_refresh_keeps_the_newest(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(feature_history, "HISTORY_MAX", 2)
+    rows = [_raw(5, updated_at="2026-01-05"), _raw(6, updated_at="2026-01-06")]
+    monkeypatch.setattr(gh, "gh_list", lambda path, **kw: rows)
+    d = feature_history.refresh([])
+    _expire(d)
+    rows = [_raw(7, updated_at="2026-01-07")]
+    feature_history.refresh([])
+    assert sorted(p.name for p in d.glob("closed-*.md")) == ["closed-6.md", "closed-7.md"]
+
+
+def _decided(store: IssueStore, n: int, at: str) -> None:
+    store.save_issue({"issue": n, "meta": {"title": f"want {n}", "state": "open", "body": "",
+                                           "updated_at": "t", "content_updated_at": "t"}})
+    store.edit_issue(n).record_feature_decision({"decision": "decline", "by": "m", "at": at})
+
+
+def test_render_decisions_keeps_the_newest(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(feature_history, "HISTORY_MAX", 2)
+    store = IssueStore(tmp_path)
+    for n, at in ((3, "2026-01-03"), (4, "2026-01-04"), (5, "2026-01-05")):
+        _decided(store, n, at)
+    text = feature_history.render_decisions(store.load_issue(n) for n in (3, 4, 5))
+    assert [line.split()[0] for line in text.splitlines()[2:]] == ["#5", "#4"]
+
+
+def test_decisions_are_rewritten_only_when_they_change(monkeypatch: pytest.MonkeyPatch,
+                                                       tmp_path: Path) -> None:
+    monkeypatch.setattr(gh, "gh_list", lambda path, **kw: [])
+    store = IssueStore(tmp_path)
+    _decided(store, 3, "2026-01-03")
+    d = feature_history.refresh([store.load_issue(3)])
+    os.utime(d / "decisions.md", (0, 0))
+    feature_history.refresh([store.load_issue(3)])
+    assert (d / "decisions.md").stat().st_mtime == 0
+    _decided(store, 4, "2026-01-04")
+    feature_history.refresh([store.load_issue(n) for n in (3, 4)])
+    assert "#4" in (d / "decisions.md").read_text()
 
 
 def test_render_decisions_lists_declines_and_implements(tmp_path: Path) -> None:

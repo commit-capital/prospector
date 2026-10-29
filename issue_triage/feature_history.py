@@ -2,6 +2,7 @@
 requests, read by the feature-request screener."""
 from __future__ import annotations
 
+import json
 import re
 import time
 import urllib.parse
@@ -20,6 +21,8 @@ COMMENT_MAX = 1500
 _MAINTAINER = {"OWNER", "MEMBER", "COLLABORATOR"}
 _FETCHED = ".fetched"
 _DECISIONS = "decisions.md"
+# Each closed-<n>.md file's issue number and the updated_at it was written at.
+_INDEX = ".index.json"
 
 
 def history_dir() -> Path:
@@ -40,11 +43,11 @@ def render_closed(raw: dict, comments: list[dict]) -> str:
 
 
 def render_decisions(issues: Iterable[Issue]) -> str:
+    """The newest HISTORY_MAX maintainer decisions, newest first."""
+    decided = sorted(((d, issue) for issue in issues if (d := issue.feature_decision)),
+                     key=lambda p: str(p[0].get("at") or ""), reverse=True)
     lines = ["# Feature-request decisions in this deployment", ""]
-    for issue in issues:
-        d = issue.feature_decision
-        if not d:
-            continue
+    for d, issue in decided[:HISTORY_MAX]:
         line = f"#{issue.number} {issue.title or ''}: {d['decision']} (by {d.get('by', '?')})"
         if d.get("guidance"):
             line += f" - {d['guidance']}"
@@ -52,40 +55,75 @@ def render_decisions(issues: Iterable[Issue]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _fetch_closed() -> list[dict] | None:
-    """The most recently closed feature requests across the feature labels, or
-    None when any listing fails."""
+def _fetch_closed(since: str | None) -> list[dict] | None:
+    """The most recently closed feature requests across the feature labels,
+    only those updated at or after `since` when given, or None when any
+    listing fails."""
     found: dict[int, dict] = {}
+    after = f"&since={urllib.parse.quote(since, safe='')}" if since else ""
     for label in profile.active().feature_labels:
         quoted = urllib.parse.quote(label, safe="")
         rows = gh.gh_list(f"repos/{config.repo()}/issues?state=closed&labels={quoted}"
-                          "&sort=updated&per_page=100")
+                          f"&sort=updated&per_page=100{after}")
         if rows is None:
             return None
         for row in rows:
             if "pull_request" not in row:
                 found[row["number"]] = row
-    newest = sorted(found.values(), key=lambda r: r.get("updated_at") or "", reverse=True)
-    return newest[:HISTORY_MAX]
+    return list(found.values())
+
+
+def _write_if_changed(path: Path, text: str) -> None:
+    if not path.exists() or path.read_text() != text:
+        path.write_text(text)
+
+
+def _sync_closed(d: Path) -> bool:
+    """Bring the closed-<n>.md files up to date: list only what was updated
+    since the newest file, fetch comments only for an issue whose updated_at
+    moved since its file was written, and keep the newest HISTORY_MAX.
+    Whether the listing succeeded."""
+    index_path = d / _INDEX
+    try:
+        index: dict[str, str] = json.loads(index_path.read_text())
+    except (OSError, ValueError):
+        index = {}
+    rows = _fetch_closed(max(index.values(), default=None))
+    if rows is None:
+        return False
+    listed = {str(r["number"]): r for r in rows}
+    updated = {**index, **{n: str(r.get("updated_at") or "") for n, r in listed.items()}}
+    keep = dict(sorted(updated.items(), key=lambda kv: kv[1], reverse=True)[:HISTORY_MAX])
+    for n, row in listed.items():
+        path = d / f"closed-{n}.md"
+        if n not in keep or (index.get(n) == keep[n] and path.exists()):
+            continue
+        comments = gh.issue_comments(int(n))
+        if comments is None:
+            if n in index:
+                keep[n] = index[n]
+            else:
+                del keep[n]
+            continue
+        path.write_text(render_closed(row, comments))
+    for old in d.glob("closed-*.md"):
+        if old.name.removeprefix("closed-").removesuffix(".md") not in keep:
+            old.unlink()
+    index_path.write_text(json.dumps(keep))
+    return True
 
 
 def refresh(issues: Iterable[Issue], *, force: bool = False) -> Path:
+    """The digest directory, its closed requests re-synced once per
+    HISTORY_MAX_AGE (or when `force`d) and decisions.md rewritten when it
+    would change."""
     d = history_dir()
     d.mkdir(parents=True, exist_ok=True)
     stamp = d / _FETCHED
     fresh = stamp.exists() and time.time() - stamp.stat().st_mtime < HISTORY_MAX_AGE.total_seconds()
-    if force or not fresh:
-        rows = _fetch_closed()
-        if rows is not None:
-            texts = {f"closed-{r['number']}.md": render_closed(r, gh.issue_comments(r["number"]) or [])
-                     for r in rows}
-            for old in d.glob("closed-*.md"):
-                if old.name not in texts:
-                    old.unlink()
-            for name, text in texts.items():
-                (d / name).write_text(text)
-            stamp.touch()
-    (d / _DECISIONS).write_text(render_decisions(issues))
+    if (force or not fresh) and _sync_closed(d):
+        stamp.touch()
+    _write_if_changed(d / _DECISIONS, render_decisions(issues))
     return d
 
 
