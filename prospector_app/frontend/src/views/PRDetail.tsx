@@ -160,25 +160,30 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fresh.status, fresh.changed, fresh.at]);
 
-  // Re-run analysis right from the "new commits" banner (#582): reuses the
-  // cluster-scoped triage-cluster job — CLUSTER/ANALYZE aren't single-PR
-  // operations — since re-analysis for a PR is always its cluster's re-analysis.
-  // Only offered once the PR has landed in a cluster; a PR ingested but not yet
-  // clustered has no cluster job to run and needs the CLUSTER phase first.
-  // The job (like the two below) runs to completion on the backend regardless
-  // of this page's lifetime, and reattaches to one already in flight on mount
-  // (#683) — navigating away and back shows it picking up where it left off.
-  const analyzeJob = useJobStream("triage-cluster", { cluster: pr?.clusters[0] }, (status) => {
+  // Re-run analysis from the "new commits" banner (#582) and the Checks panel.
+  // A clustered PR re-runs its cluster's triage, since analysis of a cluster
+  // member weighs its siblings. A PR a clustering pass left standalone
+  // reingests on its own. A PR no pass has reached needs the CLUSTER phase
+  // first, so it gets neither. Each job runs to completion on the backend
+  // regardless of this page's lifetime, and reattaches to one already in
+  // flight on mount (#683).
+  const onAnalyzed = (status: string) => {
     pushToast(`#${prNum} · Re-analysis ${status}`, status === "done" ? "green" : "red",
       { detail: status === "done" ? "disposition + freshness reloaded below" : "the phase exited non-zero — see the log" });
     reloadPr();
     fresh.refresh();
-  });
+  };
+  const clusterJob = useJobStream("triage-cluster", { cluster: pr?.clusters[0] }, onAnalyzed);
+  const reingestJob = useJobStream("reingest-pr", { pr: prNum }, onAnalyzed);
+  const cid = pr?.clusters[0];
+  const analyzeJob = cid == null ? reingestJob : clusterJob;
+  const clusterStage = pr?.stages?.find((s) => s.key === "cluster");
+  const canAnalyze = cid != null || (clusterStage != null && clusterStage.status !== "na");
   const runAnalyze = () => {
-    const cid = pr?.clusters[0];
-    if (cid == null || analyzeJob.running) return;
+    if (!canAnalyze || analyzeJob.running) return;
     pushToast(`▶ #${prNum} · Re-analysis — running…`, "muted");
-    analyzeJob.start(`/api/jobs/run/triage-cluster?cluster=${cid}`);
+    analyzeJob.start(cid == null ? `/api/jobs/run/reingest-pr?pr=${prNum}`
+      : `/api/jobs/run/triage-cluster?cluster=${cid}`);
   };
 
   // Run-state (#10): has a live action already landed on this PR? Drives the
@@ -437,12 +442,15 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     );
   }
 
-  // Analysis is cluster-scoped: re-running it re-analyzes every PR in the cluster.
+  // The button sits on the stage marked as the next step: a standalone PR's
+  // stale cluster stamp, which its reingest re-stamps, else the analysis.
   const analysisStage = pr.stages?.find((s) => s.key === "analysis");
-  if (pr.clusters.length && analysisStage && analysisStage.status !== "pass") {
-    checksActions.analysis = (
+  if (canAnalyze && analysisStage && analysisStage.status !== "pass") {
+    checksActions[cid == null && clusterStage?.stale ? "cluster" : "analysis"] = (
       <button className="btn-secondary sm" onClick={runAnalyze} disabled={analyzeJob.running}
-        title={`Analyze cluster ${pr.clusters[0]} — every PR in it — against its current heads.`}>
+        title={cid == null
+          ? "Refresh this standalone PR from GitHub, then re-summarize and re-analyze it at its current head."
+          : `Analyze cluster ${cid} — every PR in it — against its current heads.`}>
         {analyzeJob.running ? "Analyzing…" : analysisStage.status === "na" ? "Analyze now" : "↻ Re-analyze"}
       </button>
     );
@@ -545,7 +553,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       {/* Live freshness (#25): loud, above everything — acting on a stale
           picture is how you contradict reality in a contributor's PR. */}
       <FreshnessCallout diverged={fresh.byPr[prNum]}
-        onRerunAnalysis={pr.clusters.length ? runAnalyze : undefined}
+        onRerunAnalysis={canAnalyze ? runAnalyze : undefined}
         conflictAction={resolved ? undefined : resolveConflicts}
         rerunning={analyzeJob.running} rerunLog={analyzeJob.log} />
 

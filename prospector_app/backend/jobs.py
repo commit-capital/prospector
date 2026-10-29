@@ -254,6 +254,16 @@ JOB_SPECS: dict[str, JobSpec] = {
                                 str(REPO_ROOT / "pipeline" / "triage_cluster.py"),
                                 "--cluster", str(cid)],
     },
+    "reingest-pr": {
+        "label": "Re-analyze (single PR)",
+        "detail": "refresh one PR from GitHub, then re-summarize and re-analyze it at its current head if either went stale: its clusters, or a standalone PR on its own. Store writes only, nothing upstream.",
+        "agentic": True,
+        "ledger": ("pr", ("reingest",)),
+        "needs_pr": True,
+        "argv_fn": lambda pr: [*PIPELINE_PY, "-u",
+                               str(REPO_ROOT / "pipeline" / "reingest.py"),
+                               "--pr", str(pr)],
+    },
     "security-review": {
         "label": "Security review (single PR)",
         "detail": "3-lens adversarial review + refuting verifier on one PR.",

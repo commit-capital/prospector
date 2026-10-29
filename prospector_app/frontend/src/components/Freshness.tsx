@@ -30,7 +30,7 @@ export function FreshnessBar({ f, updatedAt }: { f: FreshnessState; updatedAt?: 
  *  itself moved (new commits), offers a "Re-run Analysis" action right there —
  *  the fix for a warning belongs next to the warning, not buried in a panel
  *  further down the page (#582). `onRerunAnalysis` is omitted (button hidden)
- *  when the PR isn't clustered yet, since re-analysis is cluster-scoped.
+ *  when no clustering pass has reached the PR yet.
  *  `conflictAction` renders beside a new-conflicts warning. */
 export function FreshnessCallout({ diverged, onRerunAnalysis, conflictAction, rerunning, rerunLog }: {
   diverged?: Divergence[];

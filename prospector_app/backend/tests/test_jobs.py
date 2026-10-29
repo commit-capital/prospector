@@ -103,6 +103,16 @@ def test_security_job_scheduler_bounds_concurrency(monkeypatch):
     assert peak == 2
 
 
+def test_reingest_pr_runs_the_single_pr_reingest():
+    jobs.JOBS.clear()
+    job = jobs.start_job("reingest-pr", pr=13490)
+    argv = job["_argv"]
+    assert argv[-2:] == ["--pr", "13490"]
+    assert any(a.endswith("reingest.py") for a in argv)
+    with pytest.raises(ValueError):
+        jobs.start_job("reingest-pr", None)
+
+
 def test_threat_scan_pr_spec_is_listed_and_needs_pr():
     specs = {s["kind"]: s for s in jobs.list_specs()}
     assert "threat-scan-pr" in specs

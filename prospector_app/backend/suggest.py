@@ -187,8 +187,11 @@ def _suggest_inner(rec: Pr, disposition: str | None = None,
     if disposition is None:
         if not rec.section("analysis") or not freshness.is_current(rec, "analysis"):
             if rec.section("analysis"):     # had an analysis; the head moved since
+                scope = ("its cluster" if rec.cluster_ids
+                         else "this PR, which no clustering pass grouped")
                 return {"action": "ANALYZE", "label": "Re-analyze", "tone": "muted",
-                        "rationale": "The PR head moved since analysis — re-run ANALYZE on its cluster.",
+                        "rationale": ("The PR head moved since analysis — Re-analyze "
+                                      f"(Checks panel) re-runs ANALYZE on {scope}."),
                         "accept": None}
             return _unanalyzed_card(rec)
         d = rec.disposition

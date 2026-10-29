@@ -45,9 +45,10 @@ except Re-verify.
   **📝 Rewrite the description** (Code review row), **🔧 Fix findings**
   (Design row): queue an autofix. See Other actions.
 - **↻ Run / ↻ Re-run** on the Design, Security and Threat scan rows, and
-  **Analyze now / ↻ Re-analyze** on the analysis row (PR in a cluster): start
-  the matching job (design-review-pr, security-review, threat-scan-pr,
-  triage-cluster).
+  **Analyze now / ↻ Re-analyze** on the analysis row (or a standalone PR's
+  stale Clustered row): start the matching job (design-review-pr,
+  security-review, threat-scan-pr, and triage-cluster for a clustered PR or
+  reingest-pr for a standalone one).
 - **🧪 Queue for sandbox verification / ↻ Re-verify**: POST
   /api/prs/{n}/verify/queue → `verify_queue.queue_pr`. It refuses a PR that is
   closed, malicious, or already queued. **✕ Cancel queued verification**: POST
