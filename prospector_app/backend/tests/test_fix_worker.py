@@ -76,6 +76,14 @@ class _Probe:
         return type("R", (), {"returncode": rc, "stdout": out, "stderr": self.stderr})()
 
 
+def _failure_kind(store) -> str | None:
+    """The category the last ledger row books a machine failure under, which
+    its outcome's stage carries too."""
+    raw = [r for r in store.runs() if getattr(r, "phase", "") == "fix:single"][-1].raw
+    assert raw["outcome"]["stage"] == raw["stats"]["kind"]
+    return raw["stats"]["kind"]
+
+
 def _pushed(probe: _Probe) -> bool:
     """Whether anything the worker ran could have reached the contributor's
     branch: an explicit push, or a bare `update`, which merges AND pushes."""
@@ -625,6 +633,7 @@ def test_resolve_agent_with_blocked_edits_fails_instead_of_refusing(store, monke
     assert "edit grant" in req["error"]
     after_merge = fake.calls[fake.calls.index(("prepare", "--merge")):]
     assert ("abort",) in after_merge
+    assert _failure_kind(store) == "agent-edits"
 
 
 def test_resolve_preflight_failure_refuses_and_aborts(store, monkeypatch, tmp_path):
@@ -675,6 +684,7 @@ def test_a_resolution_whose_continue_stops_fails_a_crash_and_refuses_a_verdict(
     assert probe.calls[-1] == ("abort",) and not _pushed(probe)
     if status == "failed":
         assert req["result"]["output"] == stderr.strip()
+        assert _failure_kind(store) == "helper-crash"
 
 
 def test_a_resolution_that_leaves_no_change_rests_the_head(store, monkeypatch, tmp_path):
@@ -1117,6 +1127,7 @@ def test_a_pr_diff_that_cannot_be_fetched_fails_the_request_before_the_agent(sto
     req = store.load_pr(1).fix_request
     assert req["status"] == "failed" and "gh down" in req["error"]
     assert probe.calls == []
+    assert _failure_kind(store) == "github"
 
 
 def test_a_give_up_refuses_with_the_agents_reason(store, monkeypatch):

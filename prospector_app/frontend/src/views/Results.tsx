@@ -60,6 +60,13 @@ const STAGES: Record<string, string> = {
   exception: "the run crashed",
   refused: "refused the change",
   "run-failed": "the run failed on the machine",
+  "agent-edits": "the agent's edit permission never reached it",
+  "agent-answer": "the agent's answer was unusable",
+  "helper-crash": "the push helper crashed",
+  git: "a git step on the worker failed",
+  github: "GitHub refused a read or write",
+  credentials: "this machine can't mint the bot token",
+  record: "the PR's record has no head commit",
 };
 
 const FAULTS: Record<string, { label: string; tone: "red" | "yellow" | "muted" }> = {

@@ -62,7 +62,8 @@ def autofix(n: int, head: str | None, *, action: str, status: str, detail: str |
     if status == "failed":
         if kind == capacity.PAUSED_KIND:
             return None
-        stage = kind if kind in outcomes.STAGES[AUTOFIX] else "run-failed"
+        stage = ("base" if (kind or "").startswith("base-")
+                 else kind if kind in outcomes.STAGES[AUTOFIX] else "run-failed")
         return outcomes.make(AUTOFIX, _pr(n, head), stage, fault="machine", words=words)
     if status in ("refused", "cancelled"):
         return outcomes.make(AUTOFIX, _pr(n, head), status,
