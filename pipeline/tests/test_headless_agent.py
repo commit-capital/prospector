@@ -359,8 +359,9 @@ def test_a_prompt_the_safeguards_refuse_raises_agent_declined(monkeypatch):
     monkeypatch.setattr(ha.subprocess, "Popen", _popen_with(lambda cmd: _FailingProc(cmd, [
         "API Error: Opus 5 (1M context)'s safeguards flagged this message "
         "(https://www.anthropic.com/legal/aup). Try rephrasing."])))
-    with pytest.raises(ha.AgentDeclined, match="safeguards flagged"):
+    with pytest.raises(ha.AgentDeclined) as e:
         ha.run_agent("describe this PR", allow_gh=False, cwd="/tmp")
+    assert "API Error" not in str(e.value)
 
 
 def test_an_expired_login_still_reads_as_unavailable_not_declined(monkeypatch):

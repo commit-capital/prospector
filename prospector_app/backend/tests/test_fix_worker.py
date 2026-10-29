@@ -2632,6 +2632,7 @@ class TestDeclinedPrompt:
         req = store.load_pr(1).fix_request
         assert req["status"] == "refused"
         assert "safeguards declined" in req["refused_reason"]
+        assert "API Error" not in req["refused_reason"]
         assert ("abort",) in probe.calls
 
     def test_a_declined_describe_is_refused_not_failed(self, store, monkeypatch, tmp_path):
@@ -2647,6 +2648,7 @@ class TestDeclinedPrompt:
         req = store.load_pr(5).fix_request
         assert req["status"] == "refused"
         assert "safeguards declined" in req["refused_reason"]
+        assert "API Error" not in req["refused_reason"]
 
 
 class TestCiObjection:
