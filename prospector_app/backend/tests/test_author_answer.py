@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from pipeline import design_review, gates, review_policy, reviewers
+from pipeline import approvals, gates, review_policy, reviewers
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from pipeline.testsupport import greptile_entry, reviews_section, threat_section
@@ -211,8 +211,8 @@ def test_approving_passes_the_design_bar_and_is_logged(st, client, monkeypatch):
     assert _answer(_pr(st)) == "no"
     logged: list[dict] = []
     monkeypatch.setattr(activity, "record", lambda kind, **f: logged.append({"kind": kind, **f}))
-    r = client.post("/api/reviews/design/approve/pr/5",
-                    json={"head_sha": HEAD, "reason": "the helper is shared on purpose"})
+    r = client.post("/api/prs/5/approve",
+                    json={"stage": "design", "head_sha": HEAD, "reason": "the helper is shared on purpose"})
     assert r.status_code == 200
     pr = _pr(st)
     override = reviewers.design_override(pr.review_entry(reviewers.DESIGN.id))
@@ -228,8 +228,8 @@ def test_approving_passes_the_design_bar_and_is_logged(st, client, monkeypatch):
 
 def test_a_new_review_replaces_the_approval(st, client):
     _save(st, None)
-    assert client.post("/api/reviews/design/approve/pr/5",
-                       json={"head_sha": HEAD, "reason": "fine"}).status_code == 200
+    assert client.post("/api/prs/5/approve",
+                       json={"stage": "design", "head_sha": HEAD, "reason": "fine"}).status_code == 200
     assert st.save_design_review(5, _design(), head_sha=HEAD)
     data.refresh()
     assert review_policy.own_bar(_pr(st), reviewers.DESIGN).status == reviewers.FAIL
@@ -245,28 +245,28 @@ def test_an_approval_never_lands_on_a_review_that_moved_under_it(st, monkeypatch
         assert st.save_design_review(5, {**_design(), "summary": "newer"}, head_sha=HEAD)
         return real(rec, stamp)
     monkeypatch.setattr(prs, "save_if", raced)
-    assert design_review.approve(st, 5, HEAD, "fine", by="op") is not None
+    assert approvals.approve(st, 5, "design", HEAD, "fine", by="op") is not None
     entry = _pr(st).review_entry(reviewers.DESIGN.id)
     assert entry is not None and entry["summary"] == "newer" and "override" not in entry
 
 
 @pytest.mark.parametrize("payload, words", [
-    ({"head_sha": "f" * 40, "reason": "fine"}, "reload"),
-    ({"head_sha": HEAD, "reason": "  "}, "say why"),
+    ({"stage": "design", "head_sha": "f" * 40, "reason": "fine"}, "reload"),
+    ({"stage": "design", "head_sha": HEAD, "reason": "  "}, "say why"),
 ])
 def test_approving_is_refused_off_the_read_head_or_without_a_reason(st, client, payload, words):
     _save(st, None)
-    r = client.post("/api/reviews/design/approve/pr/5", json=payload)
+    r = client.post("/api/prs/5/approve", json=payload)
     assert r.status_code == 409 and words in r.json()["detail"]
     assert reviewers.design_override(_pr(st).review_entry(reviewers.DESIGN.id)) is None
 
 
 def test_a_passing_review_holds_nothing_to_approve(st, client):
     _save(st, None)
-    assert client.post("/api/reviews/design/approve/pr/5",
-                       json={"head_sha": HEAD, "reason": "fine"}).status_code == 200
-    r = client.post("/api/reviews/design/approve/pr/5", json={"head_sha": HEAD, "reason": "again"})
-    assert r.status_code == 409 and "nothing to approve" in r.json()["detail"]
+    assert client.post("/api/prs/5/approve",
+                       json={"stage": "design", "head_sha": HEAD, "reason": "fine"}).status_code == 200
+    r = client.post("/api/prs/5/approve", json={"stage": "design", "head_sha": HEAD, "reason": "again"})
+    assert r.status_code == 409 and "no longer holds" in r.json()["detail"]
 
 
 def test_the_sweep_keeps_the_newest_authored_commits_message():

@@ -12,6 +12,7 @@ import { Collapsible } from "../components/Collapsible";
 import { bannerFindings } from "../components/bannerFindings";
 import { PRActionBar } from "../components/PRActionBar";
 import { PRStatusBlock } from "../components/PRStatusBlock";
+import { ApprovalNote, ApproveButton } from "../components/StageApproval";
 import { AnalysisLine, PRStory, type AnalysisTarget } from "../components/PRStory";
 import { VerifyAction, VerifyBody } from "../components/VerifyPanel";
 import { FixAction, FixActionButton, FixBody } from "../components/FixPanel";
@@ -255,26 +256,6 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     designJob.start(`/api/jobs/run/design-review-pr?pr=${prNum}`);
   };
 
-  // Approve the design review at the head the operator read past its
-  // findings, with their reason; a new review replaces the approval.
-  const [approvingDesign, setApprovingDesign] = useState(false);
-  const approveDesign = async (headSha: string) => {
-    if (approvingDesign) return;
-    const reason = window.prompt(`Approve #${prNum}'s design review at ${headSha.slice(0, 7)} past its `
-      + "findings? Say why — it's logged to Activity. A new push is reviewed again.");
-    if (!reason?.trim()) return;
-    setApprovingDesign(true);
-    try {
-      await api.approveDesign(prNum, headSha, reason.trim());
-      pushToast(`#${prNum} · design review approved`, "green");
-      await reloadPr();
-    } catch (e) {
-      pushToast(`#${prNum} · couldn't approve the design review`, "red", { detail: String(e) });
-    } finally {
-      setApprovingDesign(false);
-    }
-  };
-
   // Record that the secret-leak finding the operator reviewed is no
   // credential: it lifts the merge block for that line at that head only.
   const clearSecretLeak = async (headSha: string, evidence: string) => {
@@ -361,7 +342,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   const resolveConflicts = fixButton("rebase");
   const answered = pr.automation?.bucket === "answered" ? pr.automation.answer : undefined;
   const handBack = (
-    <button className="btn-secondary sm" disabled={approvingDesign}
+    <button className="btn-secondary sm"
       onClick={() => void api.ackResponse(prNum).then(reloadPr)}
       title="You've read the author's answer and the feedback still stands: hand the PR back to its author. A newer reply or push brings it back.">
       ↩ Hand back
@@ -400,14 +381,8 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   if (reviewBlocks.length > 0) checksBodies.review = <>{reviewBlocks}</>;
   const designBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.id === "design", blobUrl, { summaryFirst: true });
   if (designBlocks.length > 0 || designJob.log.length > 1) {
-    const approval = pr.reviews_detail?.design?.entry?.override;
     checksBodies.design = (
       <>
-        {approval && (
-          <div className="small muted">
-            ✅ Approved by {approval.by ?? "an operator"} {approval.at.slice(0, 10)}: {approval.reason}
-          </div>
-        )}
         {designBlocks}
         {designJob.log.length > 1 && (
           <div className="joblog" aria-label="design review log">
@@ -446,13 +421,6 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
               title={`Post the confirmed blocking and major findings on the PR as ${botLogin}, so its author can fix them`}>
               {postingDesign ? "Posting…" : "💬 Post to author"}
             </button>)}
-        {design?.digest.status === "fail" && design.entry?.reviewed_sha && (
-          <button className="btn-secondary sm" disabled={approvingDesign}
-            onClick={() => void approveDesign(design.entry?.reviewed_sha ?? "")}
-            title="You've read the findings and the author's side and accept the design as it is: the check passes at this commit and the PR moves on. A new push is reviewed again.">
-            {approvingDesign ? "Approving…" : "✓ Approve"}
-          </button>
-        )}
         {answered === "design" && handBack}
         <button className="btn-secondary sm" onClick={runDesign} disabled={designJob.running}
           title="Design-review this PR's current head now, replacing any review it has. Runs on a machine holding a verify base pin.">
@@ -532,6 +500,15 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   checksBodies.verify = (
     <VerifyBody v={pr.verify_detail ?? null} req={pr.verify_request ?? null} runner={runner} repo={repo} />
   );
+
+  // A stage an operator may approve carries the button on its row, and an
+  // approved one says who approved it and why.
+  for (const c of checks?.checks ?? []) {
+    if (c.approve_head && !resolved) {
+      checksActions[c.key] = <><ApproveButton pr={prNum} stage={c.key} head={c.approve_head} onDone={reloadPr} />{checksActions[c.key]}</>;
+    }
+    if (c.approval) checksBodies[c.key] = <><ApprovalNote approval={c.approval} />{checksBodies[c.key]}</>;
+  }
 
   // A Summary chip opens its Checks row (or leads to the Checks panel or a diff
   // file); the scroll waits a frame for the opened row to render.

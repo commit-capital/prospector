@@ -1713,20 +1713,20 @@ class Store:
         entry["extra"] = {**(entry.get("extra") or {}), "comment": comment}
         return self._prs.save_if(rec, stamp)
 
-    def approve_design_review(self, n: int, override: dict, *, reviewed_sha: str) -> bool:
-        """Record on PR `n`'s design review the operator's approval past its
-        findings, `override` = {reason, by, at}; `reviewers.design_standing`
-        reads an approved review as holding none, until a new review replaces
-        the entry. Refused (False) when the review is no longer the one taken
-        at `reviewed_sha`."""
+    def approve_stage(self, n: int, stage: str, override: dict, *, head_sha: str) -> bool:
+        """Record on PR `n`'s `stage` verdict the operator's approval past what
+        holds it, `override` = {reason, by, at}, which the gates read as
+        clearing it until a new verdict replaces it. Refused (False) unless
+        `gates.approvable` names `head_sha` on the record as it is saved."""
+        from pipeline import model
         row = self._prs.stamped(n)
         if row is None:
             return False
         rec, stamp = row
-        entry = (rec.get("reviews") or {}).get(reviewers.DESIGN.id)
-        if not entry or entry.get("reviewed_sha") != reviewed_sha:
+        if gates.approvable(model.Pr(self, rec), stage) != head_sha:
             return False
-        entry["override"] = override
+        target = (rec["reviews"][reviewers.DESIGN.id] if stage == "design" else rec[stage])
+        target["override"] = override
         return self._prs.save_if(rec, stamp)
 
     def save_verify_base(self, record: wire.VerifyPin) -> None:

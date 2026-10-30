@@ -448,8 +448,7 @@ export interface ReviewEntry {
   summary: string | null;
   checks: ReviewDigest["checks"];
   extra: Record<string, unknown>;
-  // An operator's approval past the design review's findings.
-  override?: { reason: string; by: string | null; at: string } | null;
+  override?: StageApproval | null;
 }
 
 export type ReviewsDetail = Record<string, { entry: ReviewEntry | null; digest: ReviewDigest }>;
@@ -624,7 +623,14 @@ export interface CoverageRecord {
 }
 
 // `stale`: the row describes `against`, an older commit than the PR's head.
-export interface CheckItem { key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null; advisory?: boolean; stale?: boolean; pending?: boolean; against?: string | null }
+// An operator's approval of a stage past what holds it (pipeline/approvals.py).
+export interface StageApproval { reason: string; by: string | null; at: string }
+export interface CheckItem {
+  key: string; name: string; status: "pass" | "warn" | "fail" | "na"; detail: string; at?: string | null;
+  advisory?: boolean; stale?: boolean; pending?: boolean; against?: string | null;
+  // the stage's approval, or the head an operator may approve it at
+  approval?: StageApproval | null; approve_head?: string | null;
+}
 export interface ChecksRollup { checks: CheckItem[]; passed: number; total: number }
 
 export interface AuthorStats {
@@ -2798,8 +2804,8 @@ export const api = {
     });
     return r.json() as Promise<ExecResult>;
   },
-  approveDesign: (n: number, headSha: string, reason: string) =>
-    postJson<{ ok: boolean }>(`/api/reviews/design/approve/pr/${n}`, { head_sha: headSha, reason }),
+  approveStage: (n: number, stage: string, headSha: string, reason: string) =>
+    postJson<{ ok: boolean }>(`/api/prs/${n}/approve`, { stage, head_sha: headSha, reason }),
   clearSecretLeak: (n: number, headSha: string) =>
     postJson<{ ok: boolean }>(`/api/prs/${n}/threat/clear-secret`, { head_sha: headSha }),
   retriggerReview: async (n: number, reviewer: string, dryRun: boolean) => {
