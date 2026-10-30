@@ -149,8 +149,9 @@ case "$PHASE" in
     # Merge-time compile preflight: the base tree is the current default-branch
     # HEAD and TEST_CMD is the profile's compile command — host-authored policy,
     # never agent text. The patch is the PR's full diff; a conflict means the PR
-    # does not apply onto that HEAD. The explicit heap cap keeps every node
-    # child (per-package tsc) inside the phase's 10g container memory.
+    # does not apply onto that HEAD. The heap cap bounds each node child; a
+    # native compiler (TypeScript 7's tsc) ignores it and relies on the
+    # container's memory class alone.
     export NODE_OPTIONS="--max-old-space-size=4096"
     apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
     run_test_cmd
@@ -159,8 +160,7 @@ case "$PHASE" in
   build)
     # Merge-gate build lane, sharing compile's contract: the profile's
     # whole-repo build command over the patched tree — host-authored policy,
-    # never agent text. The heap cap keeps every node child inside the phase's
-    # 10g container memory.
+    # never agent text. The heap cap bounds each node child, as in compile.
     export NODE_OPTIONS="--max-old-space-size=4096"
     apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
     run_test_cmd

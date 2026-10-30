@@ -3098,9 +3098,10 @@ class TestLargePhaseLock:
     def test_the_class_matches_the_launchers(self):
         import re
         text = (vd.SANDBOX / "sandbox-run.sh").read_text()
-        m = re.search(r'case "\$PHASE" in ([a-z0-9|]+)\) MEM=10g', text)
+        m = re.search(r'case "\$PHASE" in ([a-z0-9|]+)\) MEM=(\d+)g', text)
         assert m is not None
         assert set(m.group(1).split("|")) == set(vd.LARGE_PHASES)
+        assert int(m.group(2)) == vd.LARGE_PHASE_GIB
 
     def test_a_large_phase_stops_orphans_once_it_holds_the_lock(self, monkeypatch, tmp_path):
         import fcntl

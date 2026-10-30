@@ -441,7 +441,7 @@ def docker_disk() -> dict[str, int] | str:
 
 # A large phase's memory class, and what the VM keeps for everything else
 # (the small phases, the daemon, the kernel) before it fits another one.
-LARGE_PHASE_GIB = 10
+LARGE_PHASE_GIB = 14
 VM_RESERVE_GIB = 4
 MAX_LARGE_SLOTS = 4
 
@@ -1245,7 +1245,7 @@ def _stop_timed_out_phase(proc: subprocess.Popen[bytes], container: str,
     remove_container()
 
 
-# The phases the launcher runs at its large memory class (10g). More of them at
+# The phases the launcher runs at its large memory class (LARGE_PHASE_GIB). More of them at
 # once than the Docker VM's memory holds and the kernel kills whichever is
 # bigger, so every large phase on this machine takes one of
 # large_slots() host locks first, whichever worker thread or

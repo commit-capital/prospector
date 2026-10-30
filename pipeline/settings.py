@@ -526,7 +526,7 @@ def issue_fix_max_lines() -> int:
 
 
 def sandbox_large_slots() -> int | None:
-    """How many large-class sandbox phases (10g each) this machine runs at once,
+    """How many large-class sandbox phases this machine runs at once,
     as TRIAGE_SANDBOX_LARGE_SLOTS names it; None sizes it from the Docker VM
     (`verify_driver.large_slots`)."""
     n = positive_int("TRIAGE_SANDBOX_LARGE_SLOTS", 0)
