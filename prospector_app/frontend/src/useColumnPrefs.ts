@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ColumnMeta } from "./components/shared/columns";
+import { readWrap, type ColumnMeta } from "./components/shared/columns";
 import { useExec } from "./ExecContext";
 
 // Only explicit user overrides are stored, so a column added in a later release
@@ -14,13 +14,16 @@ function read(storageKey: string): Record<string, boolean> {
   } catch { return {}; }
 }
 
-/** Which of `columns` a table shows, saved in this browser under `storageKey`.
- *  `columns` must keep one identity across renders (a module constant). */
+/** Which of `columns` a table shows, and whether its long text wraps, saved in
+ *  this browser under `storageKey`. `columns` must keep one identity across
+ *  renders (a module constant). */
 export function useColumnPrefs<C extends ColumnMeta>(columns: readonly C[], storageKey: string): {
   isOn: (k: string) => boolean;
   toggle: (k: string) => void;
   reset: () => void;
   visibleColumns: C[];
+  wrap: boolean;
+  setWrap: (on: boolean) => void;
 } {
   const { activeReviewers } = useExec();
   const defaults = useMemo(
@@ -31,6 +34,12 @@ export function useColumnPrefs<C extends ColumnMeta>(columns: readonly C[], stor
   useEffect(() => {
     try { localStorage.setItem(storageKey, JSON.stringify(overrides)); } catch { /* private mode: keep in-memory */ }
   }, [overrides, storageKey]);
+  const [wrap, setWrap] = useState<boolean>(() => {
+    try { return readWrap(localStorage.getItem(`${storageKey}-wrap`)); } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(`${storageKey}-wrap`, wrap ? "1" : "0"); } catch { /* private mode: keep in-memory */ }
+  }, [wrap, storageKey]);
   const isOn = (k: string) => overrides[k] ?? defaults[k] ?? false;
   // Functional updater so several toggles in one tick build on the latest state
   // instead of a stale closure clobbering each other.
@@ -45,5 +54,5 @@ export function useColumnPrefs<C extends ColumnMeta>(columns: readonly C[], stor
     () => columns.filter((c) => !c.capability || activeReviewers(c.capability).length > 0)
       .filter((c) => c.fixed || (overrides[c.key] ?? defaults[c.key] ?? false)),
     [columns, defaults, overrides, activeReviewers]);
-  return { isOn, toggle, reset, visibleColumns };
+  return { isOn, toggle, reset, visibleColumns, wrap, setWrap };
 }

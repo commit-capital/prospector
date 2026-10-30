@@ -124,7 +124,8 @@ export default function PRExplorer() {
     const n = rowFromEvent(e);
     if (n !== null) rowOpen(n).onAuxClick(e);
   };
-  const { isOn: colOn, toggle: toggleCol, reset: resetCols, visibleColumns } = useColumnPrefs(COLUMNS, "app-explorer-columns");
+  const { isOn: colOn, toggle: toggleCol, reset: resetCols, visibleColumns, wrap, setWrap } =
+    useColumnPrefs(COLUMNS, "app-explorer-columns");
   const { setVisible } = useAgentPane();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSizeState] = useState<PageSizeOption>(readPageSize);
@@ -367,7 +368,8 @@ export default function PRExplorer() {
       <LaneChips spec={spec} onChange={setSpec} />
       <div className="explorer-toolbar">
         <FilterControls spec={spec} onChange={setSpec} visibleColKeys={new Set(visibleColumns.map((c) => c.key))} />
-        <ColumnToggles columns={COLUMNS} isOn={colOn} toggle={toggleCol} reset={resetCols} />
+        <ColumnToggles columns={COLUMNS} isOn={colOn} toggle={toggleCol} reset={resetCols}
+          wrap={wrap} setWrap={setWrap} />
       </div>
       <FilterSummary parts={buildPrFilterParts(spec, setSpec, reviewerLabels)} total={res?.total ?? null} />
       {deep && (
@@ -411,7 +413,7 @@ export default function PRExplorer() {
       )}
 
       <div className="table-scroll" style={loading && res === null ? { display: "none" } : undefined}>
-        <table className="grid sortable pr-table">
+        <table className={`grid sortable pr-table${wrap ? " wrap-rows" : ""}`}>
           <thead><tr>
             <th><input type="checkbox" checked={pageSelected}
               ref={(el) => { if (el) el.indeterminate = pageSomeSelected && !pageSelected; }}

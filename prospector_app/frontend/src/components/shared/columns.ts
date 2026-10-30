@@ -20,3 +20,8 @@ export interface Column<Row, Ctx> extends ColumnMeta {
   cellClass?: string;       // <td> className (e.g. "mono", "muted small")
   cell: (r: Row, ctx: Ctx) => ReactNode;
 }
+
+/** Whether a table's stored wrap choice turns long-text wrapping on; off by default. */
+export function readWrap(raw: string | null): boolean {
+  return raw === "1";
+}

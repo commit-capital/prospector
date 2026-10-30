@@ -4,12 +4,15 @@ import { Term } from "../InfoTip";
 import { useExec } from "../../ExecContext";
 
 // A dropdown menu toggling which non-anchor columns show — one button in the
-// toolbar, with a checkbox per column behind it.
-export function ColumnToggles({ columns, isOn, toggle, reset }: {
+// toolbar, with a checkbox per column behind it — and, for a table that clips
+// long text to one line, whether that text wraps.
+export function ColumnToggles({ columns, isOn, toggle, reset, wrap, setWrap }: {
   columns: readonly ColumnMeta[];
   isOn: (k: string) => boolean;
   toggle: (k: string) => void;
   reset: () => void;
+  wrap?: boolean;
+  setWrap?: (on: boolean) => void;
 }) {
   const { activeReviewers } = useExec();
   const [open, setOpen] = useState(false);
@@ -43,6 +46,13 @@ export function ColumnToggles({ columns, isOn, toggle, reset }: {
               {" "}{c.label}
             </label>
           ))}
+          {setWrap && (
+            <label className="col-menu-row col-menu-wrap"
+              title="Let titles, statuses and summaries wrap onto more lines so each row shows all of its text">
+              <input type="checkbox" checked={!!wrap} onChange={() => setWrap(!wrap)} />
+              {" "}Wrap long text
+            </label>
+          )}
           <button className="link-btn" onClick={reset}>Reset</button>
         </div>
       )}
