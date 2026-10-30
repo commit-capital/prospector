@@ -1473,7 +1473,6 @@ tr.row-done:hover > td { opacity: 1; }
 /* header tools shared by the PR and issue tables: drag a header to reorder,
    × hides the column, the right edge resizes it */
 .pr-table thead th, .issues-table thead th { position: relative; }
-.th-label { min-width: 0; overflow: hidden; }
 .col-hide-btn {
   padding: 0 2px; background: none; border: none; color: var(--muted);
   cursor: pointer; font-size: 13px; line-height: 1; opacity: 0; flex-shrink: 0;
