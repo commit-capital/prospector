@@ -96,7 +96,7 @@ export function buildPrFilterParts(spec: FilterSpec, onChange: (next: FilterSpec
   }
   if (spec.author_return) {
     const LABELS: Record<string, string> = { reopened: "reopened", "follow-up": "follow-up to our close",
-      "design-answer": "answered our design findings" };
+      answer: "answered the review feedback" };
     const label = spec.author_return === true ? "answered us"
       : Array.isArray(spec.author_return) ? spec.author_return.map((r) => LABELS[r] ?? r).join(" or ")
         : (LABELS[spec.author_return] ?? spec.author_return);
