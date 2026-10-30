@@ -155,6 +155,8 @@ def test_a_new_head_whose_findings_were_each_posted_gets_no_comment(gh_fake):
     _post()
     gh_fake.comments[0]["body"] = gh_fake.comments[0]["body"].replace(HEAD, "e" * 40)
     _save(gh_fake.store, findings=[_finding("dup helper", line=40)])
+    gh_fake.comments.append({"user": {"login": settings.bot_login() + "[bot]"},
+                             "body": "@greptile review", "html_url": URL + "0"})
     res = _post()
     assert res["status"] == "exists" and res["event_url"] == URL
     assert len(gh_fake.runs) == 1

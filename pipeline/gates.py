@@ -364,10 +364,11 @@ def head_feedback(pr: Pr) -> list[Feedback]:
 def design_answer(pr: Pr) -> str | None:
     """What `pr`'s author answered the design findings the bot posted on the
     reviewed head with, which makes the next move ours: a reply of theirs
-    newest on the PR, or the message of a push whose fresh review the bot had
-    nothing new to post on, as the responses sweep read them since that
-    comment. None when they have not answered, the bar no longer fails, or an
-    operator acked the answer."""
+    newest on the PR, or the message of a commit they wrote whose head's own
+    review the bot had nothing new to post on, as the responses sweep read
+    them since that comment. A merge, or a push that left the patch as it was,
+    is no answer. None when they have not answered, the bar no longer fails,
+    or an operator acked the answer."""
     design = pr.review_entry(reviewers.DESIGN.id) or {}
     if (not (design.get("extra") or {}).get("comment")
             or review_policy.own_bar(pr, reviewers.DESIGN).status != reviewers.FAIL):
@@ -381,8 +382,10 @@ def design_answer(pr: Pr) -> str | None:
         return None
     if sig.get("replied") and (sig.get("by") or "").lower() == (pr.author or "").lower():
         return sig.get("snippet") or "replied"
-    if sig.get("new_commits"):
-        return sig.get("commit_snippet") or "pushed a commit"
+    patch = pr.section("patch") or {}
+    rebased = patch.get("against_head_sha") == pr.head_sha and bool(patch.get("same_as"))
+    if sig.get("commit_snippet") and design.get("reviewed_sha") == pr.head_sha and not rebased:
+        return sig["commit_snippet"]
     return None
 
 

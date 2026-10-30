@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from pipeline import gates, review_policy, reviewers
+from pipeline import design_review, gates, review_policy, reviewers
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from pipeline.testsupport import reviews_section, threat_section
@@ -86,6 +86,12 @@ def test_a_push_the_bot_had_nothing_new_to_post_on_is_an_answer_too(st):
     assert gates.design_answer(_pr(st)) == "keep the helper: it is shared"
 
 
+def test_a_push_that_left_the_patch_as_it_was_is_no_answer(st):
+    _save(st, _responses(new_commits=True, commit_snippet="rebase onto main"),
+          patch={"id": "p1", "same_as": ["e" * 40], "against_head_sha": HEAD, "checked_at": _now()})
+    assert gates.design_answer(_pr(st)) is None
+
+
 @pytest.mark.parametrize("sig", [
     None,
     _responses(replied=True, by="maintainer-mo", snippet="please fix"),
@@ -135,6 +141,7 @@ def client() -> TestClient:
 
 def test_approving_passes_the_design_bar_and_is_logged(st, client, monkeypatch):
     _save(st, _responses(replied=True, by="al", snippet="no"))
+    assert gates.design_answer(_pr(st)) == "no"
     logged: list[dict] = []
     monkeypatch.setattr(activity, "record", lambda kind, **f: logged.append({"kind": kind, **f}))
     r = client.post("/api/reviews/design/approve/pr/5",
@@ -161,6 +168,21 @@ def test_a_new_review_replaces_the_approval(st, client):
     assert review_policy.own_bar(_pr(st), reviewers.DESIGN).status == reviewers.FAIL
 
 
+def test_an_approval_never_lands_on_a_review_that_moved_under_it(st, monkeypatch):
+    _save(st, None)
+    prs = st._prs
+    real = prs.save_if
+
+    def raced(rec, stamp):
+        monkeypatch.setattr(prs, "save_if", real)
+        assert st.save_design_review(5, {**_design(), "summary": "newer"}, head_sha=HEAD)
+        return real(rec, stamp)
+    monkeypatch.setattr(prs, "save_if", raced)
+    assert design_review.approve(st, 5, HEAD, "fine", by="op") is not None
+    entry = _pr(st).review_entry(reviewers.DESIGN.id)
+    assert entry is not None and entry["summary"] == "newer" and "override" not in entry
+
+
 @pytest.mark.parametrize("payload, words", [
     ({"head_sha": "f" * 40, "reason": "fine"}, "reload"),
     ({"head_sha": HEAD, "reason": "  "}, "say why"),
@@ -180,7 +202,19 @@ def test_a_passing_review_holds_nothing_to_approve(st, client):
     assert r.status_code == 409 and "nothing to approve" in r.json()["detail"]
 
 
-def test_the_sweep_keeps_the_newest_commits_message():
+def test_the_sweep_keeps_the_newest_authored_commits_message():
     sig = responses.classify(POSTED, "design-findings", state="open", comments=[], reopens=[],
-                             commit_dates=[LATER], commit_message="keep  the\nhelper")
+                             commit_dates=[LATER], authored=[
+                                 {"committedDate": "2026-10-19T10:00:00+00:00", "message": "older"},
+                                 {"committedDate": LATER, "message": "keep  the\nhelper"}])
     assert sig is not None and sig["commit_snippet"] == "keep the helper"
+
+
+def test_a_merge_alone_leaves_no_commit_message():
+    node = {"state": "OPEN", "author": {"login": "al"}, "comments": {"nodes": []},
+            "timelineItems": {"nodes": []},
+            "commits": {"nodes": [{"commit": {"committedDate": LATER, "oid": "m",
+                                              "message": "Merge branch 'main'",
+                                              "parents": {"totalCount": 2}}}]}}
+    sig = responses._node_signals(node, {"at": POSTED, "kind": "design-findings"})
+    assert sig is not None and sig["new_commits"] and sig["commit_snippet"] is None

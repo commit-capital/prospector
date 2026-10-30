@@ -729,9 +729,10 @@ def retrigger_review(n: int, reviewer_id: str, *, dry_run: bool,
 
 
 def _bot_comment_url(n: int, *markers: str, every: tuple[str, ...] = ()) -> str | None:
-    """The URL of the bot's comment on `n` that carries any of `markers`, or
-    of its newest one when its comments together carry `every` marker; None
-    when neither. Raises when the comments cannot be read."""
+    """The URL of the bot's comment on `n` that carries any of `markers`, or,
+    when its comments together carry `every` marker, of the newest one that
+    carries any of them; None when neither. Raises when the comments cannot be
+    read."""
     comments = gh.issue_comments(int(n))
     if comments is None:
         raise RuntimeError(f"the comments on #{n} could not be read")
@@ -741,7 +742,10 @@ def _bot_comment_url(n: int, *markers: str, every: tuple[str, ...] = ()) -> str 
     if hit is not None or not every:
         return hit
     bodies = "\n".join(c.get("body") or "" for c in ours)
-    return (ours[-1].get("html_url") or "") if all(m in bodies for m in every) else None
+    if not all(m in bodies for m in every):
+        return None
+    return next((c.get("html_url") or "" for c in reversed(ours)
+                 if any(m in (c.get("body") or "") for m in every)), None)
 
 
 def post_design_findings(n: int, *, dry_run: bool, initiator: str = "operator") -> dict:
