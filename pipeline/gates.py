@@ -313,10 +313,24 @@ FIX_IN_FLIGHT = ("queued", "running", "awaiting-review", "approved", "pushing")
 
 class Feedback(NamedTuple):
     """One piece of blocking feedback on a PR's head, the store section it was
-    read from, and when it was posted."""
+    read from, when it was posted, and the PR check it fails (`review`,
+    `design` or `ci`)."""
     what: str
     section: str
     at: datetime
+    check: str
+
+
+# The responses sweep's `our_action` kind for blocking feedback standing on a
+# PR's head (`head_feedback`), when it is newer than anything the bot did.
+FEEDBACK_ACTION = "head-feedback"
+
+
+class Answer(NamedTuple):
+    """An author's answer to the blocking feedback on their PR: the check it
+    answers and their words."""
+    check: str
+    text: str
 
 
 class LivePr(NamedTuple):
@@ -344,49 +358,62 @@ def head_feedback(pr: Pr) -> list[Feedback]:
     if (greptile.get("reviewed_sha") == head and score is not None and at is not None
             and score < review_policy.greptile_threshold()):
         out.append(Feedback(f"Greptile scored it {score}/{reviewers.GREPTILE.score_max}",
-                            "reviews", at))
+                            "reviews", at, "review"))
     design = pr.review_entry(reviewers.DESIGN.id) or {}
     comment = (design.get("extra") or {}).get("comment") or {}
     at = storekit.parse_ts(comment.get("posted_at"))
     if (design.get("reviewed_sha") == head and at is not None
             and review_policy.own_bar(pr, reviewers.DESIGN).status == reviewers.FAIL):
-        out.append(Feedback("the design review's findings were posted", "reviews", at))
+        out.append(Feedback("the design review's findings were posted", "reviews", at, "design"))
     signals = pr.signals or {}
     failures = (signals.get("ci_failures") or {}).get("failures") or []
     started = [t for f in failures if (t := storekit.parse_ts(f.get("started_at"))) is not None]
     if (pr.ci == "failing" and signals.get("against_head_sha") == head and started
             and not pr.ci_stale_checks):
         names = ", ".join(sorted({str(f.get("name")) for f in failures}))
-        out.append(Feedback(f"CI failed ({names})", "signals", max(started)))
+        out.append(Feedback(f"CI failed ({names})", "signals", max(started), "ci"))
     return out
 
 
-def design_answer(pr: Pr) -> str | None:
-    """What `pr`'s author answered the design findings the bot posted on the
-    reviewed head with, which makes the next move ours: a reply of theirs
-    newest on the PR, or the message of a commit they wrote whose head's own
-    review the bot had nothing new to post on, as the responses sweep read
-    them since that comment. A merge, or a push that left the patch as it was,
-    is no answer. None when they have not answered, the bar no longer fails,
-    or an operator acked the answer."""
-    design = pr.review_entry(reviewers.DESIGN.id) or {}
-    if (not (design.get("extra") or {}).get("comment")
-            or review_policy.own_bar(pr, reviewers.DESIGN).status != reviewers.FAIL):
-        return None
+def author_answer(pr: Pr) -> Answer | None:
+    """`pr`'s author's answer to the blocking feedback on its head, which makes
+    the next move ours, as the responses sweep read it since that feedback
+    (`responses.scan`). None when they have not answered, the feedback no
+    longer stands, or an operator acked the answer.
+
+    Since the design findings the bot posted, a reply of theirs newest on the
+    PR answers, and so does the message of a commit they wrote whose head's
+    own review the bot had nothing new to post on; a merge, or a push that left
+    the patch as it was, does not. Since a Greptile score or failing CI
+    (FEEDBACK_ACTION), only a reply after the newest feedback answers: a push
+    replaces the head the feedback was on."""
     sig = pr.section("responses") or {}
-    if (sig.get("our_action") or {}).get("kind") != "design-findings":
-        return None
+    kind = (sig.get("our_action") or {}).get("kind")
     acked = storekit.parse_ts((pr.section("response_ack") or {}).get("at"))
     last = storekit.parse_ts(sig.get("last_response_at"))
     if acked is not None and last is not None and acked >= last:
         return None
-    if sig.get("replied") and (sig.get("by") or "").lower() == (pr.author or "").lower():
-        return sig.get("snippet") or "replied"
-    patch = pr.section("patch") or {}
-    rebased = patch.get("against_head_sha") == pr.head_sha and bool(patch.get("same_as"))
-    if sig.get("commit_snippet") and design.get("reviewed_sha") == pr.head_sha and not rebased:
-        return sig["commit_snippet"]
-    return None
+    replied = sig.get("replied") and (sig.get("by") or "").lower() == (pr.author or "").lower()
+    if kind == "design-findings":
+        design = pr.review_entry(reviewers.DESIGN.id) or {}
+        if (not (design.get("extra") or {}).get("comment")
+                or review_policy.own_bar(pr, reviewers.DESIGN).status != reviewers.FAIL):
+            return None
+        if replied:
+            return Answer("design", sig.get("snippet") or "replied")
+        patch = pr.section("patch") or {}
+        rebased = patch.get("against_head_sha") == pr.head_sha and bool(patch.get("same_as"))
+        if sig.get("commit_snippet") and design.get("reviewed_sha") == pr.head_sha and not rebased:
+            return Answer("design", sig["commit_snippet"])
+        return None
+    if kind != FEEDBACK_ACTION or not replied or last is None:
+        return None
+    standing = head_feedback(pr)
+    if not standing or max(f.at for f in standing) >= last:
+        return None
+    checks = {f.check for f in standing}
+    check = next(c for c in ("design", "review", "ci") if c in checks)
+    return Answer(check, sig.get("snippet") or "replied")
 
 
 def abandon_exempt(pr: Pr) -> str | None:
@@ -430,8 +457,8 @@ def abandoned_close(pr: Pr, live: LivePr, now: datetime) -> tuple[bool, str]:
     held = abandon_exempt(pr)
     if held:
         return False, held
-    if (answer := design_answer(pr)) is not None:
-        return False, f"its author answered the design findings: {answer}"
+    if (answer := author_answer(pr)) is not None:
+        return False, f"its author answered the feedback: {answer.text}"
     req = pr.fix_request or {}
     if req.get("status") in FIX_IN_FLIGHT:
         return False, f"its {req.get('action')} request is {req.get('status')}"
@@ -1231,8 +1258,8 @@ def fix_huntable(pr: Pr, action: str,
     stacked = stacked_block(pr)
     if stacked is not None:
         return False, stacked
-    if action == "fix" and design_answer(pr) is not None:
-        return False, "its author answered the design findings; that is a human's call"
+    if action == "fix" and author_answer(pr) is not None:
+        return False, "its author answered the feedback; that is a human's call"
     if not is_current(pr, "signals") or (
             review_policy.active_reviewers() and not is_current(pr, "reviews")):
         return False, "signals or reviews stale or missing, so the review bar is unknowable"

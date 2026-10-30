@@ -299,12 +299,12 @@ def matches(row: dict, spec: dict) -> bool:
             return False
     if spec.get("author_return"):
         # an author answered us: came back after we closed their work
-        # (author_returns), or answered the design findings we posted
-        # (gates.design_answer); True for any, else "reopened" / "follow-up" /
-        # "design-answer"
+        # (author_returns), or answered the blocking feedback on their PR
+        # (gates.author_answer); True for any, else "reopened" / "follow-up" /
+        # "answer"
         ret = row.get("author_return")
-        signal = (ret["signal"] if ret else "design-answer"
-                  if (row.get("automation") or {}).get("bucket") == "design-answered" else None)
+        signal = (ret["signal"] if ret else "answer"
+                  if (row.get("automation") or {}).get("bucket") == "answered" else None)
         want = spec["author_return"]
         if signal is None or (want is not True and signal not in (want if isinstance(want, list) else [want])):
             return False
