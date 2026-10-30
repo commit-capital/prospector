@@ -184,7 +184,7 @@ fi
 
 # 3. Run: caps dropped, limits set, read-only mounts only. The exit code IS the
 # result — propagate it verbatim. The limits are per-phase: the whole-repo
-# phases (compile and build run a whole-repo command whose peak needs 10g —
+# phases (compile and build run a whole-repo command whose peak passes 10g —
 # the target repository's server type-check builds its Rust runner and a
 # plugin SDK before a whole-project tsc;
 # e2e boots the app and drives Chromium over it;
@@ -195,7 +195,7 @@ fi
 # tasks, which still stops a fork bomb in PR code.
 MEM=2g
 PIDS=512
-case "$PHASE" in compile|build|baseline|regress|e2e) MEM=10g; PIDS=2048;; esac
+case "$PHASE" in compile|build|baseline|regress|e2e) MEM=14g; PIDS=2048;; esac
 shm_args=()
 case "$PHASE" in
   e2e) shm_args=( --shm-size 1g );;

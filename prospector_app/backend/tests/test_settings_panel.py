@@ -54,11 +54,11 @@ def test_no_retired_setting_set_names_none(env_path, monkeypatch):
 
 def test_the_sandbox_sizes_in_effect_are_shown(env_path):
     rows = _rows()
-    assert rows["TRIAGE_SANDBOX_LARGE_SLOTS"]["effective"] == "2"
-    assert rows["TRIAGE_SANDBOX_LARGE_CPUS"]["effective"] == "3"
+    assert rows["TRIAGE_SANDBOX_LARGE_SLOTS"]["effective"] == "1"
+    assert rows["TRIAGE_SANDBOX_LARGE_CPUS"]["effective"] == "5"
 
 
-@pytest.mark.parametrize("vm,slots,cpus", [((16, 8), 1, 4), ((31, 10), 2, 3), ((64, 16), 4, 3),
+@pytest.mark.parametrize("vm,slots,cpus", [((16, 8), 1, 4), ((31, 10), 1, 5), ((64, 16), 4, 3),
                                            ((8, 4), 1, 2), (None, 1, 2)])
 def test_large_phases_are_sized_to_the_docker_vm(monkeypatch, vm, slots, cpus):
     monkeypatch.setattr(verify_driver, "_vm_size", lambda: vm)
