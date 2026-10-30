@@ -24,6 +24,8 @@ import { peekRead, runRead } from "../readCache";
 import { ISSUE_PAGE_SIZE as PAGE_SIZE, ISSUE_TABLE_FIRST_PAGE, issueTableRead, type IssueSortKey } from "./issueTable";
 import { Select } from "../components/Select";
 import { ColumnToggles } from "../components/shared/ColumnToggles";
+import { ColumnHeaderTools, ColumnWidthStyle } from "../components/shared/ColumnHeaderTools";
+import { columnDragProps } from "../columnLayout";
 import type { Column } from "../components/shared/columns";
 import { useColumnPrefs } from "../useColumnPrefs";
 
@@ -477,12 +479,12 @@ const ISSUE_COLUMNS: IssueColumn[] = [
           title={results[r.number].detail}>{results[r.number].status}</span>
       )}
     </> },
-  { key: "title", label: "Title", defaultOn: true, fixed: true, sortKey: "title",
+  { key: "title", label: "Title", defaultOn: true, fixed: true, sortKey: "title", cellClass: "col-text",
     cell: (r) => <>
       {r.title}{r.is_dup && r.canonical != null && <span className="muted small" title={`Duplicate of #${r.canonical}`}> · dup of <IssueLink n={r.canonical} /></span>}
       {r.author_return && <div className="small muted"><AuthorReturnNote ret={r.author_return} /></div>}
     </> },
-  { key: "status", label: "Status", defaultOn: false, cellClass: "small",
+  { key: "status", label: "Status", defaultOn: false, cellClass: "small col-text",
     title: "Where the issue stands, in one plain sentence",
     cell: (r) => r.status_line.text },
   { key: "author", label: "Author", defaultOn: true, sortKey: "author", cellClass: "muted small",
@@ -556,13 +558,13 @@ function AllIssuesTable({
   // Which column's filter popout is open, and where to anchor it — mirrors
   // the PR Explorer's per-column filter flyout (#494).
   const [openFilter, setOpenFilter] = useState<{ key: string; rect: DOMRect } | null>(null);
-  const { isOn: colOn, toggle: toggleCol, reset: resetCols, visibleColumns } =
-    useColumnPrefs(ISSUE_COLUMNS, "app-issue-columns");
+  const { isOn: colOn, toggle: toggleCol, hide: hideCol, move: moveCol, widths: colWidths, setWidth: setColWidth,
+    reset: resetCols, orderedColumns, visibleColumns } = useColumnPrefs(ISSUE_COLUMNS, "app-issue-columns");
   const thProps = (col: IssueColumn) => {
     const key = col.sortKey;
-    if (!key) return { title: col.title };
+    if (!key) return { className: `c-${col.key}`, title: col.title };
     return {
-      className: `sortable-th ${sortKey === key ? "sorted" : ""}`,
+      className: `c-${col.key} sortable-th ${sortKey === key ? "sorted" : ""}`,
       onClick: () => onSort(key),
       role: "button" as const,
       "aria-sort": (sortKey === key ? (sortDir === "asc" ? "ascending" : "descending") : "none") as
@@ -637,7 +639,7 @@ function AllIssuesTable({
         {filterParts.length > 0 && (
           <button className="link-btn" onClick={() => onFilterSpecChange({})}>Clear filters</button>
         )}
-        <ColumnToggles columns={ISSUE_COLUMNS} isOn={colOn} toggle={toggleCol} reset={resetCols} />
+        <ColumnToggles columns={orderedColumns} isOn={colOn} toggle={toggleCol} reset={resetCols} />
         <span className="muted small">
           {loading ? "Loading…" : total === 0 ? "No issues" : `${start}-${end} of ${total}`}
         </span>
@@ -655,6 +657,7 @@ function AllIssuesTable({
           onClose={() => setOpenFilter(null)}
         />
       )}
+      <ColumnWidthStyle tableClass="issues-table" widths={colWidths} />
       <div className="table-scroll">
         <table className="grid sortable issues-table">
           <thead><tr>
@@ -666,8 +669,12 @@ function AllIssuesTable({
                 title="Select all issues on this page" />
             </th>
             {visibleColumns.map((col) => (
-              <th key={col.key} {...thProps(col)}>
-                <span className="th-inner"><span className="th-label">{col.label}{indicator(col.sortKey)}</span>{filterBtn(col.key)}</span>
+              <th key={col.key} {...thProps(col)} {...columnDragProps(col.key, moveCol)}>
+                <span className="th-inner">
+                  <span className="th-label">{col.label}{indicator(col.sortKey)}</span>{filterBtn(col.key)}
+                  <ColumnHeaderTools label={col.label} onHide={col.fixed ? undefined : () => hideCol(col.key)}
+                    onWidth={(w) => setColWidth(col.key, w)} />
+                </span>
               </th>
             ))}
           </tr></thead>
@@ -681,7 +688,7 @@ function AllIssuesTable({
                       onChange={() => onToggle(row.number)} title="Select this issue" />
                   </td>
                   {visibleColumns.map((col) => (
-                    <td key={col.key} className={col.cellClass} onClick={col.stopOpen ? stopRowOpen : undefined}>
+                    <td key={col.key} className={`c-${col.key} ${col.cellClass ?? ""}`} onClick={col.stopOpen ? stopRowOpen : undefined}>
                       {col.cell(row, { sub, results, expanded, toggleExpand })}
                     </td>
                   ))}
