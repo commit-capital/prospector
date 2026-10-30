@@ -1470,6 +1470,24 @@ tr.row-done:hover > td { opacity: 1; }
 .th-inner { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .th-label { display: inline-flex; align-items: center; gap: 2px; }
 
+/* header tools shared by the PR and issue tables: drag a header to reorder,
+   × hides the column, the right edge resizes it */
+.pr-table thead th, .issues-table thead th { position: relative; }
+.th-label { min-width: 0; overflow: hidden; }
+.col-hide-btn {
+  padding: 0 2px; background: none; border: none; color: var(--muted);
+  cursor: pointer; font-size: 13px; line-height: 1; opacity: 0; flex-shrink: 0;
+}
+th:hover .col-hide-btn { opacity: .6; }
+.col-hide-btn:hover { opacity: 1; color: var(--text); }
+.col-resize {
+  position: absolute; top: 0; right: -3px; bottom: 0; width: 7px; z-index: 1;
+  cursor: col-resize;
+}
+.col-resize:hover { background: var(--accent); opacity: .4; }
+th.col-drop-target { box-shadow: inset 2px 0 0 var(--accent); }
+body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none; }
+
 /* small filter icon button inside each sortable column header */
 .col-filter-btn {
   display: inline-flex; align-items: center; justify-content: center;

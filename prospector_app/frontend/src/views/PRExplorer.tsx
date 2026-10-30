@@ -6,6 +6,8 @@ import { reuseRows } from "../components/explorer/rowReuse";
 import { LaneChips } from "../components/explorer/LaneChips";
 import { FilterControls } from "../components/explorer/FilterControls";
 import { ColumnToggles } from "../components/shared/ColumnToggles";
+import { ColumnHeaderTools, ColumnWidthStyle } from "../components/shared/ColumnHeaderTools";
+import { columnDragProps } from "../columnLayout";
 import { ExplorerSearchBar } from "../components/explorer/ExplorerSearchBar";
 import { BulkActionBar, type BulkAction } from "../components/explorer/BulkActionBar";
 import { BulkConfirmDialog } from "../components/explorer/BulkConfirmDialog";
@@ -92,7 +94,7 @@ const PrRow = memo(function PrRow({ r, visibleColumns, isSelected, isOpen, isCur
         <input type="checkbox" checked={isSelected} onChange={() => onToggle(r.number)} />
       </td>
       {visibleColumns.map((col) => (
-        <td key={col.key} className={col.cellClass} onClick={col.stopOpen ? stopRowOpen : undefined}>
+        <td key={col.key} className={`c-${col.key} ${col.cellClass ?? ""}`} onClick={col.stopOpen ? stopRowOpen : undefined}>
           {col.cell(r, cellCtx)}
         </td>
       ))}
@@ -124,7 +126,8 @@ export default function PRExplorer() {
     const n = rowFromEvent(e);
     if (n !== null) rowOpen(n).onAuxClick(e);
   };
-  const { isOn: colOn, toggle: toggleCol, reset: resetCols, visibleColumns } = useColumnPrefs(COLUMNS, "app-explorer-columns");
+  const { isOn: colOn, toggle: toggleCol, hide: hideCol, move: moveCol, widths: colWidths, setWidth: setColWidth,
+    reset: resetCols, orderedColumns, visibleColumns } = useColumnPrefs(COLUMNS, "app-explorer-columns");
   const { setVisible } = useAgentPane();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSizeState] = useState<PageSizeOption>(readPageSize);
@@ -367,7 +370,7 @@ export default function PRExplorer() {
       <LaneChips spec={spec} onChange={setSpec} />
       <div className="explorer-toolbar">
         <FilterControls spec={spec} onChange={setSpec} visibleColKeys={new Set(visibleColumns.map((c) => c.key))} />
-        <ColumnToggles columns={COLUMNS} isOn={colOn} toggle={toggleCol} reset={resetCols} />
+        <ColumnToggles columns={orderedColumns} isOn={colOn} toggle={toggleCol} reset={resetCols} />
       </div>
       <FilterSummary parts={buildPrFilterParts(spec, setSpec, reviewerLabels)} total={res?.total ?? null} />
       {deep && (
@@ -410,6 +413,7 @@ export default function PRExplorer() {
         />
       )}
 
+      <ColumnWidthStyle tableClass="pr-table" widths={colWidths} />
       <div className="table-scroll" style={loading && res === null ? { display: "none" } : undefined}>
         <table className="grid sortable pr-table">
           <thead><tr>
@@ -421,8 +425,8 @@ export default function PRExplorer() {
               const canFilter = FILTERABLE_COLS.has(col.key);
               const filterActive = isColFilterActive(col.key, spec, reviewers);
               return (
-                <th key={col.key}
-                  className={[col.numeric ? "num" : "", "sortable-th", sortKey === col.key ? "sorted" : ""].filter(Boolean).join(" ")}
+                <th key={col.key} {...columnDragProps(col.key, moveCol)}
+                  className={[`c-${col.key}`, col.numeric ? "num" : "", "sortable-th", sortKey === col.key ? "sorted" : ""].filter(Boolean).join(" ")}
                   onClick={() => sortByCol(col.key)}
                   aria-sort={sortKey === col.key ? (dir === "asc" ? "ascending" : "descending") : "none"}
                   title={col.key === "updated" ? "When the PR last changed upstream. Click to sort by recency. Chips show how the author responded since we acted: ↩ reopened · ⬆ new commits · 💬 replied (scan from the Control tab)." : "Click to sort by this column"}>
@@ -444,6 +448,8 @@ export default function PRExplorer() {
                         ▾
                       </button>
                     )}
+                    <ColumnHeaderTools label={col.label} onHide={col.fixed ? undefined : () => hideCol(col.key)}
+                      onWidth={(w) => setColWidth(col.key, w)} />
                   </span>
                 </th>
               );
