@@ -122,9 +122,8 @@ def test_a_push_seen_live_or_an_inflight_fix_keeps_the_pr_open(store, closes, mo
     store.edit_pr(2).record_fix_request("queued", "rebase", head_sha=_head(2))
     data.refresh()
     monkeypatch.setattr(handback, "live_state", lambda n: _live(n, head="f" * 40))
-    assert abandoned_close.judge(data.prs()[1], NOW)[:2] == (
-        False, "its live head is not the ingested one")
-    assert abandoned_close.judge(data.prs()[2], NOW)[1] == "its rebase request is queued"
+    assert abandoned_close.judge(data.prs()[1], NOW).why == "its live head is not the ingested one"
+    assert abandoned_close.judge(data.prs()[2], NOW).why == "its rebase request is queued"
     assert abandoned_close.sweep_once(NOW) == []
     assert closes == []
 
@@ -296,7 +295,7 @@ def test_a_drift_no_agent_can_resolve_gets_our_rebase_ask_which_then_closes(
     assert not abandoned_close.judge(data.prs()[1], later).close
 
 
-def test_a_queued_request_that_hit_conflicts_asks_and_one_the_worker_ended_requeues_once(
+def test_a_request_that_hit_conflicts_asks_and_one_the_worker_ended_requeues_once(
         store, failing_ci, drift, closes, queued, asks):
     _save_ci(store, 1)
     _save_ci(store, 2)
@@ -306,7 +305,18 @@ def test_a_queued_request_that_hit_conflicts_asks_and_one_the_worker_ended_reque
     later = _next_pass()
     assert abandoned_close.sweep_once(later) == [1, 2]
     assert asks == [1] and queued == [(1, "rebase"), (2, "rebase"), (2, "rebase")]
+    # The worker ended it again: the author is asked.
     _end(store, 2, "rebase", "failed")
-    assert abandoned_close.sweep_once(_next_pass(later)) == []
+    assert abandoned_close.sweep_once(_next_pass(later)) == [2]
+    assert asks == [1, 2] and len(queued) == 3
     steps = [r.raw["stats"]["step"] for r in store.runs(phase=abandoned_close.PHASE)]
-    assert sorted(steps) == ["asked", "queued", "queued", "requeued"]
+    assert sorted(steps) == ["asked", "asked", "queued", "queued", "requeued"]
+
+
+def test_a_branch_the_bot_may_not_touch_gets_the_ask(store, failing_ci, drift, closes, queued,
+                                                    asks, monkeypatch):
+    monkeypatch.setattr(abandoned_close.gates, "fix_eligibility",
+                        lambda *a, **k: (False, "maintainers cannot modify it"))
+    _save_ci(store, 1)
+    assert abandoned_close.sweep_once(NOW) == [1]
+    assert asks == [1] and queued == []

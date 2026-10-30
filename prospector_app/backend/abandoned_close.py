@@ -11,13 +11,11 @@ lease, acting on at most `settings.abandoned_close_daily()` PRs a UTC day.
 A PR held only by CI that ran on an old base is brought current first
 (`bring_current`), sorted as the backlog sweep sorts it: a clean or
 agent-resolvable drift queues an autofix update or rebase, after which CI on
-the new head is the author's to answer; one no agent can resolve gets our
-rebase ask, which is blocking feedback in its own right.
+the new head is the author's to answer; one no request can bring current gets
+our rebase ask, which is blocking feedback in its own right.
 
 Each close, queued request, ask, dry-run or failure is one runs-ledger row
-(PHASE). A close, dry-run or failure ends the lane's work on that head in its
-mode: a PR someone reopens at the same head stays open, and a failed close
-waits for an operator. A live pass runs only where the bot can
+(PHASE), and each counts toward the daily cap. A live pass runs only where the bot can
 write (`executor.live_possible`). `TRIAGE_ABANDONED_CLOSE`
 (`settings.abandoned_close`) is `off` (the default), `dry-run` or `live`.
 
@@ -43,7 +41,8 @@ PHASE = "abandoned-close"
 INTERVAL_SECONDS = 6 * 3600
 LEASE = "abandoned-close"
 LEASE_SECONDS = 2 * 3600
-# Steps that end the lane's work on a head in their mode.
+# Steps that end the lane's work on a head in their mode: a PR someone reopens
+# at the same head stays open, and a failed act waits for an operator.
 FINAL_STEPS = {"closed", "dry-run", "failed"}
 
 _thread: threading.Thread | None = None
@@ -73,8 +72,7 @@ def candidates(prs: dict[int, Pr], now: datetime) -> list[Pr]:
     for pr in prs.values():
         if pr.state != "open" or gates.abandon_exempt(pr):
             continue
-        feedback = [*gates.head_feedback(pr), *filter(None, [gates.rebase_feedback(pr)])]
-        ripe = [f.at for f in feedback if now - f.at >= quiet]
+        ripe = [f.at for f in gates.abandon_feedback(pr) if now - f.at >= quiet]
         if ripe:
             out.append((min(ripe), pr))
     return [pr for _, pr in sorted(out, key=lambda c: (c[0], c[1].number))]
@@ -82,24 +80,29 @@ def candidates(prs: dict[int, Pr], now: datetime) -> list[Pr]:
 
 class Verdict(NamedTuple):
     close: bool
+    update: bool  # held only by CI on an old base (gates.STALE_CI)
     why: str
     feedback: list[str]  # what the close names
     live: gates.LivePr | None
 
 
-def judge(pr: Pr, now: datetime, *, has_base: bool = False) -> Verdict:
+def _verdict(pr: Pr, facts: gates.LivePr, now: datetime) -> Verdict:
+    ok, why = gates.abandoned_close(pr, facts, now)
+    return Verdict(ok, why == gates.STALE_CI, why,
+                   [f.what for f in gates.current_feedback(pr, facts)] if ok else [], facts)
+
+
+def judge(pr: Pr, now: datetime) -> Verdict:
     """Whether `pr` closes now, and why, from its live state."""
     live = handback.live_state(pr.number)
     if live is None:
-        return Verdict(False, "GitHub did not answer", [], None)
+        return Verdict(False, False, "GitHub did not answer", [], None)
     if live["state"] != "open":
-        return Verdict(False, f"the PR is {live['state']}", [], None)
-    facts = gates.LivePr(head=live["head"], head_committed=live["head_committed"],
-                         updated_at=live["updated_at"], last_active=live["last_active"],
-                         ci_state=live["head_ci"], has_base=has_base)
-    ok, why = gates.abandoned_close(pr, facts, now)
-    return Verdict(ok, why, [f.what for f in gates.current_feedback(pr, facts)] if ok else [],
-                   facts)
+        return Verdict(False, False, f"the PR is {live['state']}", [], None)
+    return _verdict(pr, gates.LivePr(head=live["head"], head_committed=live["head_committed"],
+                                     updated_at=live["updated_at"],
+                                     last_active=live["last_active"], ci_state=live["head_ci"]),
+                    now)
 
 
 def _acted(mode: str, prs: list[int]) -> tuple[dict[tuple[int, str], set[str]], int]:
@@ -148,40 +151,39 @@ def close(pr: Pr, feedback: list[str], why: str, mode: str) -> str | None:
     return _book(pr, step, mode, why, status=status, detail=res.get("detail"))
 
 
-def bring_current(pr: Pr, steps: set[str], now: datetime, mode: str) -> str | None:
-    """Act on a PR held only by CI on an old base (`gates.STALE_CI`): close it
-    when local git shows its head already carries the base, else queue the
-    autofix request that brings it current, or ask its author to rebase when
-    no request can or one ended on its conflicts. A request the worker ended,
-    not the PR, is queued once more. Returns the booked step, or None when
-    there is nothing to do yet."""
+def bring_current(pr: Pr, verdict: Verdict, steps: set[str], now: datetime,
+                  mode: str) -> str | None:
+    """Act on a PR held only by CI on an old base: close it when local git
+    shows its head already carries the base, else bring it current or ask its
+    author to rebase (`backlog_sweep.classify`). A request at this head that
+    ended without bringing it current leads to the ask, or, when the worker
+    ended it, to one more try. Returns the booked step, or None."""
     req = pr.fix_request or {}
-    if "queued" in steps:
-        if backlog_sweep.ended_on_conflicts(req, pr.head_sha):
+    head = pr.head_sha
+    retry = False
+    if req.get("against_head_sha") == head and req.get("action") in ("update", "rebase", "resolve"):
+        retry = "requeued" not in steps and backlog_sweep.ended_on_the_machine(req, head)
+        if not retry:
             conflicts = [str(p) for p in (req.get("result") or {}).get("conflict_paths") or []]
-            return _ask(pr, conflicts, mode, "the queued request could not resolve its conflicts")
-        if "requeued" in steps or not backlog_sweep.ended_on_the_machine(req, pr.head_sha):
-            return None
+            return _ask(pr, conflicts, mode,
+                        f"its {req.get('action')} request ended {req.get('status')}")
     backlog_sweep.fetch([pr.number])
-    probe = backlog_sweep.probe(pr.number, pr.head_sha)
-    if isinstance(probe, str):
+    probe = backlog_sweep.probe(pr.number, head)
+    if isinstance(probe, str) or verdict.live is None:
         return None
     if probe.current:
-        verdict = judge(pr, now, has_base=True)
-        return close(pr, verdict.feedback, verdict.why, mode) if verdict.close else None
+        again = _verdict(pr, verdict.live._replace(has_base=True), now)
+        return close(pr, again.feedback, again.why, mode) if again.close else None
     plan = backlog_sweep.classify(pr, probe)
-    if plan.ask:
-        return _ask(pr, plan.conflicts, mode, plan.why)
     if plan.action is None:
-        return None
+        return _ask(pr, plan.conflicts, mode, plan.why)
     if mode != "live":
         return _book(pr, "dry-run", mode, f"would queue {plan.action}: {plan.why}")
     try:
         fix_queue.queue_pr(pr.number, plan.action)
     except ValueError as e:
         return _book(pr, "failed", mode, f"not queued: {e}")
-    return _book(pr, "requeued" if "queued" in steps else "queued", mode, plan.why,
-                 action=plan.action)
+    return _book(pr, "requeued" if retry else "queued", mode, plan.why, action=plan.action)
 
 
 def _ask(pr: Pr, conflicts: list[str], mode: str, why: str) -> str:
@@ -225,8 +227,8 @@ def sweep_once(now: datetime | None = None) -> list[int] | None:
             verdict = judge(pr, now)
             if verdict.close:
                 step = close(pr, verdict.feedback, verdict.why, mode)
-            elif verdict.why == gates.STALE_CI:
-                step = bring_current(pr, steps, now, mode)
+            elif verdict.update:
+                step = bring_current(pr, verdict, steps, now, mode)
             else:
                 step = None
             if step is not None:
@@ -281,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     rows = []
     for pr in candidates(data.prs(), now):
         v = judge(pr, now)
-        verb = "close" if v.close else "update" if v.why == gates.STALE_CI else "keep"
+        verb = "close" if v.close else "update" if v.update else "keep"
         rows.append({"pr": pr.number, "author": pr.author, "verdict": verb, "why": v.why,
                      "feedback": v.feedback})
         print(f"#{pr.number:<6} {verb:<6} @{pr.author}  {v.why}")

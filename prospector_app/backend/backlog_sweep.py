@@ -305,7 +305,7 @@ def plans() -> list[Plan]:
     return out
 
 
-def ask_rebase(rec: Pr, conflicts: list[str]) -> dict:
+def ask_rebase(rec: Pr, conflicts: list[str]) -> dict[str, object]:
     """Ask `rec`'s author, as the bot, to rebase its head, once per head, and
     stamp the ask on the PR (`rebase_ask`) for `gates.rebase_feedback`."""
     head = str(rec.head_sha or "")

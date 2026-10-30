@@ -168,12 +168,14 @@ SETTINGS: tuple[Setting, ...] = (
     _b("TRIAGE_FIX_HUNT_RESOLVE", "workers", "Hunt conflict resolves",
        "A conflicted hunted rebase may escalate to an agent resolve."),
     Setting("TRIAGE_ABANDONED_CLOSE", "workers", "choice", "Close abandoned PRs", "off",
-            "Close a contributor's PR as won't-fix when Greptile, the posted design findings "
-            "or CI blocked its newest commit and its author has been silent two weeks since, "
-            "inviting them to come back: live, dry-run (logged only), or off.", editable=True,
+            "Close a contributor's PR as won't-fix when Greptile, the posted design findings, "
+            "our rebase ask or CI blocked its newest commit and its author has been silent two "
+            "weeks since, inviting them to come back. A PR held only by CI on an old base is "
+            "brought current first: live, dry-run (logged only), or off.", editable=True,
             choices=("off", "dry-run", "live")),
-    _i("TRIAGE_ABANDONED_CLOSE_DAILY", "workers", "Abandoned PRs closed per day", "5",
-       "The most abandoned PRs closed (or logged, in dry-run) per UTC day."),
+    _i("TRIAGE_ABANDONED_CLOSE_DAILY", "workers", "Abandoned PRs acted on per day", "5",
+       "The most abandoned PRs closed, brought current or asked to rebase (or logged, in "
+       "dry-run) per UTC day."),
     Setting("TRIAGE_FIX_HANDBACK", "workers", "choice", "Hand failed autofixes to the author",
             "dry-run",
             "A hunted autofix the agents could not get past their own review is handed back "

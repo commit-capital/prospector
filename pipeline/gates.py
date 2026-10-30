@@ -452,25 +452,35 @@ def rebase_feedback(pr: Pr) -> Feedback | None:
                     at, "rebase")
 
 
+def abandon_feedback(pr: Pr) -> list[Feedback]:
+    """The blocking feedback an abandoned close weighs: `head_feedback` and
+    our rebase ask."""
+    ask = rebase_feedback(pr)
+    return [*head_feedback(pr), *([ask] if ask else [])]
+
+
+def ci_counts(pr: Pr, live: LivePr) -> bool:
+    """Whether failing CI is a verdict on the author's work: the head carries
+    the base, so the run was not on an old one."""
+    return live.has_base or brought_current(pr)
+
+
 def current_feedback(pr: Pr, live: LivePr) -> list[Feedback]:
-    """The blocking feedback an abandoned close weighs: `head_feedback` posted
-    after the newest commit and still current (its section read after the PR
-    last changed on GitHub, failing CI still failing there), and our rebase
-    ask. Failing CI is left out beside other feedback unless the head carries
-    the base (`brought_current`, `LivePr.has_base`): a CI run on an old base
-    is no verdict on the author's work."""
+    """`abandon_feedback` posted after the newest commit and still current:
+    its section read after the PR last changed on GitHub (our own rebase ask
+    always is), and failing CI still failing there. Failing CI that does not
+    count (`ci_counts`) is left out beside other feedback."""
     if live.head_committed is None or live.updated_at is None:
         return []
     out = []
-    for f in head_feedback(pr):
+    for f in abandon_feedback(pr):
         checked = storekit.parse_ts((pr.section(f.section) or {}).get("checked_at"))
-        if (f.at > live.head_committed and checked is not None and checked >= live.updated_at
+        if f.check == "rebase" or (
+                f.at > live.head_committed and checked is not None and checked >= live.updated_at
                 and (f.section != "signals" or live.ci_state in ("failure", "error"))):
             out.append(f)
-    if (ask := rebase_feedback(pr)) is not None:
-        out.append(ask)
-    if not (live.has_base or brought_current(pr)):
-        out = [f for f in out if f.check != "ci"] or out
+    if not ci_counts(pr, live) and any(f.check != "ci" for f in out):
+        out = [f for f in out if f.check != "ci"]
     return out
 
 
@@ -509,7 +519,7 @@ def abandoned_close(pr: Pr, live: LivePr, now: datetime) -> tuple[bool, str]:
     what = "; ".join(f.what for f in after)
     if now - since < timedelta(days=ABANDONED_QUIET_DAYS):
         return False, f"waiting since {since:%Y-%m-%d}: {what}"
-    if all(f.check == "ci" for f in after) and not (live.has_base or brought_current(pr)):
+    if all(f.check == "ci" for f in after) and not ci_counts(pr, live):
         return False, STALE_CI
     return True, f"silent since {since:%Y-%m-%d}: {what}"
 
