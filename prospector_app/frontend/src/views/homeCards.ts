@@ -44,8 +44,8 @@ export interface HomeCard {
   // Rendered only while its count is above zero.
   hideWhenEmpty?: boolean;
   rowAction?: HomeRowAction;
-  // Each sample row says how its author came back after our close
-  // (PRRow.author_return), with its automation standing.
+  // Each sample row says how its author answered us (PRRow.author_return, or
+  // the design answer in its automation reason), with its automation standing.
   cameBack?: boolean;
   // Sub-buckets shown as counted links under the blurb, each its own spec.
   breakdown?: HomeBreakdown[];
@@ -153,8 +153,8 @@ export const HOME_CARDS: HomeCard[] = [
   },
   {
     key: "came-back",
-    title: "Authors came back",
-    blurb: "We closed their work and the author answered: reopened the PR, or opened this one linking the PR or issue we closed — often scoped to what we asked for. They still care; take another look and move each to its next step.",
+    title: "Authors answered us",
+    blurb: "The author answered what we decided: reopened a PR we closed, opened this one linking the PR or issue we closed, or replied or pushed after we posted design findings. It's our move — read their side and move each to its next step.",
     column: "act",
     spec: { author_return: true },
     sort: "updated",

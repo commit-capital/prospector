@@ -36,14 +36,14 @@ OWNERS: dict[str, str] = {
     "stacked": "author",
     "needs-human": "you", "security-red": "you", "security-yellow": "you", "asks": "you",
     "gated": "you", "other": "you",
-    "followup": "worker", "handed-back": "you",
+    "followup": "worker", "handed-back": "you", "design-answered": "you",
 }
 
 # bucket -> the state a PR's status leads with: `moving` (a worker moves it),
 # `waiting` (someone else's move), `ready` (green; merge it), `needs-you` (one
 # quick click of yours, nothing broken) and `stalled` (the automation gave up
 # or got stuck).
-_NEEDS_YOU = ("malicious", "approve-parked", "approve-ci", "rerun-ci")
+_NEEDS_YOU = ("malicious", "approve-parked", "approve-ci", "rerun-ci", "design-answered")
 STATES: dict[str, str] = {
     b: ("ready" if b == "merge-ready" else "needs-you" if b in _NEEDS_YOU
         else {"worker": "moving", "author": "waiting"}.get(o, "stalled"))
@@ -122,6 +122,9 @@ def classify(pr: Pr) -> dict | None:
     if pr.ci_stale_checks and freshness.is_current(pr, "signals"):
         return _r("act", "rerun-ci", gates.ci_stale_reason(pr.ci_stale_checks))
 
+    if (answer := gates.design_answer(pr)) is not None:
+        return _r("act", "design-answered", f"💬 “{answer}”: the author's answer to the design "
+                                            "findings; approve the design review or hand it back")
     if pr.mergeable is False:
         action = "rebase"
     elif pr.drift_state == "conflicts" or pr.ci == "unreported":

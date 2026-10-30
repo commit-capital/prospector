@@ -4,10 +4,12 @@ It is posted only when the design bar fails (`reviewers.design_standing`: open,
 blocking or major, and confirmed by the refuting verifier), and then also lists
 the open minor findings, as optional, so one revision can take them all. A
 finding the verifier refuted or was unsure of is never posted. The comment ends
-in a marker naming the reviewed head and the failing findings' fingerprint: a head
-gets one comment however often it is re-reviewed, one set of findings is posted
-once whatever head it was found at, and a new head with different findings gets
-a new comment, which notifies the author where an edit would not.
+in markers naming the reviewed head, the failing findings' fingerprint, and each
+failing finding: a head gets one comment however often it is re-reviewed, and a
+new head gets none when each of its failing findings was posted before, wherever
+its lines moved, so a push that leaves one in place stays the author's answer to
+it. A new head with a finding not yet posted gets a new comment, which notifies
+the author where an edit would not.
 `TRIAGE_DESIGN_COMMENT` sets whose PRs it is posted on.
 """
 from __future__ import annotations
@@ -47,6 +49,12 @@ def fingerprint(found: list[dict]) -> str:
     key = "\n".join(sorted(f"{f.get('path')}\t{f.get('line')}\t{f.get('category')}\t{f.get('title')}"
                            for f in found))
     return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def finding_marker(f: dict) -> str:
+    """The marker naming one finding wherever it sits in the file."""
+    key = f"{f.get('path')}\t{f.get('category')}\t{f.get('title')}"
+    return f"prospector:design-finding key={hashlib.sha256(key.encode()).hexdigest()[:16]}"
 
 
 def head_marker(head_sha: str) -> str:
@@ -105,4 +113,5 @@ def body(found: list[dict], optional: list[dict], head_sha: str) -> str:
             parts += _item(i, f)
     parts.append(f"<!-- {head_marker(head_sha)} -->")
     parts.append(f"<!-- {findings_marker(fingerprint(found))} -->")
+    parts += [f"<!-- {finding_marker(f)} -->" for f in found]
     return "\n".join(parts)

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 
 from pipeline import ci_signal
 from pipeline import gates
+from pipeline import reviewers
 from pipeline import settings
 from pipeline import storekit
 from pipeline import wire
@@ -596,6 +597,20 @@ class Pr:
         if not sec:
             raise ValueError(f"PR #{self.n} has no verify record to override")
         sec["override"] = {"reason": reason.strip(), "by": by, "at": storekit.now()}
+        self._persist()
+
+    def log_design_override(self, reason: str, *, by: str | None = None) -> None:
+        """Log an operator's approval of the design review past its findings:
+        set the review entry's override = {reason, by, at}. The design bar
+        reads an approved review as passing (reviewers.design_standing), and a
+        new review replaces the entry and the approval with it. Raises
+        ValueError on a blank reason or when the PR has no design review."""
+        if not (reason or "").strip():
+            raise ValueError("design approval requires a non-empty reason")
+        entry = (self.rec.get("reviews") or {}).get(reviewers.DESIGN.id)
+        if not isinstance(entry, dict):
+            raise ValueError(f"PR #{self.n} has no design review to approve")
+        entry["override"] = {"reason": reason.strip(), "by": by, "at": storekit.now()}
         self._persist()
 
     def set_meta(self, meta: dict) -> None:
