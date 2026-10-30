@@ -147,7 +147,11 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 47 — a PR's `responses` may be measured from the blocking feedback on its
 #      head (`our_action.kind` "head-feedback"); an older sweep rebuilds every
 #      section without it, so the two sweeps rewrite each other's sections.
-STORE_SCHEMA_VERSION = 47
+# 48 — a PR may carry `rebase_ask` (we asked its author to rebase that head),
+#      blocking feedback an abandoned close weighs; an older lane closes a PR
+#      held only by CI on an old base, and an older backlog sweep asks without
+#      stamping it.
+STORE_SCHEMA_VERSION = 48
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

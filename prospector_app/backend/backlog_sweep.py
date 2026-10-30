@@ -204,7 +204,7 @@ def classify(rec: Pr, pr_probe: Probe) -> Plan:
                 conflicts=pr_probe.conflicts)
 
 
-def _ended_on_conflicts(req: dict[str, object], head: str | None) -> bool:
+def ended_on_conflicts(req: dict[str, object], head: str | None) -> bool:
     """Whether the request at `head` ended without bringing the PR current
     because of its conflicts: a refusal naming them, a resolve an operator
     discarded, or a parked resolve the agents judged."""
@@ -221,10 +221,10 @@ def _ended_on_conflicts(req: dict[str, object], head: str | None) -> bool:
             and handback.parked_judged(result))
 
 
-def _ended_on_the_machine(req: dict[str, object], head: str | None) -> bool:
+def ended_on_the_machine(req: dict[str, object], head: str | None) -> bool:
     """Whether the request at `head` ended without a verdict on the PR: the
     worker failed, or refused it with no conflicts to name."""
-    if req.get("against_head_sha") != head or _ended_on_conflicts(req, head):
+    if req.get("against_head_sha") != head or ended_on_conflicts(req, head):
         return False
     return req.get("status") == "failed" or (
         req.get("status") == "refused" and req.get("action") in ("rebase", "update"))
@@ -244,13 +244,13 @@ def plan_one(rec: Pr, steps: dict[str, str], pr_probe: Probe | str) -> Plan:
         return Plan(n, "close", f"the author has not answered in {CLOSE_AFTER_DAYS} days",
                     close=True)
     if "queued" in steps:
-        if _ended_on_conflicts(req, rec.head_sha):
+        if ended_on_conflicts(req, rec.head_sha):
             paths = [str(p) for p in (req.get("result") or {}).get("conflict_paths") or []]
             return Plan(n, "author", "the queued request could not resolve its conflicts",
                         ask=True, conflicts=paths)
         if req.get("status") in fix_queue.IN_FLIGHT:
             return Plan(n, "waiting", f"its {req.get('action')} request is {req.get('status')}")
-        if "requeued" not in steps and _ended_on_the_machine(req, rec.head_sha):
+        if "requeued" not in steps and ended_on_the_machine(req, rec.head_sha):
             if isinstance(pr_probe, str):
                 return Plan(n, "skip", pr_probe)
             plan = classify(rec, pr_probe)
@@ -305,6 +305,20 @@ def plans() -> list[Plan]:
     return out
 
 
+def ask_rebase(rec: Pr, conflicts: list[str]) -> dict[str, object]:
+    """Ask `rec`'s author, as the bot, to rebase its head, once per head, and
+    stamp the ask on the PR (`rebase_ask`) for `gates.rebase_feedback`."""
+    head = str(rec.head_sha or "")
+    res = executor.hand_back_comment(rec.number, handback.rebase_ask_body(rec.author, conflicts, head),
+                                     marker=handback.rebase_ask_marker(head), dry_run=False)
+    if (res.get("status") in ("executed", "exists")
+            and (rec.section("rebase_ask") or {}).get("head_sha") != head):
+        data.store().set_pr_section(rec.number, "rebase_ask",
+                                    {"head_sha": head, "at": storekit.now(),
+                                     "url": res.get("event_url")})
+    return res
+
+
 def act(plan: Plan, rec: Pr) -> str:
     """Carry out `plan` live and record it in the ledger. Returns the outcome."""
     head = str(rec.head_sha or "")
@@ -325,9 +339,7 @@ def act(plan: Plan, rec: Pr) -> str:
             return f"close failed: {res.get('detail') or status}"
         step = "closed"
     elif plan.ask:
-        res = executor.hand_back_comment(
-            rec.number, handback.rebase_ask_body(rec.author, plan.conflicts, head),
-            marker=handback.rebase_ask_marker(head), dry_run=False)
+        res = ask_rebase(rec, plan.conflicts)
         status = str(res.get("status"))
         if status not in ("executed", "exists"):
             return f"ask failed: {res.get('detail')}"

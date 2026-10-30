@@ -3343,9 +3343,25 @@ class TestAbandonedClose:
         ok, why = self._decide(self._abandoned(greptile=5, design=True))
         assert ok and "design" in why
 
-    def test_failing_ci_at_the_head_closes(self):
-        ok, why = self._decide(self._abandoned(greptile=5, ci=True))
+    def test_failing_ci_closes_only_on_a_head_that_carries_the_base(self):
+        pr = self._abandoned(greptile=5, ci=True)
+        assert self._decide(pr) == (False, gates.STALE_CI)
+        ok, why = self._decide(pr, has_base=True)
         assert ok and "CI failed (test)" in why
+        ours = self._abandoned(greptile=5, ci=True, fix_request={
+            "status": "pushed", "action": "update", "result": {"pushed_head_sha": HEAD}})
+        assert self._decide(ours)[0]
+
+    def test_ci_on_an_old_base_goes_unnamed_beside_other_feedback(self):
+        ok, why = self._decide(self._abandoned(greptile=3, ci=True))
+        assert ok and "Greptile" in why and "CI" not in why
+
+    def test_our_rebase_ask_is_feedback(self):
+        ask = {"head_sha": HEAD, "at": self.FEEDBACK.isoformat()}
+        ok, why = self._decide(self._abandoned(greptile=5, rebase_ask=ask))
+        assert ok and "we asked for a rebase" in why
+        moved = self._abandoned(greptile=5, rebase_ask={**ask, "head_sha": "old"})
+        assert not self._decide(moved)[0]
 
     def test_a_push_after_the_feedback_never_closes(self):
         # The author pushed a new head; Greptile never re-ran on it.
