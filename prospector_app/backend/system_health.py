@@ -4,8 +4,9 @@ Composes what the shared store already knows — every worker's tripped lanes,
 every worker's heartbeat (with the schema version its code writes and its
 profile's stamp) and Docker
 disk reading, and each ingest's last run — into a short list of
-problem items with one overall severity, so an outage on any machine reaches
-the operator on whatever page they have open. `summarize` is pure over plain
+problem items with one overall severity, plus the trip alerts the trip banner
+names lane by lane, so an outage on any machine reaches the operator on
+whatever page they have open. `summarize` is pure over plain
 data; `status` gathers the live inputs.
 """
 from __future__ import annotations
@@ -27,9 +28,23 @@ class HealthItem(TypedDict):
     host: str | None
 
 
+class TripAlert(TypedDict):
+    """A lane tripped now, or open but tripped RETRIP_ALERT times within a day;
+    `at`, `kind` and `reason` are its latest trip's."""
+    host: str
+    lane: str
+    tripped: bool
+    at: str | None
+    kind: str | None
+    reason: str | None
+    remedy: str | None
+    trips_24h: int
+
+
 class SystemHealth(TypedDict):
     severity: str
     items: list[HealthItem]
+    trip_alerts: list[TripAlert]
     lanes_total: int
     lanes_down: int
     workers_stalled: bool
@@ -122,6 +137,27 @@ def _profile_line(host: str, st: dict) -> str:
     return f"{host}: {st.get('fingerprint')} · fixable gates {gates} · {globs} globs"
 
 
+def _trip_alerts(health_hosts: list[dict], skip: set[str], now_ts: float) -> list[TripAlert]:
+    now = datetime.fromtimestamp(now_ts, timezone.utc)
+    out: list[TripAlert] = []
+    for h in health_hosts:
+        host = str(h["host"])
+        if host in skip:
+            continue
+        for lane, entry in sorted((h.get("lanes") or {}).items()):
+            count = worker_health.trips_within(entry, now)
+            tripped = entry.get("tripped")
+            if not tripped and count < worker_health.RETRIP_ALERT:
+                continue
+            last = tripped or (entry.get("trips") or [{}])[-1]
+            out.append({"host": host, "lane": lane, "tripped": bool(tripped),
+                        "at": last.get("at"), "kind": last.get("kind"),
+                        "reason": last.get("reason"), "remedy": entry.get("remedy"),
+                        "trips_24h": count})
+    out.sort(key=lambda a: not a["tripped"])
+    return out
+
+
 def summarize(health_hosts: list[dict], offline: list[dict],
               worker_lanes: list[tuple[str, str]],
               ingest_last: dict[str, str | None],
@@ -187,24 +223,12 @@ def summarize(health_hosts: list[dict], offline: list[dict],
         items.append({"kind": "lanes", "severity": severity, "host": None,
                       "label": f"{len(down)}/{len(lanes)} worker lanes down",
                       "detail": None})
-        for host in sorted((set(tripped_by_host) | set(offline_by_host)) - set(outdated)):
-            if host in offline_by_host:
-                items.append({
-                    "kind": "offline", "severity": severity, "host": host,
-                    "label": f"{host}: worker offline · silent "
-                             f"{_age_label(offline_by_host[host] / 3600)}",
-                    "detail": None})
-                continue
-            rec = next(h for h in health_hosts if str(h["host"]) == host)
-            names = tripped_by_host[host]
-            entry = (rec.get("lanes") or {}).get(names[0]) or {}
-            first = entry.get("tripped") or {}
-            detail = "\n".join(str(part) for part in (first.get("reason"), entry.get("remedy")) if part)
+        for host in sorted(set(offline_by_host) - set(outdated)):
             items.append({
-                "kind": "trip", "severity": severity, "host": host,
-                "label": f"{host}: {', '.join(names)} paused · "
-                         f"{first.get('kind') or 'unknown'}",
-                "detail": detail or None})
+                "kind": "offline", "severity": severity, "host": host,
+                "label": f"{host}: worker offline · silent "
+                         f"{_age_label(offline_by_host[host] / 3600)}",
+                "detail": None})
 
     for h in health_hosts:
         host = str(h["host"])
@@ -220,6 +244,8 @@ def summarize(health_hosts: list[dict], offline: list[dict],
     severity = max((i["severity"] for i in items),
                    key=lambda s: _SEVERITY_RANK[s], default="ok")
     return {"severity": severity, "items": items,
+            "trip_alerts": _trip_alerts(health_hosts, set(offline_by_host) | set(outdated),
+                                        now_ts),
             "lanes_total": len(lanes), "lanes_down": len(down),
             "workers_stalled": bool(lanes) and down == lanes}
 

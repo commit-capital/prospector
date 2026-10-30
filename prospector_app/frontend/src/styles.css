@@ -61,6 +61,16 @@ a:hover { text-decoration: underline; }
 .threat-banner-item a:hover { text-decoration: underline; }
 .threat-banner-sep { opacity: .7; }
 
+/* trip banner (App.tsx TripBanner) — worker lanes tripped or retripping on
+   any machine, one row each, solid red inside the sticky header. */
+.trip-banner { display: flex; flex-direction: column; gap: 4px; padding: 8px 20px;
+  background: var(--red); color: #fff; font-weight: 700; font-size: 14px; }
+.trip-banner-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.trip-banner-row > :not(.trip-banner-reason) { flex: none; }
+.trip-banner-reason { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-weight: 400; font-size: 13px; opacity: .9; }
+.trip-banner-row a { color: inherit; }
+
 /* Home's malicious card (homeCards.ts `alert`): red edge and title. */
 .home-card-alert { border-color: var(--red); box-shadow: inset 4px 0 0 var(--red); }
 .home-card-alert .act-card-l, .home-card-alert .act-card-n { color: var(--red); }

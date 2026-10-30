@@ -30,6 +30,9 @@ function sync(): void {
   }
 }
 
+/** Poll now, for a view that just changed what the answer would say. */
+export const refreshSystemHealth = poll;
+
 /** The latest systemwide health answer, re-rendered on every poll; null until
  *  the first poll lands or while the backend is unreachable. */
 export function useSystemHealth(): SystemHealth | null {

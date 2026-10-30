@@ -31,7 +31,7 @@ test("only the app header, which sits above the agent pane, spans the pane's gut
 });
 
 test("the banners and the topbar share the one sticky header", () => {
-  assert.match(appSrc, /<div className="app-head">\s*<BackendBanner \/>\s*<StoreWriteBanner \/>\s*<ThreatBanner \/>\s*<header className="topbar">/);
+  assert.match(appSrc, /<div className="app-head">\s*<BackendBanner \/>\s*<StoreWriteBanner \/>\s*<ThreatBanner \/>\s*<TripBanner \/>\s*<header className="topbar">/);
   const sticky = selectorsDeclaring(stylesCss, /position:\s*sticky/);
   assert.ok(sticky.includes(".app-head"), ".app-head is sticky");
   for (const part of [".topbar", ".backend-down", ".backend-loading", ".store-write-block", ".threat-banner"]) {

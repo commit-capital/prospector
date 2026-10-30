@@ -6,10 +6,11 @@ import { FeedbackButton } from "./components/FeedbackButton";
 import { AgentPaneProvider } from "./components/AgentPane";
 import { isReachable, subscribeHealth, pingHealth, snapshotState, subscribeSnapshot } from "./health";
 import type { SnapshotState } from "./health";
-import { api, type WorkStatus, type WorkerFlags } from "./api";
+import { api, type TripAlert, type WorkStatus, type WorkerFlags } from "./api";
 import { autonomyTooltip } from "./autonomy";
-import { useSystemHealth } from "./useSystemHealth";
+import { refreshSystemHealth, useSystemHealth } from "./useSystemHealth";
 import { threatBannerParts, threatsHref } from "./threatBanner";
+import { tripHeadline, tripReason } from "./tripBanner";
 import { loadWithRecovery } from "./lazyLoad";
 import { usePoll } from "./poll";
 import { prefetchTabs } from "./prefetch";
@@ -477,8 +478,9 @@ function Toasts() {
   );
 }
 
-// The thin systemwide health strip on every page: worker lanes down on any
-// machine sharing this store (tripped, offline, or behind the store's schema), a worker whose
+// The thin systemwide health strip on every page: how many worker lanes are
+// down on the machines sharing this store (the trip banner names each tripped
+// one), workers offline or behind the store's schema, a worker whose
 // Docker disk is filling (its remedy is the hover tooltip), stale ingests,
 // and AI accounts whose background work is paused at its capacity cap. Amber
 // for a partial problem, red for a full outage; hidden while everything is
@@ -528,6 +530,43 @@ function ThreatBanner() {
           </Link>
         </span>
       ))}
+    </div>
+  );
+}
+
+function TripRow({ a }: { a: TripAlert }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const resume = async () => {
+    setBusy(true); setErr(null);
+    try { await api.workerHealthResume(a.host, a.lane); await refreshSystemHealth(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="trip-banner-row" title={[a.reason, a.remedy].filter(Boolean).join("\n\n")}>
+      <span aria-hidden="true">{a.tripped ? "⛔" : "↻"}</span>
+      <span>{tripHeadline(a)}{a.at && ` · ${a.tripped ? "since" : "last"} ${timeAgo(a.at)} ago`}</span>
+      {a.reason && <span className="trip-banner-reason">{tripReason(a)}</span>}
+      {err && <span className="trip-banner-reason">{err}</span>}
+      {a.tripped
+        ? <button className="btn-sm" disabled={busy} onClick={resume}>{busy ? "Resuming…" : "Resume"}</button>
+        : <Link to="/pipeline/control" title="Open Pipeline → Health & queues">details</Link>}
+    </div>
+  );
+}
+
+// The red trip banner on every page, inside the sticky header: each worker
+// lane tripped on any machine, with when, why and a Resume, and each open lane
+// that keeps reopening onto the same fault. Hover shows the full reason and
+// what clears it. A tripped row clears when its lane reopens; a retripping row
+// once its trips age out of the day.
+function TripBanner() {
+  const alerts = useSystemHealth()?.trip_alerts ?? [];
+  if (!alerts.length) return null;
+  return (
+    <div className="trip-banner" role="alert">
+      {alerts.map((a) => <TripRow key={`${a.host}-${a.lane}`} a={a} />)}
     </div>
   );
 }
@@ -688,6 +727,7 @@ export default function App() {
           <BackendBanner />
           <StoreWriteBanner />
           <ThreatBanner />
+          <TripBanner />
           <header className="topbar">
             <Brand />
             <Nav />
