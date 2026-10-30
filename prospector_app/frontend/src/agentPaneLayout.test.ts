@@ -53,7 +53,7 @@ for (const [name, src, table] of [
   ["Issues", issuesSrc, "issues-table"],
 ] as const) {
   test(`the ${name} table scrolls inside a .table-scroll wrapper`, () => {
-    assert.match(src, new RegExp(`<div className="table-scroll"[^>]*>\\s*<table className="grid sortable ${table}"`));
+    assert.match(src, new RegExp(`<div className="table-scroll"[^>]*>\\s*<table className=\\{?["\`]grid sortable ${table}`));
   });
 }
 
