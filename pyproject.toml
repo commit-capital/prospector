@@ -45,6 +45,7 @@ dev = [
 packages = ["alert_triage", "pipeline", "pipeline.evals", "prospector_app", "prospector_app.backend", "issue_triage"]
 
 [tool.setuptools.package-data]
+"pipeline" = ["prompts/*/*.md"]
 "pipeline.evals" = ["data/*.jsonl"]
 
 [tool.pytest.ini_options]

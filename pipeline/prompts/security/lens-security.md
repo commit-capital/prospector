@@ -1,0 +1,1 @@
+authz/authn scoping (privilege escalation, weakened/missing permission or ownership checks, widened access, JWT/role), injection (SQL/command/path), SSRF/unsafe outbound, secret leakage/logging, insecure file perms, unsafe deserialization, ReDoS, info disclosure, new dependency/network/exec surface.

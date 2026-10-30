@@ -1,0 +1,1 @@
+Return ONLY a JSON object (no prose): {"results": [{"index": <int>, "upheld": <bool>, "adjusted_severity": "red|yellow|green|not-an-issue", "reasoning": "..."}]}. Output it as a ```json fenced block.
