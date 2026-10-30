@@ -361,6 +361,34 @@ def head_feedback(pr: Pr) -> list[Feedback]:
     return out
 
 
+def design_answer(pr: Pr) -> str | None:
+    """What `pr`'s author answered the design findings the bot posted on the
+    reviewed head with, which makes the next move ours: a reply of theirs
+    newest on the PR, or the message of a commit they wrote whose head's own
+    review the bot had nothing new to post on, as the responses sweep read
+    them since that comment. A merge, or a push that left the patch as it was,
+    is no answer. None when they have not answered, the bar no longer fails,
+    or an operator acked the answer."""
+    design = pr.review_entry(reviewers.DESIGN.id) or {}
+    if (not (design.get("extra") or {}).get("comment")
+            or review_policy.own_bar(pr, reviewers.DESIGN).status != reviewers.FAIL):
+        return None
+    sig = pr.section("responses") or {}
+    if (sig.get("our_action") or {}).get("kind") != "design-findings":
+        return None
+    acked = storekit.parse_ts((pr.section("response_ack") or {}).get("at"))
+    last = storekit.parse_ts(sig.get("last_response_at"))
+    if acked is not None and last is not None and acked >= last:
+        return None
+    if sig.get("replied") and (sig.get("by") or "").lower() == (pr.author or "").lower():
+        return sig.get("snippet") or "replied"
+    patch = pr.section("patch") or {}
+    rebased = patch.get("against_head_sha") == pr.head_sha and bool(patch.get("same_as"))
+    if sig.get("commit_snippet") and design.get("reviewed_sha") == pr.head_sha and not rebased:
+        return sig["commit_snippet"]
+    return None
+
+
 def abandon_exempt(pr: Pr) -> str | None:
     """Why `pr` never closes as abandoned whatever its feedback: a maintainer's
     or a bot's PR, or one Prospector stands behind (`backed`). None for a
@@ -402,6 +430,8 @@ def abandoned_close(pr: Pr, live: LivePr, now: datetime) -> tuple[bool, str]:
     held = abandon_exempt(pr)
     if held:
         return False, held
+    if (answer := design_answer(pr)) is not None:
+        return False, f"its author answered the design findings: {answer}"
     req = pr.fix_request or {}
     if req.get("status") in FIX_IN_FLIGHT:
         return False, f"its {req.get('action')} request is {req.get('status')}"
@@ -1168,6 +1198,8 @@ def fix_huntable(pr: Pr, action: str,
     stacked = stacked_block(pr)
     if stacked is not None:
         return False, stacked
+    if action == "fix" and design_answer(pr) is not None:
+        return False, "its author answered the design findings; that is a human's call"
     if not is_current(pr, "signals") or (
             review_policy.active_reviewers() and not is_current(pr, "reviews")):
         return False, "signals or reviews stale or missing, so the review bar is unknowable"

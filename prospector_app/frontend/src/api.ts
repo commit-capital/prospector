@@ -91,8 +91,9 @@ export interface FilterSpec {
   has_summary?: boolean;     // an agent summary exists for the PR
   has_issues?: boolean;      // the PR has linked issues
   responses?: ResponsesFilter | ResponsesFilter[];
-  // an author came back after we closed their work: true for either signal
-  author_return?: true | AuthorReturnSignal | AuthorReturnSignal[];
+  // an author answered us: came back after we closed their work, or answered
+  // the design findings we posted; true for any
+  author_return?: true | AuthorAnswerFilter | AuthorAnswerFilter[];
   loc?: LocFilter;
   files?: FilesFilter;       // how many files a PR touches, greater-/less-than
   pain?: NumCmp;
@@ -445,6 +446,8 @@ export interface ReviewEntry {
   summary: string | null;
   checks: ReviewDigest["checks"];
   extra: Record<string, unknown>;
+  // An operator's approval past the design review's findings.
+  override?: { reason: string; by: string | null; at: string } | null;
 }
 
 export type ReviewsDetail = Record<string, { entry: ReviewEntry | null; digest: ReviewDigest }>;
@@ -1435,6 +1438,7 @@ export interface LinkedPRFacts {
  *  (prospector_app/backend/author_returns.py): they reopened it, or opened a
  *  new PR or issue that links it. */
 export type AuthorReturnSignal = "reopened" | "follow-up";
+export type AuthorAnswerFilter = AuthorReturnSignal | "design-answer";
 
 export interface ItemRef {
   kind: "pr" | "issue";
@@ -2792,6 +2796,8 @@ export const api = {
     });
     return r.json() as Promise<ExecResult>;
   },
+  approveDesign: (n: number, headSha: string, reason: string) =>
+    postJson<{ ok: boolean }>(`/api/reviews/design/approve/pr/${n}`, { head_sha: headSha, reason }),
   clearSecretLeak: (n: number, headSha: string) =>
     postJson<{ ok: boolean }>(`/api/prs/${n}/threat/clear-secret`, { head_sha: headSha }),
   retriggerReview: async (n: number, reviewer: string, dryRun: boolean) => {

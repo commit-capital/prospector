@@ -728,15 +728,24 @@ def retrigger_review(n: int, reviewer_id: str, *, dry_run: bool,
         attempt=attempt, failure="review retrigger failed unexpectedly")
 
 
-def _bot_comment_url(n: int, *markers: str) -> str | None:
-    """The URL of the bot's comment on `n` that carries any of `markers`, or
-    None when there is none. Raises when the comments cannot be read."""
+def _bot_comment_url(n: int, *markers: str, every: tuple[str, ...] = ()) -> str | None:
+    """The URL of the bot's comment on `n` that carries any of `markers`, or,
+    when its comments together carry `every` marker, of the newest one that
+    carries any of them; None when neither. Raises when the comments cannot be
+    read."""
     comments = gh.issue_comments(int(n))
     if comments is None:
         raise RuntimeError(f"the comments on #{n} could not be read")
-    return next((c.get("html_url") or "" for c in comments
-                 if _is_bot_login((c.get("user") or {}).get("login"))
-                 and any(m in (c.get("body") or "") for m in markers)), None)
+    ours = [c for c in comments if _is_bot_login((c.get("user") or {}).get("login"))]
+    hit = next((c.get("html_url") or "" for c in ours
+                if any(m in (c.get("body") or "") for m in markers)), None)
+    if hit is not None or not every:
+        return hit
+    bodies = "\n".join(c.get("body") or "" for c in ours)
+    if not all(m in bodies for m in every):
+        return None
+    return next((c.get("html_url") or "" for c in reversed(ours)
+                 if any(m in (c.get("body") or "") for m in every)), None)
 
 
 def post_design_findings(n: int, *, dry_run: bool, initiator: str = "operator") -> dict:
@@ -765,7 +774,8 @@ def post_design_findings(n: int, *, dry_run: bool, initiator: str = "operator") 
 
     def attempt() -> dict[str, object]:
         url = _bot_comment_url(n, design_comment.head_marker(reviewed),
-                               design_comment.findings_marker(fp))
+                               design_comment.findings_marker(fp),
+                               every=tuple(design_comment.finding_marker(f) for f in found))
         if url is not None:
             return {"status": "exists", "detail": f"these findings are already posted on #{n}",
                     "event_url": url or None}

@@ -255,6 +255,26 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     designJob.start(`/api/jobs/run/design-review-pr?pr=${prNum}`);
   };
 
+  // Approve the design review at the head the operator read past its
+  // findings, with their reason; a new review replaces the approval.
+  const [approvingDesign, setApprovingDesign] = useState(false);
+  const approveDesign = async (headSha: string) => {
+    if (approvingDesign) return;
+    const reason = window.prompt(`Approve #${prNum}'s design review at ${headSha.slice(0, 7)} past its `
+      + "findings? Say why — it's logged to Activity. A new push is reviewed again.");
+    if (!reason?.trim()) return;
+    setApprovingDesign(true);
+    try {
+      await api.approveDesign(prNum, headSha, reason.trim());
+      pushToast(`#${prNum} · design review approved`, "green");
+      await reloadPr();
+    } catch (e) {
+      pushToast(`#${prNum} · couldn't approve the design review`, "red", { detail: String(e) });
+    } finally {
+      setApprovingDesign(false);
+    }
+  };
+
   // Record that the secret-leak finding the operator reviewed is no
   // credential: it lifts the merge block for that line at that head only.
   const clearSecretLeak = async (headSha: string, evidence: string) => {
@@ -366,8 +386,14 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   if (reviewBlocks.length > 0) checksBodies.review = <>{reviewBlocks}</>;
   const designBlocks = reviewerBlocks(pr.reviews_detail ?? null, (d) => d.id === "design", blobUrl, { summaryFirst: true });
   if (designBlocks.length > 0 || designJob.log.length > 1) {
+    const approval = pr.reviews_detail?.design?.entry?.override;
     checksBodies.design = (
       <>
+        {approval && (
+          <div className="small muted">
+            ✅ Approved by {approval.by ?? "an operator"} {approval.at.slice(0, 10)}: {approval.reason}
+          </div>
+        )}
         {designBlocks}
         {designJob.log.length > 1 && (
           <div className="joblog" aria-label="design review log">
@@ -379,9 +405,11 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
   }
   if (!resolved) {
     const design = pr.reviews_detail?.design ?? null;
-    const goal = design && design.digest.stale !== true ? designFixGoal(design.entry?.findings ?? []) : "";
+    const approved = design?.entry?.override != null;
+    const goal = design && design.digest.stale !== true && !approved
+      ? designFixGoal(design.entry?.findings ?? []) : "";
     const fixWhy = fixUnavailable(fixRunner, pr.fix_request ?? null, resolved);
-    const postable = design?.entry != null && design.digest.stale !== true
+    const postable = design?.entry != null && design.digest.stale !== true && !approved
       && design.entry.findings.some((f) => !f.resolved && !f.outdated
         && (f.severity === "blocking" || f.severity === "major") && f.verification?.verdict === "confirmed");
     const comment = design?.entry?.extra.comment;
@@ -404,6 +432,20 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
               title={`Post the confirmed blocking and major findings on the PR as ${botLogin}, so its author can fix them`}>
               {postingDesign ? "Posting…" : "💬 Post to author"}
             </button>)}
+        {design?.digest.status === "fail" && design.entry?.reviewed_sha && (
+          <button className="btn-secondary sm" disabled={approvingDesign}
+            onClick={() => void approveDesign(design.entry?.reviewed_sha ?? "")}
+            title="You've read the findings and the author's side and accept the design as it is: the check passes at this commit and the PR moves on. A new push is reviewed again.">
+            {approvingDesign ? "Approving…" : "✓ Approve"}
+          </button>
+        )}
+        {pr.automation?.bucket === "design-answered" && (
+          <button className="btn-secondary sm" disabled={approvingDesign}
+            onClick={() => void api.ackResponse(prNum).then(reloadPr)}
+            title="You've read the author's answer and the findings still stand: hand the PR back to its author. A newer reply or push brings it back.">
+            ↩ Hand back
+          </button>
+        )}
         <button className="btn-secondary sm" onClick={runDesign} disabled={designJob.running}
           title="Design-review this PR's current head now, replacing any review it has. Runs on a machine holding a verify base pin.">
           {designJob.running ? "Running…" : design?.entry ? "↻ Re-run" : "↻ Run"}

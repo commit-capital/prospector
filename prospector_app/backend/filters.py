@@ -298,10 +298,14 @@ def matches(row: dict, spec: dict) -> bool:
         if not any(v == "any" or resp.get(v) for v in want_list):
             return False
     if spec.get("author_return"):
-        # an author came back after we closed their work (author_returns):
-        # True for either signal, else "reopened" / "follow-up"
+        # an author answered us: came back after we closed their work
+        # (author_returns), or answered the design findings we posted
+        # (gates.design_answer); True for any, else "reopened" / "follow-up" /
+        # "design-answer"
         ret = row.get("author_return")
+        signal = (ret["signal"] if ret else "design-answer"
+                  if (row.get("automation") or {}).get("bucket") == "design-answered" else None)
         want = spec["author_return"]
-        if not ret or (want is not True and ret["signal"] not in (want if isinstance(want, list) else [want])):
+        if signal is None or (want is not True and signal not in (want if isinstance(want, list) else [want])):
             return False
     return True

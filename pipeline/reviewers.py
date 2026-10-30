@@ -486,10 +486,20 @@ def _design_bar(entry: dict | None, head_sha: str | None) -> Bar:
     return Bar(PASS, None, None)
 
 
+def design_override(entry: dict | None) -> dict | None:
+    """The operator's approval of `entry` past its findings, {reason, by, at}:
+    it stands until a new review replaces the entry."""
+    override = (entry or {}).get("override")
+    return override if isinstance(override, dict) else None
+
+
 def design_standing(entry: dict | None) -> list[dict]:
     """The open blocking and major findings a refuting verifier confirmed
     (`pipeline/design_verify.py`): the ones the bar fails on and autofix aims
-    at. A refuted, unsure or unverified finding is shown and nothing more."""
+    at. A refuted, unsure or unverified finding is shown and nothing more, and
+    a review an operator approved has none."""
+    if design_override(entry):
+        return []
     return [f for f in open_findings(entry) if f.get("severity") in DESIGN_BLOCKING
             and (f.get("verification") or {}).get("verdict") == "confirmed"]
 
@@ -602,6 +612,8 @@ def _summary_line_one(reviewer: Reviewer, entry: dict | None, b: Bar, stale: boo
         s += " ⚠stale"
     elif reviewer is DESIGN and design_outdated(entry):
         s += " ⚠older rubric"
+    if reviewer is DESIGN and (override := design_override(entry)):
+        s += f" · approved by {override.get('by') or 'an operator'}"
     return s
 
 

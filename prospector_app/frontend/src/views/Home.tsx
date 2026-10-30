@@ -62,10 +62,10 @@ function SamplePR({ r, rowAction, onActionDone, reason, cameBack }: {
       <td className="home-sample-title" title={r.summary?.one_liner ?? undefined}>
         {r.title ?? "(no title)"}
         {reason && <div className="small muted home-sample-reason" title={reason}>{reason}</div>}
-        {cameBack && r.author_return && (
+        {cameBack && (r.author_return || r.automation?.bucket === "design-answered") && (
           <div className="small muted home-sample-reason" title={r.automation?.reason ?? undefined}>
-            <AuthorReturnNote ret={r.author_return} />
-            {r.automation?.reason && <> · {r.automation.reason}</>}
+            {r.author_return && <><AuthorReturnNote ret={r.author_return} /> · </>}
+            {r.automation?.reason}
           </div>
         )}
       </td>
