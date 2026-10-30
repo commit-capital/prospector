@@ -63,6 +63,16 @@ def test_an_answer_carries_the_chosen_option(client):
     assert r.status_code == 200 and store.load_issue(7).fix_request["answer"] == {"label": "B"}
 
 
+def test_an_answer_carries_the_chosen_option_and_the_written_words_together(client):
+    c, store = client
+    store.edit_issue(7).record_fix_run({"ending": "fix-disputed", "host": "s", "question": {
+        "question": "2 or 3?", "options": [{"label": "A"}, {"label": "B"}]}})
+    r = c.post("/api/issues/7/fix", json={"action": "answer", "answer_label": "B",
+                                          "answer_text": "keep 2 as a fallback"})
+    assert r.status_code == 200
+    assert store.load_issue(7).fix_request["answer"] == {"label": "B", "text": "keep 2 as a fallback"}
+
+
 def test_a_queued_request_is_cancelled(client):
     c, store = client
     c.post("/api/issues/7/fix", json={"action": "solve"})

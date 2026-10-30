@@ -1800,6 +1800,8 @@ tr.row-done:hover > td { opacity: 1; }
   border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
   resize: vertical; }
 .fix-goal:focus { outline: none; border-color: var(--accent); }
+/* A queued answer's own words, in full, scrolling when long. */
+.fix-answer-text { white-space: pre-wrap; max-height: 12em; overflow-y: auto; }
 .choose-pr { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
 .choose-pr input { flex: 1 1 240px; min-width: 0; font: inherit; font-size: 13px; color: var(--text);
   background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }

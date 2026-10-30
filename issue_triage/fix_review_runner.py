@@ -278,8 +278,9 @@ def answer(store: IssueStore, n: int, answer_: dict, *, on_step: Callable[[str],
            notes: str | None = None, unattended: bool = False) -> tuple[dict, dict | None]:
     """Resume a dispute on the chosen reading, or re-solve with a written
     answer: a maintainer's in `answer_`, the issue author's in `notes`. A
-    chosen reading whose base this machine no longer holds is re-solved with
-    that reading as the maintainer's answer."""
+    chosen reading that comes with written words, or whose base this machine no
+    longer holds, is re-solved with that reading and the words as the
+    maintainer's answer."""
     previous = _last_record(n)
     qpath = propose.result_dir(n) / "question.json"
     saved = json.loads(qpath.read_text()) if qpath.exists() else {}
@@ -289,9 +290,12 @@ def answer(store: IssueStore, n: int, answer_: dict, *, on_step: Callable[[str],
     text = str(answer_.get("text") or "").strip()
     base: prove.PinnedBase | None = None
     if label and label in options:
-        try:
-            base = prove.held(previous["base_sha"], int(previous.get("base_tier") or 0))
-        except prove.NoBase:
+        if not text:
+            try:
+                base = prove.held(previous["base_sha"], int(previous.get("base_tier") or 0))
+            except prove.NoBase:
+                pass
+        if base is None:
             behavior = question["options"][options.index(label)].get("behavior")
             text = "\n".join(w for w in (f"{label}: {behavior}" if behavior else label, text) if w)
     if base is not None:
