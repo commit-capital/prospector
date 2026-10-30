@@ -4,9 +4,10 @@ What Prospector's own reviewers are told, one file per prompt. Edit a file here
 to change what a reviewer is asked. `__NAME__` placeholders are filled per run by
 the module named below (`headless_agent.fill`).
 
-A file is used byte for byte. Any edit is a new prompt version in the reviewer
-eval (`verdict_log.prompt_sha`). It does not re-review PRs already reviewed;
-for the design review, bumping `reviewers.DESIGN_RUBRIC` does.
+A file is used byte for byte, so a trailing newline is part of the prompt.
+Editing a prompt does not re-review PRs already reviewed; for the design review,
+bumping `reviewers.DESIGN_RUBRIC` does. Each module's `PROMPT_SHA` names the
+files that make a new prompt version in the reviewer eval.
 
 ## Design review
 
@@ -29,7 +30,7 @@ What the reviewer reads (`pipeline/design_review.py`):
 - with `TRIAGE_DESIGN_COVERAGE` on, which changed lines the PR's tests execute.
 
 It has no GitHub access, no edits and no environment. The bar a review must
-clear is `reviewers.design_standing`.
+clear is in `pipeline/reviewers.py`.
 
 ## Security review
 
