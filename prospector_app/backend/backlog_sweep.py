@@ -79,6 +79,7 @@ class Plan:
     conflicts: list[str] = field(default_factory=list)
     quiet_since: str | None = None
     kind: Kind | None = None
+    retry: bool = False  # the queued request ended on the machine, not the PR
 
 
 def population_kind(rec: Pr, now: datetime, *, acted: bool = False) -> Kind | None:
@@ -220,6 +221,15 @@ def _ended_on_conflicts(req: dict[str, object], head: str | None) -> bool:
             and handback.parked_judged(result))
 
 
+def _ended_on_the_machine(req: dict[str, object], head: str | None) -> bool:
+    """Whether the request at `head` ended without a verdict on the PR: the
+    worker failed, or refused it with no conflicts to name."""
+    if req.get("against_head_sha") != head or _ended_on_conflicts(req, head):
+        return False
+    return req.get("status") == "failed" or (
+        req.get("status") == "refused" and req.get("action") in ("rebase", "update"))
+
+
 def plan_one(rec: Pr, steps: dict[str, str], pr_probe: Probe | str) -> Plan:
     """PR `rec`'s next step, given the sweep `steps` already taken at its head
     and when each was taken."""
@@ -240,6 +250,14 @@ def plan_one(rec: Pr, steps: dict[str, str], pr_probe: Probe | str) -> Plan:
                         ask=True, conflicts=paths)
         if req.get("status") in fix_queue.IN_FLIGHT:
             return Plan(n, "waiting", f"its {req.get('action')} request is {req.get('status')}")
+        if "requeued" not in steps and _ended_on_the_machine(req, rec.head_sha):
+            if isinstance(pr_probe, str):
+                return Plan(n, "skip", pr_probe)
+            plan = classify(rec, pr_probe)
+            if plan.action is not None:
+                plan.retry = True
+                plan.why = f"its queued {req.get('action')} ended {req.get('status')}; once more"
+            return plan
         return Plan(n, "done", f"its queued {req.get('action')} ended {req.get('status')}")
     if isinstance(pr_probe, str):
         return Plan(n, "skip", pr_probe)
@@ -254,7 +272,7 @@ def plan_one(rec: Pr, steps: dict[str, str], pr_probe: Probe | str) -> Plan:
 def _steps_by_pr(prs: list[int] | None = None) -> dict[int, dict[str, dict[str, str]]]:
     """The sweep steps already taken (on `prs`, or on every PR), as
     {pr: {head_sha: {step: when}}}. One row per action, and each head is acted
-    on at most three times, so this stays as small as the backlog."""
+    on at most four times, so this stays as small as the backlog."""
     out: dict[int, dict[str, dict[str, str]]] = {}
     for run in data.store().runs(phase=PHASE, prs=prs):
         if not isinstance(run, storekit.PhaseRun) or not isinstance(run.raw.get("pr"), int):
@@ -320,7 +338,7 @@ def act(plan: Plan, rec: Pr) -> str:
             fix_queue.queue_pr(rec.number, plan.action)
         except ValueError as e:
             return f"not queued: {e}"
-        status = step = "queued"
+        status = step = "requeued" if plan.retry else "queued"
     now = storekit.now()
     data.store().append_run({"phase": PHASE, "pr": rec.number, "started": now, "finished": now,
                              "trigger": "operator",
@@ -364,5 +382,5 @@ def main(argv: list[str] | None = None) -> int:
             continue
         outcome = act(plan, prs[plan.pr])
         print(f"#{plan.pr} {plan.bucket}: {outcome}")
-        left -= outcome in ("queued", "asked", "closed")
+        left -= outcome in ("queued", "requeued", "asked", "closed")
     return 0
