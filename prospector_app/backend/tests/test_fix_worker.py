@@ -210,6 +210,23 @@ def test_a_parked_mechanical_request_keeps_no_worktree(store, monkeypatch):
     assert any(a[0] == "abort" for a in probe.calls), "the prepared tree is discarded"
 
 
+def test_a_clean_rebase_hands_the_preflight_its_whole_change(store, monkeypatch):
+    # The plain `diff` of a finished rebase is a range-diff summary, which
+    # names no paths for the preflight to measure.
+    fix_queue.queue_pr(1, "rebase")
+    probe = _Probe(overrides={"state": (0, '{"phase": "ready", "conflicts": []}'),
+                              "diff": (0, "rebase rewrite for PR #1:"),
+                              ("diff", "--whole"): (0, "diff --git a/a.ts b/a.ts\n+x")})
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+    handed: list[str] = []
+    monkeypatch.setattr(fix_worker, "_preflight",
+                        lambda n, patch: handed.append(patch) or {"exit": 0})
+
+    fix_worker.run_one(1)
+
+    assert handed == ["diff --git a/a.ts b/a.ts\n+x"]
+
+
 def test_a_diff_ending_in_a_blank_context_line_reaches_the_preflight_whole(store, monkeypatch):
     # git renders an unchanged blank line as a lone space; a patch that loses it
     # is corrupt, and the sandbox would refuse the change as not applying.

@@ -23,6 +23,7 @@ A conflicting PR uses the same isolated worktree and a pinned rebase transaction
     #   ...if it stops, agent resolves only the printed conflicted paths...
     resubmit <pr> continue             # stage those paths + continue; repeat as needed
     resubmit <pr> diff                 # review the resolution / final range-diff
+    resubmit <pr> diff --whole                 (the rebased PR's whole change vs current base)
     resubmit <pr> push --confirm-rewrite <old-head-sha>
     resubmit <pr> commit -m <message>          (a follow-up on a kept merge)
     resubmit <pr> diff --last                  (that follow-up alone)
@@ -842,7 +843,7 @@ def cmd_apply(pr: int) -> int:
     return 0
 
 
-def cmd_diff(pr: int, last: bool = False, resolution: bool = False) -> int:
+def cmd_diff(pr: int, last: bool = False, resolution: bool = False, whole: bool = False) -> int:
     """Print the diff of the agent's edits in the prepared worktree, so the operator
     can review exactly what `push` will commit. The clone is a separate repo under
     the cache, so a plain `git diff` in the app's cwd can't reach it — this runs
@@ -905,6 +906,13 @@ def cmd_diff(pr: int, last: bool = False, resolution: bool = False) -> int:
         if meta.get("phase") != "ready":
             print(f"resubmit: rebase of PR #{pr} is not ready to inspect.", file=sys.stderr)
             return 9
+        if whole:
+            r = _git(["diff", "--no-color", meta["base_sha"], meta["new_head_sha"]], wt)
+            if r.returncode != 0:
+                print(f"resubmit: git diff failed: {r.stderr.strip()}", file=sys.stderr)
+                return 4
+            print(r.stdout, end="")
+            return 0
         print(f"rebase rewrite for PR #{pr}:")
         print(f"  base: {meta['base_branch']} @ {meta['base_sha']}")
         print(f"  head: {meta['head_sha']} → {meta['new_head_sha']}")
@@ -1250,6 +1258,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="on a kept merge, only the follow-up commit `commit` added")
     diffp.add_argument("--resolution", action="store_true",
                        help="on a ready merge, only the conflict resolution inside its merge commit")
+    diffp.add_argument("--whole", action="store_true",
+                       help="on a ready rebase, the PR's whole change vs current base, as a patch")
     sub.add_parser("discard", help="return a kept merge worktree to its merge commit")
     updp = sub.add_parser("update", help="merge the base branch into the PR's head branch")
     updp.add_argument("--dry-run", action="store_true",
@@ -1280,7 +1290,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "apply":
             return cmd_apply(args.pr)
         if args.action == "diff":
-            return cmd_diff(args.pr, args.last, args.resolution)
+            return cmd_diff(args.pr, args.last, args.resolution, args.whole)
         if args.action == "discard":
             return cmd_discard(args.pr)
         if args.action == "update":

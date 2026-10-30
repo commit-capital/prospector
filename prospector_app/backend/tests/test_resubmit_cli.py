@@ -354,6 +354,10 @@ def test_clean_rebase_completes_without_an_edit(monkeypatch, tmp_path, capsys):
     assert "head:" in capsys.readouterr().out
     assert resubmit.cmd_diff(42) == 0
     assert repos["old_head"] in capsys.readouterr().out
+    assert resubmit.cmd_diff(42, whole=True) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("diff ") and "+feature" in out
+    assert "base-only.txt" not in out
 
 
 def test_conflict_must_be_resolved_then_pushes_with_exact_lease(
