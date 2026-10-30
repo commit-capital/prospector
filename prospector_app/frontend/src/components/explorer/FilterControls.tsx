@@ -71,7 +71,7 @@ export function FilterControls({ spec, onChange }: {
         <option value="any">author answered us</option>
         <option value="reopened">↩ reopened</option>
         <option value="follow-up">↪ follow-up to our close</option>
-        <option value="design-answer">💬 answered our design findings</option>
+        <option value="answer">💬 answered the review feedback</option>
       </Select>
 
       <button className="link-btn" onClick={() => onChange({})}>Clear all</button>

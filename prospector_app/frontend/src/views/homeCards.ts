@@ -45,7 +45,7 @@ export interface HomeCard {
   hideWhenEmpty?: boolean;
   rowAction?: HomeRowAction;
   // Each sample row says how its author answered us (PRRow.author_return, or
-  // the design answer in its automation reason), with its automation standing.
+  // the answer in its automation reason), with its automation standing.
   cameBack?: boolean;
   // Sub-buckets shown as counted links under the blurb, each its own spec.
   breakdown?: HomeBreakdown[];
@@ -154,7 +154,7 @@ export const HOME_CARDS: HomeCard[] = [
   {
     key: "came-back",
     title: "Authors answered us",
-    blurb: "The author answered what we decided: reopened a PR we closed, opened this one linking the PR or issue we closed, or replied or pushed after we posted design findings. It's our move — read their side and move each to its next step.",
+    blurb: "The author answered what we decided: reopened a PR we closed, opened this one linking the PR or issue we closed, replied or pushed after we posted design findings, or replied to a failing review score or CI. It's our move — read their side and move each to its next step.",
     column: "act",
     spec: { author_return: true },
     sort: "updated",

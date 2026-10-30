@@ -144,7 +144,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 # 46 — a PR's design review may carry an operator's `override`, which passes
 #      its bar; an older checkout reads the approved PR as design-blocked and
 #      its autofix aims at the approved findings.
-STORE_SCHEMA_VERSION = 46
+# 47 — a PR's `responses` may be measured from the blocking feedback on its
+#      head (`our_action.kind` "head-feedback"); an older sweep rebuilds every
+#      section without it, so the two sweeps rewrite each other's sections.
+STORE_SCHEMA_VERSION = 47
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

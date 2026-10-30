@@ -92,7 +92,7 @@ export interface FilterSpec {
   has_issues?: boolean;      // the PR has linked issues
   responses?: ResponsesFilter | ResponsesFilter[];
   // an author answered us: came back after we closed their work, or answered
-  // the design findings we posted; true for any
+  // the blocking feedback on their PR; true for any
   author_return?: true | AuthorAnswerFilter | AuthorAnswerFilter[];
   loc?: LocFilter;
   files?: FilesFilter;       // how many files a PR touches, greater-/less-than
@@ -154,6 +154,8 @@ export interface AutomationStanding {
   owner: AutomationOwner;
   state: AutomationState;
   reason: string;
+  // The check whose blocking feedback the author answered (bucket "answered").
+  answer?: "design" | "review" | "ci";
 }
 
 /** One PR's verdict from Deep Search — the agent's match decision + a short why. */
@@ -1438,7 +1440,7 @@ export interface LinkedPRFacts {
  *  (prospector_app/backend/author_returns.py): they reopened it, or opened a
  *  new PR or issue that links it. */
 export type AuthorReturnSignal = "reopened" | "follow-up";
-export type AuthorAnswerFilter = AuthorReturnSignal | "design-answer";
+export type AuthorAnswerFilter = AuthorReturnSignal | "answer";
 
 export interface ItemRef {
   kind: "pr" | "issue";

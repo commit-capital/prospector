@@ -1,6 +1,7 @@
-"""An author's answer to the design findings the bot posted makes the next move
-ours, and the operator approves the design review past its findings or hands
-the PR back."""
+"""An author's answer to the blocking feedback on their PR's head (the design
+findings the bot posted, a failing Greptile score, failing CI) makes the next
+move ours, and the operator approves the design review past its findings or
+hands the PR back."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,7 @@ from fastapi.testclient import TestClient
 from pipeline import design_review, gates, review_policy, reviewers
 from pipeline import store as S
 from pipeline.storekit import now as _now
-from pipeline.testsupport import reviews_section, threat_section
+from pipeline.testsupport import greptile_entry, reviews_section, threat_section
 from prospector_app.backend import activity, automation, data, filters, responses, service
 from prospector_app.backend import app as appmod
 
@@ -53,6 +54,11 @@ def _save(st: S.Store, sig: dict | None, **sections: object) -> None:
     data.refresh()
 
 
+def _answer(pr) -> str | None:
+    answer = gates.author_answer(pr)
+    return answer.text if answer else None
+
+
 @pytest.fixture
 def st(tmp_path, monkeypatch) -> S.Store:
     store = S.Store(tmp_path / "store")
@@ -73,23 +79,23 @@ def _pr(st: S.Store):
 def test_an_authors_reply_after_our_design_comment_is_our_move(st):
     _save(st, _responses(replied=True, by="al", snippet="the helper predates this"))
     pr = _pr(st)
-    assert gates.design_answer(pr) == "the helper predates this"
+    assert _answer(pr) == "the helper predates this"
     standing = automation.classify(pr)
     assert standing is not None
     assert (standing["bucket"], standing["owner"], standing["column"]) == (
-        "design-answered", "you", "act")
+        "answered", "you", "act")
     assert "the helper predates this" in standing["reason"]
 
 
 def test_a_push_the_bot_had_nothing_new_to_post_on_is_an_answer_too(st):
     _save(st, _responses(new_commits=True, commit_snippet="keep the helper: it is shared"))
-    assert gates.design_answer(_pr(st)) == "keep the helper: it is shared"
+    assert _answer(_pr(st)) == "keep the helper: it is shared"
 
 
 def test_a_push_that_left_the_patch_as_it_was_is_no_answer(st):
     _save(st, _responses(new_commits=True, commit_snippet="rebase onto main"),
           patch={"id": "p1", "same_as": ["e" * 40], "against_head_sha": HEAD, "checked_at": _now()})
-    assert gates.design_answer(_pr(st)) is None
+    assert _answer(_pr(st)) is None
 
 
 @pytest.mark.parametrize("sig", [
@@ -100,27 +106,88 @@ def test_a_push_that_left_the_patch_as_it_was_is_no_answer(st):
 def test_no_answer_leaves_it_the_authors_move(st, sig):
     _save(st, sig)
     pr = _pr(st)
-    assert gates.design_answer(pr) is None
+    assert _answer(pr) is None
     standing = automation.classify(pr)
-    assert standing is not None and standing["bucket"] != "design-answered"
+    assert standing is not None and standing["bucket"] != "answered"
 
 
 def test_an_ack_hands_it_back_until_a_newer_answer(st):
     _save(st, _responses(replied=True, by="al", snippet="no"),
           response_ack={"at": LATER, "by": "op"})
-    assert gates.design_answer(_pr(st)) is None
+    assert _answer(_pr(st)) is None
     _save(st, _responses(replied=True, by="al", snippet="still no",
                          last_response_at="2026-10-22T10:00:00+00:00"),
           response_ack={"at": LATER, "by": "op"})
-    assert gates.design_answer(_pr(st)) == "still no"
+    assert _answer(_pr(st)) == "still no"
 
 
 def test_the_home_card_filter_takes_design_answers_beside_author_returns(st):
     _save(st, _responses(replied=True, by="al", snippet="no"))
     row = {"automation": automation.classify(_pr(st)), "author_return": None}
     assert filters.matches(row, {"author_return": True})
-    assert filters.matches(row, {"author_return": "design-answer"})
+    assert filters.matches(row, {"author_return": "answer"})
     assert not filters.matches(row, {"author_return": "reopened"})
+
+
+def _greptile(score: int = 3, at: str = POSTED) -> dict:
+    return reviews_section(HEAD, greptile={**greptile_entry(score, HEAD), "observed_at": at})
+
+
+def _feedback_responses(**sig: object) -> dict:
+    return _responses(our_action={"kind": gates.FEEDBACK_ACTION, "at": POSTED, "by": None},
+                      **sig)
+
+
+def test_a_reply_to_a_failing_greptile_score_is_our_move(st):
+    _save(st, _feedback_responses(replied=True, by="al", snippet="that path is unreachable"),
+          reviews=_greptile())
+    pr = _pr(st)
+    assert gates.author_answer(pr) == gates.Answer("review", "that path is unreachable")
+    standing = automation.classify(pr)
+    assert standing is not None
+    assert (standing["bucket"], standing["answer"]) == ("answered", "review")
+    assert "review score" in standing["reason"]
+    row = {"automation": standing, "author_return": None}
+    assert filters.matches(row, {"author_return": "answer"})
+
+
+def test_a_reply_to_failing_ci_answers_the_ci(st):
+    failing = {"ci": "failing", "mergeable": True, "checked_at": _now(), "against_head_sha": HEAD,
+               "ci_failures": {"failures": [{"name": "e2e", "started_at": POSTED}]}}
+    _save(st, _feedback_responses(replied=True, by="al", snippet="e2e is red on main too"),
+          reviews=_greptile(score=5), signals=failing)
+    assert gates.author_answer(_pr(st)) == gates.Answer("ci", "e2e is red on main too")
+
+
+@pytest.mark.parametrize("reviews", [
+    _greptile(score=5),                         # the score passes now
+    _greptile(at="2026-10-22T10:00:00+00:00"),  # newer feedback the reply predates
+])
+def test_a_reply_to_feedback_that_no_longer_stands_is_no_answer(st, reviews):
+    _save(st, _feedback_responses(replied=True, by="al", snippet="no"), reviews=reviews)
+    assert gates.author_answer(_pr(st)) is None
+
+
+def test_the_sweep_measures_a_contributors_pr_from_its_newest_head_feedback(st):
+    _save(st, None, reviews=_greptile(at=LATER))
+    acted = {5: {"at": POSTED, "kind": "comment", "by": "op"}}
+    base = responses._with_feedback(acted, data.prs())
+    assert base[5] == {"at": datetime.fromisoformat(LATER).isoformat(),
+                       "kind": gates.FEEDBACK_ACTION, "by": None,
+                       "reason": "Greptile scored it 3/5"}
+    newer = {5: {"at": "2026-10-23T10:00:00+00:00", "kind": "comment", "by": "op"}}
+    assert responses._with_feedback(newer, data.prs()) == newer
+    closed = {5: {"at": POSTED, "kind": "close", "by": "op"}}
+    assert responses._with_feedback(closed, data.prs()) == closed
+    design = {5: {"at": POSTED, "kind": "design-findings", "by": "op"}}
+    assert responses._with_feedback(design, data.prs())[5]["kind"] == gates.FEEDBACK_ACTION
+    _save(st, None, reviews=reviews_section(
+        HEAD, design=_design(), greptile={**greptile_entry(3, HEAD), "observed_at": LATER}))
+    assert responses._with_feedback(design, data.prs()) == design
+    _save(st, None, reviews=_greptile(at=LATER), meta={
+        "title": "PR 5", "author": "mo", "author_association": "MEMBER", "state": "open",
+        "head_sha": HEAD, "updated_at": _now()})
+    assert responses._with_feedback({}, data.prs()) == {}
 
 
 def test_an_answered_pr_never_closes_as_abandoned_or_takes_an_unasked_fix(st):
@@ -129,9 +196,9 @@ def test_an_answered_pr_never_closes_as_abandoned_or_takes_an_unasked_fix(st):
     old = datetime(2026, 10, 1, tzinfo=timezone.utc)
     live = gates.LivePr(HEAD, old, old, old, "success")
     ok, why = gates.abandoned_close(pr, live, old + timedelta(days=60))
-    assert not ok and "answered the design findings" in why
+    assert not ok and "answered the feedback" in why
     ok, why = gates.fix_huntable(pr, "fix", ["src/a.py"])
-    assert not ok and "answered the design findings" in why
+    assert not ok and "answered the feedback" in why
 
 
 @pytest.fixture
@@ -141,7 +208,7 @@ def client() -> TestClient:
 
 def test_approving_passes_the_design_bar_and_is_logged(st, client, monkeypatch):
     _save(st, _responses(replied=True, by="al", snippet="no"))
-    assert gates.design_answer(_pr(st)) == "no"
+    assert _answer(_pr(st)) == "no"
     logged: list[dict] = []
     monkeypatch.setattr(activity, "record", lambda kind, **f: logged.append({"kind": kind, **f}))
     r = client.post("/api/reviews/design/approve/pr/5",
@@ -154,7 +221,7 @@ def test_approving_passes_the_design_bar_and_is_logged(st, client, monkeypatch):
     assert review_policy.own_bar(pr, reviewers.DESIGN).status == reviewers.PASS
     assert reviewers.findings_for_fix(reviewers.DESIGN, pr.review_entry(reviewers.DESIGN.id),
                                       HEAD, None) == []
-    assert gates.design_answer(pr) is None
+    assert _answer(pr) is None
     assert logged[-1]["kind"] == "design-approve" and logged[-1]["pr"] == 5
     assert logged[-1]["status"] == "recorded" and not activity.is_landed(logged[-1])
 

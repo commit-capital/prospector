@@ -1,5 +1,5 @@
 """Community response signals — how authors react after we triage their PR or
-close their issue.
+close their issue, or after blocking review feedback lands on their PR's head.
 
 After we close / request-changes / comment as the configured bot, the author may
 reply (argue back, ask why), reopen a PR we closed, or push new commits to fix
@@ -27,6 +27,7 @@ from prospector_app.backend import activity
 from prospector_app.backend import author_returns
 from prospector_app.backend import data
 from prospector_app.backend import issue_data
+from pipeline import gates
 from pipeline import gh
 from pipeline import settings
 from pipeline.storekit import now as _now
@@ -209,6 +210,29 @@ def _acted_baseline(events: list[dict] | None = None) -> dict[Kind, dict[int, di
             "issue": {n: b for n, b in issues.items() if b["kind"] == "issue-close"}}
 
 
+def _with_feedback(acted: dict[int, dict], prs: Mapping[int, Pr]) -> dict[int, dict]:
+    """`acted` with each open contributor's PR whose head carries blocking
+    feedback (`gates.head_feedback`) newer than our latest action measured from
+    that feedback instead, so an author's reply to it is a response. A close
+    stays, so its reopen still reads as one, and so do design findings that
+    still stand, which a push can answer."""
+    out = dict(acted)
+    for n, pr in prs.items():
+        if pr.state != "open" or gates.abandon_exempt(pr):
+            continue
+        feedback = gates.head_feedback(pr)
+        newest = max(feedback, key=lambda f: f.at, default=None)
+        ours = acted.get(n) or {}
+        prior = _dt(ours.get("at"))
+        if ours.get("kind") == "close" or (ours.get("kind") == "design-findings"
+                                           and any(f.check == "design" for f in feedback)):
+            continue
+        if newest is not None and (prior is None or newest.at > prior):
+            out[n] = {"at": newest.at.isoformat(), "kind": gates.FEEDBACK_ACTION, "by": None,
+                      "reason": newest.what}
+    return out
+
+
 # Every actor carries __typename so a GitHub App is recognised as a Bot: a
 # Bot's login here is bare, with no REST-style `[bot]` suffix to read it off
 # (`_is_human`).
@@ -383,7 +407,8 @@ def changed_since(since: str, baseline: dict[Kind, dict[int, dict]]) -> dict[Kin
 
 def scan(prs: list[int] | None = None, issues: list[int] | None = None, *,
          since: str | None = None) -> dict:
-    """Sweep the PRs we've acted on and the issues we closed, classify each
+    """Sweep the PRs we've acted on or that carry blocking feedback at their
+    head (`_with_feedback`) and the issues we closed, classify each
     one's response, and write each changed `responses` section. With `prs` or
     `issues`, sweep just those, and with `since` just the items
     `changed_since` names; either way every other section stays. Returns
@@ -396,6 +421,7 @@ def scan(prs: list[int] | None = None, issues: list[int] | None = None, *,
     baseline = _acted_baseline()
     data.refresh()
     issue_data.refresh()
+    baseline["pr"] = _with_feedback(baseline["pr"], data.prs())
     wanted: dict[Kind, list[int] | None] = (
         {"pr": prs, "issue": issues} if since is None
         else {**changed_since(since, baseline)})

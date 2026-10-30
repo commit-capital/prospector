@@ -359,9 +359,22 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       resolved={resolved} onQueue={queueFix} />
   );
   const resolveConflicts = fixButton("rebase");
+  const answered = pr.automation?.bucket === "answered" ? pr.automation.answer : undefined;
+  const handBack = (
+    <button className="btn-secondary sm" disabled={approvingDesign}
+      onClick={() => void api.ackResponse(prNum).then(reloadPr)}
+      title="You've read the author's answer and the feedback still stands: hand the PR back to its author. A newer reply or push brings it back.">
+      ↩ Hand back
+    </button>
+  );
   if (!resolved) {
     checksActions.drift = fixButton("update");
-    if (pr.signals?.ci === "unreported") checksActions.ci = fixButton("update");
+    if (pr.signals?.ci === "unreported" || answered === "ci") {
+      checksActions.ci = <>
+        {pr.signals?.ci === "unreported" && fixButton("update")}
+        {answered === "ci" && handBack}
+      </>;
+    }
   }
   if (checks?.checks.some((check) => check.key === "mergeable" && check.status === "fail")) {
     checksActions.mergeable = resolveConflicts;
@@ -372,6 +385,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
     checksActions.review = (
       <>
         {fixButton("describe")}
+        {answered === "review" && handBack}
         {retriggerable.map((r) => (
           <button key={r.id} className="btn-secondary sm" onClick={() => void retriggerReview(r.id, r.label)}
             disabled={retriggering !== null}
@@ -439,13 +453,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
             {approvingDesign ? "Approving…" : "✓ Approve"}
           </button>
         )}
-        {pr.automation?.bucket === "design-answered" && (
-          <button className="btn-secondary sm" disabled={approvingDesign}
-            onClick={() => void api.ackResponse(prNum).then(reloadPr)}
-            title="You've read the author's answer and the findings still stand: hand the PR back to its author. A newer reply or push brings it back.">
-            ↩ Hand back
-          </button>
-        )}
+        {answered === "design" && handBack}
         <button className="btn-secondary sm" onClick={runDesign} disabled={designJob.running}
           title="Design-review this PR's current head now, replacing any review it has. Runs on a machine holding a verify base pin.">
           {designJob.running ? "Running…" : design?.entry ? "↻ Re-run" : "↻ Run"}
