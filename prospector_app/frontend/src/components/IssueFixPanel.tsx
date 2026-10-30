@@ -99,6 +99,8 @@ function FixBanner({ d, onChanged }: { d: IssueDetail; onChanged: () => void }) 
             {req.requested_by && <>asked by {req.requested_by} · </>}
             {req.status === "queued" ? `queued ${when(req.queued_at)}` : `on ${req.host} since ${when(req.started_at)}`}
             {req.guidance && <div className="muted small">“{req.guidance}”</div>}
+            {req.answer?.label && <div className="small">Answer: <b>{req.answer.label}</b></div>}
+            {req.answer?.text && <div className="muted small fix-answer-text">“{req.answer.text}”</div>}
             {d.fix_request_replaceable && (
               <div className="muted small">Prospector queued this on its own; anything you do below takes its place.</div>
             )}
@@ -228,28 +230,35 @@ function QuestionActions({ q, asked, busy, text, setText, send, dryRun }: {
   send: (body: IssueFixBody, done: string) => void;
   dryRun: boolean;
 }) {
+  const [picked, setPicked] = useState<string | null>(null);
   if (!q || !q.options?.length) return null;
+  const words = text.trim();
   return (
     <div className="callout issue-fix-question">
       <div><b>{q.question}</b></div>
       <div className="muted small" style={{ margin: "4px 0 8px" }}>
-        The agents read the report differently. Pick what should happen and the fix continues.
+        The agents read the report differently. Pick what should happen, add your own words if you
+        like, and answer.
       </div>
       {q.options.map((o) => (
         <div key={o.label} className="row-actions" style={{ alignItems: "baseline" }}>
-          <button className="btn-secondary sm" disabled={busy}
-            onClick={() => send({ action: "answer", answer_label: o.label }, `Answered ${o.label}`)}>
+          <button className={`${picked === o.label ? "btn-primary" : "btn-secondary"} sm`} disabled={busy}
+            aria-pressed={picked === o.label}
+            onClick={() => setPicked(picked === o.label ? null : o.label)}>
             {o.label}
           </button>
           <span>{o.behavior}{o.label === q.default && <span className="muted small"> (default)</span>}</span>
         </div>
       ))}
       <textarea className="fix-goal" rows={2} value={text}
-        placeholder="Or say what should happen in your own words."
+        placeholder={picked ? `Anything to add to ${picked}?` : "Or say what should happen in your own words."}
         onChange={(e) => setText(e.target.value)} aria-label="Your answer" />
       <div className="row-actions">
-        <button className="btn-secondary sm" disabled={busy || !text.trim()}
-          onClick={() => send({ action: "answer", answer_text: text }, "Answered")}>Answer</button>
+        <button className="btn-primary sm" disabled={busy || (!picked && !words)}
+          onClick={() => send({ action: "answer", answer_label: picked ?? undefined, answer_text: words || undefined },
+                              picked ? `Answered ${picked}` : "Answered")}>
+          {picked ? `Answer ${picked}${words ? " with your words" : ""}` : "Answer"}
+        </button>
         {!asked && (
           <button className="btn-secondary sm" disabled={busy}
             title="Post this question on the GitHub issue as the bot; the reporter's reply resumes the fix"

@@ -538,6 +538,26 @@ def test_a_chosen_reading_whose_base_is_gone_is_re_solved_on_it(store, tmp_path,
     assert status == "done" and seen["guidance"] == ASKED + "A maintainer answered: " + said
 
 
+def test_a_chosen_reading_with_written_words_is_re_solved_on_both(store, tmp_path, monkeypatch):
+    question = {**QUESTION, "options": [QUESTION["options"][0], {"label": "B", "behavior": "3"}]}
+    _run(store, ending="fix-disputed", question=question)
+    monkeypatch.setattr(propose, "result_dir", lambda n: tmp_path / f"issue-{n}")
+    (tmp_path / "issue-7").mkdir()
+    (tmp_path / "issue-7" / "result.json").write_text(
+        json.dumps({"ending": "fix-disputed", "base_sha": "a" * 40, "base_tier": 1}))
+    (tmp_path / "issue-7" / "question.json").write_text(json.dumps({"question": question}))
+    monkeypatch.setattr(prove, "held", lambda sha, tier: prove.PinnedBase(
+        sha=sha, tier=tier, image="img", clone=tmp_path))
+    seen = {}
+    monkeypatch.setattr(fix_review_runner, "solve", lambda s, n, **kw: seen.update(kw) or (
+        {"ending": "no-fix", "detail": "d", "result": {}}, None))
+    fix_review.queue(store, 7, "answer", by="op",
+                     answer={"label": "B", "text": "keep 2 as a fallback"})
+    status, _ = fix_review_runner.run_request(store, 7, store.claim_fix_request(7, host="s"))
+    assert status == "done"
+    assert seen["guidance"] == ASKED + "A maintainer answered: B: 3\nkeep 2 as a fallback"
+
+
 def _taken_back(store: IssueStore, req: dict) -> None:
     store.edit_issue(7).record_fix_request(
         {**req, "status": "failed", "reason": "interrupted: the issue-fix worker on laptop "

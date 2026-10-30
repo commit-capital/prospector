@@ -1360,12 +1360,12 @@ def issue_detail(n: int):
 def issue_fix_request(n: int, payload: models.IssueFixBody):
     """Queue an action on issue #n's fix attempt for the issue-fix worker:
     `solve` (optional guidance), `send-back` (comments), `answer` (an option's
-    label or a written answer), `ask-reporter`, `propose` (dry_run as the page
+    label, a written answer, or both), `ask-reporter`, `propose` (dry_run as the page
     runs). The operator's words join the attempt's thread. 409 when the action
     does not fit the attempt or a request is already in flight."""
     from issue_triage import fix_review
-    answer = ({"label": payload.answer_label} if payload.answer_label
-              else {"text": payload.answer_text} if payload.answer_text else None)
+    answer = {k: v for k, v in (("label", payload.answer_label), ("text", payload.answer_text))
+              if v} or None
     ok, why = fix_review.queue(issue_data.store(), n, payload.action,
                                by=activity.operator()["name"], guidance=payload.guidance,
                                answer=answer, dry_run=payload.dry_run)
