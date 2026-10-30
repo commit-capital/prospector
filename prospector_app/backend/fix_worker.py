@@ -895,7 +895,7 @@ def _probe(n: int, claimed: dict, action: str) -> str | None:
         if paused is not None:
             _agent_resolve(n, claimed, paused)
             return None
-        diff = _resubmit(n, "diff")
+        diff = _resubmit(n, "diff", "--whole")
         if diff.returncode != 0:
             _fail(n, claimed, (diff.stderr or diff.stdout).strip(), kind="git")
             return None
