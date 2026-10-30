@@ -5,7 +5,7 @@ import { defineRead, type Read } from "../readCache";
 import type { SortDir } from "../sortCycle";
 
 export const ISSUE_PAGE_SIZE = 50;
-export type IssueSortKey = "number" | "title" | "author" | "pain" | "repro" | "dups" | "prs" | "disposition" | "subsystem" | "fix";
+export type IssueSortKey = "number" | "title" | "author" | "pain" | "repro" | "dups" | "prs" | "disposition" | "subsystem" | "age" | "fix";
 export type IssueQueryResult = Awaited<ReturnType<typeof api.queryIssues>>;
 
 export type IssueTablePage = {

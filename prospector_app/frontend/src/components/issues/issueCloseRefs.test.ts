@@ -7,7 +7,7 @@ function row(n: number, extra: Partial<IssueRow> = {}): IssueRow {
   return {
     number: n, title: `Issue ${n}`, author: "someone", labels: [], comments: 0, reactions: 0,
     thumbs_up: 0, state: "open", url: "", subsystem: null, repro_grade: null, repro_score: null,
-    pain: null, cluster: null, cluster_size: 0, canonical: null, is_dup: false, duplicates: [],
+    pain: null, age_days: null, cluster: null, cluster_size: 0, canonical: null, is_dup: false, duplicates: [],
     disposition: null, fixed_by: null, linked_prs: [], linked_pr_count: 0, referenced_pr_count: 0,
     referenced_merged_count: 0, status_line: { text: "", see: null },
     ...extra,

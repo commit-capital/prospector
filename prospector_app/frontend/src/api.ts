@@ -1487,6 +1487,8 @@ export interface IssueRow {
   reactions: number;
   thumbs_up: number;
   created_at?: string;
+  /** Whole days since the issue was filed. */
+  age_days: number | null;
   updated_at?: string;
   state: string;
   url: string;

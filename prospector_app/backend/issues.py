@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -236,6 +237,11 @@ def _cluster_linked_prs(members: list[int], issues: dict[int, Issue],
                            for pr, cand in by_pr.items()])
 
 
+def _age_days(created_at: str | None) -> int | None:
+    at = storekit.parse_ts(created_at)
+    return None if at is None else (datetime.now(timezone.utc) - at).days
+
+
 def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict[int, str] | None,
          *, link_limit: int | None = None, snapshot_loading: bool = False) -> dict:
     cid = iss.cluster_id
@@ -263,6 +269,7 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
         "reactions": iss.reactions_total,
         "thumbs_up": iss.thumbs_up,
         "created_at": iss.created_at,
+        "age_days": _age_days(iss.created_at),
         "updated_at": iss.updated_at,
         "state": iss.state,
         "url": iss.url or f"https://github.com/{settings.repo()}/issues/{iss.number}",
@@ -429,11 +436,12 @@ _ISSUE_SORT_KEYS = {
     "prs": lambda r: (r["referenced_merged_count"], r["referenced_pr_count"], r["linked_pr_count"]),
     "disposition": lambda r: _DISP_RANK.get(r["disposition"] or ""),
     "subsystem": lambda r: (r["subsystem"] or "").lower(),
+    "age": lambda r: r["age_days"],
     # The operator's moves first, in fix_review.STATUSES order.
     "fix": lambda r: (None if r["fix_status"] is None
                       else fix_review.STATUSES.index(r["fix_status"])),
 }
-_ISSUE_DEFAULT_DESC = {"number", "pain", "repro", "dups", "prs"}
+_ISSUE_DEFAULT_DESC = {"number", "pain", "repro", "dups", "prs", "age"}
 
 
 def _sort_rows(rows: list[dict], sort: str | None, direction: str | None) -> None:
