@@ -19,13 +19,13 @@ from __future__ import annotations
 
 import fnmatch
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import posixpath
 import re
 import shlex
 from typing import TYPE_CHECKING, NamedTuple
 
-from pipeline import actions, codeowners, describe_pr, diffpaths, e2e_report, profile, review_policy, reviewers, risktier, settings, wire
+from pipeline import actions, codeowners, describe_pr, diffpaths, e2e_report, profile, review_policy, reviewers, risktier, settings, storekit, wire
 from pipeline.freshness import currency_failure, is_current
 
 if TYPE_CHECKING:
@@ -301,6 +301,124 @@ def opened_by_bot(pr: Pr) -> bool:
     """Whether Prospector's own App opened `pr`."""
     login = (pr.author or "").removeprefix("app/").removesuffix("[bot]")
     return bool(login) and login == settings.bot_login()
+
+
+# How long an author must stay silent after blocking feedback before their PR
+# closes as abandoned.
+ABANDONED_QUIET_DAYS = 14
+
+# Fix-request statuses still working through the autofix queue.
+FIX_IN_FLIGHT = ("queued", "running", "awaiting-review", "approved", "pushing")
+
+
+class Feedback(NamedTuple):
+    """One piece of blocking feedback on a PR's head, the store section it was
+    read from, and when it was posted."""
+    what: str
+    section: str
+    at: datetime
+
+
+class LivePr(NamedTuple):
+    """What GitHub says of a PR now: its head and the newest commit's date,
+    when it last changed, its author's last commit, comment, review or edit,
+    and the head's check rollup state (`failure`, `success`, ...)."""
+    head: str | None
+    head_committed: datetime | None
+    updated_at: datetime | None
+    last_active: datetime | None
+    ci_state: str | None
+
+
+def head_feedback(pr: Pr) -> list[Feedback]:
+    """The blocking feedback standing on `pr`'s ingested head: a Greptile
+    score under the bar, the design findings the bot posted, and failing CI.
+    Feedback whose time is unknown is left out, and so is CI that may only be
+    stale (`Pr.ci_stale_checks`)."""
+    head = pr.head_sha
+    if not head:
+        return []
+    out: list[Feedback] = []
+    greptile = pr.review_entry(reviewers.GREPTILE.id) or {}
+    score, at = greptile.get("score"), storekit.parse_ts(greptile.get("observed_at"))
+    if (greptile.get("reviewed_sha") == head and score is not None and at is not None
+            and score < review_policy.greptile_threshold()):
+        out.append(Feedback(f"Greptile scored it {score}/{reviewers.GREPTILE.score_max}",
+                            "reviews", at))
+    design = pr.review_entry(reviewers.DESIGN.id) or {}
+    comment = (design.get("extra") or {}).get("comment") or {}
+    at = storekit.parse_ts(comment.get("posted_at"))
+    if (design.get("reviewed_sha") == head and at is not None
+            and review_policy.own_bar(pr, reviewers.DESIGN).status == reviewers.FAIL):
+        out.append(Feedback("the design review's findings were posted", "reviews", at))
+    signals = pr.signals or {}
+    failures = (signals.get("ci_failures") or {}).get("failures") or []
+    started = [t for f in failures if (t := storekit.parse_ts(f.get("started_at"))) is not None]
+    if (pr.ci == "failing" and signals.get("against_head_sha") == head and started
+            and not pr.ci_stale_checks):
+        names = ", ".join(sorted({str(f.get("name")) for f in failures}))
+        out.append(Feedback(f"CI failed ({names})", "signals", max(started)))
+    return out
+
+
+def abandon_exempt(pr: Pr) -> str | None:
+    """Why `pr` never closes as abandoned whatever its feedback: a maintainer's
+    or a bot's PR, or one Prospector stands behind (`backed`). None for a
+    contributor's."""
+    if priority_author(pr.author, pr.author_association):
+        return "a maintainer's PR"
+    author = pr.author or ""
+    if not author or author.endswith("[bot]") or opened_by_bot(pr) \
+            or author in profile.active().automation_bots:
+        return "opened by a bot"
+    if backed(pr):
+        return "Prospector stands behind it"
+    return None
+
+
+def current_feedback(pr: Pr, live: LivePr) -> list[Feedback]:
+    """`head_feedback` posted after the newest commit and still current: its
+    section was read after the PR last changed on GitHub, and failing CI still
+    fails there."""
+    if live.head_committed is None or live.updated_at is None:
+        return []
+    out = []
+    for f in head_feedback(pr):
+        checked = storekit.parse_ts((pr.section(f.section) or {}).get("checked_at"))
+        if (f.at > live.head_committed and checked is not None and checked >= live.updated_at
+                and (f.section != "signals" or live.ci_state in ("failure", "error"))):
+            out.append(f)
+    return out
+
+
+def abandoned_close(pr: Pr, live: LivePr, now: datetime) -> tuple[bool, str]:
+    """Whether `pr` closes as abandoned, and why or why not. It does when the
+    blocking feedback on its newest commit (`current_feedback`) is newer than
+    that commit and its author has been silent for ABANDONED_QUIET_DAYS since.
+    Never a PR `abandon_exempt` names or one with a fix in flight, and merge
+    conflicts never count as feedback."""
+    if pr.state != "open":
+        return False, f"not open ({pr.state})"
+    held = abandon_exempt(pr)
+    if held:
+        return False, held
+    req = pr.fix_request or {}
+    if req.get("status") in FIX_IN_FLIGHT:
+        return False, f"its {req.get('action')} request is {req.get('status')}"
+    if not live.head or live.head != pr.head_sha:
+        return False, "its live head is not the ingested one"
+    if live.head_committed is None or live.last_active is None:
+        return False, "its author's activity is unknown"
+    after = current_feedback(pr, live)
+    if not after:
+        return False, "no current blocking feedback newer than its newest commit"
+    since = max(f.at for f in after)
+    if live.last_active > since:
+        return False, f"its author was active on {live.last_active:%Y-%m-%d}, after the feedback"
+    what = "; ".join(f.what for f in after)
+    if now - since < timedelta(days=ABANDONED_QUIET_DAYS):
+        return False, f"waiting since {since:%Y-%m-%d}: {what}"
+    return True, f"silent since {since:%Y-%m-%d}: {what}"
 
 
 def backed(pr: Pr) -> bool:

@@ -467,6 +467,20 @@ def pr_watch() -> bool:
     return os.environ.get("TRIAGE_PR_WATCH", "1") == "1"
 
 
+def abandoned_close() -> str:
+    """Whether a worker machine closes PRs whose authors went quiet on the
+    feedback holding them (`prospector_app.backend.abandoned_close`): `off`
+    (the default), `dry-run` (each close is logged and none is made) or
+    `live`."""
+    value = os.environ.get("TRIAGE_ABANDONED_CLOSE", "off").strip().lower()
+    return value if value in ("off", "dry-run", "live") else "off"
+
+
+def abandoned_close_daily() -> int:
+    """Abandoned PRs closed (or, in dry-run, logged) per UTC day."""
+    return positive_int("TRIAGE_ABANDONED_CLOSE_DAILY", 5)
+
+
 def responses_sweep() -> bool:
     """Whether a worker machine re-reads how authors responded to our actions
     on a cadence (TRIAGE_RESPONSES_SWEEP, default on)."""

@@ -28,6 +28,7 @@ commands:
   triage-backfill  judge the fixability of every huntable issue not yet triaged, while AI capacity allows
   feature-screen-backfill  screen every open feature request not yet screened or decided, while AI capacity allows
   backlog-sweep    bring stale author-finished PRs current, or ask their authors to rebase (dry-run default)
+  abandoned-close  list the PRs the abandoned-PR lane would close, and why (read-only)
   drain            let this machine's worker lanes finish their runs before a restart
 
 `prospector <command> --help` shows the command's own options.
@@ -151,6 +152,12 @@ def _backlog_sweep(argv: list[str]) -> int:
     return backlog_sweep.main(argv)
 
 
+def _abandoned_close(argv: list[str]) -> int:
+    from prospector_app.backend import abandoned_close
+
+    return abandoned_close.main(argv)
+
+
 def _drain(argv: list[str]) -> int:
     from prospector_app.backend import host_drain
 
@@ -169,6 +176,7 @@ COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "triage-backfill": _triage_backfill,
     "feature-screen-backfill": _feature_screen_backfill,
     "backlog-sweep": _backlog_sweep,
+    "abandoned-close": _abandoned_close,
     "drain": _drain,
 }
 

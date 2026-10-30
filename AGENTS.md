@@ -30,6 +30,8 @@ with `409 {"unconfigured": true}`.
   Activity log. Widening any allowlist needs security-focused tests.
 - **Issue closes are operator-directed**, except `issue_triage/close_out.py`'s
   through `close_bot_run`, which never closes a maintainer's issue.
+- **Unattended abandoned-PR closes** are decided by `gates.abandoned_close`
+  alone and go through `executor.execute_pr` as the bot.
 - **Never hand-run `gh` writes against the triaged repository.** The
   `PreToolUse` hook (`.claude/hooks/deny-triage-writes.py`) denies `gh pr`/`gh
   issue` writes to `TRIAGE_REPO` and every mutating `gh api` call. It judges a
