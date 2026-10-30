@@ -177,6 +177,13 @@ def test_the_sweep_measures_a_contributors_pr_from_its_newest_head_feedback(st):
                        "reason": "Greptile scored it 3/5"}
     newer = {5: {"at": "2026-10-23T10:00:00+00:00", "kind": "comment", "by": "op"}}
     assert responses._with_feedback(newer, data.prs()) == newer
+    closed = {5: {"at": POSTED, "kind": "close", "by": "op"}}
+    assert responses._with_feedback(closed, data.prs()) == closed
+    design = {5: {"at": POSTED, "kind": "design-findings", "by": "op"}}
+    assert responses._with_feedback(design, data.prs())[5]["kind"] == gates.FEEDBACK_ACTION
+    _save(st, None, reviews=reviews_section(
+        HEAD, design=_design(), greptile={**greptile_entry(3, HEAD), "observed_at": LATER}))
+    assert responses._with_feedback(design, data.prs()) == design
     _save(st, None, reviews=_greptile(at=LATER), meta={
         "title": "PR 5", "author": "mo", "author_association": "MEMBER", "state": "open",
         "head_sha": HEAD, "updated_at": _now()})

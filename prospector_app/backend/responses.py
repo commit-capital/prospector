@@ -213,13 +213,20 @@ def _acted_baseline(events: list[dict] | None = None) -> dict[Kind, dict[int, di
 def _with_feedback(acted: dict[int, dict], prs: Mapping[int, Pr]) -> dict[int, dict]:
     """`acted` with each open contributor's PR whose head carries blocking
     feedback (`gates.head_feedback`) newer than our latest action measured from
-    that feedback instead, so an author's reply to it is a response."""
+    that feedback instead, so an author's reply to it is a response. A close
+    stays, so its reopen still reads as one, and so do design findings that
+    still stand, which a push can answer."""
     out = dict(acted)
     for n, pr in prs.items():
         if pr.state != "open" or gates.abandon_exempt(pr):
             continue
-        newest = max(gates.head_feedback(pr), key=lambda f: f.at, default=None)
-        prior = _dt((acted.get(n) or {}).get("at"))
+        feedback = gates.head_feedback(pr)
+        newest = max(feedback, key=lambda f: f.at, default=None)
+        ours = acted.get(n) or {}
+        prior = _dt(ours.get("at"))
+        if ours.get("kind") == "close" or (ours.get("kind") == "design-findings"
+                                           and any(f.check == "design" for f in feedback)):
+            continue
         if newest is not None and (prior is None or newest.at > prior):
             out[n] = {"at": newest.at.isoformat(), "kind": gates.FEEDBACK_ACTION, "by": None,
                       "reason": newest.what}
