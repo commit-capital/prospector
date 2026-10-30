@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from pipeline import gates
+from pipeline import approvals, gates
 from pipeline import store as S
 from pipeline.storekit import now as _now
 from pipeline.testsupport import reviews_section, threat_section
@@ -94,7 +94,59 @@ def test_only_a_yellow_verdict_is_approvable(st, client, verdict, words):
 
 def test_a_verdict_of_an_earlier_head_is_not_approvable(st, client):
     _save(st, head="e" * 40)
-    assert _approve(client, "security", head="e" * 40).status_code == 409
+    r = _approve(client, "security", head="e" * 40)
+    assert r.status_code == 409 and "no longer holds" in r.json()["detail"]
+    pr = st.load_pr(5)
+    assert pr is not None and pr.security_override is None and not gates.security_cleared(pr)
+
+
+def test_an_approval_never_lands_on_a_verdict_that_turned_red_under_it(st, monkeypatch):
+    _save(st)
+    prs = st._prs
+    real = prs.save_if
+
+    def raced(rec, stamp):
+        monkeypatch.setattr(prs, "save_if", real)
+        st.edit_pr(5).record_security("RED", [], head_sha=HEAD)
+        return real(rec, stamp)
+    monkeypatch.setattr(prs, "save_if", raced)
+    assert approvals.approve(st, 5, "security", HEAD, "fine", by="op") is not None
+    pr = st.load_pr(5)
+    assert pr is not None and pr.security_verdict == "RED" and pr.security_override is None
+
+
+def test_a_new_review_drops_the_approval(st, client):
+    _save(st)
+    assert _approve(client, "security").status_code == 200
+    st.edit_pr(5).record_security("YELLOW", [], head_sha=HEAD)
+    pr = st.load_pr(5)
+    assert pr is not None and pr.security_override is None and not gates.security_cleared(pr)
+    assert _row(st, "security")["approve_head"] == HEAD
+
+
+def test_a_moved_head_leaves_an_approved_yellow_uncleared(st, client):
+    _save(st)
+    assert _approve(client, "security").status_code == 200
+    rec = st.load_pr(5).raw  # type: ignore[union-attr]
+    rec["meta"]["head_sha"] = "f" * 40
+    st.save_pr(rec)
+    pr = st.load_pr(5)
+    assert pr is not None and not gates.security_cleared(pr)
+    assert gates.security_merge_block(pr) is not None
+
+
+def test_the_pipelines_merge_bar_counts_an_approved_yellow_as_cleared(st, client):
+    _save(st)
+    rec = st.load_pr(5).raw  # type: ignore[union-attr]
+    rec["analysis"] = {"disposition": "merge", "rationale": "r", "checked_at": _now(),
+                       "against_head_sha": HEAD}
+    rec["drift"] = {"state": "applicable", "checked_at": _now(), "against_head_sha": HEAD}
+    st.save_pr(rec)
+    pr = st.load_pr(5)
+    assert pr is not None and gates.merge_allowed(pr)[1] == "security YELLOW without logged override"
+    assert _approve(client, "security").status_code == 200
+    pr = st.load_pr(5)
+    assert pr is not None and gates.merge_allowed(pr)[1].startswith("dynamic verification")
 
 
 def test_an_approved_escalate_clears_verify(st, client, logged):

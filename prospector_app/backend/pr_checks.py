@@ -209,7 +209,7 @@ def _rows(rec: Pr) -> list[dict]:
         v = rec.security_verdict
         st = {"GREEN": "pass", "YELLOW": "warn", "RED": "fail"}.get(v or "", "na")
         detail = f"{v} · {len(rec.findings)} finding(s)"
-        if v == "YELLOW" and rec.security_override:
+        if v == "YELLOW" and gates.approval(rec, "security"):
             st = "pass"
         if v != "GREEN" and not freshness.is_current(rec, "security"):
             detail += " · blocks merge until a GREEN review of the latest commit"
@@ -242,7 +242,7 @@ def _rows(rec: Pr) -> list[dict]:
         elif aged:
             st, detail = "warn", f"{detail} · {aged}"
         else:
-            st = "pass" if o == "verified-fix" or (o == "escalate" and rec.verify_override) else "fail"
+            st = "pass" if o == "verified-fix" or (o == "escalate" and gates.approval(rec, "verify")) else "fail"
             partial = gates.verify_signals_incomplete(rec) if o == "verified-fix" else None
             if partial:
                 st, detail = "warn", f"{detail} · PARTIAL — {partial}"

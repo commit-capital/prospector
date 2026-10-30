@@ -1718,7 +1718,7 @@ class Store:
         holds it, `override` = {reason, by, at}, which the gates read as
         clearing it until a new verdict replaces it. Refused (False) unless
         `gates.approvable` names `head_sha` on the record as it is saved."""
-        from pipeline import gates, model
+        from pipeline import model
         row = self._prs.stamped(n)
         if row is None:
             return False

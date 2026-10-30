@@ -496,9 +496,9 @@ def _run_inner(store: Store, rec: Pr, req: _Request) -> int:
                      "threat verdict is malicious — the sandbox never runs flagged code")
     if req.source in AUTO_REQUEST_SOURCES and not gates.security_cleared(rec):
         return _fail(req, "refused-safety",
-                     "auto-queued run requires a current GREEN security verdict — "
-                     "the sandbox never executes code the idle hunter selected "
-                     "itself without an adversarial review clearing it")
+                     "auto-queued run requires a current GREEN security verdict, or a "
+                     "YELLOW one an operator approved — the sandbox never executes code "
+                     "the idle hunter selected itself without that clearing it")
 
     # This machine's pinned base: sha + tier + clone + built image. All four
     # come from one prepare-base run here; missing any of them is
