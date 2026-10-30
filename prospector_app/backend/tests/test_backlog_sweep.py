@@ -153,6 +153,7 @@ def test_live_queues_then_asks_once_and_honours_the_limit(store, repo, monkeypat
     assert store.load_pr(1).fix_request["action"] == "rebase"
     assert [n for n, _ in asks] == [2]
     assert "rebase it onto the latest" in asks[0][1]
+    assert (store.load_pr(2).section("rebase_ask") or {}).get("head_sha") == heads[2]
     assert store.load_pr(3).fix_request is None  # the limit of 2 is spent
 
     # The queued resolve ends on its conflicts: the next run asks.

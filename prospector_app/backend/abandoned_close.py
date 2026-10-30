@@ -6,12 +6,18 @@ commit, newer than that commit, and two weeks of its author's silence since.
 The store narrows the PRs to read (`candidates`). Each is then read live from
 GitHub (`handback.live_state`) for its head, newest commit and its author's
 last activity. A worker machine runs a pass every INTERVAL_SECONDS under a
-lease, closing at most `settings.abandoned_close_daily()` a UTC day through
-`executor.execute_pr` (comment, then close, as the bot, Activity-logged).
+lease, acting on at most `settings.abandoned_close_daily()` PRs a UTC day.
 
-Each close, dry-run or failure is one runs-ledger row (PHASE), so a head is
-acted on once per mode: a PR someone reopens at the same head stays open, and a
-failed close waits for an operator. A live pass runs only where the bot can
+A PR held only by CI that ran on an old base is brought current first
+(`bring_current`), sorted as the backlog sweep sorts it: a clean or
+agent-resolvable drift queues an autofix update or rebase, after which CI on
+the new head is the author's to answer; one no agent can resolve gets our
+rebase ask, which is blocking feedback in its own right.
+
+Each close, queued request, ask, dry-run or failure is one runs-ledger row
+(PHASE). A close, dry-run or failure ends the lane's work on that head in its
+mode: a PR someone reopens at the same head stays open, and a failed close
+waits for an operator. A live pass runs only where the bot can
 write (`executor.live_possible`). `TRIAGE_ABANDONED_CLOSE`
 (`settings.abandoned_close`) is `off` (the default), `dry-run` or `live`.
 
@@ -24,11 +30,11 @@ import json
 import threading
 import traceback
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from pipeline import gates, settings, storekit
-from prospector_app.backend import (data, executor, handback, models, profile_gate, schema_gate,
-                                    worker_loops)
+from prospector_app.backend import (backlog_sweep, data, executor, fix_queue, handback, models,
+                                    profile_gate, schema_gate, worker_loops)
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -37,6 +43,8 @@ PHASE = "abandoned-close"
 INTERVAL_SECONDS = 6 * 3600
 LEASE = "abandoned-close"
 LEASE_SECONDS = 2 * 3600
+# Steps that end the lane's work on a head in their mode.
+FINAL_STEPS = {"closed", "dry-run", "failed"}
 
 _thread: threading.Thread | None = None
 _stop = threading.Event()
@@ -65,29 +73,38 @@ def candidates(prs: dict[int, Pr], now: datetime) -> list[Pr]:
     for pr in prs.values():
         if pr.state != "open" or gates.abandon_exempt(pr):
             continue
-        ripe = [f.at for f in gates.head_feedback(pr) if now - f.at >= quiet]
+        feedback = [*gates.head_feedback(pr), *filter(None, [gates.rebase_feedback(pr)])]
+        ripe = [f.at for f in feedback if now - f.at >= quiet]
         if ripe:
             out.append((min(ripe), pr))
     return [pr for _, pr in sorted(out, key=lambda c: (c[0], c[1].number))]
 
 
-def judge(pr: Pr, now: datetime) -> tuple[bool, str, list[str]]:
-    """Whether `pr` closes now, why, and the feedback its close names."""
+class Verdict(NamedTuple):
+    close: bool
+    why: str
+    feedback: list[str]  # what the close names
+    live: gates.LivePr | None
+
+
+def judge(pr: Pr, now: datetime, *, has_base: bool = False) -> Verdict:
+    """Whether `pr` closes now, and why, from its live state."""
     live = handback.live_state(pr.number)
     if live is None:
-        return False, "GitHub did not answer", []
+        return Verdict(False, "GitHub did not answer", [], None)
     if live["state"] != "open":
-        return False, f"the PR is {live['state']}", []
+        return Verdict(False, f"the PR is {live['state']}", [], None)
     facts = gates.LivePr(head=live["head"], head_committed=live["head_committed"],
                          updated_at=live["updated_at"], last_active=live["last_active"],
-                         ci_state=live["head_ci"])
+                         ci_state=live["head_ci"], has_base=has_base)
     ok, why = gates.abandoned_close(pr, facts, now)
-    return ok, why, [f.what for f in gates.current_feedback(pr, facts)] if ok else []
+    return Verdict(ok, why, [f.what for f in gates.current_feedback(pr, facts)] if ok else [],
+                   facts)
 
 
-def _acted(mode: str, prs: list[int]) -> tuple[set[tuple[int, str]], int]:
-    """Which of `prs` were already acted on in `mode`, as (PR, head) pairs,
-    and how many acts in `mode` fell in the current UTC day."""
+def _acted(mode: str, prs: list[int]) -> tuple[dict[tuple[int, str], set[str]], int]:
+    """The steps already taken on `prs` in `mode`, by (PR, head), and how many
+    acts in `mode` fell in the current UTC day."""
     midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
     def rows(*, prs: list[int] | None = None, since: str | None = None) -> list[dict]:
@@ -95,9 +112,21 @@ def _acted(mode: str, prs: list[int]) -> tuple[set[tuple[int, str]], int]:
                 if isinstance(run, storekit.PhaseRun)
                 and (run.raw.get("stats") or {}).get("mode") == mode]
 
-    heads = {(int(r.get("pr") or 0), str((r.get("stats") or {}).get("head_sha")))
-             for r in rows(prs=prs)}
+    heads: dict[tuple[int, str], set[str]] = {}
+    for r in rows(prs=prs):
+        stats = r.get("stats") or {}
+        heads.setdefault((int(r.get("pr") or 0), str(stats.get("head_sha"))), set()).add(
+            str(stats.get("step")))
     return heads, len(rows(since=midnight.isoformat()))
+
+
+def _book(pr: Pr, step: str, mode: str, why: str, **stats: object) -> str:
+    now = storekit.now()
+    data.store().append_run({"phase": PHASE, "pr": pr.number, "started": now, "finished": now,
+                             "trigger": "worker",
+                             "stats": {"step": step, "mode": mode, "head_sha": str(pr.head_sha or ""),
+                                       "why": why, **stats}})
+    return step
 
 
 def close(pr: Pr, feedback: list[str], why: str, mode: str) -> str | None:
@@ -116,13 +145,52 @@ def close(pr: Pr, feedback: list[str], why: str, mode: str) -> str | None:
         step = "dry-run"
     if step is None:
         return None
-    now = storekit.now()
-    data.store().append_run({"phase": PHASE, "pr": pr.number, "started": now, "finished": now,
-                             "trigger": "worker",
-                             "stats": {"step": step, "mode": mode, "head_sha": head,
-                                       "status": status, "why": why,
-                                       "detail": res.get("detail")}})
-    return step
+    return _book(pr, step, mode, why, status=status, detail=res.get("detail"))
+
+
+def bring_current(pr: Pr, steps: set[str], now: datetime, mode: str) -> str | None:
+    """Act on a PR held only by CI on an old base (`gates.STALE_CI`): close it
+    when local git shows its head already carries the base, else queue the
+    autofix request that brings it current, or ask its author to rebase when
+    no request can or one ended on its conflicts. A request the worker ended,
+    not the PR, is queued once more. Returns the booked step, or None when
+    there is nothing to do yet."""
+    req = pr.fix_request or {}
+    if "queued" in steps:
+        if backlog_sweep.ended_on_conflicts(req, pr.head_sha):
+            conflicts = [str(p) for p in (req.get("result") or {}).get("conflict_paths") or []]
+            return _ask(pr, conflicts, mode, "the queued request could not resolve its conflicts")
+        if "requeued" in steps or not backlog_sweep.ended_on_the_machine(req, pr.head_sha):
+            return None
+    backlog_sweep.fetch([pr.number])
+    probe = backlog_sweep.probe(pr.number, pr.head_sha)
+    if isinstance(probe, str):
+        return None
+    if probe.current:
+        verdict = judge(pr, now, has_base=True)
+        return close(pr, verdict.feedback, verdict.why, mode) if verdict.close else None
+    plan = backlog_sweep.classify(pr, probe)
+    if plan.ask:
+        return _ask(pr, plan.conflicts, mode, plan.why)
+    if plan.action is None:
+        return None
+    if mode != "live":
+        return _book(pr, "dry-run", mode, f"would queue {plan.action}: {plan.why}")
+    try:
+        fix_queue.queue_pr(pr.number, plan.action)
+    except ValueError as e:
+        return _book(pr, "failed", mode, f"not queued: {e}")
+    return _book(pr, "requeued" if "queued" in steps else "queued", mode, plan.why,
+                 action=plan.action)
+
+
+def _ask(pr: Pr, conflicts: list[str], mode: str, why: str) -> str:
+    if mode != "live":
+        return _book(pr, "dry-run", mode, f"would ask for a rebase: {why}")
+    res = backlog_sweep.ask_rebase(pr, conflicts)
+    if res.get("status") not in ("executed", "exists"):
+        return _book(pr, "failed", mode, why, detail=res.get("detail"))
+    return _book(pr, "asked", mode, why, status=res.get("status"))
 
 
 def sweep_once(now: datetime | None = None) -> list[int] | None:
@@ -151,10 +219,17 @@ def sweep_once(now: datetime | None = None) -> list[int] | None:
         for pr in picks:
             if room <= 0:
                 break
-            if (pr.number, str(pr.head_sha)) in heads:
+            steps = heads.get((pr.number, str(pr.head_sha)), set())
+            if steps & FINAL_STEPS:
                 continue
-            ok, why, feedback = judge(pr, now)
-            if ok and close(pr, feedback, why, mode) is not None:
+            verdict = judge(pr, now)
+            if verdict.close:
+                step = close(pr, verdict.feedback, verdict.why, mode)
+            elif verdict.why == gates.STALE_CI:
+                step = bring_current(pr, steps, now, mode)
+            else:
+                step = None
+            if step is not None:
                 acted.append(pr.number)
                 room -= 1
         store.append_run({"phase": f"{PHASE}:pass", "started": started,
@@ -205,15 +280,16 @@ def main(argv: list[str] | None = None) -> int:
     now = datetime.now(timezone.utc)
     rows = []
     for pr in candidates(data.prs(), now):
-        ok, why, feedback = judge(pr, now)
-        rows.append({"pr": pr.number, "author": pr.author, "close": ok, "why": why,
-                     "feedback": feedback})
-        print(f"#{pr.number:<6} {'close' if ok else 'keep':<5} @{pr.author}  {why}")
+        v = judge(pr, now)
+        verb = "close" if v.close else "update" if v.why == gates.STALE_CI else "keep"
+        rows.append({"pr": pr.number, "author": pr.author, "verdict": verb, "why": v.why,
+                     "feedback": v.feedback})
+        print(f"#{pr.number:<6} {verb:<6} @{pr.author}  {v.why}")
     if args.json:
         with open(args.json, "w") as f:
             json.dump(rows, f, indent=1)
-    closes = sum(r["close"] for r in rows)
-    print(json.dumps({"candidates": len(rows), "close": closes, "keep": len(rows) - closes,
+    count = {v: sum(r["verdict"] == v for r in rows) for v in ("close", "update", "keep")}
+    print(json.dumps({"candidates": len(rows), **count,
                       "daily_cap": settings.abandoned_close_daily(),
                       "mode": settings.abandoned_close()}))
     return 0

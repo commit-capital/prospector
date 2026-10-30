@@ -336,12 +336,14 @@ class Answer(NamedTuple):
 class LivePr(NamedTuple):
     """What GitHub says of a PR now: its head and the newest commit's date,
     when it last changed, its author's last commit, comment, review or edit,
-    and the head's check rollup state (`failure`, `success`, ...)."""
+    and the head's check rollup state (`failure`, `success`, ...). `has_base`
+    is local git's word that the head already contains the base branch."""
     head: str | None
     head_committed: datetime | None
     updated_at: datetime | None
     last_active: datetime | None
     ci_state: str | None
+    has_base: bool = False
 
 
 def head_feedback(pr: Pr) -> list[Feedback]:
@@ -431,10 +433,32 @@ def abandon_exempt(pr: Pr) -> str | None:
     return None
 
 
+def brought_current(pr: Pr) -> bool:
+    """Whether `pr`'s head is the commit our update, rebase or resolve pushed,
+    so its CI ran against a base we brought it onto."""
+    req = pr.fix_request or {}
+    return (req.get("status") == "pushed" and req.get("action") in ("update", "rebase", "resolve")
+            and bool(pr.head_sha) and (req.get("result") or {}).get("pushed_head_sha") == pr.head_sha)
+
+
+def rebase_feedback(pr: Pr) -> Feedback | None:
+    """Our ask that `pr`'s author rebase its head (`rebase_ask`), as blocking
+    feedback on that head."""
+    ask = pr.section("rebase_ask") or {}
+    at = storekit.parse_ts(ask.get("at"))
+    if not pr.head_sha or ask.get("head_sha") != pr.head_sha or at is None:
+        return None
+    return Feedback(f"we asked for a rebase onto `{settings.default_branch()}`", "rebase_ask",
+                    at, "rebase")
+
+
 def current_feedback(pr: Pr, live: LivePr) -> list[Feedback]:
-    """`head_feedback` posted after the newest commit and still current: its
-    section was read after the PR last changed on GitHub, and failing CI still
-    fails there."""
+    """The blocking feedback an abandoned close weighs: `head_feedback` posted
+    after the newest commit and still current (its section read after the PR
+    last changed on GitHub, failing CI still failing there), and our rebase
+    ask. Failing CI is left out beside other feedback unless the head carries
+    the base (`brought_current`, `LivePr.has_base`): a CI run on an old base
+    is no verdict on the author's work."""
     if live.head_committed is None or live.updated_at is None:
         return []
     out = []
@@ -443,15 +467,25 @@ def current_feedback(pr: Pr, live: LivePr) -> list[Feedback]:
         if (f.at > live.head_committed and checked is not None and checked >= live.updated_at
                 and (f.section != "signals" or live.ci_state in ("failure", "error"))):
             out.append(f)
+    if (ask := rebase_feedback(pr)) is not None:
+        out.append(ask)
+    if not (live.has_base or brought_current(pr)):
+        out = [f for f in out if f.check != "ci"] or out
     return out
+
+
+# Why `abandoned_close` keeps a PR whose only blocking feedback is CI that ran
+# on an old base: the lane brings it current first.
+STALE_CI = "its CI failed on a base we have not brought it current with"
 
 
 def abandoned_close(pr: Pr, live: LivePr, now: datetime) -> tuple[bool, str]:
     """Whether `pr` closes as abandoned, and why or why not. It does when the
     blocking feedback on its newest commit (`current_feedback`) is newer than
     that commit and its author has been silent for ABANDONED_QUIET_DAYS since.
-    Never a PR `abandon_exempt` names or one with a fix in flight, and merge
-    conflicts never count as feedback."""
+    Never a PR `abandon_exempt` names or one with a fix in flight, nor one held
+    only by CI on an old base (STALE_CI). Merge conflicts count only once we
+    asked for a rebase."""
     if pr.state != "open":
         return False, f"not open ({pr.state})"
     held = abandon_exempt(pr)
@@ -475,6 +509,8 @@ def abandoned_close(pr: Pr, live: LivePr, now: datetime) -> tuple[bool, str]:
     what = "; ".join(f.what for f in after)
     if now - since < timedelta(days=ABANDONED_QUIET_DAYS):
         return False, f"waiting since {since:%Y-%m-%d}: {what}"
+    if all(f.check == "ci" for f in after) and not (live.has_base or brought_current(pr)):
+        return False, STALE_CI
     return True, f"silent since {since:%Y-%m-%d}: {what}"
 
 

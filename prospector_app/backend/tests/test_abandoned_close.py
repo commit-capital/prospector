@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from pipeline import storekit
+from pipeline import settings, storekit
 from pipeline import store as S
 from pipeline.testsupport import greptile_entry, reviews_section
 from prospector_app.backend import abandoned_close, data, executor, handback
@@ -78,7 +78,7 @@ def test_the_dry_run_command_writes_nothing(store, closes, capsys):
     _save(store, 2, author_association="MEMBER")
     assert abandoned_close.main([]) == 0
     out = capsys.readouterr().out
-    assert "#1      close @dev1  silent since" in out
+    assert "#1      close  @dev1  silent since" in out
     assert "#2" not in out
     assert '"close": 1' in out
     assert closes == [] and store.runs(phase=abandoned_close.PHASE) == []
@@ -177,3 +177,136 @@ def test_live_state_reads_the_head_and_the_authors_own_edit(monkeypatch):
     assert live["last_active"] == datetime(2026, 1, 5, tzinfo=timezone.utc)
     monkeypatch.setattr("pipeline.gh.gh_graphql_data", lambda q, timeout: pr("maintainer"))
     assert (LIVE_STATE(1) or {})["last_active"] == datetime(2026, 1, 2, tzinfo=timezone.utc)
+
+
+def _save_ci(st: S.Store, n: int, *, score: int = 5, pushed_by_us: str | None = None) -> None:
+    """PR `n` with CI failing on its head an hour after the push."""
+    _save(st, n, score=score)
+    rec = st.edit_pr(n)
+    rec.raw["signals"].update(ci="failing", ci_failures={
+        "failures": [{"name": "verify", "started_at": FEEDBACK.isoformat()}]})
+    st.save_pr(rec.raw)
+    if pushed_by_us:
+        st.edit_pr(n).record_fix_request("pushed", pushed_by_us, head_sha=_head(n),
+                                         result={"pushed_head_sha": _head(n)})
+    data.refresh()
+
+
+@pytest.fixture
+def failing_ci(store, monkeypatch):
+    monkeypatch.setattr(handback, "live_state", lambda n: _live(n, head_ci="failure"))
+
+
+@pytest.fixture
+def drift(monkeypatch):
+    """Local git's view of every PR: behind the base, rebasing cleanly unless
+    a test says otherwise."""
+    from prospector_app.backend import backlog_sweep
+    probe = backlog_sweep.Probe(head_date=PUSHED.isoformat(), current=False,
+                                merge_commits=False, rebase_clean=True, conflicts=[],
+                                changed=["src/a.ts"])
+    monkeypatch.setattr(backlog_sweep, "fetch", lambda prs: None)
+    monkeypatch.setattr(backlog_sweep, "probe", lambda n, head: probe)
+    return probe
+
+
+@pytest.fixture
+def queued(monkeypatch):
+    from prospector_app.backend import fix_queue
+    out: list[tuple[int, str]] = []
+
+    def queue(n: int, action: str) -> dict:
+        out.append((n, action))
+        data.store().edit_pr(n).record_fix_request("queued", action, head_sha=_head(n))
+        data.refresh()
+        return {}
+    monkeypatch.setattr(fix_queue, "queue_pr", queue)
+    return out
+
+
+@pytest.fixture
+def asks(monkeypatch):
+    out: list[int] = []
+    monkeypatch.setattr(executor, "hand_back_comment", lambda n, body, *, marker, dry_run: (
+        out.append(n) or {"status": "executed", "event_url": f"https://x/{n}"}))
+    return out
+
+
+def _end(st: S.Store, n: int, action: str, status: str, **result: object) -> None:
+    st.edit_pr(n).record_fix_request(status, action, head_sha=_head(n), result=result)
+    data.refresh()
+
+
+def test_ci_on_an_old_base_is_brought_current_before_it_can_close(
+        store, failing_ci, drift, closes, queued):
+    _save_ci(store, 1)
+    assert abandoned_close.judge(data.prs()[1], NOW).why == abandoned_close.gates.STALE_CI
+    assert abandoned_close.sweep_once(NOW) == [1]
+    assert queued == [(1, "rebase")] and closes == []
+    assert [r.raw["stats"]["step"] for r in store.runs(phase=abandoned_close.PHASE)] == ["queued"]
+
+
+def test_ci_on_a_head_we_brought_current_or_that_carries_the_base_closes(
+        store, failing_ci, drift, closes, queued):
+    _save_ci(store, 1, pushed_by_us="update")
+    _save_ci(store, 2)
+    drift_current = abandoned_close.backlog_sweep.Probe(**{**drift.__dict__, "current": True})
+    abandoned_close.backlog_sweep.probe = lambda n, head: drift_current if n == 2 else drift
+    assert abandoned_close.judge(data.prs()[1], NOW).close
+    assert abandoned_close.sweep_once(NOW) == [1, 2]
+    assert [n for n, *_ in closes] == [1, 2] and queued == []
+    assert "- CI failed (verify)" in (closes[0][1] or "")
+
+
+def test_other_feedback_closes_without_naming_ci_on_an_old_base(store, failing_ci, closes):
+    _save_ci(store, 1, score=3)
+    v = abandoned_close.judge(data.prs()[1], NOW)
+    assert v.close and v.feedback == ["Greptile scored it 3/5"]
+
+
+def test_a_dry_run_only_books_what_it_would_queue(store, failing_ci, drift, closes, queued,
+                                                    monkeypatch):
+    monkeypatch.setenv("TRIAGE_ABANDONED_CLOSE", "dry-run")
+    _save_ci(store, 1)
+    assert abandoned_close.sweep_once(NOW) == [1]
+    assert queued == []
+    [run] = store.runs(phase=abandoned_close.PHASE)
+    assert run.raw["stats"]["step"] == "dry-run"
+    assert run.raw["stats"]["why"].startswith("would queue rebase")
+
+
+def test_a_drift_no_agent_can_resolve_gets_our_rebase_ask_which_then_closes(
+        store, failing_ci, drift, closes, queued, asks, monkeypatch):
+    drift.rebase_clean, drift.conflicts = False, [f"f{i}.ts" for i in range(9)]
+    _save_ci(store, 1)
+    assert abandoned_close.sweep_once(NOW) == [1]
+    assert asks == [1] and queued == []
+    data.refresh()
+    ask = data.prs()[1].section("rebase_ask") or {}
+    assert ask["head_sha"] == _head(1) and ask["url"] == "https://x/1"
+    # The ask is blocking feedback: two weeks of the author's silence closes.
+    later = datetime.now(timezone.utc) + timedelta(days=15)
+    monkeypatch.setattr(handback, "live_state",
+                        lambda n: _live(n, head_ci="failure", updated_at=NOW))
+    v = abandoned_close.judge(data.prs()[1], later)
+    assert v.close and v.feedback == [f"we asked for a rebase onto `{settings.default_branch()}`"]
+    # An answer from the author keeps it open.
+    monkeypatch.setattr(handback, "live_state", lambda n: _live(
+        n, head_ci="failure", updated_at=NOW, last_active=NOW + timedelta(hours=1)))
+    assert not abandoned_close.judge(data.prs()[1], later).close
+
+
+def test_a_queued_request_that_hit_conflicts_asks_and_one_the_worker_ended_requeues_once(
+        store, failing_ci, drift, closes, queued, asks):
+    _save_ci(store, 1)
+    _save_ci(store, 2)
+    assert abandoned_close.sweep_once(NOW) == [1, 2]
+    _end(store, 1, "rebase", "refused", conflict_paths=["a.ts"])
+    _end(store, 2, "rebase", "failed")
+    later = _next_pass()
+    assert abandoned_close.sweep_once(later) == [1, 2]
+    assert asks == [1] and queued == [(1, "rebase"), (2, "rebase"), (2, "rebase")]
+    _end(store, 2, "rebase", "failed")
+    assert abandoned_close.sweep_once(_next_pass(later)) == []
+    steps = [r.raw["stats"]["step"] for r in store.runs(phase=abandoned_close.PHASE)]
+    assert sorted(steps) == ["asked", "queued", "queued", "requeued"]
