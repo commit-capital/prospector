@@ -1,0 +1,1 @@
+bundled unrelated changes, scope creep, generated/snapshot/lockfile bloat, missing tests, mis-scoped/oversized diffs, migration safety.

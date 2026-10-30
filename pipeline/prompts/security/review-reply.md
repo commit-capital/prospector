@@ -1,0 +1,1 @@
+Return ONLY a JSON object (no prose): {"lens_summary": "...", "findings": [{"severity": "red|yellow", "category": "...", "title": "...", "location": "file+hunk", "detail": "...", "confidence": "high|medium|low"}]}. Output it as a ```json fenced block.

@@ -1,0 +1,1 @@
+logic errors, null/undefined, error handling, races & DB-transaction bugs, breaking API/contract changes, regressions, and whether the code does what its title claims.

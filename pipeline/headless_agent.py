@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from pipeline.store import Store
 
 CLAUDE_BIN = shutil.which("claude") or "claude"
+PROMPTS = REPO_ROOT / "pipeline" / "prompts"
 
 
 class AgentUnavailable(RuntimeError):
@@ -150,6 +151,12 @@ class EditsBlockedError(RuntimeError):
     permission rule is not reaching the agent (a CLI whose rule syntax moved, a
     worktree path the rule form cannot name) — this machine's fault, never a
     verdict on the change. Callers end such a run as retryable."""
+
+
+def prompt(name: str) -> str:
+    """The prompt template at `pipeline/prompts/<name>`, byte for byte (see that
+    directory's README)."""
+    return (PROMPTS / name).read_text()
 
 
 def fill(template: str, subs: dict[str, object]) -> str:
