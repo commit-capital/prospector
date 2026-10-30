@@ -24,6 +24,7 @@ from pipeline import (authoring, capacity, coverage, design_verify, diffpaths, f
 if TYPE_CHECKING:
     from pipeline.coverage import CoverageRecord
     from pipeline.model import Pr
+    from pipeline.store import Store
 
 PHASE = "design-review:run"
 AGENT_TIMEOUT_SECONDS = 900
@@ -73,6 +74,26 @@ def retrying(pr: Pr) -> bool:
     entry = pr.review_entry(reviewers.DESIGN.id) or {}
     return (entry.get("reviewed_sha") == review_policy.review_head(pr, reviewers.DESIGN)
             and not reviewers.design_outdated(entry))
+
+
+def approve(store: Store, n: int, head_sha: str, reason: str, *, by: str) -> str | None:
+    """Record `by`'s approval of PR `n`'s design review taken at `head_sha`,
+    past the findings its bar fails on, for `reason`. Returns why it refused,
+    or None."""
+    pr = store.load_pr(n)
+    if pr is None:
+        return f"PR #{n} is not in the store"
+    if not reason.strip():
+        return "say why you approve it"
+    entry = pr.review_entry(reviewers.DESIGN.id) or {}
+    if entry.get("reviewed_sha") != head_sha:
+        return "the design review is no longer the one you read; reload the PR"
+    if review_policy.own_bar(pr, reviewers.DESIGN).status != reviewers.FAIL:
+        return "the design review holds nothing to approve"
+    if not store.approve_design_review(
+            n, {"reason": reason.strip(), "by": by, "at": storekit.now()}, reviewed_sha=head_sha):
+        return "the design review changed while you approved it; reload the PR"
+    return None
 
 
 def _within(clone: Path, path: str) -> bool:

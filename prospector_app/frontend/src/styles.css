@@ -1430,6 +1430,7 @@ tr.row-done:hover > td { opacity: 1; }
 .split-menu button.on { color: var(--accent); font-weight: 600; }
 .issue-prs { display: inline-flex; gap: 7px; flex-wrap: wrap; }
 .issues-table td { vertical-align: top; }
+.issues-table td.col-text { min-width: 28ch; }
 
 /* bulk action bar — appears when rows are selected */
 .bulkbar { display: flex; align-items: center; gap: 10px; padding: 9px 12px;
@@ -1446,8 +1447,9 @@ tr.row-done:hover > td { opacity: 1; }
 .pr-table th:first-child, .pr-table td:first-child { width: 26px; text-align: center; }
 .pr-table tbody tr.sel { background: var(--ready-tint); }
 .pr-table .num { color: var(--accent); font-weight: 600; cursor: pointer; }
-/* the title column takes the width the fixed columns leave, on one line */
-.pr-table td.col-title { width: 100%; max-width: 0; }
+/* the title column takes the width the other columns leave, on one line, and
+   never narrower than a readable title */
+.pr-table td.col-title { width: 100%; max-width: 0; min-width: 28ch; }
 .title-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .title-cell .chip { flex: none; }
 .title-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1473,9 +1475,11 @@ tr.row-done:hover > td { opacity: 1; }
 /* header tools shared by the PR and issue tables: drag a header to reorder,
    × hides the column, the right edge resizes it */
 .pr-table thead th, .issues-table thead th { position: relative; }
+/* the × floats in the header's top-right corner, so it adds no column width */
 .col-hide-btn {
-  padding: 0 2px; background: none; border: none; color: var(--muted);
-  cursor: pointer; font-size: 13px; line-height: 1; opacity: 0; flex-shrink: 0;
+  position: absolute; top: 1px; right: 5px; padding: 0 2px;
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; font-size: 12px; line-height: 1; opacity: 0;
 }
 th:hover .col-hide-btn { opacity: .6; }
 .col-hide-btn:hover { opacity: 1; color: var(--text); }
@@ -1552,17 +1556,25 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+  min-width: 22ch;
   max-width: 36ch;
   overflow: hidden;
 }
 .col-summary {
   display: inline-block;
-  max-width: 22ch;
+  max-width: 40ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
 }
+
+/* "Wrap long text" (column menu): every row grows to show its full title,
+   status and summary */
+.wrap-rows .title-cell { flex-wrap: wrap; align-items: flex-start; }
+.wrap-rows .title-text { white-space: normal; overflow: visible; }
+.wrap-rows .col-status { display: block; -webkit-line-clamp: unset; }
+.wrap-rows .col-summary { display: block; white-space: normal; overflow: visible; min-width: 28ch; }
 
 /* bulk confirm dialog */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 70;
@@ -1817,6 +1829,8 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
   resize: vertical; }
 .fix-goal:focus { outline: none; border-color: var(--accent); }
+/* A queued answer's own words, in full, scrolling when long. */
+.fix-answer-text { white-space: pre-wrap; max-height: 12em; overflow-y: auto; }
 .choose-pr { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
 .choose-pr input { flex: 1 1 240px; min-width: 0; font: inherit; font-size: 13px; color: var(--text);
   background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }

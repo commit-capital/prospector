@@ -93,7 +93,8 @@ def test_failing_findings_are_posted_with_the_minor_ones_as_optional(gh_fake):
     for absent in ("refuted one", "unsure one", "fixed one"):
         assert absent not in text
     assert design_comment.head_marker(HEAD) in text
-    assert text.endswith(design_comment.findings_marker(design_comment.fingerprint(found)) + " -->")
+    assert design_comment.findings_marker(design_comment.fingerprint(found)) in text
+    assert all(design_comment.finding_marker(f) in text for f in found)
 
 
 def test_without_a_failing_finding_there_is_no_optional_section():
@@ -148,6 +149,17 @@ def test_a_new_head_with_different_findings_gets_a_new_comment(gh_fake):
     _save(gh_fake.store, findings=[_finding("another problem")])
     assert _post()["status"] == "executed"
     assert len(gh_fake.runs) == 2
+
+
+def test_a_new_head_whose_findings_were_each_posted_gets_no_comment(gh_fake):
+    _post()
+    gh_fake.comments[0]["body"] = gh_fake.comments[0]["body"].replace(HEAD, "e" * 40)
+    _save(gh_fake.store, findings=[_finding("dup helper", line=40)])
+    gh_fake.comments.append({"user": {"login": settings.bot_login() + "[bot]"},
+                             "body": "@greptile review", "html_url": URL + "0"})
+    res = _post()
+    assert res["status"] == "exists" and res["event_url"] == URL
+    assert len(gh_fake.runs) == 1
 
 
 def test_a_red_security_verdict_posts_nothing(gh_fake):

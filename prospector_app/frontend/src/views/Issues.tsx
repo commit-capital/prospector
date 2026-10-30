@@ -479,12 +479,12 @@ const ISSUE_COLUMNS: IssueColumn[] = [
           title={results[r.number].detail}>{results[r.number].status}</span>
       )}
     </> },
-  { key: "title", label: "Title", defaultOn: true, fixed: true, sortKey: "title",
+  { key: "title", label: "Title", defaultOn: true, fixed: true, sortKey: "title", cellClass: "col-text",
     cell: (r) => <>
       {r.title}{r.is_dup && r.canonical != null && <span className="muted small" title={`Duplicate of #${r.canonical}`}> · dup of <IssueLink n={r.canonical} /></span>}
       {r.author_return && <div className="small muted"><AuthorReturnNote ret={r.author_return} /></div>}
     </> },
-  { key: "status", label: "Status", defaultOn: false, cellClass: "small",
+  { key: "status", label: "Status", defaultOn: false, cellClass: "small col-text",
     title: "Where the issue stands, in one plain sentence",
     cell: (r) => r.status_line.text },
   { key: "author", label: "Author", defaultOn: true, sortKey: "author", cellClass: "muted small",

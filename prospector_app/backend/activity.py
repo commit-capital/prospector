@@ -73,7 +73,7 @@ def _engine() -> storekit.Engine:
 
 # The semantic vocabulary (#40). Aggregation groups on these.
 KINDS = ("merge", "close", "comment", "review", "line-comment", "review-retrigger",
-         "design-findings", "pr-edit",
+         "design-findings", "design-approve", "pr-edit",
          "resubmit", "reopen", "undo", "handoff", "reconcile",
          "issue-close", "issue-reopen", "issue-comment", "alert-dismiss", "issue-propose",
          "issue-question", "issue-fix-label", "issue-fix-comment", "issue-fix-rerun", "issue-fix")
@@ -190,6 +190,7 @@ _VERB = {
     "merge": "merged", "close": "closed", "comment": "commented", "reopen": "reopened",
     "undo": "undid an action", "handoff": "handed off", "reconcile": "reconciled",
     "line-comment": "commented on a line", "design-findings": "posted design findings",
+    "design-approve": "approved the design review",
     "pr-edit": "rewrote the description",
     "resubmit": "pushed a fix", "issue-close": "closed", "issue-reopen": "reopened",
     "issue-comment": "commented", "alert-dismiss": "dismissed the alert",

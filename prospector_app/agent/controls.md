@@ -75,6 +75,11 @@ except Re-verify.
 - **✓ Not a secret**, on a committed-secret block: POST
   /api/prs/{n}/threat/clear-secret → `threat_scan.clear_secret_leak`. It lifts
   the block for this head only, as a store-only operator judgment.
+- **✓ Approve design**, on a failing design check: POST
+  /api/reviews/design/approve/pr/{n} → `design_review.approve`, with a
+  required reason. The check passes until a new review replaces it. It is a
+  store-only operator judgment, logged to Activity. **↩ Hand back to author**,
+  when the author answered the design findings: POST /api/responses/{n}/ack.
 - **Diff line → Comment**: POST /api/comment/pr/{n} → `executor.comment_line`.
   A bot write; refuses on a moved head.
 - **Save label** on a reviewer verdict: POST /api/verdicts/{verdict_id}/label.

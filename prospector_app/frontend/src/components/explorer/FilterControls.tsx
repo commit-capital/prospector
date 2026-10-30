@@ -63,14 +63,15 @@ export function FilterControls({ spec, onChange }: {
         <option value="resubmitted">⤴ resubmitted</option>
       </Select>
 
-      {/* author_return: the open PRs an author came back with after we closed their work */}
+      {/* author_return: the open PRs whose author answered us */}
       <Select value={spec.author_return === true ? "any" : Array.isArray(spec.author_return) ? "" : (spec.author_return ?? "")}
         onChange={(next) => set("author_return", next === "any" ? true : (next || undefined))}
-        title="Open PRs whose author came back after we closed their work: reopened it, or opened this PR linking the PR or issue we closed.">
-        <option value="">came back: any</option>
-        <option value="any">author came back</option>
+        title="Open PRs whose author answered us: reopened it, opened this PR linking the PR or issue we closed, or replied or pushed after we posted design findings.">
+        <option value="">answered us: any</option>
+        <option value="any">author answered us</option>
         <option value="reopened">↩ reopened</option>
         <option value="follow-up">↪ follow-up to our close</option>
+        <option value="design-answer">💬 answered our design findings</option>
       </Select>
 
       <button className="link-btn" onClick={() => onChange({})}>Clear all</button>

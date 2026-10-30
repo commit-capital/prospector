@@ -88,6 +88,7 @@ from prospector_app.backend import verify_worker
 from prospector_app.backend import work_status
 
 from pipeline import actions as pipeline_actions
+from pipeline import design_review
 from pipeline import reviewers
 from pipeline import settings
 from pipeline import storekit
@@ -1360,12 +1361,12 @@ def issue_detail(n: int):
 def issue_fix_request(n: int, payload: models.IssueFixBody):
     """Queue an action on issue #n's fix attempt for the issue-fix worker:
     `solve` (optional guidance), `send-back` (comments), `answer` (an option's
-    label or a written answer), `ask-reporter`, `propose` (dry_run as the page
+    label, a written answer, or both), `ask-reporter`, `propose` (dry_run as the page
     runs). The operator's words join the attempt's thread. 409 when the action
     does not fit the attempt or a request is already in flight."""
     from issue_triage import fix_review
-    answer = ({"label": payload.answer_label} if payload.answer_label
-              else {"text": payload.answer_text} if payload.answer_text else None)
+    answer = {k: v for k, v in (("label", payload.answer_label), ("text", payload.answer_text))
+              if v} or None
     ok, why = fix_review.queue(issue_data.store(), n, payload.action,
                                by=activity.operator()["name"], guidance=payload.guidance,
                                answer=answer, dry_run=payload.dry_run)
@@ -1661,6 +1662,23 @@ def post_design_findings(n: int, dry_run: bool = True):
     if res.get("status") in ("executed", "exists"):
         data.refresh()
     return res
+
+
+@app.post("/api/reviews/design/approve/pr/{n}")
+def approve_design(n: int, payload: dict = Body(...)):
+    """Record the operator's approval of PR #n's design review at the head they
+    read (`head_sha`) past its findings, for `reason`, and log it to Activity.
+    409 when the review moved or holds nothing to approve."""
+    reason = str(payload.get("reason") or "").strip()
+    head = str(payload.get("head_sha") or "")
+    by = activity.operator()["name"]
+    why = design_review.approve(data.store(), n, head, reason, by=by)
+    if why:
+        raise HTTPException(409, why)
+    activity.record("design-approve", pr=n, status="recorded", dry_run=False,
+                    detail=reason, head_sha=head)
+    data.refresh()
+    return {"ok": True}
 
 
 @app.get("/api/pipeline/status")

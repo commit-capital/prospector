@@ -97,6 +97,7 @@ def classify(action_at: str, action_kind: str, *, state: str,
              comments: list[dict], reopens: list[dict], commit_dates: list[str],
              cross_refs: list[dict] | None = None,
              pr_author: str | None = None,
+             authored: list[dict] | None = None,
              bots: set[str] | None = None,
              repo: str | None = None) -> dict | None:
     """Pure classifier: given when/what we last did and a PR's timeline, return
@@ -105,7 +106,9 @@ def classify(action_at: str, action_kind: str, *, state: str,
     - replied: a human issue comment after we acted (latest one's author/snippet kept)
     - reopened: a human reopen event after we acted, or state is open while our
       last action was a close (a state flip we may not have an event for)
-    - new_commits: a commit pushed after we acted
+    - new_commits: a commit pushed after we acted; the message of the newest
+      one the author wrote after it (`authored`, the PR's commits that merge
+      nothing, as {committedDate, message}) is kept as `commit_snippet`
     - resubmitted: a new PR in this repository, by the same author, cross-referenced
       on this closed PR after our action (author opened a fresh PR as a redo)
     - follow_ups: the PRs and issues the author opened after our action that
@@ -163,6 +166,9 @@ def classify(action_at: str, action_kind: str, *, state: str,
         for c in human if pr_author and _login(c, "author") == pr_author
         for m in _mention_re(this_repo).finditer(c.get("bodyText") or "")})
 
+    wrote = max((c for c in authored or [] if (_dt(c.get("committedDate")) or cut) > cut),
+                key=lambda c: c["committedDate"], default=None)
+
     if not (replied or reopened or new_commits or resubmitted):
         return None
 
@@ -176,6 +182,7 @@ def classify(action_at: str, action_kind: str, *, state: str,
         "follow_ups": follow_ups,
         "last_response_at": last,
         "snippet": _snippet(latest.get("bodyText")) if latest else None,
+        "commit_snippet": _snippet(wrote.get("message")) if wrote else None,
         "by": reply_login or (_login(reopen_after[-1], "actor") if reopen_after else None),
     }
 
@@ -218,7 +225,8 @@ _COMMON = ("number state "
            "... on Issue { number createdAt author { login } "
            "repository { nameWithOwner } } } } } } ")
 _FIELDS: dict[Kind, tuple[str, str]] = {
-    "pr": ("pullRequest", _COMMON + "headRefOid commits(last: 10) { nodes { commit { committedDate oid } } }"),
+    "pr": ("pullRequest", _COMMON + "headRefOid commits(last: 10) { nodes { commit { committedDate oid message "
+                     "parents { totalCount } } } }"),
     "issue": ("issue", _COMMON),
 }
 
@@ -306,13 +314,15 @@ def _node_signals(node: dict, base: dict) -> dict | None:
     reopens = [n for n in timeline_nodes if (n or {}).get("__typename") == "ReopenedEvent"]
     cross_refs = [n for n in timeline_nodes if (n or {}).get("__typename") == "CrossReferencedEvent"]
     comments = ((node.get("comments") or {}).get("nodes")) or []
-    commit_dates = [((c or {}).get("commit") or {}).get("committedDate")
-                    for c in ((node.get("commits") or {}).get("nodes")) or []]
-    commit_dates = [d for d in commit_dates if d]
+    commits = [c for n in ((node.get("commits") or {}).get("nodes")) or []
+               if (c := (n or {}).get("commit") or {}).get("committedDate")]
     pr_author: str | None = (node.get("author") or {}).get("login") or None
     return classify(base["at"], base["kind"], state=(node.get("state") or "").lower(),
-                    comments=comments, reopens=reopens, commit_dates=commit_dates,
-                    cross_refs=cross_refs, pr_author=pr_author)
+                    comments=comments, reopens=reopens,
+                    commit_dates=[c["committedDate"] for c in commits],
+                    cross_refs=cross_refs, pr_author=pr_author,
+                    authored=[c for c in commits
+                              if ((c.get("parents") or {}).get("totalCount") or 0) <= 1])
 
 
 def _sweep(kind: Kind, baseline: dict[int, dict], targets: list[int],

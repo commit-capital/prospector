@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ColumnMeta } from "./components/shared/columns";
+import { readWrap, type ColumnMeta } from "./components/shared/columns";
 import { useExec } from "./ExecContext";
 import { moveKey, orderColumns } from "./columnLayout";
 
@@ -26,9 +26,9 @@ function usePersist(storageKey: string, value: unknown): void {
   }, [storageKey, value]);
 }
 
-/** Which of `columns` a table shows, in what order and at what widths, saved
- *  in this browser under `storageKey`. `columns` must keep one identity across
- *  renders (a module constant). */
+/** Which of `columns` a table shows, in what order and at what widths, and
+ *  whether its long text wraps, saved in this browser under `storageKey`.
+ *  `columns` must keep one identity across renders (a module constant). */
 export function useColumnPrefs<C extends ColumnMeta>(columns: readonly C[], storageKey: string): {
   isOn: (k: string) => boolean;
   toggle: (k: string) => void;
@@ -39,6 +39,8 @@ export function useColumnPrefs<C extends ColumnMeta>(columns: readonly C[], stor
   reset: () => void;
   orderedColumns: C[];
   visibleColumns: C[];
+  wrap: boolean;
+  setWrap: (on: boolean) => void;
 } {
   const { activeReviewers } = useExec();
   const defaults = useMemo(
@@ -50,6 +52,12 @@ export function useColumnPrefs<C extends ColumnMeta>(columns: readonly C[], stor
   usePersist(storageKey, overrides);
   usePersist(`${storageKey}-order`, order);
   usePersist(`${storageKey}-widths`, widths);
+  const [wrap, setWrap] = useState<boolean>(() => {
+    try { return readWrap(localStorage.getItem(`${storageKey}-wrap`)); } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(`${storageKey}-wrap`, wrap ? "1" : "0"); } catch { /* private mode: keep in-memory */ }
+  }, [wrap, storageKey]);
   const isOn = (k: string) => overrides[k] ?? defaults[k] ?? false;
   // Functional updater so several toggles in one tick build on the latest state
   // instead of a stale closure clobbering each other.
@@ -73,5 +81,5 @@ export function useColumnPrefs<C extends ColumnMeta>(columns: readonly C[], stor
     () => orderedColumns.filter((c) => !c.capability || activeReviewers(c.capability).length > 0)
       .filter((c) => c.fixed || (overrides[c.key] ?? defaults[c.key] ?? false)),
     [orderedColumns, defaults, overrides, activeReviewers]);
-  return { isOn, toggle, hide, move, widths, setWidth, reset, orderedColumns, visibleColumns };
+  return { isOn, toggle, hide, move, widths, setWidth, reset, orderedColumns, visibleColumns, wrap, setWrap };
 }
