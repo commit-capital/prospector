@@ -212,3 +212,29 @@ def test_an_unanswered_ask_closes_after_two_weeks_once(store, repo, monkeypatch)
     data.refresh()
     backlog_sweep.main(["--live", "--limit", "10"])
     assert len(closes) == 1
+
+
+def test_a_request_the_worker_failed_is_queued_once_more(store, repo):
+    heads = {1: repo.pr(1, {"d.txt": "1\n"}), 2: repo.pr(2, {"e.txt": "2\n"})}
+    repo.advance_base({"z.txt": "z\n"})
+    for n, head in heads.items():
+        _save(store, n, head)
+    backlog_sweep.main(["--live", "--limit", "5"])
+
+    def end(n: int, status: str, **result: object) -> None:
+        rec = store.edit_pr(n)
+        rec.record_fix_request(status, "rebase", head_sha=heads[n], result=result)
+        data.refresh()
+
+    end(1, "failed")
+    end(2, "refused", detail="the PR diff is empty or unparsable")
+    plans = _plans()
+    assert plans[1].retry and plans[2].retry and plans[1].action == "rebase"
+    backlog_sweep.main(["--live", "--limit", "5"])
+    assert store.load_pr(1).fix_request["status"] == "queued"
+    assert [r.raw["stats"]["step"] for r in store.runs(phase=backlog_sweep.PHASE)] == [
+        "queued", "queued", "requeued", "requeued"]
+
+    # A second machine ending is final.
+    end(1, "failed")
+    assert _plans()[1].bucket == "done"
