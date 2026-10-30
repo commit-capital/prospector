@@ -720,9 +720,42 @@ def blocked_on_security(pr: Pr, today: str | None = None) -> bool:
 
 def security_cleared(pr: Pr) -> bool:
     """True iff the PR carries a GREEN security verdict taken at its current
-    head. The bar the idle auto-hunter applies before any sandbox run on code it
-    selected itself."""
-    return is_current(pr, "security") and pr.security_verdict == "GREEN"
+    head, or a YELLOW one an operator approved. The bar the idle auto-hunter
+    applies before any sandbox run on code it selected itself."""
+    return is_current(pr, "security") and (
+        pr.security_verdict == "GREEN"
+        or (pr.security_verdict == "YELLOW" and pr.security_override is not None))
+
+
+# The stages an operator may approve past what holds them, with `approval`
+# and `approvable` the one place each one's approval is read and allowed.
+APPROVABLE_STAGES = ("design", "security", "verify")
+
+
+def approval(pr: Pr, stage: str) -> dict | None:
+    """The operator's approval {reason, by, at} standing on `stage`'s verdict,
+    or None."""
+    if stage == "design":
+        return reviewers.design_override(pr.review_entry(reviewers.DESIGN.id))
+    return pr.security_override if stage == "security" else pr.verify_override
+
+
+def approvable(pr: Pr, stage: str) -> str | None:
+    """The head `stage`'s verdict was taken at when an operator may approve
+    it, or None. Each one holds the PR at its current head with no approval:
+    the design review failing its bar, a YELLOW security verdict (never a RED
+    one), or an escalated verify outcome."""
+    if approval(pr, stage) is not None:
+        return None
+    if stage == "design":
+        entry = pr.review_entry(reviewers.DESIGN.id) or {}
+        held = review_policy.own_bar(pr, reviewers.DESIGN).status == reviewers.FAIL
+        return entry.get("reviewed_sha") if held else None
+    if stage == "security":
+        held = is_current(pr, "security") and pr.security_verdict == "YELLOW"
+    else:
+        held = is_current(pr, "verify") and pr.verify_outcome == "escalate"
+    return (pr.section(stage) or {}).get("against_head_sha") if held else None
 
 
 # The deterministic repro findings the harness owns: a command the runner could

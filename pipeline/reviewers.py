@@ -612,8 +612,6 @@ def _summary_line_one(reviewer: Reviewer, entry: dict | None, b: Bar, stale: boo
         s += " ⚠stale"
     elif reviewer is DESIGN and design_outdated(entry):
         s += " ⚠older rubric"
-    if reviewer is DESIGN and (override := design_override(entry)):
-        s += f" · approved by {override.get('by') or 'an operator'}"
     return s
 
 

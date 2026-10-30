@@ -120,6 +120,15 @@ def _mark_commit(rec: Pr, row: dict) -> None:
     row["detail"] = f"{row['detail']} · older commit"
 
 
+def _mark_approval(rec: Pr, row: dict) -> None:
+    """Stamp `row` with the operator's approval of its stage, or with the head
+    they may approve it at (`gates.approvable`)."""
+    row["approval"] = approval = gates.approval(rec, row["key"])
+    row["approve_head"] = gates.approvable(rec, row["key"])
+    if approval:
+        row["detail"] = f"{row['detail']} · approved by {approval.get('by') or 'an operator'}"
+
+
 def _rows(rec: Pr) -> list[dict]:
     """Every named check row of `rec`, in CHECK_KEYS order, each judged as
     if its commit were the PR's head."""
@@ -200,6 +209,8 @@ def _rows(rec: Pr) -> list[dict]:
         v = rec.security_verdict
         st = {"GREEN": "pass", "YELLOW": "warn", "RED": "fail"}.get(v or "", "na")
         detail = f"{v} · {len(rec.findings)} finding(s)"
+        if v == "YELLOW" and rec.security_override:
+            st = "pass"
         if v != "GREEN" and not freshness.is_current(rec, "security"):
             detail += " · blocks merge until a GREEN review of the latest commit"
         by_key["security"] = _c("security", "Security review", st, detail, security.get("checked_at"))
@@ -231,8 +242,8 @@ def _rows(rec: Pr) -> list[dict]:
         elif aged:
             st, detail = "warn", f"{detail} · {aged}"
         else:
-            st = "pass" if o == "verified-fix" else "fail"
-            partial = gates.verify_signals_incomplete(rec) if st == "pass" else None
+            st = "pass" if o == "verified-fix" or (o == "escalate" and rec.verify_override) else "fail"
+            partial = gates.verify_signals_incomplete(rec) if o == "verified-fix" else None
             if partial:
                 st, detail = "warn", f"{detail} · PARTIAL — {partial}"
         by_key["verify"] = _c("verify", "Validation test run", st, detail, verify.get("checked_at"))
@@ -252,6 +263,8 @@ def checks_for_record(rec: Pr, today: str | None = None) -> dict:
     out = _rows(rec)
     for row in out:
         _mark_commit(rec, row)
+        if row["key"] in gates.APPROVABLE_STAGES:
+            _mark_approval(rec, row)
     ran = [c for c in out if c["status"] != "na" and not c["advisory"]]
     passed = [c for c in ran if c["status"] == "pass"]
     return {"checks": out, "passed": len(passed), "total": len(ran)}
