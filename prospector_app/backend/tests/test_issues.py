@@ -167,6 +167,20 @@ def test_query_issues_search_and_sort(tmp_path, monkeypatch):
     assert out["items"][0]["number"] == 12
 
 
+def test_query_issues_age_is_days_since_filed_and_sorts_oldest_first(tmp_path, monkeypatch):
+    st = _seed(tmp_path, monkeypatch)  # #10, #11 filed 2026-01-01
+    st.create_issue(12, {"title": "newer", "state": "open", "author": "ci",
+                         "created_at": "2026-01-05T00:00:00Z", "updated_at": "2026-02-01T00:00:00Z"})
+    st.create_issue(13, {"title": "undated", "state": "open", "author": "ci", "updated_at": "2026-02-01T00:00:00Z"})
+    rows = {r["number"]: r for r in issues.query_issues(collapse_dups=False)["items"]}
+    assert rows[10]["age_days"] - rows[12]["age_days"] == 4
+    assert rows[13]["age_days"] is None
+    order = [r["number"] for r in issues.query_issues(sort="age", collapse_dups=False)["items"]]
+    assert order == [11, 10, 12, 13]
+    order = [r["number"] for r in issues.query_issues(sort="age", direction="asc", collapse_dups=False)["items"]]
+    assert order == [12, 10, 11, 13]
+
+
 def test_query_issues_filters_by_state(tmp_path, monkeypatch):
     """`state` narrows to one GitHub lifecycle state; "all"/None returns both."""
     st = _seed(tmp_path, monkeypatch)  # #10, #11 both open

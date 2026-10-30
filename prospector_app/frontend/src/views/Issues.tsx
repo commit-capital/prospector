@@ -29,7 +29,7 @@ import { columnDragProps } from "../columnLayout";
 import type { Column } from "../components/shared/columns";
 import { useColumnPrefs } from "../useColumnPrefs";
 
-const ISSUE_DESC_FIRST = new Set<IssueSortKey>(["number", "pain", "repro", "dups", "prs"]);
+const ISSUE_DESC_FIRST = new Set<IssueSortKey>(["number", "pain", "repro", "dups", "prs", "age"]);
 
 // A GitHub issue number → its issue on github.com. Row-level clicks open the
 // in-app detail flyout, so this link stops the row handler.
@@ -514,6 +514,9 @@ const ISSUE_COLUMNS: IssueColumn[] = [
     cell: (r) => <LinkedPRs prs={r.linked_prs} count={r.linked_pr_count} referencedCount={r.referenced_pr_count} /> },
   { key: "subsystem", label: "Subsystem", defaultOn: true, sortKey: "subsystem", cellClass: "muted small",
     cell: (r) => r.subsystem ?? "—" },
+  { key: "age", label: "Age", defaultOn: true, sortKey: "age", cellClass: "muted small",
+    title: "Days since the issue was filed",
+    cell: (r) => (r.age_days != null ? `${r.age_days}d` : "—") },
   { key: "fix", label: "Auto-fix", defaultOn: true, sortKey: "fix",
     title: "The auto-fix factory's status; sorts the ones waiting on you first",
     cell: (r) => <FixStatusChip status={r.fix_status} reason={r.fix_reason} /> },
