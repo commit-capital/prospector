@@ -103,6 +103,10 @@ SETTINGS: tuple[Setting, ...] = (
        on_by_default=True),
     _b("TRIAGE_FIX_HUNT_SECURITY", "behavior", "Fix YELLOW security findings",
        "The autofix hunter may queue a fix for a PR's current YELLOW security finding."),
+    _b("TRIAGE_MERGE_COMPILE_PREFLIGHT", "behavior", "Compile before each merge",
+       "Before a live merge from this machine, compile the PR over the latest default "
+       "branch in the sandbox. Off, the merge relies on the repository's required CI.",
+       on_by_default=True),
     _b("TRIAGE_PR_WATCH", "behavior", "Watch GitHub for new PRs",
        "A worker records new and pushed-to PRs every 15 minutes, so the threat scan reads them.",
        on_by_default=True),

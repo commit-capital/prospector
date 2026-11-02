@@ -4,7 +4,7 @@ record the container exit as the verdict.
 
 This module only produces the record; the policy over it is
 gates.compile_preflight_gate, and the executor runs both immediately before a
-live merge fires. The base is resolved live per run and its tier-1 image built
+live merge fires, unless the machine switches the merge run off. The base is resolved live per run and its tier-1 image built
 ephemerally (reused while the default branch stays put) — the stored verify
 pin plays no part, so the compile always measures the PR against the branch it
 is about to land on. A PR that changes dependency manifests is refused:
@@ -17,7 +17,7 @@ import logging
 import time
 from pathlib import Path
 
-from pipeline import diffpaths, gates, profile, progress, verify_driver
+from pipeline import diffpaths, gates, profile, progress, settings, verify_driver
 from pipeline.store import Store
 
 logger = logging.getLogger(__name__)
@@ -77,13 +77,13 @@ def run_command_for_patch(pr: int, head_sha: str, patch: Path, cmd: str, *,
 
 def run_for_merge(pr: int, head_sha: str) -> dict | None:
     """The compile-preflight record for a live merge of `pr` at `head_sha`, or
-    None when the active profile configures no verify.compile_cmd (the
-    deployment requires no compile preflight). Fail-safe shape, fail-closed
+    None when the active profile configures no verify.compile_cmd or this
+    machine switches the merge preflight off. Fail-safe shape, fail-closed
     content: every failure — a refusal, an unresolvable base, a docker or
     build error — lands in the record for gates.compile_preflight_gate to
     block on; nothing raises into the merge path."""
     cmd = profile.active().verify.compile_cmd
-    if cmd is None:
+    if cmd is None or not settings.merge_compile_preflight():
         return None
     t0 = time.monotonic()
     result: dict = {"cmd": cmd, "pr": pr, "head_sha": head_sha}

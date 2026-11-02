@@ -39,8 +39,9 @@ with `409 {"unconfigured": true}`.
   its own command from the repo root.
 - **Merges** are `gh pr merge --squash` as the bot, one PR at a time. A
   human-initiated merge must pass `gates.merge_eligibility`, then a fresh threat
-  scan at the pinned head (`executor._threat_rescan`), then, live only, the
-  compile preflight (`pipeline/compile_preflight.py`). The pipeline's own
+  scan at the pinned head (`executor._threat_rescan`), then, live only and
+  unless the machine switches it off, the compile preflight
+  (`pipeline/compile_preflight.py`). The pipeline's own
   merge recommendation is the stricter `gates.merge_allowed`. The chat agent
   cannot merge.
 - **Pushes to contributor head branches** go through `resubmit`, and
