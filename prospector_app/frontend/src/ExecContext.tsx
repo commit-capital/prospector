@@ -5,10 +5,7 @@ export interface Effect { label: string; value: string }
 export interface Toast { id: number; title: string; detail?: string; effects?: Effect[]; tone: "green" | "red" | "yellow" | "muted" }
 
 interface ExecState {
-  identities: Identity[];
   botLogin: string;
-  identity: string;
-  setIdentity: (s: string) => void;
   dryRun: boolean;
   setDryRun: (b: boolean) => void;
   livePossible: boolean;
@@ -43,7 +40,7 @@ interface ExecState {
 }
 
 const Ctx = createContext<ExecState>({
-  identities: [], botLogin: "bot", identity: "", setIdentity: () => {},
+  botLogin: "bot",
   dryRun: true, setDryRun: () => {}, livePossible: false,
   liveError: null, pushIdentity: null, storeWriteBlock: null, retryLive: async () => false,
   canMergeUpstream: false, login: null, reviewers: [], activeReviewers: () => [],
@@ -108,7 +105,6 @@ function effectsFor(action: string): Effect[] | null {
 
 export function ExecProvider({ children }: { children: ReactNode }) {
   const [identities, setIdentities] = useState<Identity[]>([]);
-  const [identity, setIdentity] = useState("");
   const [livePossible, setLivePossible] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [pushIdentity, setPushIdentity] = useState<PushIdentityInfo | null>(null);
@@ -135,9 +131,6 @@ export function ExecProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     api.identities().then((d) => {
       setIdentities(d.identities);
-      // Default the active identity to the backend's first (the bot) unless the
-      // operator already picked one — the bot login lives in settings, not here.
-      setIdentity((prev) => prev || d.identities[0]?.id || "");
       setLivePossible(d.live_possible);
       setLiveError(d.live_error);
       setPushIdentity(d.push ?? null);
@@ -222,7 +215,7 @@ export function ExecProvider({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider value={{
-      identities, botLogin, identity, setIdentity, dryRun, setDryRun: setDryRunGuarded, livePossible,
+      botLogin, dryRun, setDryRun: setDryRunGuarded, livePossible,
       liveError, pushIdentity, storeWriteBlock, retryLive, canMergeUpstream, login, reviewers, activeReviewers,
       toasts, pushToast, dismissToast, actionTick, reportResult,
     }}>
