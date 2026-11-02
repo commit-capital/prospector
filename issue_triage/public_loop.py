@@ -2,7 +2,7 @@
 fix attempt when the issue is in scope, and the writes that bring it there.
 
 The store stays the state machine. `label_for` derives the one status label an
-issue, and the pull request it proposed, carries from `fix_review.fix_status`,
+issue carries from `fix_review.fix_status`,
 the attempt and the follow-up; `comments_due` names the comments the attempt
 calls for; `sync` compares both with what the issue's `fix_public` section
 records as set and posted, and makes only the missing writes through the
@@ -50,8 +50,8 @@ finished more than QUEUE_MAX_AGE ago starts nothing on its own. An issue that
 leaves scope has the labels recorded for it taken off, and only a clean fix's
 pull request opens.
 
-A label another worker set from the facts this one reads (`label_facts`) is
-never reverted while the issue is in scope: the two disagree only when they run
+A label another worker set on the issue from the facts this one reads
+(`label_facts`) is never reverted while the issue is in scope: the two disagree only when they run
 different code or settings, and fighting would flip the label every pass. The issue's thread notes the
 disagreement once per set of facts.
 
@@ -207,18 +207,8 @@ def label_for(issue: Issue) -> str | None:
     return None
 
 
-def label_targets(issue: Issue) -> dict[int, str | None]:
-    """The label each number the attempt touches carries: the issue's, and the
-    pull request's while it has one."""
-    out: dict[int, str | None] = {issue.number: label_for(issue)}
-    pr = _proposed_pr(issue.fix_run or {})
-    if pr is not None:
-        out[pr] = out[issue.number]
-    return out
-
-
 def label_facts(issue: Issue) -> str:
-    """A fingerprint of the sections `label_targets` derives the labels from."""
+    """A fingerprint of the sections `label_for` derives the label from."""
     facts = [issue.state, issue.author, issue.author_association, issue.fix_request,
              issue.fix_run, issue.fix_followup]
     return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode()).hexdigest()[:16]
@@ -344,7 +334,9 @@ def work_for(issue: Issue, mode: str, now: datetime, host: str) -> _Work:
     view = mode_view(issue.fix_public, mode)
     have = {int(k): v for k, v in (view.get("labels") or {}).items()}
     scoped = in_scope(issue)
-    want = label_targets(issue) if scoped else {}
+    # A label on a pull request would start a CI run the repository's workflow
+    # may skip, and GitHub would then read its required checks as missing.
+    want: dict[int, str | None] = {issue.number: label_for(issue)} if scoped else {}
     for number in have:
         want.setdefault(number, None)
     facts = label_facts(issue)
@@ -354,7 +346,7 @@ def work_for(issue: Issue, mode: str, now: datetime, host: str) -> _Work:
         if have.get(number) == label:
             continue
         by = (view.get("label_by") or {}).get(str(number))
-        if scoped and by and by.get("facts") == facts:
+        if scoped and number == issue.number and by and by.get("facts") == facts:
             # A standing label other than the one `by` set came from a worker
             # that records no `label_by`.
             writer = by.get("host") if by.get("label") == have.get(number) else "another worker"
