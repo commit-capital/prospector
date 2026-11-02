@@ -118,9 +118,24 @@ def test_a_closed_issue_carries_no_label(store):
     assert _label(store) is None
 
 
-def test_the_pull_request_carries_its_issue_s_label(store):
+def test_a_label_recorded_on_the_pull_request_comes_off(store, writes):
     store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
-    assert public_loop.label_targets(store.load_issue(1)) == {1: ITERATING, 9: ITERATING}
+    public_loop._record_label(store, 1, "live", 9,
+                              {"host": "h", "label": READY, "facts": "earlier facts"})
+    public_loop.sync(store, mode="live", now=NOW)
+    assert ("label", 9, None, READY, False) in writes
+    removals = len(writes)
+    public_loop.sync(store, mode="live", now=NOW)
+    assert len(writes) == removals
+
+
+def test_another_worker_s_label_on_the_pull_request_comes_off_on_the_same_facts(store, writes):
+    store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
+    facts = public_loop.label_facts(store.load_issue(1))
+    public_loop._record_label(store, 1, "live", 9,
+                              {"host": "retired", "label": READY, "facts": facts})
+    public_loop.sync(store, mode="live", now=NOW)
+    assert ("label", 9, None, READY, False) in writes
 
 
 # --- the comments and the queue ------------------------------------------------
@@ -216,12 +231,11 @@ def test_a_pass_labels_and_comments_once(store, writes):
     store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
     assert public_loop.sync(store, mode="live", now=NOW) == 1
     assert writes == [("label", 1, ITERATING, None, False),
-                      ("label", 9, ITERATING, None, False),
                       ("comment", 1, "opened", False)]
     pub = store.load_issue(1).fix_public
-    assert pub["labels"] == {"1": ITERATING, "9": ITERATING} and "lease" not in pub
+    assert pub["labels"] == {"1": ITERATING} and "lease" not in pub
     assert public_loop.sync(store, mode="live", now=NOW) == 0
-    assert len(writes) == 3
+    assert len(writes) == 2
 
 
 def test_a_new_state_swaps_the_label(store, writes):
@@ -246,15 +260,15 @@ def test_a_pass_opens_the_pull_request_for_a_fixed_attempt_once(store, writes):
 def test_a_dry_run_notes_each_write_once_and_keeps_its_record_apart(store, writes):
     store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
     public_loop.sync(store, mode="dry-run", now=NOW)
-    assert all(call[-1] is True for call in writes) and len(writes) == 3
+    assert all(call[-1] is True for call in writes) and len(writes) == 2
     issue = store.load_issue(1)
-    assert issue.fix_public["dry"]["labels"] == {"1": ITERATING, "9": ITERATING}
+    assert issue.fix_public["dry"]["labels"] == {"1": ITERATING}
     assert "labels" not in {k for k, v in issue.fix_public.items() if v and k != "dry"}
-    assert [e["text"][:7] for e in issue.fix_thread] == ["Dry run"] * 3
+    assert [e["text"][:7] for e in issue.fix_thread] == ["Dry run"] * 2
     public_loop.sync(store, mode="dry-run", now=NOW)
-    assert len(writes) == 3
+    assert len(writes) == 2
     public_loop.sync(store, mode="live", now=NOW)
-    assert [c[-1] for c in writes[3:]] == [False, False, False]
+    assert [c[-1] for c in writes[2:]] == [False, False]
 
 
 def test_an_issue_out_of_scope_is_left_alone(store, writes):
@@ -457,7 +471,7 @@ def test_a_comment_that_fails_its_problems_is_recorded_and_not_posted(store, wri
     store.edit_issue(1).record_fix_run(_run(ending="fixed", proposal={"pr": 9}))
     monkeypatch.setattr(public_comments, "problems", lambda body: ["the comment carries a link"])
     public_loop.sync(store, mode="live", now=NOW)
-    assert [c[0] for c in writes] == ["label", "label"]
+    assert [c[0] for c in writes] == ["label"]
     posted = store.load_issue(1).fix_public["posted"]
     assert list(posted.values())[0]["blocked"] == ["the comment carries a link"]
 

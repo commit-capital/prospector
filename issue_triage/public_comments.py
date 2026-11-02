@@ -53,7 +53,7 @@ def opened(issue: int, key: str, pr: int, summary: object) -> str:
     """The comment on issue `issue` once pull request `pr` carries its fix."""
     lines = [f"Prospector's automated fix pipeline opened #{int(pr)} with a fix for this "
              "issue. It keeps revising that pull request until CI and code review pass, "
-             "then labels it `ready for review`."]
+             "then labels this issue `ready for review`."]
     what = quiet(summary)
     if what:
         lines += ["", f"The change: {what}."]
