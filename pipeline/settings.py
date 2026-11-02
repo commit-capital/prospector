@@ -461,6 +461,12 @@ def slack_webhook_url() -> str | None:
     return os.environ.get("TRIAGE_SLACK_WEBHOOK_URL", "").strip() or None
 
 
+def merge_compile_preflight() -> bool:
+    """Whether a live merge from this machine runs the compile preflight first
+    (TRIAGE_MERGE_COMPILE_PREFLIGHT, default on)."""
+    return os.environ.get("TRIAGE_MERGE_COMPILE_PREFLIGHT", "1") != "0"
+
+
 def pr_watch() -> bool:
     """Whether a worker machine records new PRs and pushed heads from GitHub on
     a cadence (TRIAGE_PR_WATCH, default on)."""

@@ -261,6 +261,15 @@ def test_an_unconfigured_compile_command_merges_without_a_preflight(env):
     env.compile = None
     res = executor.merge_pr(5, dry_run=False)
     assert res["status"] == "merged" and "compile_preflight" not in res
+    assert "compile_preflight_skipped" not in res
+
+
+def test_a_merge_with_the_preflight_switched_off_records_the_skip(env, monkeypatch):
+    monkeypatch.setenv("TRIAGE_MERGE_COMPILE_PREFLIGHT", "0")
+    env.compile = None
+    res = executor.merge_pr(5, dry_run=False)
+    assert res["status"] == "merged" and res["compile_preflight_skipped"] is True
+    assert env.entries()[-1]["compile_preflight_skipped"] is True
 
 
 def test_a_live_merge_reports_each_step_and_refuses_a_second_click(env):

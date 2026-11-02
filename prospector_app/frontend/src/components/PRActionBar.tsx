@@ -272,7 +272,7 @@ export function PRActionBar({ pr, runState, onActed, summary }:
         )}
         {mergeLive && (
           <div className="sug-comment muted-note" role="status"
-            title="The merge runs its compile preflight before it fires; a cold base builds an image first.">
+            title="Unless this machine switches it off, the merge runs its compile preflight before it fires; a cold base builds an image first.">
             ⏳ {mergeStep?.step ?? "starting the merge"}…
             {mergeStep?.started_at && <> · running since {new Date(mergeStep.started_at).toLocaleTimeString()}</>}
           </div>

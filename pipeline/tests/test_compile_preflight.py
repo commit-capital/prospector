@@ -60,7 +60,24 @@ class TestRunForMerge:
         monkeypatch.setattr(profile, "active", lambda: profile.GENERIC)
         assert compile_preflight.run_for_merge(1, "a" * 40) is None
 
-    def test_blank_head_is_refused(self, configured, no_sandbox_calls):
+    def test_switched_off_means_no_preflight(self, configured, no_sandbox_calls, monkeypatch):
+        monkeypatch.setenv("TRIAGE_MERGE_COMPILE_PREFLIGHT", "0")
+        assert compile_preflight.run_for_merge(1, "a" * 40) is None
+
+    @pytest.mark.parametrize("value", ["", "true", "off"])
+    def test_only_a_zero_switches_it_off(self, configured, no_sandbox_calls, monkeypatch, value):
+        monkeypatch.setenv("TRIAGE_MERGE_COMPILE_PREFLIGHT", value)
+        res = compile_preflight.run_for_merge(1, "")
+        assert res is not None and "head" in res["refused"]
+
+    def test_switched_off_still_preflights_a_patch(self, configured, no_sandbox_calls,
+                                                   monkeypatch, tmp_path):
+        monkeypatch.setenv("TRIAGE_MERGE_COMPILE_PREFLIGHT", "0")
+        res = compile_preflight.run_for_patch(1, "a" * 40, _patch_file(tmp_path, "not a diff"))
+        assert res is not None and "unparsable" in res["refused"]
+
+    def test_blank_head_is_refused(self, configured, no_sandbox_calls, monkeypatch):
+        monkeypatch.delenv("TRIAGE_MERGE_COMPILE_PREFLIGHT", raising=False)
         res = compile_preflight.run_for_merge(1, "")
         assert res is not None and "head" in res["refused"]
 

@@ -73,6 +73,8 @@ def test_nothing_editable_names_a_credential_a_path_or_the_deployment():
     ("TRIAGE_FIX_HUNT_REREVIEW", "", "1"),
     ("TRIAGE_FIX_HUNT_REREVIEW", "0", "0"),
     ("TRIAGE_FIX_HUNT_SECURITY", "", ""),
+    ("TRIAGE_MERGE_COMPILE_PREFLIGHT", "", "1"),
+    ("TRIAGE_MERGE_COMPILE_PREFLIGHT", "0", "0"),
     ("TRIAGE_ISSUE_FIX_MODELS", "opus, sonnet", "opus,sonnet"),
     ("TRIAGE_ISSUE_FIX_MODELS", "opus,sonnet,codex:gpt-6.1-sol", "opus,sonnet,codex:gpt-6.1-sol"),
     ("TRIAGE_ISSUE_FIX_REVIEW_MODELS", " opus, codex:gpt-6.1-sol ", "opus,codex:gpt-6.1-sol"),

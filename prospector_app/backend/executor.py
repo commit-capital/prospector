@@ -810,14 +810,16 @@ def merge_pr(n: int, method: str = "squash", *, dry_run: bool, reason: str | Non
     is auditable either way. RED always blocks. With no configured bot key this is forced to
     dry-run (no token to mint), so the app cannot merge.
 
-    A live merge additionally passes the deterministic compile preflight:
+    Unless this machine switches it off, which the merge event records as
+    `compile_preflight_skipped`, a live merge additionally passes the
+    deterministic compile preflight:
     pipeline/compile_preflight.py runs the profile's verify.compile_cmd over
     (current default-branch HEAD + this PR's diff) in the sandbox, and
     gates.compile_preflight_gate blocks on anything but a clean pass — fail
     closed on a machine that cannot run the sandbox. A block that gives no
     verdict on the PR (gates.compile_preflight_waivable: no Docker, a base that
     will not build) is cleared by `compile_reason`, which rides the merge's
-    activity entry as `compile_waiver`; a compile failure is never cleared. The
+    activity entry as `compile_waiver`; a compile failure is never cleared. A
     run and its outcome land in the activity log either way: a block records
     its own event, a pass rides the merge event's compile_preflight payload.
 
@@ -925,8 +927,9 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None,
     # PR's diff) must compile clean in the sandbox before the merge fires. The
     # dry-run branch above returns first — a preview never boots a container —
     # and this runs before the override logging below, so a blocked merge
-    # writes no durable override. run_for_merge is None only when the profile
-    # configures no compile_cmd; every failure shape blocks via the gate.
+    # writes no durable override. run_for_merge is None when the profile
+    # configures no compile_cmd or this machine switches the preflight off;
+    # every failure shape blocks via the gate.
     from pipeline import compile_preflight
     from pipeline import progress
     head = rec.head_sha if rec and rec.head_sha else ""
@@ -935,6 +938,8 @@ def _merge_pr(n: int, method: str, *, dry_run: bool, reason: str | None,
                     detail=f"merging #{n} (--{method}) at {head[:12] or 'an unknown head'}")
     with progress.reporting_steps(lambda what: merge_progress.step(int(n), what)):
         pf = compile_preflight.run_for_merge(int(n), head)
+    if pf is None and not settings.merge_compile_preflight():
+        base["compile_preflight_skipped"] = True
     if pf is not None:
         ok_cp, why_cp = gates.compile_preflight_gate(pf)
         base["compile_preflight"] = {**pf, "ok": ok_cp}
