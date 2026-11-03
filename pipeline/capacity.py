@@ -7,10 +7,10 @@ window utilization in a `rate_limit_event`; the newest reading from any
 machine on the account, and any pause after a usage-limit hit, live in the
 store's `ai_capacity:<key>` row, and the account's policy in `ai_account:<key>`.
 `check()` decides whether unattended work may start an agent now: under a
-subscription, while the 5-hour window is below the cap in effect at this time
-of day and weekly use is within its pace; under an API key, while today's
-reported spend is below the daily budget. Work an operator starts is never
-gated.
+subscription, while the 5-hour window, when the CLI reports one, is below the
+cap in effect at this time of day and weekly use is within its pace; under an
+API key, while today's reported spend is below the daily budget. Work an
+operator starts is never gated.
 """
 from __future__ import annotations
 
@@ -433,23 +433,27 @@ def check(store: Store, acct: Account | None, now: datetime | None = None,
         else:
             _probe_failed.pop(acct.key, None)
     five = _current(reading.five_hour, now, FIVE_HOURS) if reading is not None else None
-    if reading is None or five is None:
+    week = _current(reading.seven_day, now, WEEK) if reading is not None else None
+    if five is None and week is None:
         return Decision(False, "no capacity reading from the Claude CLI", now + RETRY_UNKNOWN)
-    cap, boundary = cap_now(p, now)
-    used = five.utilization
-    if used >= cap:
-        later = cap_now(p, boundary + timedelta(seconds=1))[0]
-        retry = min(five.resets_at, boundary) if used < later else five.resets_at
-        return Decision(False, f"5-hour window at {used:.0%} (cap now {cap:.0%})", retry)
-    week = _current(reading.seven_day, now, WEEK)
-    if p.weekly_pacing and week is not None:
+    reason = ""
+    if five is not None:
+        cap, boundary = cap_now(p, now)
+        used = five.utilization
+        reason = f"5-hour window at {used:.0%} (cap now {cap:.0%})"
+        if used >= cap:
+            later = cap_now(p, boundary + timedelta(seconds=1))[0]
+            retry = min(five.resets_at, boundary) if used < later else five.resets_at
+            return Decision(False, reason, retry)
+    if week is not None:
         line = pacing_line(week, now)
-        if week.utilization > line:
+        if p.weekly_pacing and week.utilization > line:
             start = week.resets_at - WEEK
             return Decision(False, f"weekly use {week.utilization:.0%} is ahead of pace "
                                    f"({line:.0%} by now)",
                             start + WEEK * (week.utilization - WEEKLY_SLACK))
-    return Decision(True, f"5-hour window at {used:.0%} (cap now {cap:.0%})", None)
+        reason = reason or f"weekly use {week.utilization:.0%}"
+    return Decision(True, reason, None)
 
 
 # --- the unattended mark ----------------------------------------------------
