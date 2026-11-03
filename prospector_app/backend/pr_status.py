@@ -110,15 +110,16 @@ def seed(pr: Pr, standing: dict, tried_: list[dict]) -> str:
 
 
 def status(pr: Pr) -> dict:
-    """The status block's data for one open PR."""
-    standing = automation.classify(pr) or {}
+    """The status block's data for one PR; its standing is None unless it is open."""
+    classified = automation.classify(pr)
+    standing = classified or {}
     issue = automation.fix_issue(pr)
     by = None
     if issue is not None and standing.get("bucket") == "handed-back":
         fu = fix_review.followup_for(issue.fix_followup, pr.number)
         by = fix_review.blocked_by(fu.get("judged") or {})
     tried_ = tried(pr)
-    return {"standing": standing, "stages": stages(pr, standing, blocked_by=by),
+    return {"standing": classified, "stages": stages(pr, standing, blocked_by=by),
             "tried": tried_, "issue": issue.number if issue is not None else None,
             "seed": seed(pr, standing, tried_) if standing.get("state") == "stalled" else None}
 

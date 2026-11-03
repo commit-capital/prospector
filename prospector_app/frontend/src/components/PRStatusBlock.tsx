@@ -43,15 +43,17 @@ export function PRStatusBlock({ prNum, reload, onRun, onScrollTo, onActed }: {
       if (!live) return;
       setStatus(s);
       setNext(null);
-      if (s.standing.state === "moving") {
+      if (s.standing?.state === "moving") {
         api.prNextStep(prNum).then((n) => { if (live) setNext(n); }).catch(() => {});
       }
     }).catch(() => { if (live) setStatus(null); });
     return () => { live = false; };
   }, [prNum, reload]);
 
-  if (!status) return null;
-  const { standing, stages, tried, issue, seed } = status;
+  // The merge or close that ended a PR can land here before the page learns of it.
+  const standing = status?.standing;
+  if (!status || !standing) return null;
+  const { stages, tried, issue, seed } = status;
   const ours = issue !== null;
 
   const act = async (what: string, call: () => Promise<unknown>, tone: "green" | "yellow" = "green") => {

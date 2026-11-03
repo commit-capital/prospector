@@ -134,7 +134,8 @@ export interface PRTried {
 }
 /** A PR page's status block (GET /api/prs/{n}/status). */
 export interface PRStatus {
-  standing: AutomationStanding;
+  // Null for a PR that is not open.
+  standing: AutomationStanding | null;
   stages: PRStage[];
   tried: PRTried[];
   issue: number | null;

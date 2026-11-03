@@ -98,6 +98,13 @@ def test_the_seed_is_only_for_a_stalled_pr(store, monkeypatch):
     assert pr_status.status(pr)["seed"]
 
 
+@pytest.mark.parametrize("state", ["closed", "merged"])
+def test_a_pr_that_is_not_open_has_no_standing(store, state):
+    rec = _rec()
+    rec["meta"]["state"] = state
+    assert pr_status.status(_load(store, rec))["standing"] is None
+
+
 def test_a_ledger_row_without_an_outcome_is_not_tried(store):
     store.append_run({"phase": "ingest", "started": _now(), "finished": _now()})
     pr = _load(store, _rec())
