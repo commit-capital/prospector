@@ -131,7 +131,7 @@ function DismissForm({ d, onDone }: { d: AlertDetail; onDone: () => void }) {
         value={comment} onChange={(e) => setComment(e.target.value)} rows={2} />
       <div className="form-row">
         <button className="btn-secondary sm" disabled={busy} onClick={() => run(true)}>Preview (dry-run)</button>
-        <button className="btn-primary sm" disabled={busy || dryRun} title={dryRun ? "Live mode is off — toggle dry-run in the identity picker" : "Dismiss this alert on GitHub"}
+        <button className="btn-primary sm" disabled={busy || dryRun} title={dryRun ? "Live mode is off — switch off dry-run in the header" : "Dismiss this alert on GitHub"}
           onClick={() => run(false)}>Dismiss</button>
       </div>
       {result && (

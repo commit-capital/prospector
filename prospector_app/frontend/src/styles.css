@@ -136,8 +136,6 @@ a:hover { text-decoration: underline; }
 .theme-toggle { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
   padding: 3px 8px; cursor: pointer; font-size: 14px; line-height: 1; }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-.identity-picker { display: flex; align-items: center; gap: 6px; }
-.identity-picker .ui-select { padding: 3px 6px; font-size: 12px; }
 .work-status { position: relative; }
 .work-status-label { display: inline-flex; align-items: center; gap: 5px;
   border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px;
@@ -179,7 +177,6 @@ a:hover { text-decoration: underline; }
   min-width: 220px; padding: 8px; display: flex; flex-direction: column; gap: 8px;
   box-shadow: 0 8px 32px rgba(0,0,0,0.18); }
 .settings-row { display: flex; align-items: center; gap: 6px; }
-.settings-row .ui-select { padding: 3px 6px; font-size: 12px; flex: 1; }
 .settings-sep { border-top: 1px solid var(--border); }
 .settings-link { color: var(--text); padding: 4px 6px; border-radius: 6px; font-size: 13px; }
 .settings-link:hover { background: var(--panel2); }

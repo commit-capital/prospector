@@ -16,7 +16,6 @@ import { usePoll } from "./poll";
 import { prefetchTabs } from "./prefetch";
 import { timeAgo } from "./timeAgo";
 import { workStatusLabel } from "./workStatusLabel";
-import { Select } from "./components/Select";
 
 const PRFlyout = lazy(() => loadWithRecovery("pr-flyout", async () => ({
   default: (await import("./components/PRFlyout")).PRFlyout,
@@ -241,7 +240,7 @@ function DryRunBadge() {
  *  What stays in the bar is what an operator touches mid-review: live sync,
  *  the dry-run/live switch, and feedback. */
 function SettingsMenu() {
-  const { identities, botLogin, identity, setIdentity, livePossible,
+  const { botLogin, livePossible,
     liveError, pushIdentity, retryLive, pushToast } = useExec();
   const { meta } = useRepoMeta();
   const [open, setOpen] = useState(false);
@@ -296,13 +295,6 @@ function SettingsMenu() {
       </button>
       {open && (
         <div className="settings-dropdown" role="menu">
-          <div className="settings-row">
-            <span className="muted small">Posting as</span>
-            <Select value={identity} onChange={(next) => setIdentity(next)}
-              disabled={identities.length <= 1}>
-              {identities.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
-            </Select>
-          </div>
           {/* The deployment's two write identities, each with its own lane and
               availability: the bot App posts upstream; the contributor-push
               user pushes to PR head branches over SSH. */}
