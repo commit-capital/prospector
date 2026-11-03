@@ -213,6 +213,37 @@ def test_no_reading_and_no_probe_answer_pauses(store):
     assert not d.allowed and "reading" in d.reason
 
 
+def _weekly_only(seven: float, at: datetime) -> capacity.Reading:
+    event = {"type": "rate_limit_event", "rate_limit_info": {
+        "status": "allowed", "rateLimitType": "seven_day",
+        "unifiedWindows": {"seven_day": {"utilization": seven,
+                                         "resetsAt": (at + timedelta(days=4)).timestamp()}}}}
+    reading = capacity.parse_rate_limit(event, "x", at)
+    assert reading is not None
+    return reading
+
+
+def test_a_reading_with_only_the_weekly_window_runs_within_pace(store):
+    capacity.record_reading(store, MAX, _weekly_only(0.1, _la(12)))
+    d = capacity.check(store, MAX, now=_la(12, 1))
+    assert d.allowed and "weekly use 10%" in d.reason
+
+
+def test_a_reading_with_only_the_weekly_window_still_paces(store):
+    capacity.record_reading(store, MAX, _weekly_only(0.9, _la(12)))
+    d = capacity.check(store, MAX, now=_la(12, 1))
+    assert not d.allowed and "ahead of pace" in d.reason
+
+
+def test_a_reading_with_no_windows_pauses(store):
+    reading = capacity.parse_rate_limit({"type": "rate_limit_event", "rate_limit_info": {
+        "status": "allowed"}}, "x", _la(12))
+    assert reading is not None
+    capacity.record_reading(store, MAX, reading)
+    d = capacity.check(store, MAX, now=_la(12, 1))
+    assert not d.allowed and "reading" in d.reason
+
+
 def test_a_stale_reading_is_used_only_when_asked(store):
     capacity.record_reading(store, MAX, _reading(0.2, 0.2, _la(10)))
     assert not capacity.check(store, MAX, now=_la(12)).allowed
