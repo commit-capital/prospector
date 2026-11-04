@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import TypedDict
 from zoneinfo import ZoneInfo
 
-from pipeline import capacity
+from pipeline import capacity, settings
 from prospector_app.backend import data
 
 
@@ -124,6 +124,14 @@ _HEALTH_TTL_SECONDS = 30.0
 _health_cache: tuple[float, list[CapacityHealthItem]] | None = None
 
 
+def codex_fallback_open() -> bool:
+    """Whether the issue-fix lane runs on Codex while Claude is paused: this
+    machine names a Codex model for it and Codex is not paused
+    (`issue_fix_worker._capacity_open`)."""
+    return (settings.issue_fix_codex_model() is not None
+            and capacity.check(data.store(), capacity.CODEX).allowed)
+
+
 def health_items() -> list[CapacityHealthItem]:
     """One amber strip line per account whose unattended work is paused and
     that some worker machine runs under."""
@@ -132,6 +140,7 @@ def health_items() -> list[CapacityHealthItem]:
     if _health_cache is not None and now_ts - _health_cache[0] < _HEALTH_TTL_SECONDS:
         return _health_cache[1]
     items: list[CapacityHealthItem] = []
+    on_codex = " · issue-fix running on Codex" if codex_fallback_open() else ""
     for v in accounts():
         if not v["machines"] or v["decision"]["allowed"]:
             continue
@@ -142,7 +151,7 @@ def health_items() -> list[CapacityHealthItem]:
             resumes = f" · resumes ~{local:%I:%M %p}".replace("~0", "~")
         items.append({"kind": "capacity", "severity": "amber",
                       "label": f"Background AI paused · {v['label']}",
-                      "detail": f"{v['decision']['reason']}{resumes}", "host": None})
+                      "detail": f"{v['decision']['reason']}{resumes}{on_codex}", "host": None})
     _health_cache = (now_ts, items)
     return items
 

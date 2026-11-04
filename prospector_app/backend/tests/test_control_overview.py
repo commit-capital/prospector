@@ -24,7 +24,7 @@ def _inputs(**over) -> co.Inputs:
         "local": "studio",
         "roster": {"local": "studio", "machines": [_machine("studio", 0.5)]},
         "stood_down": {}, "loops": {"studio": {"lanes": ALL_ON, "loops": {}}},
-        "tripped": {}, "pins": [], "ai_paused": {},
+        "tripped": {}, "pins": [], "ai_paused": {}, "codex_open": False,
         "verify_queue": [], "fix_queue": [], "issue_queue": [], "hunter_now": {},
         "pools": {"security": 0, "verify": 0, "design": 0},
         "failed_runs": [], "rows": [], "paused": {}, "picks": {}}
@@ -78,6 +78,13 @@ def test_ai_paused_lane_state():
     out = co.build(_inputs(ai_paused={"acct": {"reason": "weekly", "retry_at": _iso(-60)}}), NOW)
     assert _cell(out, "autofix", "studio") == "ai-paused"
     assert out["ai_paused"] is not None and out["ai_paused"]["reason"] == "weekly"
+
+
+def test_the_issue_fix_lane_runs_on_codex_while_claude_is_paused():
+    paused = {"acct": {"reason": "weekly", "retry_at": _iso(-60)}}
+    out = co.build(_inputs(ai_paused=paused, codex_open=True), NOW)
+    assert _cell(out, "issue-fix", "studio") == "on"
+    assert _cell(out, "autofix", "studio") == "ai-paused"
 
 
 def test_loop_next_run_is_last_plus_interval():
