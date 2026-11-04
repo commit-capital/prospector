@@ -701,11 +701,12 @@ def run(spec: fix_lane.LaneSpec, *, workdir: Path,
     try:
         on_step(f"{len(models)} agents reproducing and fixing")
         agent_runs = len(models)
-        # Each candidate runs in a copy of this context, so the lane its spend is
-        # metered under reaches the pool's threads.
+        # Each candidate runs in its own copy of this thread's context, so the
+        # lane's metering and fallback reach the pool's threads.
+        context = contextvars.copy_context()
         with ThreadPoolExecutor(max_workers=len(models)) as pool:
             cands = list(pool.map(
-                lambda im: contextvars.copy_context().run(
+                lambda im: context.copy().run(
                     _author, spec, workdir, Candidate(index=im[0], model=im[1]), pre_patch_file),
                 enumerate(models)))
         result = {"candidates": [c.summary() for c in cands], "proof": {}, "reviews": [],

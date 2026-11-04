@@ -230,7 +230,7 @@ def test_a_reading_with_only_the_weekly_window_runs_within_pace(store):
 
 
 def test_a_reading_with_only_the_weekly_window_still_paces(store):
-    capacity.record_reading(store, MAX, _weekly_only(0.9, _la(12)))
+    capacity.record_reading(store, MAX, _weekly_only(0.5, _la(12)))
     d = capacity.check(store, MAX, now=_la(12, 1))
     assert not d.allowed and "ahead of pace" in d.reason
 
@@ -385,3 +385,39 @@ def test_the_account_is_kept_and_a_missing_one_is_retried_later(monkeypatch):
     assert _REAL_ACCOUNT() == MAX and reads == [1, 1]
     now[0] += 60
     assert _REAL_ACCOUNT() == MAX and reads == [1, 1]
+
+
+def test_codex_is_open_until_a_pause_is_recorded(store):
+    now = datetime.now(UTC).replace(microsecond=0)
+    assert capacity.check(store, capacity.CODEX, now=now).allowed
+    capacity.record_pause(store, capacity.CODEX, now + timedelta(hours=1), "spent", now=now)
+    d = capacity.check(store, capacity.CODEX, now=now)
+    assert not d.allowed and d.retry_at == now + timedelta(hours=1)
+
+
+def test_without_a_5_hour_window_the_week_is_paced_to_the_night_cap(store):
+    _save_policy(store, MAX, _policy(night_cap=0.5))
+    start = _la(12) - timedelta(days=3.5)
+    capacity.record_reading(store, MAX, capacity.Reading(
+        five_hour=None, seven_day=capacity.Window(0.40, start + timedelta(days=7)),
+        status="allowed", at=_la(12), by="t"))
+    d = capacity.check(store, MAX, now=_la(12, 1))
+    assert not d.allowed and "ahead of pace (30% by now)" in d.reason
+    assert d.retry_at == start + timedelta(days=7 * (0.40 - capacity.WEEKLY_SLACK) / 0.5)
+
+
+def test_without_a_5_hour_window_the_night_cap_reserves_the_rest_of_the_week(store):
+    _save_policy(store, MAX, _policy(night_cap=0.95, weekly_pacing=False))
+    reset = _la(22)
+    capacity.record_reading(store, MAX, capacity.Reading(
+        five_hour=None, seven_day=capacity.Window(0.96, reset), status="allowed", at=_la(10),
+        by="t"))
+    d = capacity.check(store, MAX, now=_la(10, 1))
+    assert not d.allowed and "reached the 95%" in d.reason and d.retry_at == reset
+
+
+def test_a_5_hour_window_paces_the_whole_week(store):
+    _save_policy(store, MAX, _policy(night_cap=0.5, day_cap=0.9))
+    capacity.record_reading(store, MAX, _reading(0.1, 0.55, _la(12),
+                                                 week_start=_la(12) - timedelta(days=3.5)))
+    assert capacity.check(store, MAX, now=_la(12, 1)).allowed

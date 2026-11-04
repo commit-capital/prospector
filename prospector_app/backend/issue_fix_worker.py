@@ -34,6 +34,7 @@ attempts unchanged, each `running` request no worker will finish
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Iterator
 import os
 import threading
 import time
@@ -227,6 +228,20 @@ def recover_orphans(store: IssueStore) -> list[int]:
     return requeued_issues
 
 
+def _capacity_open() -> bool:
+    """Whether the lane may start unattended agent work: while Claude's
+    capacity is open, or Codex's when the lane names a Codex model."""
+    return lane_health.capacity_open(LANE, codex=settings.issue_fix_codex_model() is not None)
+
+
+@contextlib.contextmanager
+def _metered() -> Iterator[None]:
+    """Meter the block's agent runs as the lane's, each free to move to the
+    other provider while its own is closed (`capacity.fallback`)."""
+    with capacity.metered(LANE), capacity.fallback(settings.issue_fix_codex_model()):
+        yield
+
+
 def _unattended(req: dict, run: dict | None) -> bool:
     """Whether request `req` on the attempt `run` is agent work no operator
     queued. An `ask-reporter` runs an agent only to draft a question `run` does
@@ -244,7 +259,7 @@ def next_request(issues: dict, host: str) -> int | None:
         req = issues[n].fix_request or {}
         if req.get("action") != "solve" and (issues[n].fix_run or {}).get("host") != host:
             continue
-        if _unattended(req, issues[n].fix_run) and not lane_health.capacity_open(LANE):
+        if _unattended(req, issues[n].fix_run) and not _capacity_open():
             continue
         return n
     return None
@@ -269,7 +284,7 @@ def run_once(store: IssueStore) -> bool:
     with _state_lock:
         state["current"].add(n)
     print(f"[issue-fix] #{n}: {claimed['action']}", flush=True)
-    metering = (capacity.metered(LANE) if _unattended(claimed, issues[n].fix_run)
+    metering = (_metered() if _unattended(claimed, issues[n].fix_run)
                 else contextlib.nullcontext())
     try:
         with metering:
@@ -377,7 +392,7 @@ def triage(store: IssueStore, limit: int | None, *, trigger: str = "worker") -> 
     outage propagates."""
     from prospector_app.backend import issue_data
 
-    if not lane_health.capacity_open(LANE):
+    if not _capacity_open():
         return []
     now = time.monotonic()
     pending = sorted(((m, (i.raw.get("meta") or {}).get("created_at") or "", n, i)
@@ -393,7 +408,7 @@ def triage(store: IssueStore, limit: int | None, *, trigger: str = "worker") -> 
         return []
     judged = []
     for *_, n, issue in pending:
-        if not lane_health.capacity_open(LANE):
+        if not _capacity_open():
             break
         if _judge(store, issue, base, trigger):
             judged.append(n)
@@ -407,7 +422,7 @@ def _judge(store: IssueStore, issue: Issue, base: prove.PinnedBase, trigger: str
     created = storekit.parse_ts((issue.raw.get("meta") or {}).get("created_at"))
     replies = (public_loop.read_replies(issue, created) or []) if created else []
     try:
-        with capacity.metered(LANE):
+        with _metered():
             record = fixability.judge(issue, base.clone, base_sha=base.sha, replies=replies,
                                       subject=verdict_log.Subject("issue", n))
     except (ValueError, RuntimeError) as e:
@@ -466,7 +481,7 @@ def screen_features(store: IssueStore, limit: int | None, *, trigger: str = "wor
     pending = sorted(((i.raw.get("meta") or {}).get("created_at") or "", n)
                      for n, i in issues.items() if _screenable(i))
     pending = pending[::-1][:limit]
-    if not pending or not lane_health.capacity_open(LANE):
+    if not pending or not _capacity_open():
         return []
     try:
         base = prove.pinned(Store())
@@ -475,7 +490,7 @@ def screen_features(store: IssueStore, limit: int | None, *, trigger: str = "wor
     history = feature_history.refresh(issues.values())
     screened = []
     for _, n in pending:
-        if not lane_health.capacity_open(LANE):
+        if not _capacity_open():
             break
         if _screen(store, n, base, history, trigger):
             screened.append(n)
@@ -522,7 +537,7 @@ def _screen(store: IssueStore, n: int, base: prove.PinnedBase, history: Path,
     created = storekit.parse_ts((issue.raw.get("meta") or {}).get("created_at"))
     replies = (public_loop.read_replies(issue, created) or []) if created else []
     try:
-        with capacity.metered(LANE):
+        with _metered():
             section = feature_screen.screen(issue, base.clone, history, base_sha=base.sha,
                                             replies=replies, subject=verdict_log.Subject("issue", n))
     except (ValueError, RuntimeError) as e:
@@ -558,7 +573,7 @@ def fill(store: IssueStore, want: int) -> list[int]:
     for _, n, tri in sorted((p for p in picks if p[2].get("verdict") == "go"), reverse=True):
         if len(queued) >= want:
             break
-        if _budget_spent(store) or not lane_health.capacity_open(LANE):
+        if _budget_spent(store) or not _capacity_open():
             break
         approach = tri.get("approach") and f"The triage's read of the fix: {tri['approach']}"
         notes = "\n\n".join(p for p in (tri.get("notes"), approach) if p) or None
@@ -577,16 +592,16 @@ def hunt(store: IssueStore) -> int | None:
 def _follow_up(store: IssueStore) -> None:
     """`followup.poll`, whose reply routing runs an agent only while the lane's
     AI capacity is open; its other steps run regardless."""
-    with capacity.metered(LANE):
-        followup.poll(store, may_route=lambda: lane_health.capacity_open(LANE))
+    with _metered():
+        followup.poll(store, may_route=_capacity_open)
 
 
 def _answer_replies(store: IssueStore) -> None:
     """`public_loop.answer_replies`, whose reply routing runs an agent only while
     the lane's AI capacity is open; reading replies and report edits runs
     regardless."""
-    with capacity.metered(LANE):
-        public_loop.answer_replies(store, may_route=lambda: lane_health.capacity_open(LANE))
+    with _metered():
+        public_loop.answer_replies(store, may_route=_capacity_open)
 
 
 def _close_out(store: IssueStore) -> None:
@@ -594,9 +609,9 @@ def _close_out(store: IssueStore) -> None:
     while the lane's AI capacity is open."""
     from prospector_app.backend import issue_data
 
-    with capacity.metered(LANE):
+    with _metered():
         close_out.run(store, issue_data.issues(),
-                      may_run=lambda: lane_health.capacity_open(LANE))
+                      may_run=_capacity_open)
 
 
 def _every_ten_minutes(store: IssueStore) -> None:

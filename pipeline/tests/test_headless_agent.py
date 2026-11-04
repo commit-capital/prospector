@@ -1,7 +1,7 @@
 import itertools
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from pipeline import capacity
@@ -779,3 +779,96 @@ def test_a_metered_run_is_booked_as_unattended_spend(monkeypatch, capacity_store
 def test_a_reason_naming_a_pull_request_is_not_transient():
     assert not ha.transient("PR #529 failed its checks")
     assert ha.transient("API Error: 529 Overloaded")
+
+
+# --- the fallback between Claude and Codex ------------------------------------
+
+def _pause(store: Store, acct: capacity.Account) -> None:
+    capacity.record_pause(store, acct, datetime.now(timezone.utc) + timedelta(hours=1), "spent")
+
+
+def _claude_open(store: Store) -> None:
+    now = datetime.now(timezone.utc)
+    capacity.record_reading(store, _ACCT, capacity.Reading(
+        five_hour=capacity.Window(0.1, now + timedelta(hours=2)),
+        seven_day=None,
+        status="allowed", at=now, by="t"))
+
+
+@pytest.fixture
+def providers(monkeypatch, capacity_store):
+    """Each run's provider and model: Claude's spawn, or the Codex run."""
+    from pipeline import headless_codex
+    ran: list[tuple[str, str | None]] = []
+
+    def claude(cmd, **kw):
+        ran.append(("claude", cmd[cmd.index("--model") + 1] if "--model" in cmd else None))
+        return _FakeProc(cmd)
+
+    def codex(prompt, *, model, **kw):
+        ran.append(("codex", model))
+        return "ok"
+
+    monkeypatch.setattr(ha.subprocess, "Popen", claude)
+    monkeypatch.setattr(headless_codex, "run", codex)
+    monkeypatch.setattr(ha, "probe_reading", lambda timeout=180: None)
+    monkeypatch.setenv("TRIAGE_AGENT_MODEL", "opus")
+    return ran
+
+
+def _run(model: str | None = None, **kw) -> None:
+    ha.run_agent("hi", allow_gh=False, cwd="/tmp", read_root="/tmp", env_allow=(), model=model,
+                 **kw)
+
+
+def test_a_claude_run_moves_to_the_fallback_while_claude_is_closed(providers, capacity_store):
+    _pause(capacity_store, _ACCT)
+    with capacity.fallback("codex:gpt-x"):
+        _run("sonnet")
+    assert providers == [("codex", "gpt-x")]
+
+
+def test_a_claude_run_stays_while_claude_is_open(providers, capacity_store):
+    _claude_open(capacity_store)
+    with capacity.fallback("codex:gpt-x"):
+        _run("sonnet")
+    assert providers == [("claude", "sonnet")]
+
+
+def test_a_claude_run_stays_while_both_are_closed(providers, capacity_store):
+    _pause(capacity_store, _ACCT)
+    _pause(capacity_store, capacity.CODEX)
+    with capacity.fallback("codex:gpt-x"):
+        _run("sonnet")
+    assert providers == [("claude", "sonnet")]
+
+
+def test_a_codex_run_moves_to_the_agent_model_while_codex_is_paused(providers, capacity_store):
+    _claude_open(capacity_store)
+    _pause(capacity_store, capacity.CODEX)
+    with capacity.fallback("codex:gpt-x"):
+        _run("codex:gpt-y")
+    assert providers == [("claude", "opus")]
+
+
+def test_no_run_moves_outside_a_fallback_block(providers, capacity_store):
+    _pause(capacity_store, _ACCT)
+    _pause(capacity_store, capacity.CODEX)
+    _run("sonnet")
+    _run("codex:gpt-y")
+    assert providers == [("claude", "sonnet"), ("codex", "gpt-y")]
+
+
+def test_a_run_codex_cannot_serve_stays_on_claude(providers, capacity_store):
+    _pause(capacity_store, _ACCT)
+    with capacity.fallback("codex:gpt-x"):
+        ha.run_agent("hi", allow_gh=True, cwd="/tmp", read_root="/tmp", env_allow=(),
+                     model="sonnet")
+    assert providers == [("claude", "sonnet")]
+
+
+def test_attended_work_never_moves(providers, capacity_store):
+    _pause(capacity_store, _ACCT)
+    with capacity.fallback("codex:gpt-x"), capacity.attended():
+        _run("sonnet")
+    assert providers == [("claude", "sonnet")]

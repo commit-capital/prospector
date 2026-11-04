@@ -494,8 +494,11 @@ def run_agent(prompt: str, *, allow_gh: bool, cwd: str, system_prompt: str | Non
     AgentTransient when the service was overloaded. Inside unattended work
     (capacity.current_lane()) a closed capacity gate raises
     capacity.CapacityPaused before any agent starts. Every run's capacity
-    reading and usage are recorded for its account."""
+    reading and usage are recorded for its account. Inside a
+    `capacity.fallback` block the run may move providers (`_routed`)."""
     from pipeline import headless_codex
+    if read_root is not None and not allow_gh and not git_root:
+        model = _routed(model)
     if model and model.startswith(headless_codex.PREFIX):
         return headless_codex.run(
             prompt, model=model.removeprefix(headless_codex.PREFIX) or None, cwd=cwd,
@@ -629,7 +632,7 @@ def _book(rate_events: list[dict], result: dict | None, lane: str | None,
 
 
 # A limit hit whose reset the CLI did not say pauses unattended work this long.
-_UNKNOWN_RESET_PAUSE = timedelta(hours=1)
+UNKNOWN_RESET_PAUSE = timedelta(hours=1)
 
 
 def _pause(resets_at: datetime | None, window: str | None) -> None:
@@ -639,11 +642,33 @@ def _pause(resets_at: datetime | None, window: str | None) -> None:
         acct = capacity.account()
         if acct is None:
             return
-        until = resets_at or datetime.now(timezone.utc) + _UNKNOWN_RESET_PAUSE
+        until = resets_at or datetime.now(timezone.utc) + UNKNOWN_RESET_PAUSE
         label = (window or "usage").replace("_", "-")
         capacity.record_pause(_store(), acct, until, f"the {label} limit was reached")
     except Exception:
         return
+
+
+def _routed(model: str | None) -> str | None:
+    """The model a run Codex could serve takes inside a `capacity.fallback`
+    block: a Claude run whose gate is closed moves to the fallback while Codex
+    is open, and a Codex run while Codex is paused moves to the agent model
+    while Claude's gate is open. Anything else keeps `model`."""
+    from pipeline import headless_codex
+    fallback = capacity.fallback_model()
+    if fallback is None:
+        return model
+    store = _store()
+
+    def claude_open() -> bool:
+        return capacity.check(store, capacity.account(), probe=probe_reading).allowed
+
+    if model and model.startswith(headless_codex.PREFIX):
+        codex_open = capacity.check(store, capacity.CODEX).allowed
+        return model if codex_open or not claude_open() else None
+    if claude_open() or not capacity.check(store, capacity.CODEX).allowed:
+        return model
+    return fallback
 
 
 def run_on_bundle(bundle: object, prompt: Callable[[str], str], *, prefix: str,

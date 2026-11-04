@@ -34,7 +34,7 @@ def capacity(monkeypatch):
     """Whether this machine's AI capacity is open, and the lanes asked about it."""
     held: dict = {"open": True, "asked": []}
 
-    def capacity_open(lane: str) -> bool:
+    def capacity_open(lane: str, *, codex: bool = False) -> bool:
         held["asked"].append(lane)
         return held["open"]
 
@@ -1070,6 +1070,31 @@ def test_automation_s_request_is_metered_and_an_operator_s_is_not(store, capacit
         "queued_at": _ago(minutes=1), "attempts": 1})
     issue_fix_worker.run_once(store)
     assert lanes == [("operator", None), ("hunter", "issue-fix")]
+
+
+@pytest.mark.parametrize("models, fallback", [("opus,sonnet", None),
+                                               ("opus,codex:gpt-x", "codex:gpt-x")])
+def test_a_codex_model_in_the_mix_lets_the_lane_fall_back_to_it(store, capacity, monkeypatch,
+                                                                 models, fallback):
+    from pipeline import capacity as policy
+    asked: list[bool] = []
+    seen: list[str | None] = []
+
+    def capacity_open(lane: str, *, codex: bool = False) -> bool:
+        asked.append(codex)
+        return True
+
+    def run_request(s, n, req, *, on_step):
+        seen.append(policy.fallback_model())
+        return "done", "Solved: fixed"
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_MODELS", models)
+    monkeypatch.setattr(lane_health, "capacity_open", capacity_open)
+    monkeypatch.setattr(fix_review_runner, "run_request", run_request)
+    store.edit_issue(2).record_fix_request({
+        "action": "solve", "status": "queued", "source": "hunter", "requested_by": "hunter",
+        "queued_at": _ago(minutes=1), "attempts": 1})
+    issue_fix_worker.run_once(store)
+    assert asked == [fallback is not None] and seen == [fallback]
 
 
 @pytest.mark.parametrize("question, lane", [(QUESTION, None), (None, "issue-fix")])

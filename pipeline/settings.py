@@ -583,6 +583,15 @@ def issue_fix_review_model() -> str | None:
     return issue_fix_review_models()[0]
 
 
+def issue_fix_codex_model() -> str | None:
+    """The first `codex:<model>` among the issue-fix candidate and reviewer
+    models: the issue-fix lane's fallback while Claude's capacity is closed
+    (`capacity.fallback`). None when neither list names one."""
+    from pipeline import headless_codex
+    return next((m for m in (*issue_fix_models(), *issue_fix_review_models())
+                 if m and m.startswith(headless_codex.PREFIX)), None)
+
+
 def issue_fix_suite() -> bool:
     """Whether the issue-fix lanes run the full suite over a fix that clears
     their other checks. On unless TRIAGE_ISSUE_FIX_SUITE=0."""

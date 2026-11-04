@@ -21,8 +21,8 @@ from issue_triage import (
     solo_lane,
     trust_boundary,
 )
-from pipeline import (authoring, gates, headless_agent, prove, resolve_evidence, verdict_log,
-                      verify_driver)
+from pipeline import (authoring, capacity, gates, headless_agent, prove, resolve_evidence,
+                      verdict_log, verify_driver)
 from pipeline.store import Store
 
 ROOT_SAFE = {"lens": "root-cause", "verdict": "safe", "reason": "cures it", "concerns": []}
@@ -220,6 +220,20 @@ def test_candidates_that_agree_end_fixed_with_the_smallest_fix_when_the_comparis
     for test in ("a", "b", "c"):
         assert f"src/{test}.test.ts" in res.result["patch"]
     assert [f["path"] for f in res.reproduction["files"]][0] == f"src/{'ab'[pick]}.test.ts"
+
+
+def test_every_candidate_runs_under_the_caller_s_metering_and_fallback(cross, monkeypatch):
+    seen: list[tuple[str | None, str | None]] = []
+    author = solo_lane.author
+
+    def spy(worktree, **kw):
+        seen.append((capacity.meter_lane(), capacity.fallback_model()))
+        return author(worktree, **kw)
+
+    monkeypatch.setattr(solo_lane, "author", spy)
+    with capacity.metered("issue-fix"), capacity.fallback("codex:gpt-x"):
+        cross["run"]()
+    assert seen[:3] == [("issue-fix", "codex:gpt-x")] * 3
 
 
 def test_the_fix_a_design_comparison_prefers_is_judged_over_a_smaller_one(cross):
