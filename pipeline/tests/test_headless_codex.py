@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -428,3 +429,16 @@ def test_a_usage_limit_hit_pauses_unattended_codex_work(home, tmp_path, monkeypa
             allow_gh=False, git_root=None, system_prompt=None)
     decision = capacity.check(store, capacity.CODEX)
     assert not decision.allowed and "Codex usage limit" in decision.reason
+
+
+def test_unattended_work_never_starts_codex_while_it_is_paused(home, tmp_path, monkeypatch):
+    store = Store(tmp_path / "store")
+    now = datetime.now(timezone.utc)
+    capacity.record_pause(store, capacity.CODEX, now + timedelta(hours=1), "spent")
+    monkeypatch.setattr(headless_agent, "_store", lambda: store)
+    monkeypatch.setattr(headless_codex, "CODEX_BIN", str(tmp_path / "missing-codex"))
+    with capacity.unattended("issue-fix"), pytest.raises(capacity.CapacityPaused):
+        headless_codex.run(
+            "review it", model="gpt-x", cwd=str(home["clone"]), read_root=str(home["clone"]),
+            edit_root=None, allow=(), env_allow=(), env_extra=None, timeout=30,
+            allow_gh=False, git_root=None, system_prompt=None)

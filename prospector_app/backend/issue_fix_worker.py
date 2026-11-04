@@ -593,7 +593,7 @@ def _follow_up(store: IssueStore) -> None:
     """`followup.poll`, whose reply routing runs an agent only while the lane's
     AI capacity is open; its other steps run regardless."""
     with _metered():
-        followup.poll(store, may_route=lambda: _capacity_open())
+        followup.poll(store, may_route=_capacity_open)
 
 
 def _answer_replies(store: IssueStore) -> None:
@@ -601,7 +601,7 @@ def _answer_replies(store: IssueStore) -> None:
     the lane's AI capacity is open; reading replies and report edits runs
     regardless."""
     with _metered():
-        public_loop.answer_replies(store, may_route=lambda: _capacity_open())
+        public_loop.answer_replies(store, may_route=_capacity_open)
 
 
 def _close_out(store: IssueStore) -> None:
@@ -611,7 +611,7 @@ def _close_out(store: IssueStore) -> None:
 
     with _metered():
         close_out.run(store, issue_data.issues(),
-                      may_run=lambda: _capacity_open())
+                      may_run=_capacity_open)
 
 
 def _every_ten_minutes(store: IssueStore) -> None:

@@ -33,7 +33,6 @@ from pipeline import capacity, headless_agent, settings
 
 CODEX_BIN = shutil.which("codex") or "codex"
 PREFIX = "codex:"
-ACCOUNT = "codex"
 
 _PROFILE = "lane"
 
@@ -331,6 +330,10 @@ def run(prompt: str, *, model: str | None, cwd: str, read_root: str | Sequence[s
         raise ValueError("a Codex run reaches neither GitHub nor git")
     if read_root is None:
         raise ValueError("a Codex run needs a read_root")
+    if capacity.current_lane() is not None:
+        decision = capacity.check(headless_agent._store(), capacity.CODEX)
+        if not decision.allowed:
+            raise capacity.CapacityPaused(decision)
     roots = headless_agent._roots(read_root)
     headless_agent._assert_scoped(cwd, read_root, edit_root, None)
     tools = allowed_commands(allow)
@@ -412,7 +415,7 @@ def _book(usage: dict | None, lane: str | None, model: str | None,
     try:
         finished = datetime.now(timezone.utc).isoformat(timespec="seconds")
         headless_agent._store().append_agent_run({
-            "phase": "agent:run", "lane": lane or "operator", "account": ACCOUNT,
+            "phase": "agent:run", "lane": lane or "operator", "account": capacity.CODEX.key,
             "unattended": lane is not None, "model": f"{PREFIX}{model or ''}",
             "host": settings.worker_id(),
             "input_tokens": usage.get("input_tokens"),
