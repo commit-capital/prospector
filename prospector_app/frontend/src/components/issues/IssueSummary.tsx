@@ -17,6 +17,8 @@ import { WhyHeld } from "./WhyHeld";
 import { holdReasons } from "./holdReasons";
 import { useExec } from "../../ExecContext";
 import { flashTo, issueSectionId } from "../pageAnchor";
+import { ago } from "../../factLine";
+import { localDateTime } from "../../timeAgo";
 
 type Tone = "green" | "amber" | "red" | "blue" | "purple" | "gold" | "muted";
 type Fact = { tone: Tone; text: string; tip: string };
@@ -230,6 +232,7 @@ function IssueAnalysis({ d }: { d: IssueDetail }) {
         <ReproChip grade={d.repro_grade} />
         {a.canonical != null && <span className="muted small">duplicate of <FlyoutIssueLink n={a.canonical} /></span>}
         {a.fixed_by != null && <span className="muted small">fixed by <PRLink n={a.fixed_by} /></span>}
+        {a.checked_at && <span className="muted small" title={localDateTime(a.checked_at)}>checked {ago(a.checked_at)}</span>}
       </div>
       {a.rationale && <div className="issue-rationale">{a.rationale}</div>}
       {a.asks && a.asks.length > 0 && (

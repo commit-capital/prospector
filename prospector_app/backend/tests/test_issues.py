@@ -843,6 +843,18 @@ def test_row_carries_the_fix_scans_fixer_without_a_store_state(tmp_path, monkeyp
     assert rows[11]["fixed_by"] is None
 
 
+def test_detail_dates_the_analysis_by_the_fact_its_rationale_comes_from(tmp_path, monkeypatch):
+    st = _seed(tmp_path, monkeypatch)
+    rec = st.load_issue(11).raw
+    rec["analysis"]["checked_at"] = "2026-03-01T00:00:00+00:00"
+    st.save_issue(rec)
+    assert issues.get_issue(11)["analysis"]["checked_at"] == "2026-03-01T00:00:00+00:00"
+    st.edit_issue(11).record_fixed(950, rationale="#950 adds the guard")
+    d = issues.get_issue(11)["analysis"]
+    assert d["rationale"] == "#950 adds the guard"
+    assert d["checked_at"] == st.load_issue(11).section("fix_scan")["checked_at"]
+
+
 def test_rows_and_detail_carry_the_fix_attempt(tmp_path, monkeypatch):
     st = _seed(tmp_path, monkeypatch)
     st.edit_issue(10).record_fix_run({"ending": "fixed", "detail": "proven", "patch": "p",

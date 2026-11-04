@@ -157,18 +157,22 @@ class Issue:
     def fixed_by(self) -> int | None:
         return (self.rec.get("fix_scan") or {}).get("fixed_by")
 
+    def _verdict(self) -> dict:
+        """The section the rationale and gist come from."""
+        return self.rec.get("fix_scan" if self._fixed_now() else "analysis") or {}
+
     @property
     def rationale(self) -> str | None:
-        if self._fixed_now():
-            return (self.rec.get("fix_scan") or {}).get("rationale")
-        return (self.rec.get("analysis") or {}).get("rationale")
+        return self._verdict().get("rationale")
+
+    @property
+    def rationale_checked_at(self) -> str | None:
+        return self._verdict().get("checked_at")
 
     @property
     def gist(self) -> str | None:
         """Plain-language restatement of what the issue is."""
-        if self._fixed_now():
-            return (self.rec.get("fix_scan") or {}).get("gist")
-        return (self.rec.get("analysis") or {}).get("gist")
+        return self._verdict().get("gist")
 
     @property
     def asks(self) -> list | None:
