@@ -441,6 +441,18 @@ def brought_current(pr: Pr) -> bool:
             and bool(pr.head_sha) and (req.get("result") or {}).get("pushed_head_sha") == pr.head_sha)
 
 
+def agent_could_try(req: dict) -> bool:
+    """Whether fix request `req` could reach an agent on its conflicts: a hunted
+    rebase stops at them unless the hunter may resolve, and then ends as `resolve`."""
+    return req.get("source") != "auto" or req.get("action") == "resolve"
+
+
+def operator_rejected(req: dict) -> bool:
+    """Whether a person cancelled fix request `req`; a `reclaimed` cancel is a
+    worker's request taken back from a machine that went offline."""
+    return req.get("status") == "cancelled" and not (req.get("result") or {}).get("reclaimed")
+
+
 def rebase_feedback(pr: Pr) -> Feedback | None:
     """Our ask that `pr`'s author rebase its head (`rebase_ask`), as blocking
     feedback on that head."""

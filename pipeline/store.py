@@ -1622,8 +1622,11 @@ class Store:
                 section[field] = req[field]
         if req.get("failures") and req.get("against_head_sha") == head:
             section["failures"] = req["failures"]
-        storekit.stamp(rec, "fix_request", section, "against_head_sha", head)
-        return section if self._prs.save_if(rec, stamp) else None
+        # A queued request runs on the head it finds; any later one stays on the
+        # head its result was proven against, so a moved head refuses the push.
+        pinned = head if req.get("status") == "queued" else req.get("against_head_sha") or head
+        storekit.stamp(rec, "fix_request", section, "against_head_sha", pinned)
+        return rec["fix_request"] if self._prs.save_if(rec, stamp) else None
 
     def claim_security_run(self, n: int, *, host: str, stale_after: float) -> bool:
         """Atomically claim PR `n`'s autohunt security review for `host` — a

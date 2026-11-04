@@ -320,3 +320,82 @@ def test_a_branch_the_bot_may_not_touch_gets_the_ask(store, failing_ci, drift, c
     _save_ci(store, 1)
     assert abandoned_close.sweep_once(NOW) == [1]
     assert asks == [1] and queued == []
+
+
+def test_a_hunted_rebase_no_agent_could_help_does_not_count_as_trying(
+        store, failing_ci, drift, closes, queued, asks):
+    drift.rebase_clean, drift.conflicts = False, ["a.ts"]
+    _save_ci(store, 1)
+    store.edit_pr(1).record_fix_request("refused", "rebase", head_sha=_head(1), source="auto",
+                                        result={"conflict_paths": ["a.ts"]})
+    data.refresh()
+    assert abandoned_close.sweep_once(NOW) == [1]
+    assert queued == [(1, "rebase")] and asks == []
+
+
+def test_a_hunted_resolve_counts_as_trying(store, failing_ci, drift, closes, queued, asks):
+    _save_ci(store, 1)
+    store.edit_pr(1).record_fix_request("refused", "resolve", head_sha=_head(1), source="auto",
+                                        result={"conflict_paths": ["a.ts"]})
+    data.refresh()
+    assert abandoned_close.sweep_once(NOW) == [1]
+    assert asks == [1] and queued == []
+
+
+def test_reopening_clears_only_asks_no_agent_stood_behind():
+    head, ask = "a" * 40, {"head_sha": "a" * 40, "at": "2026-11-01T00:00:00+00:00"}
+
+    def rec(**req: object) -> dict:
+        return {"pr": 1, "meta": {"head_sha": head}, "rebase_ask": ask,
+                "fix_request": {"against_head_sha": head, "action": "rebase", **req}}
+
+    hunted = abandoned_close.reopen_premature_asks(rec(source="auto", status="refused"))
+    assert hunted is not None and "rebase_ask" not in hunted and "fix_request" in hunted
+    misfired = abandoned_close.reopen_premature_asks(rec(status="refused", result={
+        "output": "resubmit: rewrite confirmation must be the exact old head SHA x"}))
+    assert misfired is not None and "rebase_ask" not in misfired and "fix_request" not in misfired
+    assert abandoned_close.reopen_premature_asks(rec(status="refused")) is None
+    moved = {**rec(source="auto"), "meta": {"head_sha": "b" * 40}}
+    assert abandoned_close.reopen_premature_asks(moved) is None
+    declined = rec(source="auto", status="refused", refused_reason="The agent declined to guess")
+    assert abandoned_close.reopen_premature_asks(declined) is None
+    no_ask = {k: v for k, v in rec(status="refused", result={
+        "output": "rewrite confirmation must be"}).items() if k != "rebase_ask"}
+    cleared = abandoned_close.reopen_premature_asks(no_ask)
+    assert cleared is not None and "fix_request" not in cleared
+
+
+def test_the_repair_saves_through_store_edit_and_the_lane_then_queues(
+        store, failing_ci, drift, closes, queued, asks, tmp_path):
+    from pipeline import store_edit
+    _save_ci(store, 1)
+    store.edit_pr(1).record_fix_request("refused", "rebase", head_sha=_head(1), source="auto",
+                                        result={"conflict_paths": ["a.ts"]})
+    store.set_pr_section(1, "rebase_ask", {"head_sha": _head(1), "at": FEEDBACK.isoformat()})
+    report = store_edit.plan_edit(store, abandoned_close.reopen_premature_asks, "prs")
+    store_edit.apply_edit(store, report, "reopen_premature_asks", backup_dir=tmp_path)
+    data.refresh()
+    assert data.prs()[1].section("rebase_ask") is None
+    assert abandoned_close.sweep_once(NOW) == [1]
+    assert queued == [(1, "rebase")] and asks == []
+
+
+def test_a_hunter_overwriting_the_lanes_request_does_not_reset_its_bound(
+        store, failing_ci, drift, closes, queued, asks):
+    _save_ci(store, 1)
+    assert abandoned_close.sweep_once(NOW) == [1]
+    # The worker ended the lane's request, and the hunter's own run then ended too.
+    store.edit_pr(1).record_fix_request("refused", "rebase", head_sha=_head(1), source="auto",
+                                        result={"conflict_paths": ["a.ts"]})
+    data.refresh()
+    assert abandoned_close.sweep_once(_next_pass()) == [1]
+    assert asks == [1] and queued == [(1, "rebase")]
+
+
+def test_an_operators_cancelled_rebase_is_not_queued_again(
+        store, failing_ci, drift, closes, queued, asks):
+    _save_ci(store, 1)
+    store.edit_pr(1).record_fix_request("cancelled", "rebase", head_sha=_head(1), source="auto")
+    data.refresh()
+    assert abandoned_close.sweep_once(NOW) == [1]
+    assert asks == [1] and queued == []
