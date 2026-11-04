@@ -157,11 +157,16 @@ def bring_current(pr: Pr, verdict: Verdict, steps: set[str], now: datetime,
     shows its head already carries the base, else bring it current or ask its
     author to rebase (`backlog_sweep.classify`). A request at this head that
     ended without bringing it current leads to the ask, or, when the worker
-    ended it, to one more try. Returns the booked step, or None."""
+    ended it, to one more try. A hunted request no agent could help counts only
+    once this lane queued at the head, which the hunter's later runs overwrite.
+    Returns the booked step, or None."""
     req = pr.fix_request or {}
     head = pr.head_sha
     retry = False
-    if req.get("against_head_sha") == head and req.get("action") in ("update", "rebase", "resolve"):
+    tried = (gates.agent_could_try(req) or gates.operator_rejected(req)
+             or bool(steps & {"queued", "requeued"}))
+    if (tried and req.get("against_head_sha") == head
+            and req.get("action") in ("update", "rebase", "resolve")):
         retry = "requeued" not in steps and backlog_sweep.ended_on_the_machine(req, head)
         if not retry:
             conflicts = [str(p) for p in (req.get("result") or {}).get("conflict_paths") or []]
@@ -184,6 +189,24 @@ def bring_current(pr: Pr, verdict: Verdict, steps: set[str], now: datetime,
     except ValueError as e:
         return _book(pr, "failed", mode, f"not queued: {e}")
     return _book(pr, "requeued" if retry else "queued", mode, plan.why, action=plan.action)
+
+
+def reopen_premature_asks(rec: dict) -> dict | None:
+    """A `store_edit` transform: clear the rebase ask on a head no agent tried,
+    and any request whose push failed our own confirmation, so the head can be
+    brought current. A later ask finds its comment already posted."""
+    ask, req = rec.get("rebase_ask") or {}, rec.get("fix_request") or {}
+    head = (rec.get("meta") or {}).get("head_sha")
+    if req.get("against_head_sha") != head:
+        return None
+    misfired = "rewrite confirmation" in str((req.get("result") or {}).get("output"))
+    premature = ask.get("head_sha") == head and (misfired or not (
+        gates.agent_could_try(req) or gates.operator_rejected(req)
+        or "The agent" in str(req.get("refused_reason"))))
+    if not (misfired or premature):
+        return None
+    drop = ({"fix_request"} if misfired else set()) | ({"rebase_ask"} if premature else set())
+    return {k: v for k, v in rec.items() if k not in drop}
 
 
 def _ask(pr: Pr, conflicts: list[str], mode: str, why: str) -> str:

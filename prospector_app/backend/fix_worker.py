@@ -1365,6 +1365,8 @@ def _agent_resolve(n: int, claimed: dict, paused: list[str]) -> None:
         _decline(n, claimed, _conflict_refusal(paused), result=evidence)
         return
 
+    # Every ending from here on is the agent's, so it records as a `resolve`.
+    claimed = {**claimed, "action": "resolve"}
     _running_step(n, claimed, "agent resolving conflicts")
     try:
         verdict = resolve_conflicts.resolve(

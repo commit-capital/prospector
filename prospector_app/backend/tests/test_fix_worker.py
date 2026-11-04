@@ -227,6 +227,45 @@ def test_a_clean_rebase_hands_the_preflight_its_whole_change(store, monkeypatch)
     assert handed == ["diff --git a/a.ts b/a.ts\n+x"]
 
 
+def test_a_clean_rebase_confirms_its_push_with_the_head_it_rebased(store, monkeypatch, retriggers):
+    monkeypatch.setenv("TRIAGE_FIX_AUTOPUSH", "rebase")
+    fix_queue.queue_pr(1, "rebase")
+    head = store.load_pr(1).head_sha
+    probe = _Probe(overrides={"state": (0, '{"phase": "ready", "conflicts": []}'),
+                              ("diff", "--whole"): (0, "diff --git a/a.ts b/a.ts\n+x")})
+    monkeypatch.setattr(fix_worker, "_resubmit", probe)
+
+    fix_worker.run_one(1)
+
+    assert ("push", "--confirm-rewrite", head) in probe.calls
+
+
+def test_an_approved_rebase_refuses_a_head_that_moved(store, monkeypatch, retriggers):
+    fix_queue.queue_pr(1, "rebase")
+    proven = store.load_pr(1).head_sha
+    store.edit_pr(1).record_fix_request("approved", "rebase", head_sha=proven)
+    rec = store.edit_pr(1)
+    rec.raw["meta"]["head_sha"] = "f" * 40
+    store.save_pr(rec.raw)
+
+    claimed = store.claim_fix_request(1, host="h", statuses=("approved",), to_status="pushing")
+
+    assert claimed is not None and claimed["against_head_sha"] == proven
+
+
+def test_an_agent_give_up_on_a_hunted_rebase_ends_as_a_resolve(store, monkeypatch, tmp_path):
+    monkeypatch.setenv("TRIAGE_FIX_HUNT_RESOLVE", "1")
+    fix_queue.queue_pr(1, "rebase", source="auto")
+    monkeypatch.setattr(fix_worker, "_resubmit", _ConflictedResubmit(tmp_path))
+    monkeypatch.setattr(fix_worker.resolve_conflicts, "resolve",
+                        lambda wt, paths, **kw: {"give_up": "needs a person"})
+
+    fix_worker.run_one(1)
+
+    req = store.load_pr(1).fix_request
+    assert (req["status"], req["action"]) == ("refused", "resolve")
+
+
 def test_a_diff_ending_in_a_blank_context_line_reaches_the_preflight_whole(store, monkeypatch):
     # git renders an unchanged blank line as a lone space; a patch that loses it
     # is corrupt, and the sandbox would refuse the change as not applying.
