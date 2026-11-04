@@ -8,7 +8,8 @@ machine on the account, and any pause after a usage-limit hit, live in the
 store's `ai_capacity:<key>` row, and the account's policy in `ai_account:<key>`.
 `check()` decides whether unattended work may start an agent now: under a
 subscription, while the 5-hour window, when the CLI reports one, is below the
-cap in effect at this time of day and weekly use is within its pace; under an
+cap in effect at this time of day and weekly use is within its pace (paced to
+the night cap's share of the week when there is no 5-hour window); under an
 API key, while today's reported spend is below the daily budget. The Codex
 CLI reports no readings, so Codex (`CODEX`) is gated only by the pause a
 usage-limit hit records. Work an operator starts is never gated.
@@ -371,12 +372,20 @@ def cap_now(p: Policy, now: datetime) -> tuple[float, datetime]:
     return cap, min(e for e in edges if e > local).astimezone(timezone.utc)
 
 
-def pacing_line(seven_day: Window, now: datetime) -> float:
+def pacing_line(seven_day: Window, now: datetime, ceiling: float = 1.0) -> float:
     """The weekly utilization unattended work may reach by `now`: the elapsed
-    share of this account's week plus WEEKLY_SLACK."""
+    share of this account's week, of `ceiling`, plus WEEKLY_SLACK."""
     start = seven_day.resets_at - WEEK
     elapsed = min(max((now - start) / WEEK, 0.0), 1.0)
-    return elapsed + WEEKLY_SLACK
+    return elapsed * ceiling + WEEKLY_SLACK
+
+
+def weekly_ceiling(p: Policy, reading: Reading | None, now: datetime) -> float:
+    """The share of the week unattended work may spend: all of it while the CLI
+    reports a 5-hour window, whose cap holds back the operator's share, else
+    the night cap."""
+    five = _current(reading.five_hour, now, FIVE_HOURS) if reading is not None else None
+    return 1.0 if five is not None else p.night_cap
 
 
 def local_midnights(p: Policy, now: datetime) -> tuple[datetime, datetime]:
@@ -453,12 +462,16 @@ def check(store: Store, acct: Account | None, now: datetime | None = None,
             retry = min(five.resets_at, boundary) if used < later else five.resets_at
             return Decision(False, reason, retry)
     if week is not None:
-        line = pacing_line(week, now)
+        ceiling = weekly_ceiling(p, reading, now)
+        if week.utilization >= ceiling:
+            return Decision(False, f"weekly use {week.utilization:.0%} reached the "
+                                   f"{ceiling:.0%} unattended work may spend", week.resets_at)
+        line = pacing_line(week, now, ceiling)
         if p.weekly_pacing and week.utilization > line:
             start = week.resets_at - WEEK
             return Decision(False, f"weekly use {week.utilization:.0%} is ahead of pace "
                                    f"({line:.0%} by now)",
-                            start + WEEK * (week.utilization - WEEKLY_SLACK))
+                            start + WEEK * (week.utilization - WEEKLY_SLACK) / ceiling)
         reason = reason or f"weekly use {week.utilization:.0%}"
     return Decision(True, reason, None)
 

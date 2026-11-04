@@ -98,7 +98,7 @@ def view(acct: capacity.Account, machines: list[str], this_machine: bool,
         "reading_age_seconds": None if reading is None else (now - reading.at).total_seconds(),
         "cap_now": cap if subscription else None,
         "next_boundary": _iso(boundary) if subscription else None,
-        "pacing_line": (capacity.pacing_line(week, now)
+        "pacing_line": (capacity.pacing_line(week, now, capacity.weekly_ceiling(p, reading, now))
                         if subscription and week is not None and p.weekly_pacing else None),
         "weekly_resets_at": _iso(week.resets_at) if week is not None else None,
         "decision": {"allowed": decision.allowed, "reason": decision.reason,

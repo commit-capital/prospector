@@ -803,7 +803,7 @@ function CapacityForm({ initial, host }: { initial: CapacityAccount; host: strin
             <span>
               <input id="cap-night" type="number" min={1} max={100} step={1} value={fields.nightCap}
                 disabled={busy} onChange={(e) => set({ nightCap: e.target.value })} />
-              {" % "}<span className="muted small">of the 5-hour window</span>
+              {" % "}<span className="muted small">of the 5-hour window, or of the week when Claude reports no 5-hour window</span>
             </span>
             <label htmlFor="cap-pacing">Weekly pacing</label>
             <span>
