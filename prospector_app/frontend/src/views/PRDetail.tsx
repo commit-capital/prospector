@@ -762,7 +762,7 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
               onApprove={approveFix} />
           </div>
         </div>
-        <FixBody req={pr.fix_request ?? null} runner={fixRunner} onShowPatch={proposedPatch ? showProposed : undefined} />
+        <FixBody req={pr.fix_request ?? null} runner={fixRunner} head={pr.live_head_sha ?? pr.head_sha ?? null} onShowPatch={proposedPatch ? showProposed : undefined} />
       </section>
 
       {/* #581: security findings, dynamic verification, review-provider
