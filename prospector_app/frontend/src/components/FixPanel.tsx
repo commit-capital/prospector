@@ -309,9 +309,10 @@ export function FixActionButton({ action, req, runner, busy, resolved, onQueue }
 /** The expanded autofix detail: the request's live state plus, once one is
  *  parked for review, a link to its change in the Diff section — shown before
  *  anything is pushed, since approving is what sends it. */
-export function FixBody({ req, runner, onShowPatch }: {
+export function FixBody({ req, runner, head, onShowPatch }: {
   req: FixRequest | null;
   runner: FixRunner | null;
+  head: string | null;
   onShowPatch?: () => void;
 }) {
   if (!req) {
@@ -322,6 +323,22 @@ export function FixBody({ req, runner, onShowPatch }: {
         the contributor's branch.
         {runner != null && !runner.can_queue
           && " No worker has been seen against this store, so nothing would run yet."}
+      </div>
+    );
+  }
+  const ran = req.against_head_sha;
+  if ((req.status === "failed" || req.status === "refused") && ran && head && ran !== head) {
+    return (
+      <div className="verdict-banner v-unknown">
+        <span className="vb-icon">↷</span>
+        <div>
+          <div className="vb-headline">The last {req.action} ran against an earlier head</div>
+          <div className="vb-detail">
+            It stopped at {ran.slice(0, 8)}; the PR has moved to {head.slice(0, 8)} since, so
+            its outcome no longer describes this PR.
+            {req.finished_at && <span title={localDateTime(req.finished_at)}> · {timeAgo(req.finished_at)}</span>}
+          </div>
+        </div>
       </div>
     );
   }
