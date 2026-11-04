@@ -385,3 +385,11 @@ def test_the_account_is_kept_and_a_missing_one_is_retried_later(monkeypatch):
     assert _REAL_ACCOUNT() == MAX and reads == [1, 1]
     now[0] += 60
     assert _REAL_ACCOUNT() == MAX and reads == [1, 1]
+
+
+def test_codex_is_open_until_a_pause_is_recorded(store):
+    now = datetime.now(UTC).replace(microsecond=0)
+    assert capacity.check(store, capacity.CODEX, now=now).allowed
+    capacity.record_pause(store, capacity.CODEX, now + timedelta(hours=1), "spent", now=now)
+    d = capacity.check(store, capacity.CODEX, now=now)
+    assert not d.allowed and d.retry_at == now + timedelta(hours=1)

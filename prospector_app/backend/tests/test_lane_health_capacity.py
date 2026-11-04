@@ -111,3 +111,21 @@ def test_a_recorded_pause_invalidates_the_cached_decision(store, monkeypatch):
     assert lane_health.capacity_open("fix") is True
     capacity.record_pause(store, ACCT, until=now + timedelta(hours=1), reason="limit")
     assert lane_health.capacity_open("fix") is False
+
+
+def _claude_paused(store, monkeypatch) -> None:
+    monkeypatch.setattr(capacity, "account", lambda refresh=False: ACCT)
+    capacity.record_pause(store, ACCT, datetime.now(timezone.utc) + timedelta(hours=12), "spent")
+
+
+def test_a_lane_with_codex_runs_while_only_claude_is_closed(store, monkeypatch):
+    _claude_paused(store, monkeypatch)
+    assert lane_health.capacity_open("issue-fix") is False
+    assert lane_health.capacity_open("issue-fix", codex=True) is True
+
+
+def test_a_lane_with_codex_pauses_once_both_are_closed(store, monkeypatch):
+    _claude_paused(store, monkeypatch)
+    soon = datetime.now(timezone.utc) + timedelta(hours=1)
+    capacity.record_pause(store, capacity.CODEX, soon, "spent")
+    assert lane_health.capacity_open("issue-fix", codex=True) is False

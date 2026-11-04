@@ -59,7 +59,9 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("TRIAGE_ISSUE_FIX_MODELS", "behavior", "list", "Issue-fix candidate models",
             "opus,sonnet,opus",
             "One cross-tested issue-fix candidate per model, comma-separated; "
-            "codex:<model> runs that candidate on the Codex CLI.", editable=True),
+            "codex:<model> runs that candidate on the Codex CLI. Any codex:<model> in "
+            "this list or the reviewers' keeps the lane running while either Claude or "
+            "Codex has capacity: each run moves to the one that is open.", editable=True),
     Setting("TRIAGE_ISSUE_FIX_REVIEW_MODELS", "behavior", "list", "Issue-fix reviewer models",
             "(the agent model)",
             "The models the issue-fix lane reviews every fix on, each apart from the fixers, "

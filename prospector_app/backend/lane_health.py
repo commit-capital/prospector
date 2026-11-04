@@ -178,25 +178,37 @@ _capacity_said: dict[str, bool] = {}
 _account_noted: list[str] = []
 
 
-def capacity_open(lane: str) -> bool:
+def _decision(key: str, acct: capacity.Account | None) -> capacity.Decision:
+    """`acct`'s capacity decision, cached under `key` for CAPACITY_TTL_SECONDS
+    or until a pause is recorded. Called under `_decide_lock`."""
+    now = time.monotonic()
+    cached = _capacity_cache.get(key)
+    if (cached is not None and now - cached[0] < CAPACITY_TTL_SECONDS
+            and cached[1] == capacity.pause_generation()):
+        return cached[2]
+    try:
+        decision = capacity.check(data.store(), acct, probe=headless_agent.probe_reading)
+    except Exception as e:
+        decision = capacity.Decision(False, f"the capacity check failed: {e}", None)
+    _capacity_cache[key] = (now, capacity.pause_generation(), decision)
+    return decision
+
+
+def capacity_open(lane: str, *, codex: bool = False) -> bool:
     """Whether `lane` may start unattended agent work now under this machine's
-    AI account's capacity policy. Asked only with an unattended item in hand,
-    so an idle machine never spends a probe; a decision answers every lane for
-    CAPACITY_TTL_SECONDS or until a pause is recorded, and each lane's change
-    of answer is logged once."""
+    AI account's capacity policy, or with `codex` under Codex's while Claude's
+    is closed. Asked only with an unattended item in hand, so an idle machine
+    never spends a probe; each lane's change of answer is logged once."""
     with _decide_lock:
-        now = time.monotonic()
-        cached = _capacity_cache.get("account")
-        if (cached is not None and now - cached[0] < CAPACITY_TTL_SECONDS
-                and cached[1] == capacity.pause_generation()):
-            decision = cached[2]
-        else:
-            acct = capacity.account()
-            try:
-                decision = capacity.check(data.store(), acct, probe=headless_agent.probe_reading)
-            except Exception as e:
-                decision = capacity.Decision(False, f"the capacity check failed: {e}", None)
-            _capacity_cache["account"] = (now, capacity.pause_generation(), decision)
+        decision = _decision("account", capacity.account())
+        if codex and not decision.allowed:
+            other = _decision("codex", capacity.CODEX)
+            if other.allowed:
+                decision = capacity.Decision(True, f"on Codex; Claude {decision.reason}", None)
+            else:
+                decision = capacity.Decision(
+                    False, f"Claude {decision.reason}; Codex {other.reason}",
+                    min((d.retry_at for d in (decision, other) if d.retry_at), default=None))
         changed = _capacity_said.get(lane) != decision.allowed
         _capacity_said[lane] = decision.allowed
     if changed:

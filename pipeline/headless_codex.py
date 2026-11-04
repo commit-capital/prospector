@@ -383,12 +383,24 @@ def run(prompt: str, *, model: str | None, cwd: str, read_root: str | Sequence[s
     if proc.returncode != 0 or failure:
         why = failure or " ".join("".join(lines[-20:]).split())[-500:] or "(no output)"
         if _LIMIT.search(why):
+            _pause()
             raise headless_agent.CapacityExhausted(f"codex: usage limit reached: {why[:300]}",
                                                    None, None)
         if _UNAVAILABLE.search(why):
             raise headless_agent.AgentUnavailable(f"codex cannot serve prompts: {why[:300]}")
         raise RuntimeError(f"codex exited {proc.returncode}; last output: {why}")
     return text
+
+
+def _pause() -> None:
+    """Pause unattended Codex work for `headless_agent.UNKNOWN_RESET_PAUSE`:
+    the CLI says no reset time. Bookkeeping never fails the run it describes."""
+    try:
+        until = datetime.now(timezone.utc) + headless_agent.UNKNOWN_RESET_PAUSE
+        capacity.record_pause(headless_agent._store(), capacity.CODEX, until,
+                              "the Codex usage limit was reached")
+    except Exception:
+        return
 
 
 def _book(usage: dict | None, lane: str | None, model: str | None,
