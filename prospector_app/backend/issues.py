@@ -347,7 +347,7 @@ def get_issue(n: int) -> dict | None:
         "asks": i.asks,
         "canonical": i.canonical,
         "fixed_by": i.fixed_by,
-        "checked_at": (i.section("analysis") or {}).get("checked_at"),
+        "checked_at": i.rationale_checked_at,
     }
     fixer, canon = i.fixed_by, i.canonical
     row["fixed_comment"] = fixed_issue_comment(int(fixer)) if fixer else None
