@@ -181,55 +181,12 @@ a:hover { text-decoration: underline; }
 .settings-link { color: var(--text); padding: 4px 6px; border-radius: 6px; font-size: 13px; }
 .settings-link:hover { background: var(--panel2); }
 
-/* Feedback modal */
-.feedback-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.45);
-  display: flex; align-items: center; justify-content: center; }
-.feedback-modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-  width: 520px; max-width: calc(100vw - 32px); display: flex; flex-direction: column;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.18); }
-.feedback-modal-header { display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 16px 12px; border-bottom: 1px solid var(--border); }
-.feedback-modal-title { font-weight: 600; font-size: 14px; }
-.feedback-close { background: none; border: none; cursor: pointer; color: var(--muted);
-  font-size: 16px; line-height: 1; padding: 2px 4px; }
-.feedback-close:hover { color: var(--text); }
-.feedback-modal-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
-.feedback-textarea-wrap { position: relative; }
-.feedback-textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px;
-  line-height: 1.5; color: var(--text); background: var(--bg); border: 1px solid var(--border);
-  border-radius: 6px; padding: 8px 10px; resize: vertical; min-height: 110px;
-  padding-right: 36px; }
-.feedback-textarea:focus { outline: none; border-color: var(--accent); }
-.feedback-textarea:disabled { opacity: .6; }
-.feedback-mic-btn { position: absolute; bottom: 8px; right: 8px; background: none; border: none;
-  cursor: pointer; padding: 3px; border-radius: 4px; display: flex; align-items: center;
-  color: var(--muted); transition: color .15s, transform .1s; }
-.feedback-mic-btn:hover { color: var(--text); transform: scale(1.1); }
-.feedback-mic-btn.active { color: #e53e3e; animation: mic-pulse .9s ease-in-out infinite; }
-.feedback-mic-btn:disabled { opacity: .4; cursor: not-allowed; }
-@keyframes mic-pulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
-.feedback-mic-error { font-size: 11px; color: var(--red); }
-.feedback-option { display: flex; align-items: center; gap: 6px; font-size: 12px;
-  color: var(--muted); cursor: pointer; user-select: none; }
-.feedback-option input[type="checkbox"] { cursor: pointer; }
-.feedback-modal-footer { display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 16px 14px; gap: 10px; }
-.feedback-hint { font-size: 11px; color: var(--muted); }
-.feedback-actions { display: flex; gap: 8px; }
-.feedback-cancel { background: none; border: 1px solid var(--border); color: var(--muted);
-  border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; }
-.feedback-cancel:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
-.feedback-cancel:disabled { opacity: .5; cursor: not-allowed; }
-.feedback-submit { background: var(--accent); border: none; color: #fff; border-radius: 6px;
-  padding: 5px 14px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.feedback-submit:hover:not(:disabled) { opacity: .88; }
-.feedback-submit:disabled { opacity: .5; cursor: not-allowed; }
-.feedback-screenshot-fallback { display: flex; flex-direction: column; gap: 8px;
-  padding: 10px 12px; background: var(--bg); border: 1px solid var(--border);
-  border-radius: 6px; }
-.feedback-screenshot-fallback-label { font-size: 12px; color: var(--muted); }
-.feedback-screenshot-preview { max-width: 100%; max-height: 220px; border-radius: 4px;
-  border: 1px solid var(--border); cursor: context-menu; object-fit: contain; }
+/* Feedback dialog, from @commit-capital/bugfix-button */
+:root {
+  --bugfix-bg: var(--panel); --bugfix-fg: var(--text); --bugfix-muted: var(--muted);
+  --bugfix-border: var(--border); --bugfix-accent: var(--accent); --bugfix-danger: var(--red);
+  --bugfix-field-bg: var(--bg);
+}
 
 .mode-badge { border-radius: 6px; padding: 3px 9px; font-size: 11px; font-weight: 700; cursor: pointer; border: 1px solid; letter-spacing: .03em; }
 .mode-badge.dry { color: var(--gold); border-color: var(--gold); background: transparent; }
