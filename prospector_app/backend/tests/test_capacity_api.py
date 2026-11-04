@@ -112,6 +112,21 @@ def test_a_paused_account_with_a_worker_raises_a_health_line(store):
     assert item["label"].startswith("Background AI paused · pa…@example.com · Max")
 
 
+@pytest.mark.parametrize("models, codex_paused, on_codex", [
+    ("opus,sonnet", False, False), ("opus,codex:gpt-x", False, True),
+    ("opus,codex:gpt-x", True, False)])
+def test_the_health_line_says_when_issue_fix_runs_on_codex(store, monkeypatch, models,
+                                                           codex_paused, on_codex):
+    monkeypatch.setenv("TRIAGE_ISSUE_FIX_MODELS", models)
+    if codex_paused:
+        capacity.record_pause(store, capacity.CODEX,
+                              datetime.now(timezone.utc) + timedelta(hours=1), "spent")
+    _worker(store, "Studio", MINE)
+    _reading(store, MINE, 0.95)
+    (item,) = capacity_view.health_items()
+    assert item["detail"].endswith("issue-fix running on Codex") is on_codex
+
+
 def test_an_open_account_raises_no_health_line(store):
     _worker(store, "Studio", MINE)
     _reading(store, MINE, 0.1)

@@ -159,6 +159,7 @@ class Inputs(TypedDict):
     tripped: dict[str, dict[str, dict]]       # host → health lane → {at, kind, reason, remedy, retest}
     pins: list[dict]                          # autohunt_view.base_health()["hosts"] in trouble
     ai_paused: dict[str, AiPaused]            # account key → decision, paused accounts only
+    codex_open: bool                          # capacity_view.codex_fallback_open()
     verify_queue: list[dict]                  # verify_queue.queue_entries()
     fix_queue: list[dict]                     # fix_queue.queue_entries()
     issue_queue: list[dict]                   # {issue, title, status, source, queued_at, started_at, host, step}
@@ -189,7 +190,7 @@ def _cell(lane: str, host: str, m: dict, inp: Inputs) -> CellState:
     if HEALTH_LANE[lane] in inp["tripped"].get(host, {}):
         return "tripped"
     acct = (m.get("ai_account") or {}).get("key")
-    if acct and acct in inp["ai_paused"]:
+    if acct and acct in inp["ai_paused"] and not (lane == "issue-fix" and inp["codex_open"]):
         return "ai-paused"
     return "on"
 
@@ -482,6 +483,7 @@ def _gather() -> Overview:
         f_roster = pool.submit(machines.roster)
         f_hunt = later(autohunt_view.status, None)
         f_accounts = later(capacity_view.accounts, [])
+        f_codex = later(capacity_view.codex_fallback_open, False)
         f_vq = later(verify_queue.queue_entries, [])
         f_fq = later(fix_queue.queue_entries, [])
         f_iq = later(_issue_queue, [])
@@ -497,6 +499,7 @@ def _gather() -> Overview:
         regs, roster, hunt = f_regs.result(), f_roster.result(), f_hunt.result()
         vq = [dict(e) for e in f_vq.result()]
         accounts, fq, iq = f_accounts.result(), f_fq.result(), f_iq.result()
+        codex_open = f_codex.result()
         loops, pauses, picks, design_pool = (f_loops.result(), f_pauses.result(),
                                              f_picks.result(), f_design.result())
         rows = [(ledger, r.raw) for ledger, f in f_runs for r in f.result()
@@ -518,7 +521,7 @@ def _gather() -> Overview:
         "local": settings.worker_id(), "roster": roster,
         "stood_down": machine_mode.stood_down_in(regs), "loops": loops,
         "tripped": _tripped(escalation.health_status(regs)["hosts"]),
-        "pins": pins, "ai_paused": paused, "verify_queue": vq,
+        "pins": pins, "ai_paused": paused, "codex_open": codex_open, "verify_queue": vq,
         "fix_queue": [dict(e) for e in fq], "issue_queue": iq,
         "hunter_now": _hunter_now(roster),
         "pools": {"security": hunt["security_pool"] if hunt else 0,
