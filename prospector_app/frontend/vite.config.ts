@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
+import { bugfixButton } from '@commit-capital/bugfix-button/vite'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -15,7 +16,7 @@ export default defineConfig(({ mode }) => {
   const apiPort = Number(env.API_PORT) || 8787
 
   return {
-    plugins: [react()],
+    plugins: [react(), bugfixButton()],
     // Expose the backend port to the client so the "backend unreachable" banner
     // can name it (see src/health.ts / App.tsx).
     define: { __API_PORT__: JSON.stringify(String(apiPort)) },
