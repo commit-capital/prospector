@@ -47,7 +47,7 @@ directly; you do not need it to get started.
 
 For a single-process setup without the dev servers, build the frontend once
 (`pnpm --dir prospector_app/frontend build`, or
-`npx -y pnpm@11 --dir prospector_app/frontend build` without a pnpm install)
+`npx -y pnpm@12 --dir prospector_app/frontend build` without a pnpm install)
 and run `uv run prospector serve`.
 
 `uv run prospector --help` lists every subcommand. The Clusters board in the
