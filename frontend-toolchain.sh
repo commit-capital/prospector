@@ -22,13 +22,7 @@ if [ -z "$(_fe_node_major)" ] || [ "$(_fe_node_major)" -lt 24 ]; then
   exit 1
 fi
 
-# The pnpm pinned in the frontend's packageManager field. Use an on-PATH pnpm of
-# the same major; an older major fails to switch itself to the pin (ENOEXEC on
-# macOS), so run the pinned version through npx instead (no global install).
-# PNPM is an array so callers invoke it as "${PNPM[@]}".
+# Always run the frontend's pinned pnpm through npx, so whatever pnpm a host has
+# installed never matters. PNPM is an array so callers invoke it as "${PNPM[@]}".
 _fe_pnpm_ver="$(sed -n 's/.*"packageManager":[[:space:]]*"pnpm@\([0-9.]*\)".*/\1/p' "$FRONTEND/package.json" 2>/dev/null | head -1)"
-if command -v pnpm >/dev/null 2>&1 && [ "$(pnpm -v 2>/dev/null | cut -d. -f1)" = "${_fe_pnpm_ver%%.*}" ]; then
-  PNPM=(pnpm)
-else
-  PNPM=(npx -y "pnpm@$_fe_pnpm_ver")
-fi
+PNPM=(npx -y "pnpm@$_fe_pnpm_ver")
