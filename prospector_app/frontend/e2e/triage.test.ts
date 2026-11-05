@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fixture } from "./fixture.ts";
 
+// How far any shape in the settings gear reaches past its viewBox; a positive
+// value is a clipped icon.
+const GEAR_OVERFLOW = `(() => {
+  const svg = document.querySelector(".settings-btn svg");
+  const box = svg.viewBox.baseVal;
+  let worst = -Infinity;
+  for (const shape of svg.querySelectorAll("path, circle")) {
+    const b = shape.getBBox();
+    worst = Math.max(worst, box.x - b.x, box.y - b.y,
+      b.x + b.width - box.x - box.width, b.y + b.height - box.y - box.height);
+  }
+  return worst;
+})()`;
+
 test("find a PR, preview a close, and read its durable Activity receipt", { timeout: 90_000 }, async t => {
   const { page, url, requests, api } = await fixture(t);
   await page.go(`${url}/explore`);
@@ -78,4 +92,12 @@ test("a malicious PR shows its merge block and the API enforces it", { timeout: 
   const receipts = (await api("/api/activity")).items as { kind: string; pr: number; status: string; detail: string }[];
   assert.deepEqual(receipts.map(e => [e.kind, e.pr, e.status]), [["merge", 102, "blocked"]], "only the refusal receipt");
   assert.match(receipts[0].detail, /^merge gate: .*malicious/i);
+});
+
+test("the settings gear draws inside its icon box", { timeout: 60_000 }, async t => {
+  const { page, url } = await fixture(t);
+  await page.go(`${url}/explore`);
+  await page.find({ title: "Settings" }).waitUntil("visible");
+  const overflow = await page.evaluate<number>(GEAR_OVERFLOW);
+  assert.ok(overflow <= 0, `the gear overflows its viewBox by ${overflow} units`);
 });

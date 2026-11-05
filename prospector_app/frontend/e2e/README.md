@@ -36,6 +36,7 @@ node --test --test-concurrency=1 e2e/*.test.ts
 - Open a PR flagged malicious, select merge, and check the disabled control
   and its policy explanation. Independently send the merge request over HTTP
   and verify that the backend also refuses it and preserves the open state.
+- Check that the header's settings gear draws entirely inside its icon box.
 
 Dry runs have no confirmation dialog in the product. These tests preserve
 that behavior. Live confirmation, onboarding, worker transitions, and streamed
