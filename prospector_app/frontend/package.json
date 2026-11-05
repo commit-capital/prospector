@@ -17,7 +17,7 @@
     "test:e2e": "pnpm run build && node --test --test-concurrency=1 e2e/*.test.ts"
   },
   "dependencies": {
-    "@commit-capital/bugfix-button": "github:commit-capital/bugfix-button#5c425f654ba98a213b915d74a0aa9069377d742c",
+    "@commit-capital/bugfix-button": "github:commit-capital/bugfix-button#v0.2.2",
     "react": "^19.3.0",
     "react-diff-view": "^3.3.3",
     "react-dom": "^19.3.0",
