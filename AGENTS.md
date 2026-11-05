@@ -181,8 +181,8 @@ else, and never re-derive it at a call site.
   `test_settings_registry.py` catches literal reads that aren't registered.
   Prefer a sensible default or a Setup-page control to a variable an operator
   has to know about.
-- **Keep the dev-env files in sync:** `.conductor/settings.toml`,
-  `.superset/config.json`, and `.claude/launch.example.json` all wire up
+- **Keep the dev-env files in sync:** `.superset/config.json` and
+  `.claude/launch.example.json` both wire up
   `setup.sh` and `uv run prospector serve --dev`. Edit the launch *example*;
   `setup.sh` generates `.claude/launch.json` from it.
 - **Keep `pyproject.toml` dependency lists alphabetical.**

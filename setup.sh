@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Prospector — dependency setup. Syncs the repo-root uv environment (pinned
 # to Python 3.14.6 via .python-version + uv.lock) and installs frontend deps.
-# Idempotent: safe to run standalone, from `prospector serve --dev`, or as
-# Conductor's setup script (.conductor/settings.toml). Run from anywhere — paths are
-# resolved to the repo root.
+# Idempotent: safe to run standalone, from `prospector serve --dev`, or as a
+# workspace host's setup script. Run from anywhere — paths are resolved to the
+# repo root.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -61,8 +61,8 @@ if ! grep -q '^TRIAGE_REPO=' "$ENV_FILE"; then
   fi
 fi
 
-# The repository policy profile is static, local, and gitignored. Conductor
-# copies it via .worktreeinclude; this setup path also serves workspace hosts
+# The repository policy profile is static, local, and gitignored. Hosts that
+# honor .worktreeinclude copy it; this setup path also serves workspace hosts
 # that start from tracked files and then run the repository setup script.
 PROFILE_FILE="$ROOT/profile.json"
 primary_profile="$primary/profile.json"
