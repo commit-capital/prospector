@@ -1,7 +1,8 @@
 """Small helper for lazy, debounced in-process store snapshots.
 
 The PR and Issue read paths both want the same control flow: one blocking cold
-load on first use, then non-blocking incremental refreshes after a debounce.
+load on first use, then non-blocking incremental refreshes after a debounce. A
+read after `mark_stale` freshens incrementally before returning.
 Callers own the actual data/watermark shape; this class owns only the locking
 and scheduling.
 """
@@ -39,10 +40,9 @@ class LazySnapshot:
                     self._stale = False
                     try:
                         self._freshen(False)
+                        self._last_check = time.monotonic()
                     except Exception:
-                        self._stale = True
-                        raise
-                    self._last_check = time.monotonic()
+                        self._stale = True  # serve the last snapshot; the next read retries
             return
         if time.monotonic() - self._last_check < self._debounce:
             return
@@ -62,6 +62,7 @@ class LazySnapshot:
 
     def refresh(self) -> None:
         with self._lock:
+            self._stale = False
             self._freshen(not self._loaded)
             self._loaded = True
             self._last_check = time.monotonic()
@@ -73,4 +74,5 @@ class LazySnapshot:
     def invalidate(self) -> None:
         with self._lock:
             self._loaded = False
+            self._stale = False
             self._last_check = 0.0
