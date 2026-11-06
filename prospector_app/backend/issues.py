@@ -247,7 +247,7 @@ def _row(iss: Issue, clusters_by_id: dict[int, IssueCluster], store_states: dict
     cid = iss.cluster_id
     cl = clusters_by_id.get(cid) if cid is not None else None
     members = cl.members if cl else [iss.number]
-    canonical = cl.canonical if cl else None
+    canonical = cl.canonical if cl else iss.canonical
     # Each link's state is resolved once here, so the chip and the merged-fixer
     # count can never read the same link differently.
     links = _links_for(iss)

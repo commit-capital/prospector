@@ -71,6 +71,16 @@ def test_list_issues_enriches(tmp_path, monkeypatch):
     assert rows[11]["duplicates"] == [10]
 
 
+def test_an_unclustered_close_dup_row_carries_its_analyzed_canonical(tmp_path, monkeypatch):
+    st = _seed(tmp_path, monkeypatch)
+    st.create_issue(12, {"title": "boot crash again", "state": "open", "author": "cy",
+                         "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"})
+    st.edit_issue(12).route_to("close-dup", "Duplicate of #10.", canonical=10)
+    row = {r["number"]: r for r in issues.list_issues()[0]}[12]
+    assert row["cluster"] is None
+    assert row["canonical"] == 10 and row["is_dup"] is False
+
+
 def test_issue_rows_flag_trusted_authors(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(
