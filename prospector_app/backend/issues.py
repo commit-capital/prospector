@@ -78,13 +78,13 @@ def _sync_store_root() -> None:
 
 def reflect_issue_state(n: int, state: str, state_reason: str | None = None) -> None:
     """Record our own issue state change and its reason into the shared issue store
-    and refresh this app's snapshot, so the Issues view and close-as-dup
-    worklist reflect it instantly. The issue-side analog of the PR executor's
+    and mark this app's snapshot stale, so the next read of the Issues view or
+    close-as-dup worklist reflects it. The issue-side analog of the PR executor's
     _reflect_state. A no-op when the issue has no store row."""
     st = _store()
     if st.load_issue(int(n)) is not None:
         st.edit_issue(int(n)).record_live_state(state, state_reason)
-    issue_data.refresh()
+    issue_data.mark_stale()
 
 
 def issue_state(n: int) -> str | None:

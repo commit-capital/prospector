@@ -193,6 +193,10 @@ def refresh() -> None:
     _runs_snapshot.refresh()
 
 
+def mark_stale() -> None:
+    _snapshot.mark_stale()
+
+
 def load_full_issues(ns: list[int]) -> dict[int, Issue]:
     return store().load_issues(ns)
 
