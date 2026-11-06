@@ -17,6 +17,7 @@ class LazySnapshot:
         self._freshen = freshen
         self._debounce = debounce
         self._loaded = False
+        self._stale = False
         self._last_check = 0.0
         self._lock = threading.Lock()
 
@@ -30,6 +31,17 @@ class LazySnapshot:
                 if not self._loaded:
                     self._freshen(True)
                     self._loaded = True
+                    self._last_check = time.monotonic()
+            return
+        if self._stale:
+            with self._lock:
+                if self._stale:
+                    self._stale = False
+                    try:
+                        self._freshen(False)
+                    except Exception:
+                        self._stale = True
+                        raise
                     self._last_check = time.monotonic()
             return
         if time.monotonic() - self._last_check < self._debounce:
@@ -53,6 +65,10 @@ class LazySnapshot:
             self._freshen(not self._loaded)
             self._loaded = True
             self._last_check = time.monotonic()
+
+    def mark_stale(self) -> None:
+        """Make the next read freshen first, so a run of writes costs one freshen."""
+        self._stale = True
 
     def invalidate(self) -> None:
         with self._lock:
