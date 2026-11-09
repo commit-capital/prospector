@@ -233,6 +233,12 @@ export function breakdownHref(card: HomeCard, entry: HomeBreakdown): string {
   return exploreHref({ ...card, spec: entry.spec });
 }
 
+// A card's shareable link, named for its title ("Ready to merge" →
+// /prs/ready_to_merge); main.tsx redirects it to exploreHref.
+export function cardHref(card: HomeCard): string {
+  return "/prs/" + card.title.toLowerCase().replace(/'/g, "").replace(/[^a-z0-9]+/g, " ").trim().replace(/ /g, "_");
+}
+
 export function exploreHref(card: HomeCard): string {
   const params = new URLSearchParams();
   params.set("spec", JSON.stringify(card.spec));
