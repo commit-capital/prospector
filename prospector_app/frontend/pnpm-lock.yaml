@@ -167,8 +167,8 @@ importers:
   .:
     dependencies:
       '@commit-capital/bugfix-button':
-        specifier: github:commit-capital/bugfix-button#v0.2.2
-        version: https://codeload.github.com/commit-capital/bugfix-button/tar.gz/90c50726ab80eccb5b7ecfacf4ec8ab8a76a59aa(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        specifier: github:commit-capital/bugfix-button#v0.3.1
+        version: https://codeload.github.com/commit-capital/bugfix-button/tar.gz/c169a23841db7c8d0b34cccbde7af70ee821ae62(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       react:
         specifier: ^19.3.0
         version: 19.3.0
@@ -303,9 +303,10 @@ packages:
   '@cacheable/utils@2.5.0':
     resolution: {integrity: sha512-buipgOVDkkPXNR5+xBpDw7Zk2n1EvU7qBJCNUcL7rhQ//kfpOXPAvQ511Os0vpLYJ1pZnvudNytkQt2hst3wqA==}
 
-  '@commit-capital/bugfix-button@https://codeload.github.com/commit-capital/bugfix-button/tar.gz/90c50726ab80eccb5b7ecfacf4ec8ab8a76a59aa':
-    resolution: {gitHosted: true, tarball: https://codeload.github.com/commit-capital/bugfix-button/tar.gz/90c50726ab80eccb5b7ecfacf4ec8ab8a76a59aa}
-    version: 0.2.2
+  '@commit-capital/bugfix-button@https://codeload.github.com/commit-capital/bugfix-button/tar.gz/c169a23841db7c8d0b34cccbde7af70ee821ae62':
+    resolution: {gitHosted: true, integrity: sha512-dJjzEg//NgrRPa92Pc/2Y9XtbuLxj7Scgor/eJ2OXHTD6zW7qqkY2uZ6cAcRL4Bwf+WD+3wt0OXspYM94YgpjA==, tarball: https://codeload.github.com/commit-capital/bugfix-button/tar.gz/c169a23841db7c8d0b34cccbde7af70ee821ae62}
+    version: 0.3.1
+    hasBin: true
     peerDependencies:
       react: '>=18'
       react-dom: '>=18'
@@ -1623,7 +1624,7 @@ snapshots:
       hashery: 1.5.1
       keyv: 5.6.0
 
-  '@commit-capital/bugfix-button@https://codeload.github.com/commit-capital/bugfix-button/tar.gz/90c50726ab80eccb5b7ecfacf4ec8ab8a76a59aa(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
+  '@commit-capital/bugfix-button@https://codeload.github.com/commit-capital/bugfix-button/tar.gz/c169a23841db7c8d0b34cccbde7af70ee821ae62(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
     dependencies:
       html2canvas-pro: 2.5.2
       react: 19.3.0
