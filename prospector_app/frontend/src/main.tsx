@@ -5,6 +5,7 @@ import { RouterProvider } from "react-router/dom";
 import "./styles.css";
 import App from "./App";
 import { LANES, type Lane } from "./components/explorer/lanes";
+import { cardHref, exploreHref, HOME_CARDS, type HomeCard } from "./views/homeCards";
 import { loadHome, loadIssues, loadPipeline, loadPRExplorer, loadSecurity } from "./tabViews";
 
 function lazyView(load: () => Promise<{ default: ComponentType }>) {
@@ -36,6 +37,16 @@ function LaneRedirect({ lane }: { lane: Lane["key"] }) {
 function Moved({ to }: { to: string }) {
   const { search } = useLocation();
   return <Navigate to={`${to}${search}`} replace />;
+}
+
+// A Home card's shareable link (cardHref) opens its Explorer view, with any
+// query params (e.g. ?pr=N) layered on top.
+// eslint-disable-next-line react-refresh/only-export-components -- route redirect local to the entry's router setup
+function CardRedirect({ card }: { card: HomeCard }) {
+  const [sp] = useSearchParams();
+  const next = new URLSearchParams(exploreHref(card).split("?")[1]);
+  sp.forEach((v, k) => next.set(k, v));
+  return <Navigate to={`/prs/list?${next}`} replace />;
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- route redirect local to the entry's router setup
@@ -92,6 +103,7 @@ const router = createBrowserRouter([
       { path: "easy", element: <LaneRedirect lane="easy" /> },
       { path: "stale", element: <LaneRedirect lane="stale" /> },
       { path: "prs/:n", element: <PRRedirect /> },
+      ...HOME_CARDS.map((card) => ({ path: cardHref(card).slice(1), element: <CardRedirect card={card} /> })),
     ],
   },
 ]);

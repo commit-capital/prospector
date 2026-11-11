@@ -17,7 +17,7 @@ import { useRepoMeta } from "../RepoMetaContext";
 import { useSystemHealth } from "../useSystemHealth";
 import { SkeletonRows } from "../components/SkeletonRows";
 import {
-  breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
+  breakdownHref, cardHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
   HOME_GROUPS, HOME_ISSUE_CARDS, issuesHref, painLabel,
   SAMPLE_ISSUE_LIMIT, SAMPLE_LIMIT, SAMPLE_QUERY,
   SECURITY_ADVISORIES_HREF, SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY,
@@ -96,7 +96,7 @@ function HomeCardRow({ card, count, sample, breakdown, onActionDone }: {
   breakdown: { label: string; href: string; count: number | null; hint?: string }[];
   onActionDone: () => void;
 }) {
-  const href = exploreHref(card);
+  const href = cardHref(card);
   const total = sample ? sample.total : count;
   return (
     <div className={"act-card home-card" + (card.lead ? " act-card-lead" : "")

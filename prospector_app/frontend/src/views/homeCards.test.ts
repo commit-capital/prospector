@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { AutomationOwner } from "../api.ts";
 import { LANES } from "../components/explorer/lanes.ts";
 import {
-  breakdownHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
+  breakdownHref, cardHref, exploreHref, HOME_BREAKDOWN_ENTRIES, HOME_CARDS, HOME_COUNT_SPECS,
   HOME_GROUPS, HOME_ISSUE_CARDS, ISSUE_ANALYZE_BATCH, issuesHref,
   painLabel, SAMPLE_LIMIT, SAMPLE_QUERY,
   SECURITY_ADVISORIES_HREF, SECURITY_ADVISORY_QUERY, SECURITY_ALERT_QUERY,
@@ -125,6 +125,16 @@ test("exploreHref round-trips the spec through the URL", () => {
     assert.ok(href.startsWith("/prs/list?"));
     const params = new URLSearchParams(href.slice("/prs/list?".length));
     assert.deepEqual(JSON.parse(params.get("spec")!), card.spec);
+  }
+});
+
+test("cardHref is a unique /prs/<title> path clear of the other /prs routes", () => {
+  const hrefs = HOME_CARDS.map(cardHref);
+  assert.equal(cardHref(HOME_CARDS.find((c) => c.key === "ready")!), "/prs/ready_to_merge");
+  assert.equal(new Set(hrefs).size, hrefs.length);
+  for (const href of hrefs) {
+    assert.match(href, /^\/prs\/[a-z][a-z0-9_]*$/);
+    assert.ok(!["/prs/list", "/prs/clusters", "/prs/compare"].includes(href), href);
   }
 });
 
