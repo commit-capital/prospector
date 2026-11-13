@@ -22,7 +22,8 @@ OK_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 CONTEXT_FIELDS = (
     "pageInfo { hasNextPage endCursor } "
     "nodes { __typename ... on CheckRun { name status conclusion startedAt title summary detailsUrl url "
-    "checkSuite { app { slug } } } ... on StatusContext { context state } }")
+    "checkSuite { app { slug } createdAt workflowRun { workflow { databaseId } } } } "
+    "... on StatusContext { context state } }")
 
 # GraphQL pullRequest fields `from_graphql_pr` reads: the head's checks, plus
 # when the description was last edited.
@@ -122,14 +123,32 @@ def from_rest_check_runs(check_runs: list[dict]) -> list[dict]:
     return out
 
 
+def _workflow_suite(node: object) -> tuple[int | None, str]:
+    """A CheckRun node's workflow id and check suite creation time."""
+    if not isinstance(node, dict) or node.get("__typename") != "CheckRun":
+        return None, ""
+    suite = node.get("checkSuite") or {}
+    return ((suite.get("workflowRun") or {}).get("workflow") or {}).get("databaseId"), suite.get("createdAt") or ""
+
+
 def from_graphql_contexts(nodes: list[dict]) -> tuple[list[dict], list[dict]]:
-    """statusCheckRollup.contexts nodes → (check runs, statuses), lower-cased."""
+    """statusCheckRollup.contexts nodes → (check runs, statuses), lower-cased.
+    A workflow's newest run at the head supersedes its older runs there, as in
+    GitHub's own requirement check."""
+    newest: dict[int, str] = {}
+    for node in nodes or []:
+        workflow, created = _workflow_suite(node)
+        if workflow is not None:
+            newest[workflow] = max(newest.get(workflow, ""), created)
     runs: list[dict] = []
     statuses: list[dict] = []
     for node in nodes or []:
         if not isinstance(node, dict):
             continue
         if node.get("__typename") == "CheckRun":
+            workflow, created = _workflow_suite(node)
+            if workflow is not None and created != newest[workflow]:
+                continue
             runs.append({"app": ((node.get("checkSuite") or {}).get("app") or {}).get("slug"),
                          "name": node.get("name"),
                          "status": (node.get("status") or "").lower() or None,
