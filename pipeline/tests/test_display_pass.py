@@ -15,7 +15,7 @@ def _src(rationale: str = "Duplicate of #42; the same guard already landed.") ->
 
 
 def _seed(tmp_path, monkeypatch) -> Store:
-    monkeypatch.setattr(dp, "_issue_lines", lambda pr: "(none)")
+    monkeypatch.setattr(dp, "_titles", lambda ns: {})
     st = Store(tmp_path)
     st.create_pr(1, {"title": "fix(cli): confirm deletes", "state": "open", "head_sha": "h1"})
     st.edit_pr(1).route_to("close-wontfix", "The wrong approach; #42 has the better one.")
@@ -81,6 +81,13 @@ def test_problem_section_prefers_the_problem_heading():
     body = "## Summary\n\n### What happened?\n\nIt deleted the file.\n\n### Steps\n\n1. run"
     assert dp.problem_section(body) == "It deleted the file."
     assert dp.problem_section("no headings here") == "no headings here"
+
+
+def test_inputs_lists_the_issues_the_pr_names_itself(tmp_path, monkeypatch):
+    pr = _seed(tmp_path, monkeypatch).load_pr(1)
+    pr.rec["issues"] = {"linked": [{"issue": 7, "how": "explicit"}, {"issue": 8, "how": "body-ref"},
+                                   {"issue": 9, "how": "search"}]}
+    assert dp.inputs(pr, {7: "delete is destructive"})["issues"] == "#7 delete is destructive\n#8"
 
 
 def test_write_stores_a_current_section(tmp_path, monkeypatch):
