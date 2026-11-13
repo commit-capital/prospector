@@ -256,14 +256,16 @@ def write(store: Store, n: int, *, trigger: str) -> dict | str:
 def refresh(store: Store, ns: list[int], *, trigger: str, concurrency: int = 4) -> int:
     """Write the card of each open, analyzed PR in `ns` whose card is missing
     or stale, the agents in parallel and the store on this thread. A paused or
-    unavailable agent ends the pass quietly: the card is presentation. Returns
+    unavailable agent ends the pass early: the card is presentation. Returns
     the count written."""
-    written = 0
-    with store.batch(), ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+    with store.batch():
         prs = [pr for n in dict.fromkeys(ns) if (pr := store.load_pr(n)) is not None
                and pr.state == "open" and pr.disposition and current(pr) is None]
         titles = _titles({n for pr in prs for n in _named(pr)})
-        cards = progress.Progress("writing", len(prs), "summary cards", one="summary card")
+    written = 0
+    summary = "{} written"
+    cards = progress.Progress("writing", len(prs), "summary cards", one="summary card")
+    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
         futures = {pool.submit(compose, inputs(pr, titles), pr.disposition): (pr, storekit.now())
                    for pr in prs}
         for fut in as_completed(futures):
@@ -273,11 +275,12 @@ def refresh(store: Store, ns: list[int], *, trigger: str, concurrency: int = 4) 
             except (capacity.CapacityPaused, headless_agent.AgentUnavailable):
                 for f in futures:
                     f.cancel()
+                summary = "{} written; stopped, the agent is paused or unavailable"
                 break
             _record(store, pr, payload, started=started, trigger=trigger)
             written += isinstance(payload, dict)
             cards.advance()
-        cards.finish(f"{written} written")
+    cards.finish(summary.format(written))
     return written
 
 
