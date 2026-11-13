@@ -27,7 +27,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
-from pipeline import capacity, freshness, headless_agent, storekit
+from pipeline import capacity, freshness, headless_agent, progress, storekit
 
 if TYPE_CHECKING:
     from pipeline.model import Pr
@@ -140,23 +140,26 @@ def current(pr: Pr) -> dict | None:
     return sec if sec.get("source_hash") == source_hash(pr) else None
 
 
-def _issue_lines(pr: Pr) -> str:
-    """The issues the PR names itself (explicit or body references), with titles."""
-    ns = [int(i["issue"]) for i in pr.linked_issues if i.get("how") in ("explicit", "body-ref")]
+def _named(pr: Pr) -> list[int]:
+    """The issues the PR names itself (explicit or body references)."""
+    return [int(i["issue"]) for i in pr.linked_issues if i.get("how") in ("explicit", "body-ref")]
+
+
+def _titles(ns: set[int]) -> dict[int, str]:
     if not ns:
-        return "(none)"
+        return {}
     from issue_triage.issue_store import IssueStore
-    found = IssueStore().load_issues(ns)
-    return "\n".join(f"#{n} {(found[n].title if n in found else '') or ''}".rstrip() for n in ns)
+    return {row["issue"]: row["title"] or "" for row, _ in IssueStore().issue_rows([], numbers=ns)}
 
 
-def inputs(pr: Pr) -> dict[str, str]:
+def inputs(pr: Pr, titles: dict[int, str]) -> dict[str, str]:
     from pipeline import gates
     s = pr.section("summary") or {}
     summary = "\n".join(str(s[k]) for k in ("one_liner", "primary_change") if s.get(k))
     ok, blocker = gates.merge_allowed(pr)
     return {"verdict": pr.disposition or "undecided", "title": pr.title or "",
-            "body": problem_section(pr.body), "issues": _issue_lines(pr),
+            "body": problem_section(pr.body),
+            "issues": "\n".join(f"#{n} {titles.get(n, '')}".rstrip() for n in _named(pr)) or "(none)",
             "summary": summary or "(none)", "rationale": pr.rationale or "(none)",
             "asks": "\n".join(f"- {a}" for a in pr.asks or []) or "(none)",
             "blockers": blocker if pr.disposition == "merge" and not ok else "(none)"}
@@ -241,7 +244,7 @@ def write(store: Store, n: int, *, trigger: str) -> dict | str:
     if pr is None:
         raise KeyError(n)
     started = storekit.now()
-    payload = compose(inputs(pr), pr.disposition)
+    payload = compose(inputs(pr, _titles(set(_named(pr)))), pr.disposition)
     _record(store, pr, payload, started=started, trigger=trigger)
     if isinstance(payload, str):
         return payload
@@ -255,11 +258,13 @@ def refresh(store: Store, ns: list[int], *, trigger: str, concurrency: int = 4) 
     or stale, the agents in parallel and the store on this thread. A paused or
     unavailable agent ends the pass quietly: the card is presentation. Returns
     the count written."""
-    prs = [pr for n in dict.fromkeys(ns) if (pr := store.load_pr(n)) is not None
-           and pr.state == "open" and pr.disposition and current(pr) is None]
     written = 0
-    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-        futures = {pool.submit(compose, inputs(pr), pr.disposition): (pr, storekit.now())
+    with store.batch(), ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+        prs = [pr for n in dict.fromkeys(ns) if (pr := store.load_pr(n)) is not None
+               and pr.state == "open" and pr.disposition and current(pr) is None]
+        titles = _titles({n for pr in prs for n in _named(pr)})
+        cards = progress.Progress("writing", len(prs), "summary cards", one="summary card")
+        futures = {pool.submit(compose, inputs(pr, titles), pr.disposition): (pr, storekit.now())
                    for pr in prs}
         for fut in as_completed(futures):
             pr, started = futures[fut]
@@ -271,6 +276,8 @@ def refresh(store: Store, ns: list[int], *, trigger: str, concurrency: int = 4) 
                 break
             _record(store, pr, payload, started=started, trigger=trigger)
             written += isinstance(payload, dict)
+            cards.advance()
+        cards.finish(f"{written} written")
     return written
 
 

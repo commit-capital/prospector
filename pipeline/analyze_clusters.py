@@ -155,9 +155,7 @@ def run(store: Store, *, limit: int, concurrency: int,
     try:
         _say("④ Wrapping up — each step reads every PR from the store:")
         orphans, salvage = _post_steps(store)
-        _say(f"  writing the summary cards of the {len(analyzed)} analyzed PR(s)…")
-        cards = display_pass.refresh(store, analyzed, trigger="analyze", concurrency=conc)
-        _say(f"  wrote {cards} summary card(s)")
+        display_pass.refresh(store, analyzed, trigger="analyze", concurrency=conc)
         _say("  counting the clusters still pending (reads the clusters too)…")
         remaining = len(analyze_driver.pending(store))
         _say(f"✓ committed {committed}/{len(todo)} clusters ({failed} failed); "

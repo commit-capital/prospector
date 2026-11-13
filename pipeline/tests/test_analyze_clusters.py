@@ -122,7 +122,7 @@ def test_main_writes_the_analyzed_prs_summary_cards(tmp_path, monkeypatch):
                         lambda prompt, **kw: _fenced(_bundle_cluster_id(prompt)))
     card = {"problem": "It broke.", "fix": "It mends it.", "how": ["It mends it."]}
     monkeypatch.setattr(analyze_clusters.display_pass, "ask", lambda prompt: card)
-    monkeypatch.setattr(analyze_clusters.display_pass, "_issue_lines", lambda pr: "(none)")
+    monkeypatch.setattr(analyze_clusters.display_pass, "_titles", lambda ns: {})
     assert analyze_clusters.main(["--limit", "2", "--store", str(tmp_path)]) == 0
     st = Store(tmp_path)
     assert [bool(analyze_clusters.display_pass.current(st.load_pr(n))) for n in (1, 2, 3)] \

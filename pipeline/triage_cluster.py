@@ -166,10 +166,7 @@ def _run(store: Store, cid: int, cluster: Cluster) -> int:
                 _say(f"    ✓ formatted with {formatted['tier']}; TL;DR written")
     except Exception as exc:
         _say(f"    ! rationale formatting unavailable; keeping raw display: {exc}")
-    _say("    writing each PR page's summary card…")
-    cards = display_pass.refresh(store, [int(r["pr"]) for r in payload.get("prs", [])],
-                                 trigger="analyze")
-    _say(f"    ✓ {cards} summary card(s) written")
+    display_pass.refresh(store, [int(r["pr"]) for r in payload.get("prs", [])], trigger="analyze")
 
     # 7. Report.
     c = store.load_cluster(cid)
