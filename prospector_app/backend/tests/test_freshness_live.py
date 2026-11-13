@@ -194,7 +194,7 @@ def test_live_states_rereads_a_failed_batch_in_smaller_batches(monkeypatch):
     monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", gh_graphql)
     facts, _ = freshness_live.live_states(list(range(1, 51)))
     assert sorted(facts) == list(range(1, 51))
-    assert sizes == [40, 10, 10, 10, 10, 10]
+    assert sizes == [20, 20, 10, 10, 10, 10, 10]
 
 
 def test_live_states_keeps_resolved_aliases_when_one_errors(monkeypatch, caplog):

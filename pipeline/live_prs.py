@@ -20,7 +20,7 @@ from pipeline.gh import RateLimited, complete_pr_checks, gh_graphql, required_ch
 
 _log = logging.getLogger(__name__)
 
-CHUNK_SIZE = 40
+CHUNK_SIZE = 20
 RETRY_CHUNK_SIZE = 10
 
 
