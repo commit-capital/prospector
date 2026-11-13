@@ -57,6 +57,25 @@ def test_required_context_nothing_reported_is_unreported():
                              required=required) == "failing"
 
 
+def test_a_newer_run_of_the_workflow_supersedes_its_older_checks():
+    def run(name, conclusion, workflow, created):
+        return {"__typename": "CheckRun", "name": name, "status": "COMPLETED", "conclusion": conclusion,
+                "checkSuite": {"app": {"slug": "github-actions"}, "createdAt": created,
+                               "workflowRun": {"workflow": {"databaseId": workflow}}}}
+    passed = [run("ci / e2e", "SUCCESS", 1, "2026-10-24T16:22:35Z"),
+              run("storybook", "FAILURE", 2, "2026-10-24T16:22:35Z")]
+    relabeled = [run("ci", "SKIPPED", 1, "2026-10-28T23:12:40Z"),
+                 run("storybook", "SUCCESS", 2, "2026-10-28T23:12:40Z")]
+    other_app = {"__typename": "CheckRun", "name": "Socket", "status": "COMPLETED",
+                 "conclusion": "SUCCESS", "checkSuite": {"app": {"slug": "socket-security"}}}
+    runs, _ = ci_signal.from_graphql_contexts(passed + relabeled + [other_app])
+    assert [r["name"] for r in runs] == ["ci", "storybook", "Socket"]
+    assert ci_signal.verdict(runs, [], required=["ci / e2e"]) == "unreported"
+    rerun, _ = ci_signal.from_graphql_contexts(
+        passed + relabeled + [run("ci / e2e", "SUCCESS", 1, "2026-10-29T09:00:00Z")])
+    assert ci_signal.verdict(rerun, [], required=["ci / e2e"]) == "passing"
+
+
 def test_a_workflow_run_awaiting_approval_reads_as_such():
     def node(*conclusions):
         return {"commits": {"nodes": [{"commit": {"checkSuites": {"nodes": [
