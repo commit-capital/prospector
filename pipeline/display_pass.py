@@ -35,6 +35,9 @@ if TYPE_CHECKING:
 
 MODEL = "claude-haiku-4-5-20251001"
 ATTEMPTS = 2
+# Cards are recorded one at a time on the calling thread, which keeps up with
+# about this many agents.
+CONCURRENCY = 6
 # The ledger phase every write is booked under.
 PHASE = "display:write"
 BODY_CHARS = 3000
@@ -253,7 +256,7 @@ def write(store: Store, n: int, *, trigger: str) -> dict | str:
     return sec if sec is not None else "the card was not stored"
 
 
-def refresh(store: Store, ns: list[int], *, trigger: str, concurrency: int = 4) -> int:
+def refresh(store: Store, ns: list[int], *, trigger: str) -> int:
     """Write the card of each open, analyzed PR in `ns` whose card is missing
     or stale, the agents in parallel and the store on this thread. A paused or
     unavailable agent ends the pass early: the card is presentation. Returns
@@ -265,7 +268,7 @@ def refresh(store: Store, ns: list[int], *, trigger: str, concurrency: int = 4) 
     written = 0
     summary = "{} written"
     cards = progress.Progress("writing", len(prs), "summary cards", one="summary card")
-    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
         futures = {pool.submit(compose, inputs(pr, titles), pr.disposition): (pr, storekit.now())
                    for pr in prs}
         for fut in as_completed(futures):
