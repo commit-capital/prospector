@@ -58,6 +58,8 @@ os.environ.pop("PROSPECTOR_UNATTENDED", None)
 os.environ["TRIAGE_DESIGN_REVIEW"] = "advisory"
 
 import pytest  # noqa: E402
+from sqlalchemy import event  # noqa: E402
+from sqlalchemy.engine import Engine  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -171,3 +173,11 @@ def _no_evidence_github_reads(monkeypatch):
     that needs answers passes its own reads or sets LiveGitHub."""
     from pipeline import threat_evidence
     monkeypatch.setattr(threat_evidence, "LiveGitHub", _OfflineGitHub)
+
+
+# Test stores are throwaway, and fsync on every commit is most of their write
+# cost once parallel workers share the disk.
+@event.listens_for(Engine, "connect")
+def _sqlite_without_fsync(dbapi_conn, _record):
+    if type(dbapi_conn).__module__.startswith("sqlite3"):
+        dbapi_conn.execute("PRAGMA synchronous=OFF")
