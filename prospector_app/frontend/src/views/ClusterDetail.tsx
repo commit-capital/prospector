@@ -7,6 +7,7 @@ import { api, type ClusterDetail as CD, type Disposition, type PRRow, type ExecR
 import { attachJobStream } from "../jobStream";
 import { SafetyChip, HumanMergeChip, ConflictChip, DraftChip } from "../components/Chips";
 import { ChecksChip } from "../components/ChecksChip";
+import { AuthorHover } from "../components/AuthorHover";
 import { InfoTip } from "../components/InfoTip";
 import { clusterStateEntry, dispositionEntry, term } from "../glossary";
 import { PRLink } from "../components/PRLink";
@@ -29,12 +30,7 @@ function authorRep(a: AuthorStats | null | undefined): ReactNode {
   const merged = a?.merged ?? null;
   const decided = (a?.merged ?? 0) + (a?.closed_unmerged ?? 0);
   if (merged == null || decided === 0) return <span className="muted small"> —</span>;
-  const rate = Math.round((100 * merged) / decided);
-  const tip = `Decided merge rate ${rate}% (${merged}/${decided} merged)`
-    + (a?.open != null ? `\nOpen ${a.open}` : "")
-    + (a?.total != null ? `\nTotal PRs ${a.total}` : "")
-    + (a?.comments != null ? `\nComments ${a.comments}` : "");
-  return <span className="mono small muted" title={tip}> {merged}/{decided}</span>;
+  return <span className="mono small muted"> {merged}/{decided}</span>;
 }
 
 // "resolved" holds PRs already closed/merged upstream (reconciled, #107) — it
@@ -644,7 +640,7 @@ export default function ClusterDetail() {
                         onApplyToAll={(text) => setEditedComments((m) => { const c = { ...m }; for (const n of (commentGroups[r.number] ?? [r.number])) c[n] = text; return c; })}
                         applyToAllCount={(commentGroups[r.number]?.length ?? 1) - 1} /></span>
                     </td>
-                    <td className="muted small">{r.author}{r.trusted_author && <InfoTip entry={term("trusted")} cue={false} focusable={false}><span className="chip chip-gold sm">trusted</span></InfoTip>}{authorRep(r.author_stats)}</td>
+                    <td className="muted small"><AuthorHover author={r.author} trusted={r.trusted_author} stats={r.author_stats}>{r.author}{authorRep(r.author_stats)}</AuthorHover>{r.trusted_author && <InfoTip entry={term("trusted")} cue={false} focusable={false}><span className="chip chip-gold sm">trusted</span></InfoTip>}</td>
                     <td className="mono small" title={r.pain_breakdown ? `Issue pain: ${r.pain_breakdown.issue_pain.toFixed(2)} (${r.pain_breakdown.linked_issues} issue${r.pain_breakdown.linked_issues === 1 ? "" : "s"})\nPR comments: ${r.pain_breakdown.pr_comments}\nPR reactions: ${r.pain_breakdown.pr_reactions}` : "Community Pain Score: no data"}>
                       {r.pain_score != null && r.pain_score > 0 ? r.pain_score.toFixed(2) : "—"}
                     </td>
