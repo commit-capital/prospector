@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Safety, SafetyRollup, AuthorStats, HumanMerge, PRResponseAck } from "../api";
+import type { Safety, SafetyRollup, HumanMerge, PRResponseAck } from "../api";
 import { Badge, type BadgeTone } from "./Badge";
 import { InfoTip } from "./InfoTip";
 import { term } from "../glossary";
@@ -63,18 +63,6 @@ export function SafetyChip({ v, findings }: { v: Safety; findings?: { severity: 
     ? `${v} — ${findings.length} finding(s):\n` + findings.map((f) => `• [${f.severity}] ${f.title}`).join("\n")
     : v === "GREEN" ? "GREEN — no safety issues found." : v;
   return <Badge tone={tone} title={tip}>{v}{findings && findings.length ? ` ·${findings.length}` : ""}</Badge>;
-}
-
-// eslint-disable-next-line react-refresh/only-export-components -- tooltip helper co-located with the chips it serves
-export function authorTip(s: AuthorStats | null | undefined): string {
-  if (!s || s.merged == null) return "Author stats unavailable.";
-  const pct = (v: number | undefined): string => (v != null ? `${Math.round(v * 100)}%` : "—");
-  return [
-    `@${s.handle}`,
-    `Adjusted merge rate: ${pct(s.merge_rate_shrunk)}  ·  Merge rate: ${pct(s.merge_rate)}`,
-    `PRs: ${s.total} total · ${s.merged} merged · ${s.open} open · ${s.closed_unmerged} closed-unmerged`,
-    `Comments: ${s.comments}`,
-  ].join("\n");
 }
 
 const SEG: { key: string; label: string; tone: BadgeTone; count: (r: SafetyRollup) => number }[] = [

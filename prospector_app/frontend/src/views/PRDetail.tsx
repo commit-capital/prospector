@@ -3,7 +3,7 @@ import { Link } from "react-router";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, type PRDetail as PD, type DiffResult, type VerifyRunner, type FixAction as FixActionName, type FixRunner, type ReviewDigest, type ReviewEntry, type ReviewFinding, type CoverageRecord } from "../api";
-import { authorTip } from "../components/Chips";
+import { AuthorHover } from "../components/AuthorHover";
 import { ChecksPanel } from "../components/ChecksPanel";
 import { DiffView } from "../components/DiffView";
 import { MergeSideBySide } from "../components/MergeSideBySide";
@@ -576,9 +576,9 @@ export function PRDetailContent({ pr: prNum }: { pr: number }) {
       <div className="prc-head">
         <h2>#{pr.number} — {pr.title}</h2>
         <div className="metaline">
-          {pr.author_stats?.url
-            ? <a href={pr.author_stats.url} target="_blank" rel="noreferrer" title={authorTip(pr.author_stats)}>@{pr.author}</a>
-            : <span title={authorTip(pr.author_stats)}>@{pr.author}</span>}
+          <AuthorHover author={pr.author} trusted={pr.trusted_author} stats={pr.author_stats}>
+            {pr.author_stats?.url ? <a href={pr.author_stats.url} target="_blank" rel="noreferrer">@{pr.author}</a> : `@${pr.author}`}
+          </AuthorHover>
           {pr.trusted_author && <span className="chip chip-gold sm" title="A contributor we trust. When two PRs are about equally good, theirs is preferred.">trusted</span>}
           {pr.backing && (
             <Link className="chip chip-purple sm" to={`/issues?issue=${pr.backing.issue}`}
