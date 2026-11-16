@@ -37,6 +37,15 @@ export function FilterControls({ spec, onChange }: {
         <option value="no">not stacked</option>
       </Select>
 
+      <Select value={Array.isArray(spec.author_kind) ? "" : (spec.author_kind ?? "")}
+        onChange={(next) => set("author_kind", next || undefined)}
+        title="Filter by who wrote the PR: a repository maintainer (or a profile trusted/priority author), Prospector's own bot, or anyone else.">
+        <option value="">author: anyone</option>
+        <option value="community">community only</option>
+        <option value="maintainer">maintainers only</option>
+        <option value="prospector">Prospector only</option>
+      </Select>
+
       {/* state: always shown — the queue defaults to open PRs only */}
       <Select value={spec.state ?? ""}
         onChange={(next) => set("state", next || undefined)}

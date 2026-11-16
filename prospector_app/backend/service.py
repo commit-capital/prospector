@@ -320,6 +320,7 @@ def pr_row(n: int, rec: Pr | None = None) -> dict | None:
         "stale_sections": freshness.stale_sections(rec),
         "issues": rec.linked_issues,
         "trusted_author": rec.author in profile.active().trusted_authors,
+        "author_kind": author_kind(rec),
         "signals": _signal_summary(rec.signals, rec),
         "reviews": reviewers.digests(rec),
         "author_stats": data.author_stats(rec.author),
