@@ -5,3 +5,7 @@ allowBuilds:
 # Resolve only releases at least seven days old (minutes), so a compromised or
 # broken publish has time to be caught and yanked before it can land here.
 minimumReleaseAge: 10080
+
+# GHSA-g3hv-75wg-m249: eslint <10.15 and typescript-eslint <8.73 still pin minimatch 10.
+overrides:
+  minimatch@<11.0.1: ^11.0.5
