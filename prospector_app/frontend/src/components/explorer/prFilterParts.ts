@@ -78,6 +78,11 @@ export function buildPrFilterParts(spec: FilterSpec, onChange: (next: FilterSpec
   if (spec.stacked === false) push("stacked", "not stacked", "stacked");
   if (spec.state === "closed") push("state", "state: closed only", "state");
   if (spec.state === "all") push("state", "state: all (open + closed)", "state");
+  if (spec.author_kind) {
+    const LABELS = { prospector: "Prospector", maintainer: "maintainers", community: "community" } as const;
+    const kinds = Array.isArray(spec.author_kind) ? spec.author_kind : [spec.author_kind];
+    push("author_kind", `by ${kinds.map((k) => LABELS[k]).join(" or ")}`, "author_kind");
+  }
   if (spec.trusted_author) push("trusted_author", "trusted author", "trusted_author");
   if (spec.clean) push("clean", "gate-clean", "clean");
   if (spec.conflicts === true) push("conflicts", "has conflicts", "conflicts");

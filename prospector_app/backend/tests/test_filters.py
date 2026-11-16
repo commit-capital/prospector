@@ -472,3 +472,10 @@ def test_stacked_filter():
     assert filters.matches({"stacked": True}, {"stacked": True})
     assert not filters.matches({"stacked": False}, {"stacked": True})
     assert filters.matches({}, {"stacked": False})
+
+
+def test_author_kind_filter():
+    maintainer = _row(author_kind="maintainer")
+    assert filters.matches(maintainer, {"author_kind": "maintainer"})
+    assert not filters.matches(maintainer, {"author_kind": "community"})
+    assert filters.matches(maintainer, {"author_kind": ["community", "maintainer"]})

@@ -31,6 +31,7 @@ _ENUMS = {
                     "close-wontfix", "close-stale", "needs-human"},
     "ci": {"passing", "failing", "unknown"},
     "threat": {"malicious", "suspicious", "clear", "unscanned"},
+    "author_kind": {"prospector", "maintainer", "community"},
     "greptile_severity": {"defects", "nits", "clean"},
 }
 _BOOLS = {"conflicts", "has_tests", "trusted_author", "clean", "artifact_dominated",
@@ -140,6 +141,7 @@ Output ONLY a single JSON object, no prose. Allowed keys:
 - disposition: merge|request-changes|close-dup|close-fixed|close-wontfix|close-stale|needs-human
 - ci: passing|failing|unknown
 - threat: malicious|suspicious|clear|unscanned   (supply-chain threat-scan verdict; unscanned = no scan of the current head)
+- author_kind: maintainer|community|prospector   (who wrote the PR: a repository maintainer, an outside contributor, or this deployment's bot; "not by maintainers" => community)
 - conflicts/has_tests/trusted_author/clean: booleans
 - merge_ok: boolean — the PR clears (true) or is blocked by (false) the human-merge gate
 - has_summary: boolean — an agent summary exists for the PR

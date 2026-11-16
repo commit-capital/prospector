@@ -187,6 +187,10 @@ def matches(row: dict, spec: dict) -> bool:
         return False
     if "clean" in spec and bool(row.get("clean")) != bool(spec["clean"]):
         return False
+    if spec.get("author_kind"):
+        want = spec["author_kind"] if isinstance(spec["author_kind"], list) else [spec["author_kind"]]
+        if row.get("author_kind") not in want:
+            return False
     if spec.get("threat"):
         want = spec["threat"] if isinstance(spec["threat"], list) else [spec["threat"]]
         if (row.get("threat") or "unscanned") not in want:

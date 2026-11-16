@@ -60,6 +60,9 @@ export interface FilesFilter {
   value?: number;
 }
 
+/** Who wrote a PR (service.author_kind): this deployment's App, a maintainer, or anyone else. */
+export type AuthorKind = "prospector" | "maintainer" | "community";
+
 export interface FilterSpec {
   q?: string;
   author?: string;
@@ -77,6 +80,7 @@ export interface FilterSpec {
   stacked?: boolean;
   state?: "closed" | "all";       // PR Explorer defaults to open PRs only; widen to include closed/merged
   trusted_author?: boolean;
+  author_kind?: AuthorKind | AuthorKind[];
   clean?: boolean;
   greptile?: NumCmp;
   greptile_stale?: boolean;
@@ -508,6 +512,7 @@ export interface PRRow {
   live_head_sha?: string | null;
   issues?: IssueLink[];
   trusted_author?: boolean;
+  author_kind?: AuthorKind;
   proposed_action?: ProposedAction;
   suggestion?: Suggestion;
   signals?: SignalSummary | null;
@@ -1437,7 +1442,7 @@ export interface IssuePR {
 }
 export interface LinkedPRFacts {
   author: string | null;
-  author_kind: "prospector" | "maintainer" | "community";
+  author_kind: AuthorKind;
   checks: { passed: number; total: number; failed: boolean };
   risk_tier: number | null;
   disposition: Disposition | null;
