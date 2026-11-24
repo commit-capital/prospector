@@ -7,7 +7,8 @@ Upstream writes retain their per-PR gates and activity-log entries, and local
 verification/security work retains its normal queue and job controls. Each
 blocking call (a store write, an upstream write) runs on a worker
 thread, so the event loop keeps serving every other request and stream while a
-batch works.
+batch works. Closes run a few at a time and stream in the order they finish;
+every other action runs one PR at a time, in order.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from pipeline import bot_token
+from prospector_app.backend import data
 from prospector_app.backend import executor
 from prospector_app.backend import jobs
 from prospector_app.backend import models
@@ -27,6 +29,10 @@ from pipeline import reviewers
 from prospector_app.backend import verify_queue
 
 CAP = 1000
+# Closes run this many at a time: about 40 writes a minute, under GitHub's
+# 80-a-minute content-creation limit. Its 500-an-hour limit still caps a batch
+# at about 250 closes.
+_CLOSE_WIDTH = 4
 
 # Bulk actions that start one background job per PR.
 _JOB_ACTIONS = {"RUN_SECURITY": ("security-review", "security review"),
@@ -77,32 +83,47 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
 
     summary: dict[str, int] = {}
     bookkeeping_errors: list[str] = []
-    for n in prs:
+    closing = action in executor.CLOSE_ACTIONS
+    gate = asyncio.Semaphore(_CLOSE_WIDTH if closing else 1)
+
+    async def one(n: int) -> dict[str, Any]:
+        if closing:
+            data.defer_refresh()  # this task's context only; the batch refreshes once
         pr_comment = (comments or {}).get(n) or comment
-        try:
-            if action in _JOB_ACTIONS:
-                kind, noun = _JOB_ACTIONS[action]
-                try:
-                    job = jobs.start_job(kind, pr=n)
-                    jobs.schedule_job(job)
-                    res = {"pr": n, "action": action, "status": "queued",
-                           "job_id": job["id"],
-                           "detail": f"{noun} queued as background job #{job['id']}"}
-                except ValueError as e:
-                    res = {"pr": n, "action": action, "status": "skipped",
-                           "detail": str(e)}
-            else:
-                res = await asyncio.to_thread(
+        async with gate:
+            try:
+                if action in _JOB_ACTIONS:
+                    kind, noun = _JOB_ACTIONS[action]
+                    try:
+                        job = jobs.start_job(kind, pr=n)
+                        jobs.schedule_job(job)
+                        return {"pr": n, "action": action, "status": "queued",
+                                "job_id": job["id"],
+                                "detail": f"{noun} queued as background job #{job['id']}"}
+                    except ValueError as e:
+                        return {"pr": n, "action": action, "status": "skipped",
+                                "detail": str(e)}
+                return await asyncio.to_thread(
                     _apply, n, action, comment=pr_comment, canonical=canonical,
                     method=method, reason=reason, tags=tags, reviewer=reviewer,
                     dry_run=dry_run)
-        except Exception as e:  # one PR's failure never aborts the batch
-            res = {"pr": n, "action": action, "status": "error", "detail": str(e)[:200]}
-        status = res.get("status", "error")
-        summary[status] = summary.get(status, 0) + 1
-        if res.get("bookkeeping_error"):
-            bookkeeping_errors.append(str(res["bookkeeping_error"]))
-        yield {"event": "result", "data": json.dumps(res)}
+            except Exception as e:  # one PR's failure never aborts the batch
+                return {"pr": n, "action": action, "status": "error", "detail": str(e)[:200]}
+
+    tasks = [asyncio.create_task(one(n)) for n in prs]
+    try:
+        for finished in asyncio.as_completed(tasks):
+            res = await finished
+            status = res.get("status", "error")
+            summary[status] = summary.get(status, 0) + 1
+            if res.get("bookkeeping_error"):
+                bookkeeping_errors.append(str(res["bookkeeping_error"]))
+            yield {"event": "result", "data": json.dumps(res)}
+    finally:
+        for t in tasks:
+            t.cancel()
+    if closing:
+        await asyncio.to_thread(data.refresh)
     done: dict[str, Any] = {"summary": summary}
     _warn_bookkeeping(done, bookkeeping_errors)
     yield {"event": "done", "data": json.dumps(done)}

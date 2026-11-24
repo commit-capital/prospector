@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
@@ -57,6 +58,7 @@ _generation = 0
 _loaded = False
 _last_check = 0.0
 _check_lock = threading.Lock()  # single-flights the freshen; never held by a reader
+_refresh_deferred: ContextVar[bool] = ContextVar("refresh_deferred", default=False)
 # PRs whose snapshot record is the light copy, each with the saved_at it was read
 # at. A freshen that delivers a PR's whole record removes it.
 _light: dict[int, str | None] = {}
@@ -445,6 +447,12 @@ def set_action_item_status(item_id: str, status: str) -> dict:
     return next(i for i in reg["items"] if i["id"] == item_id)
 
 
+def defer_refresh() -> None:
+    """Make refresh() a no-op for the rest of the current context, for a batch
+    that refreshes once when it ends."""
+    _refresh_deferred.set(True)
+
+
 def refresh() -> None:
     """Freshen the snapshot synchronously now — used after a local pipeline phase,
     an executor action, or the live sweep changes the store, so the next read
@@ -453,6 +461,8 @@ def refresh() -> None:
     call on an action path; a snapshot not yet loaded runs the cold load. Cluster
     removals arrive as tombstones on the same watermark, so they drop here too."""
     global _loaded, _last_check, _author_table, _generation
+    if _refresh_deferred.get():
+        return
     with _check_lock:
         _author_table = None
         if _loaded:
