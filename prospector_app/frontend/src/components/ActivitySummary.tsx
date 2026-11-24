@@ -92,7 +92,7 @@ interface VelSeries {
   staleFrom?: number | null;
 }
 
-// Daily series — cumulative is rendered separately in its own chart. `ingest`
+// Daily series — open counts are rendered separately in its own chart. `ingest`
 // names the corpus whose ingest stamp bounds the series' data; the triage-action
 // series come from the app's own activity log and are always current.
 const VEL_SERIES_META = [
@@ -117,37 +117,21 @@ function buildDailySeries(fh: FirehoseStats): VelSeries[] {
   }));
 }
 
-function buildCumulativeSeries(fh: FirehoseStats): VelSeries[] {
-  const prCumulative: number[] = [];
-  let prRunning = 0;
-  for (let i = 0; i < fh.days.length; i++) {
-    prRunning += fh.pr_incoming[i] - fh.pr_merged[i] - fh.pr_closed[i];
-    prCumulative.push(prRunning);
-  }
-  const prMin = Math.min(0, ...prCumulative);
-
-  const issCumulative: number[] = [];
-  let issRunning = 0;
-  for (let i = 0; i < fh.days.length; i++) {
-    issRunning += fh.iss_incoming[i] - (fh.iss_closed[i] ?? 0);
-    issCumulative.push(issRunning);
-  }
-  const issMin = Math.min(0, ...issCumulative);
-
+function buildOpenSeries(fh: FirehoseStats): VelSeries[] {
   return [
     {
-      key: "cumulative_prs",
-      label: "Cumulative open PRs (net change)",
+      key: "open_prs",
+      label: "Open PRs",
       color: "#e26d5a",
-      values: prCumulative.map((v) => v - prMin),
+      values: fh.pr_open,
       staleFrom: staleFromIndex(fh.days, fh.ingest_as_of),
     },
     {
-      key: "cumulative_issues",
-      label: "Cumulative open issues (net change)",
+      key: "open_issues",
+      label: "Open issues",
       color: "var(--purple)",
       dashed: true,
-      values: issCumulative.map((v) => v - issMin),
+      values: fh.iss_open,
       staleFrom: staleFromIndex(fh.days, fh.issue_ingest_as_of),
     },
   ];
@@ -499,7 +483,7 @@ interface ActivitySummaryProps {
 type ChartView = "line" | "bar";
 
 /** Statistics dashboard: headline cards, a multi-series velocity
- *  chart with bar/line toggle, a cumulative open PRs + issues chart side-by-side
+ *  chart with bar/line toggle, open PR + issue counts side-by-side
  *  with the daily view, an incoming-vs-triaged category breakdown, and a list
  *  of the PRs and issues we closed that their author came back to. */
 export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
@@ -605,7 +589,7 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
       && (showIncoming || !series.key.endsWith("_incoming"))
     ))
     : null;
-  const cumulativeSeries = firehose ? buildCumulativeSeries(firehose) : null;
+  const openSeries = firehose ? buildOpenSeries(firehose) : null;
 
   const quickFilter = (kinds: string[], range: string) => {
     onQuickFilter?.(kinds, range);
@@ -862,21 +846,21 @@ export function ActivitySummary({ onQuickFilter }: ActivitySummaryProps) {
               )}
             </div>
 
-            {/* Daily activity + cumulative charts side by side */}
-            {cumulativeSeries && !who && (
+            {/* Open PR + issue counts side by side */}
+            {openSeries && !who && (
               <div className="act-charts-row">
                 <div className="act-charts-col">
                   <div className="act-chart-title muted small" style={{ marginBottom: 8 }}>
-                    cumulative open PRs · net change over window
+                    open PRs · end of each day
                   </div>
-                  <LineChart series={[cumulativeSeries[0]]} days={firehose.days} height={100} />
+                  <LineChart series={[openSeries[0]]} days={firehose.days} height={100} />
                 </div>
                 {showIssues && (
                   <div className="act-charts-col">
                     <div className="act-chart-title muted small" style={{ marginBottom: 8 }}>
-                      cumulative open issues · net change over window
+                      open issues · end of each day
                     </div>
-                    <LineChart series={[cumulativeSeries[1]]} days={firehose.days} height={100} />
+                    <LineChart series={[openSeries[1]]} days={firehose.days} height={100} />
                   </div>
                 )}
               </div>

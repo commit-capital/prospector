@@ -10,20 +10,24 @@ def _ev(at: str, kind: str, pr: int | None = None, **extra) -> dict:
             **({"pr": pr} if pr is not None else {}), **extra}
 
 
-def _pr(n: int, created_at: str, state: str = "open", title: str = "PR", author: str = "author") -> object:
+def _pr(n: int, created_at: str, state: str = "open", title: str = "PR", author: str = "author",
+        updated_at: str | None = None) -> object:
     """Minimal Pr-like object for testing."""
     class FakePr:
         def __init__(self):
             self.state = state
             self.created_at = created_at
+            self.updated_at = updated_at
             self.title = title
             self.url = f"https://github.com/test-owner/test-repo/pull/{n}"
             self.author = author
     return FakePr()
 
 
-def _issue(created_at: str) -> dict:
-    return {"created_at": created_at, "title": "Issue", "state": "open"}
+def _issue(created_at: str, number: int = 1, state: str = "open",
+           updated_at: str | None = None) -> dict:
+    return {"number": number, "created_at": created_at, "title": "Issue", "state": state,
+            "updated_at": updated_at}
 
 
 # Fixed "today" for deterministic tests — use a date far enough back that
@@ -62,6 +66,56 @@ def test_firehose_issue_incoming_counted():
     day_idx = {d: i for i, d in enumerate(stats["days"])}
     assert stats["iss_incoming"][day_idx[_days_ago(1)]] == 2
     assert sum(stats["iss_incoming"]) == 2
+
+
+def test_open_counts_tracks_each_span_by_end_of_day():
+    days = ["2026-06-10", "2026-06-11", "2026-06-12"]
+    spans = [
+        ("2026-01-01", None),           # opened before the window, still open
+        ("2026-01-01", "2026-06-11"),   # closes inside the window
+        ("2026-06-11", None),           # opens inside the window
+        ("2026-06-12", "2026-06-12"),   # opened and closed the same day
+        ("2026-01-01", "2026-02-01"),   # closed before the window
+    ]
+    assert activity.open_counts(spans, days) == [2, 2, 2]
+    assert activity.open_counts(spans[1:2], days) == [1, 0, 0]
+    assert activity.open_counts(spans, []) == []
+
+
+def test_firehose_open_counts_date_a_close_by_the_later_of_ours_and_upstream():
+    prs = {
+        1: _pr(1, f"{_days_ago(20)}T10:00:00Z"),
+        # Closed by us 5 days ago; its updated_at is stale.
+        2: _pr(2, f"{_days_ago(20)}T10:00:00Z", state="closed",
+               updated_at=f"{_days_ago(15)}T10:00:00Z"),
+        # Merged upstream 3 days ago, with no event of ours.
+        3: _pr(3, f"{_days_ago(20)}T10:00:00Z", state="merged",
+               updated_at=f"{_days_ago(3)}T10:00:00Z"),
+        # Reopened after our close: open wins.
+        4: _pr(4, f"{_days_ago(20)}T10:00:00Z"),
+        # Closed by us 8 days ago, reopened, then merged upstream 1 day ago.
+        5: _pr(5, f"{_days_ago(20)}T10:00:00Z", state="merged",
+               updated_at=f"{_days_ago(1)}T10:00:00Z"),
+    }
+    issues = [
+        # Closed by us 4 days ago; its updated_at is stale.
+        _issue(f"{_days_ago(20)}T10:00:00Z", number=7, state="closed",
+               updated_at=f"{_days_ago(10)}T10:00:00Z"),
+        _issue(f"{_days_ago(20)}T10:00:00Z", number=8, state="closed",
+               updated_at=f"{_days_ago(2)}T10:00:00Z"),
+    ]
+    events = [
+        _ev(f"{_days_ago(5)}T10:00:00Z", "close", pr=2),
+        _ev(f"{_days_ago(8)}T10:00:00Z", "close", pr=4),
+        _ev(f"{_days_ago(8)}T10:00:00Z", "close", pr=5),
+        _ev(f"{_days_ago(4)}T10:00:00Z", "issue-close", issue=7),
+    ]
+    stats = activity.firehose_stats(prs, issues, n_days=30, events=events,
+                                    today=_TODAY, tz=timezone.utc)
+    pr_open = dict(zip(stats["days"], stats["pr_open"]))
+    assert [pr_open[_days_ago(n)] for n in (21, 20, 6, 5, 3, 2, 1)] == [0, 5, 5, 4, 3, 3, 2]
+    iss_open = dict(zip(stats["days"], stats["iss_open"]))
+    assert [iss_open[_days_ago(n)] for n in (5, 4, 2, 1)] == [2, 1, 0, 0]
 
 
 def test_firehose_triaged_from_events():

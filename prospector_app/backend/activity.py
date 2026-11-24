@@ -652,6 +652,31 @@ def local_day(stamp: str | None, tz: tzinfo) -> str:
     return dt.astimezone(tz).date().isoformat()
 
 
+def open_counts(spans: Iterable[tuple[str, str | None]], days: list[str]) -> list[int]:
+    """How many (opened_day, closed_day) spans are open at the end of each day.
+    A None closed_day is still open."""
+    if not days:
+        return []
+    first = days[0]
+    delta = dict.fromkeys(days, 0)
+    base = 0
+    for opened, closed in spans:
+        if closed is not None and closed <= opened:
+            continue
+        for day, step in ((opened, 1), (closed, -1)):
+            if day is None:
+                continue
+            if day < first:
+                base += step
+            elif day in delta:
+                delta[day] += step
+    out: list[int] = []
+    for d in days:
+        base += delta[d]
+        out.append(base)
+    return out
+
+
 def firehose_stats(
     prs: dict[int, Pr],
     issues: list[dict],
@@ -703,10 +728,18 @@ def firehose_stats(
     pr_merged: dict[str, int] = {d: 0 for d in days}
     pr_reopened: dict[str, int] = {d: 0 for d in days}
     iss_closed: dict[str, int] = {d: 0 for d in days}
+    # A closed item's close time is the later of our landed close and its
+    # upstream updated_at. updated_at is the close time when ingest re-fetched
+    # the item after it closed, and earlier when the live sweep saw the close.
+    our_close: dict[tuple[str, int], str] = {}
     for ev in events:
         if not is_landed(ev):
             continue
         kind = ev.get("kind")
+        corpus = {"close": "pr", "merge": "pr", "issue-close": "issue"}.get(kind or "")
+        if corpus and ev.get(corpus) is not None:
+            key = (corpus, int(ev[corpus]))
+            our_close[key] = max(our_close.get(key, ""), ev.get("at") or "")
         day = local_day(ev.get("at"), local_tz)
         if kind == "issue-close":
             if day in iss_closed:
@@ -719,6 +752,18 @@ def firehose_stats(
         elif kind == "reopen" and day in pr_reopened:
             pr_reopened[day] += 1
 
+    def span(kind: str, n: int, created: str | None, state: str | None,
+             updated: str | None) -> tuple[str, str | None]:
+        closed = None if state == "open" else local_day(
+            max(our_close.get((kind, n), ""), updated or ""), local_tz)
+        return local_day(created, local_tz), closed
+
+    pr_open = open_counts(
+        (span("pr", n, rec.created_at, rec.state, rec.updated_at) for n, rec in prs.items()), days)
+    iss_open = open_counts(
+        (span("issue", int(i["number"]), i.get("created_at"), i.get("state"),
+              i.get("updated_at")) for i in issues), days)
+
     last7 = set(days[-7:])
     return {
         "days": days,
@@ -728,6 +773,8 @@ def firehose_stats(
         "pr_reopened": [pr_reopened[d] for d in days],
         "iss_incoming": [iss_incoming[d] for d in days],
         "iss_closed": [iss_closed[d] for d in days],
+        "pr_open": pr_open,
+        "iss_open": iss_open,
         "totals": {
             "pr_incoming_7d": sum(pr_incoming[d] for d in last7),
             "pr_closed_7d": sum(pr_closed[d] for d in last7),
