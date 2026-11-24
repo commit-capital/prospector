@@ -49,7 +49,8 @@ WORKDIR /work/src
 # Offline + frozen means the sandbox cannot fetch any package that is not already
 # in the prefetched store, so a PR-introduced dependency is impossible here.
 # Install runs as `sandbox`, so main's pinned-dep lifecycle scripts execute
-# unprivileged, offline, and secretless.
+# unprivileged, offline, and secretless. node-gyp builds native ones against the
+# image's own Node headers, since it cannot download them here.
 # The tree arrives with no node_modules, and that is asserted rather than assumed.
 # pnpm reads an existing node_modules as the record of what is installed: handed
 # one, it exits 0 without linking anything, and the image ships importing nothing.
@@ -58,7 +59,7 @@ RUN if [ "$TIER" = "1" ]; then \
       set -e; \
       [ ! -e node_modules ] \
         || { echo "src carries a node_modules; expected a clean tree" >&2; exit 1; }; \
-      pnpm install --offline --frozen-lockfile --store-dir /work/pnpm-store; \
+      npm_config_nodedir=/usr/local pnpm install --offline --frozen-lockfile --store-dir /work/pnpm-store; \
     fi
 
 # Tier 1 also compiles each Rust workspace once, the checks and the release

@@ -7,6 +7,7 @@
     "test": "node test.js"
   },
   "dependencies": {
+    "cpu-features": "0.0.10",
     "ms": "2.1.3"
   }
 }
