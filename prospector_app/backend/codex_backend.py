@@ -14,8 +14,8 @@ An allowed command runs outside the sandbox, with the network and the
 operator's write reach, so the rule alone bounds it. Codex grants that only
 while the profile denies no read: denying one pulls every allowed command into
 the sandbox, where `gh` and the helpers lose the network. So the sandbox reads
-`.env` and the key files, and what keeps them from the agent is the developer
-instructions and the environment `safety_guard.agent_env` withholds.
+`.env` and the key files, and only the developer instructions keep the agent
+from them.
 """
 from __future__ import annotations
 

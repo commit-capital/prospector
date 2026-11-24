@@ -143,9 +143,9 @@ def toml_table(table: Mapping[str, str]) -> str:
 
 
 def locked_down() -> list[str]:
-    """What every Codex run here starts from, the chat agent's included: no
-    approval prompt, repository instructions, login shell, update check, web
-    search or optional feature, and the caller's environment."""
+    """The settings every Codex run starts from: no approval prompt,
+    repository instructions, login shell, update check, web search or optional
+    feature, and the caller's environment."""
     return [
         *config("approval_policy", "never"),
         *config("project_doc_max_bytes", 0),

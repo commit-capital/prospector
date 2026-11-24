@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The app agent's read window into GitHub's raw contents + code search.
 
-The agent's allowlisted `gh` commands (claude_backend.py:_GH_ALLOW) cover PR/issue/search
+The agent's allowlisted `gh` commands (agent_backend._GH_READS) cover PR/issue/search
 subcommands but not `gh api`, because `gh api` is read-only only by *default* —
 `gh api -X PUT repos/<repo>/contents/<path> -f content=…` writes a file to the
 default branch and `gh api -X PUT .../pulls/N/merge` merges a PR, both bypassing
@@ -35,7 +35,7 @@ that no longer resolves (deleted, renamed, or hidden). `auth` runs `gh auth stat
 with no flag passed through, so the token itself is never printed. Reads only —
 no bot token, no upstream write — so it rides the same always-available
 allowlisted-Bash path as `store-read`; it runs under the app's uv env, where every
-agent command runs. Both the chat agent (claude_backend.py _GH_READ_ALLOW) and the
+agent command runs. Both the chat agent (agent_backend.command_prefixes) and the
 headless pipeline agents (pipeline/headless_agent.py _GH_ALLOW) allowlist this
 script by path.
 """

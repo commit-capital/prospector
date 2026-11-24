@@ -13,6 +13,11 @@ from typing import Protocol
 
 AGENT_ROOT = Path(__file__).resolve().parents[1] / "agent"
 _CACHE = Path(__file__).resolve().parents[1] / "cache"
+# The two places a session that grants resubmit may write: `resubmit prepare`
+# clones a PR head to RESUBMIT_ROOT/pr-<n>, and the agent authors a --body-file
+# in BODY_DIR.
+RESUBMIT_ROOT = _CACHE / "resubmit"
+BODY_DIR = _CACHE / "chat-bodies"
 
 _GH_READS: tuple[tuple[str, ...], ...] = tuple(
     ("gh", *sub.split()) for sub in (
@@ -53,11 +58,6 @@ def command_prefixes(can_write: bool, can_resubmit: bool) -> list[tuple[str, ...
     return [*_GH_READS, *((f,) for f in _FILTERS), *_helpers(_READ_HELPERS),
             *(_helpers(_BOT_HELPERS) if can_write else ()),
             *(_helpers(_RESUBMIT_HELPERS) if can_resubmit else ())]
-# The two places a session that grants resubmit may write: `resubmit prepare`
-# clones a PR head to RESUBMIT_ROOT/pr-<n>, and the agent authors a --body-file
-# in BODY_DIR.
-RESUBMIT_ROOT = _CACHE / "resubmit"
-BODY_DIR = _CACHE / "chat-bodies"
 
 
 @dataclass(frozen=True)
