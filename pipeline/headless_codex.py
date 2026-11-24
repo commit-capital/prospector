@@ -134,31 +134,40 @@ def allowed_commands(allow: Sequence[str]) -> list[str]:
     return out
 
 
-def _config(key: str, value: object) -> list[str]:
+def config(key: str, value: object) -> list[str]:
     return ["-c", f"{key}={json.dumps(value)}"]
 
 
-def _toml_table(table: Mapping[str, str]) -> str:
+def toml_table(table: Mapping[str, str]) -> str:
     return "{" + ", ".join(f"{json.dumps(k)} = {json.dumps(v)}" for k, v in table.items()) + "}"
+
+
+def locked_down() -> list[str]:
+    """What every Codex run here starts from, the chat agent's included: no
+    approval prompt, repository instructions, login shell, update check, web
+    search or optional feature, and the caller's environment."""
+    return [
+        *config("approval_policy", "never"),
+        *config("project_doc_max_bytes", 0),
+        *config("allow_login_shell", False),
+        *config("check_for_update_on_startup", False),
+        *config("web_search", "disabled"),
+        *config("features.multi_agent", False),
+        *config("features.apps", False),
+        *config("features.plugins", False),
+        *config("features.browser_use", False),
+        *config("features.standalone_web_search", False),
+        *config("shell_environment_policy.inherit", "all"),
+    ]
 
 
 def flags(fs: Mapping[str, str], cwd: str, model: str | None) -> list[str]:
     return [
         "exec", "--json", "--ignore-user-config", "--strict-config",
         "--skip-git-repo-check", "-C", cwd,
-        *_config("default_permissions", _PROFILE),
-        "-c", f"permissions.{_PROFILE}.filesystem={_toml_table(fs)}",
-        *_config("approval_policy", "never"),
-        *_config("project_doc_max_bytes", 0),
-        *_config("allow_login_shell", False),
-        *_config("check_for_update_on_startup", False),
-        *_config("web_search", "disabled"),
-        *_config("features.multi_agent", False),
-        *_config("features.apps", False),
-        *_config("features.plugins", False),
-        *_config("features.browser_use", False),
-        *_config("features.standalone_web_search", False),
-        *_config("shell_environment_policy.inherit", "all"),
+        *config("default_permissions", _PROFILE),
+        "-c", f"permissions.{_PROFILE}.filesystem={toml_table(fs)}",
+        *locked_down(),
         *(["-m", model] if model else []),
         "-",
     ]

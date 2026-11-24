@@ -356,7 +356,7 @@ needs_codex = pytest.mark.skipif(shutil.which("codex") is None or os.uname().sys
 
 
 def _sandboxed(fs: dict[str, str], cwd: Path, *cmd: str) -> subprocess.CompletedProcess:
-    table = headless_codex._toml_table(fs)
+    table = headless_codex.toml_table(fs)
     return subprocess.run(
         ["codex", "sandbox", "--permissions-profile", "lane", "-c",
          f"permissions.lane.filesystem={table}", "-C", str(cwd), "--", *cmd],

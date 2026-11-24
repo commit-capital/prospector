@@ -127,7 +127,7 @@ def test_read_only_rules_expose_only_curated_reads_and_local_helpers():
     assert '["gh", "release", "list"]' in rules
     assert '["gh", "run", "list"]' in rules
     assert '["prospector_app/agent/store-read"]' in rules
-    assert json.dumps([str(codex_backend.AGENT_ROOT / "store-read")]) in rules
+    assert json.dumps([str(agent_backend.AGENT_ROOT / "store-read")]) in rules
     assert '["prospector_app/agent/file-issue"]' in rules
     assert '["prospector_app/agent/gh-write"]' not in rules
     assert '["prospector_app/agent/resubmit"]' not in rules
@@ -150,8 +150,8 @@ def test_writable_rules_add_only_the_curated_write_helpers():
     writable = codex_backend.isolation_rules(can_write=True, can_resubmit=False)
 
     assert writable.startswith(read_only)
-    for helper in codex_backend._WRITE_ALLOW:
-        assert json.dumps(list(helper)) in writable
+    for helper in ("gh-write", "close-pr", "reopen-pr", "submit-review", "close-issue"):
+        assert json.dumps([f"prospector_app/agent/{helper}"]) in writable
     assert '["prospector_app/agent/resubmit"]' not in writable
     assert '["gh", "pr", "merge"]' not in writable
 
@@ -165,7 +165,7 @@ def test_resubmit_rules_ride_the_resubmit_grant_not_the_token():
 def test_writable_rules_accept_resolved_absolute_helper_paths():
     rules = codex_backend.isolation_rules(can_write=True, can_resubmit=True)
     for helper in ("gh-write", "close-pr", "reopen-pr", "submit-review", "close-issue", "resubmit"):
-        assert json.dumps([str((codex_backend.AGENT_ROOT / helper).resolve())]) in rules
+        assert json.dumps([str((agent_backend.AGENT_ROOT / helper).resolve())]) in rules
 
 
 def test_start_isolates_config_and_normalizes_jsonl_events(tmp_path, monkeypatch):
@@ -349,7 +349,7 @@ def test_cli_startup_error_is_returned_as_chat_text(tmp_path, monkeypatch):
 def test_stop_terminates_the_registered_process(monkeypatch):
     proc = FakeProc([], running=True)
     stopped: list[FakeProc] = []
-    monkeypatch.setattr(codex_backend, "_terminate", stopped.append)
+    monkeypatch.setattr(agent_backend, "terminate", stopped.append)
     backend = codex_backend.CodexBackend()
     backend.running["pr-12"] = proc
 
