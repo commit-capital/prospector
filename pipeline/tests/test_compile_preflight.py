@@ -1,6 +1,7 @@
 """The merge-time compile preflight: the sandbox phase contract and the host
 driver that runs (current default-branch tree + PR diff + profile compile
 command) and records the container exit as the verdict."""
+import contextlib
 import re
 from pathlib import Path
 
@@ -124,6 +125,8 @@ class TestRunForMerge:
                             lambda pr, head: _patch_file(tmp_path, SRC_DIFF))
         monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: BASE)
         monkeypatch.setattr(verify_driver, "image_exists", lambda tag: False)
+        monkeypatch.setattr(verify_driver, "head_delta_base",
+                            lambda sha, *, tier: contextlib.nullcontext(None))
 
         def fake_build(sha, *, tier):
             order.append("build")
@@ -144,6 +147,8 @@ class TestRunForMerge:
                             lambda pr, head: _patch_file(tmp_path, SRC_DIFF))
         monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: BASE)
         monkeypatch.setattr(verify_driver, "image_exists", lambda tag: False)
+        monkeypatch.setattr(verify_driver, "head_delta_base",
+                            lambda sha, *, tier: contextlib.nullcontext(None))
         monkeypatch.setattr(verify_driver, "build_base_image",
                             lambda sha, *, tier: verify_driver.base_image_tag(sha, tier))
         monkeypatch.setattr(verify_driver, "local_pin", lambda store: {"base_sha": "p" * 40})
@@ -164,6 +169,53 @@ class TestRunForMerge:
         monkeypatch.setattr(verify_driver, "run_phase", lambda *a, **k: (0, ""))
         res = compile_preflight.run_for_merge(7, "a" * 40)
         assert res is not None and res["exit"] == 0
+
+    def test_a_moved_default_branch_reuses_a_built_image_with_its_diff(
+            self, configured, monkeypatch, tmp_path):
+        older = "e" * 40
+        delta = _patch_file(tmp_path, SRC_DIFF).rename(tmp_path / "delta.patch")
+        monkeypatch.setattr(verify_driver, "fetch_patch",
+                            lambda pr, head: _patch_file(tmp_path, SRC_DIFF))
+        monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: BASE)
+        monkeypatch.setattr(verify_driver, "image_exists", lambda tag: False)
+        monkeypatch.setattr(verify_driver, "head_delta_base",
+                            lambda sha, *, tier: contextlib.nullcontext(
+                                (older, verify_driver.base_image_tag(older, 1), delta)))
+        monkeypatch.setattr(verify_driver, "build_base_image",
+                            lambda *a, **k: pytest.fail("built despite a reusable image"))
+        monkeypatch.setattr(verify_driver, "collect_garbage",
+                            lambda *a, **k: pytest.fail("no build, no sweep"))
+        calls: list = []
+        monkeypatch.setattr(verify_driver, "run_phase",
+                            lambda phase, image, **kw: (calls.append((image, kw)), (0, ""))[1])
+        res = compile_preflight.run_for_merge(7, "a" * 40)
+        assert res is not None and res["exit"] == 0
+        assert res["base_sha"] == BASE and res["image_base_sha"] == older
+        image, kw = calls[0]
+        assert image == verify_driver.base_image_tag(older, 1)
+        assert kw["pre_patch"] == delta and kw["base_sha"] == BASE
+
+    def test_a_reused_images_pristine_rerun_measures_head_too(
+            self, configured, monkeypatch, tmp_path):
+        older = "e" * 40
+        delta = tmp_path / "delta.patch"
+        delta.write_text(SRC_DIFF)
+        monkeypatch.setattr(verify_driver, "fetch_patch",
+                            lambda pr, head: _patch_file(tmp_path, SRC_DIFF))
+        monkeypatch.setattr(verify_driver, "resolve_base_sha", lambda: BASE)
+        monkeypatch.setattr(verify_driver, "image_exists", lambda tag: False)
+        monkeypatch.setattr(verify_driver, "head_delta_base",
+                            lambda sha, *, tier: contextlib.nullcontext(
+                                (older, verify_driver.base_image_tag(older, 1), delta)))
+        keys: list = []
+        monkeypatch.setattr(verify_driver, "base_command_failure",
+                            lambda key, cmd, rerun: keys.append(key) or rerun() and None)
+        calls: list = []
+        monkeypatch.setattr(verify_driver, "run_phase",
+                            lambda phase, image, **kw: (calls.append(kw), (20, "boom"))[1])
+        compile_preflight.run_for_merge(7, "a" * 40)
+        assert len(calls) == 2 and calls[1]["pristine"] and calls[1]["pre_patch"] == delta
+        assert keys == [f"{verify_driver.base_image_tag(older, 1)}@{BASE[:12]}"]
 
     def test_compile_failure_extracts_error_excerpt(self, configured, monkeypatch, tmp_path):
         monkeypatch.setattr(verify_driver, "fetch_patch",
@@ -210,6 +262,17 @@ class TestPhaseDeclared:
         text = (SANDBOX / "sandbox-run.sh").read_text()
         m = re.search(r'case "\$PHASE" in ([a-z0-9|-]+)\) ;;', text)
         assert m is not None and "compile" in m.group(1).split("|")
+
+    def test_compile_takes_a_pre_patch_and_reads_its_failure_as_the_harnesss(self):
+        launcher = (SANDBOX / "sandbox-run.sh").read_text()
+        m = re.search(r'--pre-patch is for --phase ([a-z|]+)"', launcher)
+        assert m is not None and "compile" in m.group(1).split("|")
+        phase = (SANDBOX / "run-phase.sh").read_text()
+        arm = re.search(r"^  compile\)\n(.*?)\n    ;;", phase, re.MULTILINE | re.DOTALL)
+        assert arm is not None
+        body = arm.group(1)
+        assert 'apply_pre_patch || exit "$SENTINEL_PATCH_UNREADABLE"' in body
+        assert body.index("apply_pre_patch") < body.index("apply_patch ||")
 
     def test_launcher_requires_a_patch_or_pristine_for_compile(self):
         text = (SANDBOX / "sandbox-run.sh").read_text()

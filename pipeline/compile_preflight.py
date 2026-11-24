@@ -4,10 +4,13 @@ record the container exit as the verdict.
 
 This module only produces the record; the policy over it is
 gates.compile_preflight_gate, and the executor runs both immediately before a
-live merge fires, unless the machine switches the merge run off. The base is resolved live per run and its tier-1 image built
-ephemerally (reused while the default branch stays put) — the stored verify
-pin plays no part, so the compile always measures the PR against the branch it
-is about to land on. A PR that changes dependency manifests is refused:
+live merge fires, unless the machine switches the merge run off. The base is
+resolved live per run. Its tier-1 image is reused while the default branch
+stays put, and once it moves, a recent image this machine
+already built is carried to the new HEAD by upstream's own diff
+(verify_driver.head_delta_base); only when none qualifies is HEAD's image
+built. Either way the compile measures the PR against the exact tree it is
+about to land on. A PR that changes dependency manifests is refused:
 PR-controlled dependencies are never installed in the sandbox, so its compile
 result would be meaningless.
 """
@@ -103,10 +106,10 @@ def run_for_merge(pr: int, head_sha: str) -> dict | None:
 
 def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str,
                   lane: str = "compile", *, runs_tests: bool = False) -> None:
-    """Build the tier-1 base image for current default-branch HEAD and run `cmd`
-    over it with `patch` applied, recording the outcome into `result`. Refusals
-    (an empty diff, a dependency-manifest change) land as `refused` and run
-    nothing."""
+    """Find or build a tier-1 base image for current default-branch HEAD and
+    run `cmd` over HEAD's tree with `patch` applied, recording the outcome into
+    `result`. Refusals (an empty diff, a dependency-manifest change) land as
+    `refused` and run nothing."""
     paths = diffpaths.changed_paths(patch.read_text())
     if not paths:
         result["refused"] = "the PR diff is empty or unparsable"
@@ -122,23 +125,44 @@ def _compile_over(result: dict, patch: Path, cmd: str, head_sha: str,
     result["base_sha"] = sha
     tag = verify_driver.base_image_tag(sha, 1)
     if not verify_driver.image_exists(tag):
+        progress.step("looking for a recent base image to reuse")
+        with verify_driver.head_delta_base(sha, tier=1) as reuse:
+            if reuse is not None:
+                # An image this machine built for an earlier default-branch
+                # commit, carried to HEAD inside the phase by upstream's own
+                # diff: the tree the command runs over is HEAD's all the same,
+                # without the clone, install and image build a new commit would
+                # otherwise cost.
+                result["image_base_sha"], reused, delta = reuse
+                _run_compile(result, reused, patch, delta, cmd, sha, head_sha, lane,
+                             runs_tests)
+                return
         verify_driver.build_base_image(sha, tier=1)
-        # Every default-branch move builds another generation; the sweep keeps
-        # this machine's verify pin and the newest beside it and reclaims the
-        # rest, so a busy day cannot fill the Docker volume.
+        # A default-branch move no built image could be carried across builds
+        # another generation; the sweep keeps this machine's verify pin and the
+        # newest beside it and reclaims the rest, so a busy day cannot fill the
+        # Docker volume.
         verify_driver.collect_garbage(verify_driver.local_pin(Store()).get("base_sha"))
+    _run_compile(result, tag, patch, None, cmd, sha, head_sha, lane, runs_tests)
+
+
+def _run_compile(result: dict, tag: str, patch: Path, delta: Path | None, cmd: str,
+                 sha: str, head_sha: str, lane: str, runs_tests: bool) -> None:
+    """Run `cmd` over `tag` with the optional `delta` then `patch` applied,
+    recording the exit and, on a failure, its reading into `result`."""
     progress.step(f"running {cmd} in the sandbox")
     exit_code, tail = verify_driver.run_phase(
-        "compile", tag, patch=patch, tier=1, test_cmd=cmd,
+        "compile", tag, patch=patch, pre_patch=delta, tier=1, test_cmd=cmd,
         base_sha=sha, head_sha=head_sha, runs_tests=runs_tests)
     result["exit"] = exit_code
     excerpt = verify_driver.error_excerpt(tail)
     if exit_code == gates.SENTINEL_TEST_FAIL:
         result["error_excerpt"] = excerpt
         progress.step(f"re-running {cmd} over the unpatched base")
+        # Cached per tree: a reused image measures HEAD only with its diff.
         base_failure = verify_driver.base_command_failure(
-            tag, cmd, lambda: verify_driver.run_phase(
-                "compile", tag, tier=1, test_cmd=cmd, base_sha=sha,
+            tag if delta is None else f"{tag}@{sha[:12]}", cmd, lambda: verify_driver.run_phase(
+                "compile", tag, pre_patch=delta, tier=1, test_cmd=cmd, base_sha=sha,
                 head_sha="pristine", pristine=True, runs_tests=runs_tests))
         if base_failure is not None:
             result["error"] = gates.base_fault_text(lane, f"at {sha[:12]}: {base_failure}")

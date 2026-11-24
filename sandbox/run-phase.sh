@@ -151,8 +151,12 @@ case "$PHASE" in
     # never agent text. The patch is the PR's full diff; a conflict means the PR
     # does not apply onto that HEAD. The heap cap bounds each node child; a
     # native compiler (TypeScript 7's tsc) ignores it and relies on the
-    # container's memory class alone.
+    # container's memory class alone. PRE_PATCH_FILE, when set, is the
+    # default branch's own diff from an older base image's commit to HEAD,
+    # applied first so the tree is HEAD's; it is upstream's history, not the
+    # PR, so a failure to apply it is the harness's and never a conflict.
     export NODE_OPTIONS="--max-old-space-size=4096"
+    apply_pre_patch || exit "$SENTINEL_PATCH_UNREADABLE"
     apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
     run_test_cmd
     [ $? -eq 0 ] && exit 0 || exit "$SENTINEL_TEST_FAIL"

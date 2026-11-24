@@ -31,7 +31,8 @@ import sys
 import threading
 import time
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -255,13 +256,18 @@ def assert_scrubbed(src: Path) -> None:
             text = path.read_text(errors="ignore")
         except OSError:
             continue
-        pattern = (_SCRUB_RE_LITERALS if _WORKFLOW_YAML.match(rel.as_posix())
-                   else _SCRUB_RE)
-        m = pattern.search(text)
+        m = _credential_in(rel.as_posix(), text)
         if m:
             raise RuntimeError(
                 f"refusing to build a base image: {rel} matches "
                 f"{m.group(0)!r} — an image layer is durable, so scrub it first")
+
+
+def _credential_in(rel: str, text: str) -> re.Match[str] | None:
+    """assert_scrubbed's content check for the non-source file at the
+    repository-relative `rel`: the first key or token material in `text`."""
+    pattern = _SCRUB_RE_LITERALS if _WORKFLOW_YAML.match(rel) else _SCRUB_RE
+    return pattern.search(text)
 
 
 def prefetch_store(src: Path, store: Path) -> None:
@@ -692,6 +698,166 @@ def changed_paths_for(rec: Pr) -> list[str]:
     missing or unreadable. An empty list is the fail-closed half of the
     deps-touched gate: a PR whose diff cannot be read is refused, never run."""
     return diffpaths.changed_paths(cached_diff_text(rec))
+
+
+# How many commits behind the default-branch HEAD a built base may sit for the
+# compile preflight to measure HEAD on it by replaying the difference as a
+# patch (head_delta_base) instead of building HEAD's own image. A busy upstream
+# merges dozens of PRs a day, and a session of merges adds one commit each.
+DELTA_MAX_COMMITS = 300
+# The longest fetching HEAD into a base clone may take before reuse is given
+# up and the preflight builds instead.
+DELTA_FETCH_TIMEOUT_SECONDS = 300
+
+# Inputs to the image's install beyond the dependency manifests: pnpm's
+# patches and hooks, its settings, the Rust toolchain pin, and codegen schemas.
+# A change to one means the image's installed tree is not HEAD's.
+_INSTALL_INPUTS = re.compile(
+    r"(?:^|/)(?:\.npmrc|\.pnpmfile\.cjs|rust-toolchain(?:\.toml)?|[^/]+\.prisma)$"
+    r"|(?:^|/)patches/")
+# The package.json scripts the install runs, and the files they name.
+_LIFECYCLE_SCRIPTS = ("preinstall", "install", "postinstall", "prepare")
+_SCRIPT_FILE = re.compile(r"[\w@][\w@./-]*\.(?:m?js|cjs|ts|mts|sh|py)\b")
+# Fixed diff output whatever the operator's git config says.
+_PLAIN_DIFF = ("-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+               "-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv",
+               "--no-relative", "--no-color", "--no-renames")
+
+
+@contextmanager
+def head_delta_base(head_sha: str, *, tier: int) -> Iterator[tuple[str, str, Path] | None]:
+    """A finished base image this machine already holds that the compile
+    preflight can measure `head_sha` on, as (its base SHA, its tag, the
+    default branch's own diff from that base to `head_sha`), or None when no
+    built base qualifies and HEAD's image must be built.
+
+    A base qualifies when its build finished FROM the current sandbox image, it
+    is not a held history generation, and its commit is an ancestor of
+    `head_sha` no more than DELTA_MAX_COMMITS behind. The newest qualifying
+    base wins. When the history between them touches what the image's install
+    read (_install_inputs_touched) or carries a credential the build's scrub
+    gate would refuse, there is no reuse: HEAD's own build installs afresh and
+    applies that gate. The diff leaves out the files scrub_checkout removes
+    from every clone, so it applies to the scrubbed tree the image carries; it
+    is applied in the phase container's own layer and never baked into an
+    image. Every failure along the way, a fetch that does not finish among
+    them, gives None, so the caller builds as it always has.
+
+    The generation's lock is held for the body, so a sweep cannot remove the
+    image a compile is running on; the diff is removed when the body ends."""
+    try:
+        held = verify_gc.held_shas()
+        survey = verify_gc.list_generations()
+    except (OSError, subprocess.SubprocessError):
+        held, survey = frozenset(), []
+    gens = sorted((g for g in survey if g.sha12 not in held and g.clone_dir is not None),
+                  key=lambda g: (g.created or datetime.min.replace(tzinfo=UTC), g.sha12),
+                  reverse=True)
+    for g in gens:
+        assert g.clone_dir is not None
+        tag = base_image_tag(g.sha12, tier)
+        if tag not in g.images or not (g.clone_dir / _BUILT_MARKER).is_file():
+            continue
+        if image_parent(tag) != sandbox_image():
+            continue
+        with verify_gc.generation_lock(g.clone_dir) as got:
+            # A sweep that removed the generation while this waited leaves
+            # nothing to read.
+            if not got or not (g.clone_dir / _BUILT_MARKER).is_file():
+                continue
+            try:
+                found = _delta_from(g.clone_dir / "src", head_sha)
+            except (OSError, subprocess.SubprocessError) as e:
+                print(f"[base] cannot reuse {tag} for {head_sha[:12]}: {e}",
+                      file=sys.stderr, flush=True)
+                continue
+            if found is None:
+                continue
+            base_sha, patch = found
+            if patch is None:
+                break
+            try:
+                yield base_sha, tag, patch
+            finally:
+                patch.unlink(missing_ok=True)
+            return
+    yield None
+
+
+def _delta_from(src: Path, head_sha: str) -> tuple[str, Path | None] | None:
+    """(the clone's commit, the diff from it to `head_sha`) for head_delta_base,
+    with no diff when that history means the image cannot stand for HEAD; None
+    when the clone's commit is not a close enough ancestor of `head_sha`."""
+    env = launcher_env()
+
+    def git(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", "-C", str(src), *args], capture_output=True,
+                              text=True, env=env, timeout=timeout)
+
+    def ok(p: subprocess.CompletedProcess[str], what: str) -> str:
+        if p.returncode != 0:
+            raise subprocess.SubprocessError(f"{what} failed: {p.stderr.strip()[-300:]}")
+        return p.stdout
+
+    base = git("rev-parse", "HEAD").stdout.strip()
+    if not _BASE_SHA_RE.fullmatch(base) or not _BASE_SHA_RE.fullmatch(head_sha):
+        return None
+    if git("cat-file", "-e", f"{head_sha}^{{commit}}").returncode != 0:
+        # The clone has no remote (scrub_checkout strips them), so HEAD is
+        # fetched from the public URL the clone came from, by SHA.
+        ok(git("fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
+               f"https://github.com/{settings.repo()}.git", head_sha,
+               timeout=DELTA_FETCH_TIMEOUT_SECONDS), "fetch")
+    if git("merge-base", "--is-ancestor", base, head_sha).returncode != 0:
+        return None
+    count = git("rev-list", "--count", f"{base}..{head_sha}").stdout.strip()
+    if not count.isdigit() or int(count) > DELTA_MAX_COMMITS:
+        return None
+    paths = [p for p in ok(git(*_PLAIN_DIFF, "--name-only", "-z", base, head_sha),
+                           "diff").split("\0") if p]
+    if _install_inputs_touched(src, paths):
+        return base, None
+    for path in paths:
+        if _SOURCE_FILE.search(path) or scrubbed_path(path):
+            continue
+        shown = git("show", f"{head_sha}:{path}")
+        if shown.returncode == 0 and _credential_in(path, shown.stdout):
+            return base, None
+    excluded = [f":(exclude,literal){p}" for p in paths if scrubbed_path(p)]
+    diff = ok(git(*_PLAIN_DIFF, "--binary", "--src-prefix=a/", "--dst-prefix=b/",
+                  base, head_sha, "--", ".", *excluded), "diff")
+    out = SCRATCH / "compile-delta"
+    out.mkdir(parents=True, exist_ok=True)
+    # Named per call: the caller removes its own once the phase is done, and a
+    # concurrent merge over the same two commits holds another.
+    patch = out / f"{base[:12]}-{head_sha[:12]}-{os.getpid()}-{time.monotonic_ns()}.patch"
+    patch.write_text(diff)
+    return base, patch
+
+
+def _install_inputs_touched(src: Path, paths: list[str]) -> bool:
+    """Whether a change to `paths` reaches what building the image installed:
+    a dependency manifest, another install input (_INSTALL_INPUTS), or a file a
+    lifecycle script of one of the base's package.json files names. The base's
+    manifests are HEAD's when no manifest changed, so reading them in `src`
+    reads the scripts HEAD's install would run."""
+    if gates.deps_touched(paths) or any(_INSTALL_INPUTS.search(p) for p in paths):
+        return True
+    changed = set(paths)
+    for manifest in src.rglob("package.json"):
+        rel = manifest.relative_to(src)
+        if "node_modules" in rel.parts or ".git" in rel.parts:
+            continue
+        try:
+            scripts = json.loads(manifest.read_text()).get("scripts") or {}
+        except (OSError, ValueError, AttributeError):
+            return True
+        pkg = rel.parent.as_posix()
+        for name in _LIFECYCLE_SCRIPTS:
+            for ref in _SCRIPT_FILE.findall(str(scripts.get(name) or "")):
+                if posixpath.normpath(posixpath.join(pkg, ref)) in changed:
+                    return True
+    return False
 
 
 def local_pin(store: Store) -> wire.VerifyPin:
