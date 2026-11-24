@@ -289,6 +289,13 @@ def push_ssh_key_file() -> Path | None:
     return Path(raw).expanduser() if raw else None
 
 
+def key_files() -> list[str]:
+    """The deployment's configured private keys, as resolved paths."""
+    return [os.path.realpath(Path(raw).expanduser())
+            for var in ("TRIAGE_BOT_KEY_FILE", "TRIAGE_PUSH_SSH_KEY_FILE")
+            if (raw := os.environ.get(var, "").strip())]
+
+
 def push_identity_partial() -> bool:
     """Whether some but not all of the contributor-push values are set."""
     got = (push_login(), push_email(), push_ssh_key_file())

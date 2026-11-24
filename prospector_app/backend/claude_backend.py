@@ -20,7 +20,6 @@ import os
 import shutil
 import subprocess
 from collections.abc import AsyncIterator
-from pathlib import Path
 
 from pipeline import settings
 from prospector_app.backend import agent_backend
@@ -33,10 +32,6 @@ CLAUDE_BIN = shutil.which("claude") or "claude"
 # and body files under the app's cache. Chat runs here, and the CLI reads its
 # working directory whatever the rules say.
 CHECKOUT = "/" + os.path.realpath(settings.REPO_ROOT)
-
-# The deployment secrets named in the environment. The files live outside the
-# checkout by default; naming them holds a deployment that files one inside it.
-_KEY_FILE_VARS = ("TRIAGE_BOT_KEY_FILE", "TRIAGE_PUSH_SSH_KEY_FILE")
 
 CLASSIFIER_SYSTEM_PROMPT = """\
 # Background
@@ -73,10 +68,9 @@ def _secret_denies() -> list[str]:
     """Deny rules over the deployment's credentials: the repo-root .env the
     read grant covers, and each configured private key, as resolved paths."""
     rules = [f"Read({CHECKOUT}/.env)", f"Read({CHECKOUT}/.env.*)"]
-    for var in _KEY_FILE_VARS:
-        raw = os.environ.get(var, "").strip()
-        if raw:
-            rules.append(f"Read(/{os.path.realpath(Path(raw).expanduser())})")
+    # The keys live outside the checkout by default; naming them holds a
+    # deployment that files one inside it.
+    rules += [f"Read(/{path})" for path in settings.key_files()]
     return rules
 
 

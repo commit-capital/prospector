@@ -43,8 +43,6 @@ _FORBIDDEN = ("node", "npx", "npm", "pnpm", "yarn", "bun", "deno", "tsx", "ts-no
               "vitest", "jest", "python", "python3", "uv", "pip", "make", "docker",
               "git", "gh", "curl", "wget", "ssh", "scp")
 
-_KEY_FILE_VARS = ("TRIAGE_BOT_KEY_FILE", "TRIAGE_PUSH_SSH_KEY_FILE")
-
 _ALLOW_RE = re.compile(r"^Bash\((.+):\*\)$")
 
 # What a brokered tool's output is cut to, from its end.
@@ -90,12 +88,7 @@ def _real(path: str | Path) -> str:
 def _secrets() -> list[str]:
     """The deployment's credentials as resolved paths: the repo-root .env and
     each configured private key."""
-    paths = [_real(headless_agent.REPO_ROOT / ".env")]
-    for var in _KEY_FILE_VARS:
-        raw = os.environ.get(var, "").strip()
-        if raw:
-            paths.append(_real(raw))
-    return paths
+    return [_real(headless_agent.REPO_ROOT / ".env"), *settings.key_files()]
 
 
 def filesystem(read_roots: Sequence[str], edit_root: str | None, tmp: str,
