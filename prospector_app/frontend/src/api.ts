@@ -3035,6 +3035,9 @@ export interface FirehoseStats {
   pr_reopened: number[];
   iss_incoming: number[];
   iss_closed: number[];
+  // Open items at the end of each day.
+  pr_open: number[];
+  iss_open: number[];
   totals: {
     pr_incoming_7d: number;
     pr_closed_7d: number;
