@@ -76,6 +76,20 @@ process. Claude uses the login from `claude auth login`; Codex uses the login
 from `codex login`. The choice and credentials stay on the machine and are not
 included in deployment-sharing bundles.
 
+Both providers run the same commands, helpers and grants. On Codex:
+
+- An answer arrives one message at a time; `codex exec` emits no token deltas.
+- Chats are titled from the first message's opening, not by a model.
+- Commands run in a sandbox that reads the whole filesystem, `.env` and the key
+  files included. The agent is told not to read them, and its environment
+  withholds the store URL and tokens, but no rule enforces it. Claude holds
+  reads to the checkout and denies those files by rule, so it is the stronger
+  boundary for a repository with outside contributors.
+
+No minimum Codex version is pinned. The Setup readiness check runs the
+installed CLI against the app's flags and reports a refusal as "Codex cannot
+start". The path was last verified end to end on codex-cli 0.172.0.
+
 ## Bot identity (live writes)
 
 Upstream writes execute as a GitHub App, and each deployment registers its own

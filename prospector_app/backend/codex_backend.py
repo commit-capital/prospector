@@ -1,15 +1,21 @@
 """Codex CLI implementation of the conversational-agent boundary.
 
-Each chat thread gets an isolated Codex home containing its resume state and an
-execpolicy allowlist. Codex runs in a network-restricted, read-only sandbox; a
-session that grants resubmit runs a permissions profile that adds write access
-to the clones `resubmit prepare` makes, the body-file directory and the temp
-directories, so the agent can author the confirmed resubmit edit, and the
-bot-authenticated helpers ride separately on the session's bot-token grant.
-Only the same GitHub reads and curated helper commands exposed to Claude may
-run outside the sandbox. The operator's file-backed Codex login is linked into
-the isolated home, while user configuration and repository instructions stay
-out of the app agent's prompt.
+Each chat thread gets an isolated Codex home holding its resume state, the
+operator's file-backed login linked in, and an execpolicy that allows
+`agent_backend.command_prefixes`. User configuration and repository
+instructions stay out of the prompt.
+
+Every other command, and `apply_patch`, runs in a network-disabled sandbox that
+reads the whole filesystem. It writes nothing, or, in a session that grants
+resubmit, the clones `resubmit prepare` makes, the body-file directory and the
+temp directories.
+
+An allowed command runs outside the sandbox, with the network and the
+operator's write reach, so the rule alone bounds it. Codex grants that only
+while the profile denies no read: denying one pulls every allowed command into
+the sandbox, where `gh` and the helpers lose the network. So the sandbox reads
+`.env` and the key files, and what keeps them from the agent is the developer
+instructions and the environment `safety_guard.agent_env` withholds.
 """
 from __future__ import annotations
 
