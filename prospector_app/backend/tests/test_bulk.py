@@ -7,11 +7,13 @@ warnings, the batch cap, merges before their dependent closes, and an event
 loop left free while the executor runs."""
 import asyncio
 import json
+import threading
 import time
 
 import pytest
 
 from prospector_app.backend import bulk
+from prospector_app.backend import data
 from prospector_app.backend import executor
 from prospector_app.backend import models
 
@@ -39,6 +41,53 @@ def test_per_pr_comments_override_shared(monkeypatch):
     assert seen[2] == "dup of #22"   # its own comment
     assert seen[3] == "shared"       # not in the map → shared fallback
 
+
+
+def _track_overlap(peak: list[int]):
+    """A fake executor body that records how many calls are in flight at once."""
+    lock = threading.Lock()
+    live = [0]
+    def body() -> None:
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        time.sleep(0.05)
+        with lock:
+            live[0] -= 1
+    return body
+
+
+def test_closes_overlap_up_to_the_width_and_refresh_once(monkeypatch):
+    peak = [0]
+    body = _track_overlap(peak)
+    def fake_exec(n, action, *, dry_run):
+        body()
+        data.refresh()
+        return {"pr": n, "action": action.action, "status": "executed"}
+    refreshes = []
+    monkeypatch.setattr(executor, "execute_pr", fake_exec)
+    monkeypatch.setattr(data, "_freshen", lambda: refreshes.append(1))
+    monkeypatch.setattr(data, "_cold_load", lambda: refreshes.append(1))
+
+    evs = _drain(bulk.run_bulk(list(range(1, 11)), "CLOSE_STALE", dry_run=False))
+
+    assert sorted(json.loads(e["data"])["pr"] for e in evs if e["event"] == "result") == list(range(1, 11))
+    assert peak[0] == bulk._CLOSE_WIDTH
+    assert refreshes == [1]
+
+
+def test_merges_run_one_at_a_time_in_order(monkeypatch):
+    peak = [0]
+    body = _track_overlap(peak)
+    def fake_merge(n, method, *, dry_run, reason=None):
+        body()
+        return {"pr": n, "action": "MERGE", "status": "merged"}
+    monkeypatch.setattr(executor, "merge_pr", fake_merge)
+
+    evs = _drain(bulk.run_bulk([1, 2, 3, 4], "MERGE", dry_run=False))
+
+    assert [json.loads(e["data"])["pr"] for e in evs if e["event"] == "result"] == [1, 2, 3, 4]
+    assert peak[0] == 1
 
 
 def test_a_bulk_merge_goes_through_the_gated_merge(monkeypatch):

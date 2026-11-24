@@ -171,9 +171,8 @@ def _reflect_state(n: int, *, state: str | None, merged: bool = False) -> None:
     store row — a brand-new PR we closed without ever ingesting has nothing to
     update."""
     effective = "merged" if merged else state
-    store = data.store()
-    if effective and store.load_pr(n) is not None:
-        store.edit_pr(n).record_live_state(state=effective)
+    if effective and (rec := _store_row(n)) is not None:
+        rec.record_live_state(state=effective)
     data.refresh()
 
 
@@ -181,10 +180,16 @@ def _record_observed_head(n: int, head: str) -> None:
     """Persist a head observed at write time into the shared store, so a push the
     pipeline has not ingested reads stale for every operator rather than only in
     the request that noticed it. A no-op when the PR has no store row."""
-    store = data.store()
-    if store.load_pr(n) is not None:
-        store.edit_pr(n).record_live_state(live_head_sha=head)
+    if (rec := _store_row(n)) is not None:
+        rec.record_live_state(live_head_sha=head)
     data.refresh()
+
+
+def _store_row(n: int) -> Pr | None:
+    try:
+        return data.store().edit_pr(n)
+    except KeyError:
+        return None
 
 
 def _live_ci_block(n: int, head: str | None) -> str | None:
@@ -196,9 +201,8 @@ def _live_ci_block(n: int, head: str | None) -> str | None:
     if live["ci"] == "passing":
         return None
     ci = live["ci"] or "unknown"
-    store = data.store()
-    if store.load_pr(n) is not None:
-        store.edit_pr(n).record_live_state(ci=ci, ci_failures=live.get("ci_failures"))
+    if (rec := _store_row(n)) is not None:
+        rec.record_live_state(ci=ci, ci_failures=live.get("ci_failures"))
     data.refresh()
     if ci == "awaiting-approval":
         from pipeline import gates
