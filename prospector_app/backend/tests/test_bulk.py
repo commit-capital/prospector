@@ -6,6 +6,7 @@ tests hold what bulk itself decides: per-PR comments, the summary and its
 warnings, the batch cap, merges before their dependent closes, and an event
 loop left free while the executor runs."""
 import asyncio
+from collections.abc import Callable
 import json
 import threading
 import time
@@ -43,7 +44,7 @@ def test_per_pr_comments_override_shared(monkeypatch):
 
 
 
-def _track_overlap(peak: list[int]):
+def _track_overlap(peak: list[int]) -> Callable[[], None]:
     """A fake executor body that records how many calls are in flight at once."""
     lock = threading.Lock()
     live = [0]

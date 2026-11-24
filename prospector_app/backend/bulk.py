@@ -29,7 +29,9 @@ from pipeline import reviewers
 from prospector_app.backend import verify_queue
 
 CAP = 1000
-# Closes run this many at a time, well inside GitHub's content-creation rate limit.
+# Closes run this many at a time: about 40 writes a minute, under GitHub's
+# 80-a-minute content-creation limit. Its 500-an-hour limit still caps a batch
+# at about 250 closes.
 _CLOSE_WIDTH = 4
 
 # Bulk actions that start one background job per PR.
