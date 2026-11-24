@@ -139,8 +139,9 @@ def _close_issue(item: models.IssueBulkCloseItem, *, dry_run: bool) -> dict[str,
             n, models.IssueCloseDupBody(canonical=item.canonical, comment=comment),
             dry_run=dry_run)
     if item.action == "close-fixed":
+        assert item.fixed_by is not None  # IssueBulkCloseItem requires it
         return executor.close_issue_fixed(
-            n, models.IssueCloseFixedBody(fixed_by=item.fixed_by or 0, comment=comment),
+            n, models.IssueCloseFixedBody(fixed_by=item.fixed_by, comment=comment),
             dry_run=dry_run)
     return executor.close_issue_with_comment(n, models.IssueCloseBody(
         disposition=item.disposition, comment=item.comment,

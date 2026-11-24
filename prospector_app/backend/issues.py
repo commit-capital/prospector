@@ -133,8 +133,15 @@ def _live_pr_states(numbers: list[int]) -> dict[int, str]:
     or a node-limit error fails only its own batch, not every PR on the tab; a PR that
     can't be resolved is simply omitted."""
     now = time.time()
-    want = sorted({n for n in numbers
-                   if n not in _pr_state_cache or now - _pr_state_cache[n][0] >= _STATE_TTL})
+    # Each entry is read once: a concurrent gate may evict it at any moment.
+    states: dict[int, str] = {}
+    want: list[int] = []
+    for n in sorted(set(numbers)):
+        hit = _pr_state_cache.get(n)
+        if hit:
+            states[n] = hit[1]
+        if not hit or now - hit[0] >= _STATE_TTL:
+            want.append(n)
     for i in range(0, len(want), _STATE_BATCH):
         batch = want[i:i + _STATE_BATCH]
         fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ state }}" for n in batch)
@@ -145,8 +152,9 @@ def _live_pr_states(numbers: list[int]) -> dict[int, str]:
         for n in batch:
             node = repo.get(f"p{n}")
             if node and node.get("state"):
-                _pr_state_cache[n] = (now, node["state"].lower())
-    return {n: _pr_state_cache[n][1] for n in numbers if n in _pr_state_cache}
+                states[n] = node["state"].lower()
+                _pr_state_cache[n] = (now, states[n])
+    return states
 
 
 # Within one evidence kind — issue_links.HOW_RANK orders those, explicit and

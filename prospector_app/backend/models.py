@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class CloseAction(BaseModel):
@@ -115,6 +115,12 @@ class IssueBulkCloseItem(BaseModel):
     comment: str | None = None
     fixed_by: int | None = None
     canonical: int | None = None
+
+    @model_validator(mode="after")
+    def _fixer_for_close_fixed(self) -> IssueBulkCloseItem:
+        if self.action == "close-fixed" and self.fixed_by is None:
+            raise ValueError("close-fixed needs fixed_by")
+        return self
 
 
 class IssueBulkCloseBody(BaseModel):

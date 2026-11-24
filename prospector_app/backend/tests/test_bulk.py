@@ -155,6 +155,16 @@ def test_issue_close_route_defaults_to_dry_run(monkeypatch):
     assert runs == [True]
 
 
+def test_a_close_fixed_item_without_a_fixer_is_refused():
+    from fastapi.testclient import TestClient
+    from prospector_app.backend import app as appmod
+
+    r = TestClient(appmod.app).post("/api/execute/issues/close",
+                                    json={"items": [{"issue": 1, "action": "close-fixed"}]})
+
+    assert r.status_code == 422
+
+
 def test_a_bulk_merge_goes_through_the_gated_merge(monkeypatch):
     monkeypatch.setattr(executor, "merge_pr", lambda n, method, *, dry_run, reason=None: {
         "pr": n, "action": "MERGE", "status": "blocked" if n == 2 else "merged"})
