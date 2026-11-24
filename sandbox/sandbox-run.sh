@@ -68,12 +68,13 @@ esac
 if [ "$PHASE" = "regress" ] && [ -z "$EXCL" ]; then
   echo "usage: --phase regress requires --exclude-file F" >&2; exit 2
 fi
-# --pre-patch belongs to the suite phases alone: the tree their plan and
-# baseline are taken over.
+# --pre-patch belongs to the suite phases, where it is the tree their plan and
+# baseline are taken over, and to compile, where it carries an older base
+# image's tree forward to the default-branch HEAD the preflight measures.
 if [ -n "$PRE" ]; then
   case "$PHASE" in
-    baseline|regress) ;;
-    *) echo "usage: --pre-patch is for --phase baseline|regress" >&2; exit 2;;
+    baseline|regress|compile) ;;
+    *) echo "usage: --pre-patch is for --phase baseline|regress|compile" >&2; exit 2;;
   esac
 fi
 # The suite phases run verify-suite.mjs, which needs its repository contract.

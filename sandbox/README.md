@@ -70,6 +70,25 @@ worker re-pins. Keeping the newest non-pinned generation covers that without
 locking. Image removal is un-forced besides, so a phase container running right
 now refuses the removal and keeps its clone too.
 
+**The compile preflight reuses a generation across default-branch moves.**
+When no image exists for current HEAD, `verify_driver.head_delta_base` takes the
+newest finished generation built FROM the current sandbox image whose commit is
+an ancestor of HEAD at most `DELTA_MAX_COMMITS` behind. It fetches HEAD into that
+generation's clone and mounts upstream's own diff to HEAD as the compile phase's
+`--pre-patch`, so the command still runs over HEAD's tree. The diff leaves out
+the files the scrub removes. It is applied in the container's layer and never
+baked into an image. These fall back to building HEAD's image:
+- a history that touches what the image's install read (a dependency manifest,
+  pnpm patches or hooks, `.npmrc`, the Rust toolchain pin, a Prisma schema, or a
+  file a `preinstall`/`install`/`postinstall`/`prepare` script names);
+- a non-source file at HEAD that `assert_scrubbed`'s content check would refuse,
+  so that gate still runs at the build;
+- a fetch that fails, or no qualifying generation.
+
+The reused generation's lock is held until the compile ends, so no sweep removes
+its image mid-run. A pre-patch that does not apply exits 40: the harness's fault,
+never the PR's conflict. One build therefore serves a whole session of merges.
+
 `prepare-base` sweeps on both sides of its build: before, so a disk that is
 already full can be recovered (the build is what fails when it is full, which
 would otherwise leave no path back), and again once the new pin is saved. The

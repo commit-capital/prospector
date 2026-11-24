@@ -160,8 +160,12 @@ case "$PHASE" in
     # Merge-time compile preflight: the base tree is the current default-branch
     # HEAD and TEST_CMD is the profile's compile command — host-authored policy,
     # never agent text. The patch is the PR's full diff; a conflict means the PR
-    # does not apply onto that HEAD.
+    # does not apply onto that HEAD. PRE_PATCH_FILE, when set, is the default
+    # branch's own diff from an older base image's commit to HEAD, applied
+    # first so the tree is HEAD's; it is upstream's history, not the PR, so a
+    # failure to apply it is the harness's and never a conflict.
     cap_heaps
+    apply_pre_patch || exit "$SENTINEL_PATCH_UNREADABLE"
     apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
     run_test_cmd
     [ $? -eq 0 ] && exit 0 || exit "$SENTINEL_TEST_FAIL"
