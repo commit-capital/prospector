@@ -32,7 +32,7 @@ _LINK_RE = re.compile(r"https?://[^\s)>\]]+")
 _HTML_RE = re.compile(r"<(?!!--)[a-zA-Z/][^>]*>")
 _IMAGE_RE = re.compile(r"!\[")
 _MD_LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
-_MENTION_RE = re.compile(r"(?<![\w`])@(?=[A-Za-z0-9-])")
+_MENTION_RE = re.compile(r"(?<!\w)@(?=[A-Za-z0-9-])")
 
 
 def inert(text: str, limit: int = FIELD_MAX) -> str:
@@ -42,9 +42,9 @@ def inert(text: str, limit: int = FIELD_MAX) -> str:
     one = _HTML_RE.sub("", one)
     one = _MD_LINK_RE.sub(r"\1", one)
     one = _IMAGE_RE.sub("[", one)
-    one = _LINK_RE.sub("(link removed)", one)
+    one = _LINK_RE.sub("(link removed)", one).replace("`", "'")
     one = _MENTION_RE.sub("@\u200b", one)
-    one = " ".join(one.replace("`", "'").split())
+    one = " ".join(one.split())
     return one[:limit].rstrip()
 
 

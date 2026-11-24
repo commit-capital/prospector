@@ -94,6 +94,14 @@ def test_agent_text_in_the_comment_is_inert():
     assert dispute_question.problems(body) == ["the comment carries a closing keyword"]
 
 
+def test_a_package_name_in_backticks_stays_postable():
+    body = _render({**QUESTION, "options": [
+        {"label": "A", "behavior": "only checks that the package is named `@openai/codex`"},
+        QUESTION["options"][1]]})
+    assert "'@\u200bopenai/codex'" in body
+    assert dispute_question.problems(body) == []
+
+
 @pytest.mark.parametrize("text,label", [
     ("A", "A"), ("b", "B"), ("**A** — that's right", "A"), ("Option B please", "B"),
     ("A.\nbecause", "A"), ("C", None), ("Actually neither", None), ("", None),
