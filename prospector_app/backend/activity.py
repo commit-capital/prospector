@@ -655,6 +655,8 @@ def local_day(stamp: str | None, tz: tzinfo) -> str:
 def open_counts(spans: Iterable[tuple[str, str | None]], days: list[str]) -> list[int]:
     """How many (opened_day, closed_day) spans are open at the end of each day.
     A None closed_day is still open."""
+    if not days:
+        return []
     first = days[0]
     delta = dict.fromkeys(days, 0)
     base = 0
@@ -726,8 +728,9 @@ def firehose_stats(
     pr_merged: dict[str, int] = {d: 0 for d in days}
     pr_reopened: dict[str, int] = {d: 0 for d in days}
     iss_closed: dict[str, int] = {d: 0 for d in days}
-    # A closed item's close time is our landed close when there is one, else
-    # its upstream updated_at, which ingest refreshes when it leaves the open set.
+    # A closed item's close time is the later of our landed close and its
+    # upstream updated_at. updated_at is the close time when ingest re-fetched
+    # the item after it closed, and earlier when the live sweep saw the close.
     our_close: dict[tuple[str, int], str] = {}
     for ev in events:
         if not is_landed(ev):
@@ -751,7 +754,8 @@ def firehose_stats(
 
     def span(kind: str, n: int, created: str | None, state: str | None,
              updated: str | None) -> tuple[str, str | None]:
-        closed = None if state == "open" else local_day(our_close.get((kind, n)) or updated, local_tz)
+        closed = None if state == "open" else local_day(
+            max(our_close.get((kind, n), ""), updated or ""), local_tz)
         return local_day(created, local_tz), closed
 
     pr_open = open_counts(
