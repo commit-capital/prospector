@@ -536,6 +536,15 @@ class Store:
             self._holding = False
             self._held_prs = self._held_clusters = None
 
+    def reconciled_prs(self, numbers: Iterable[int]) -> tuple[dict[int, model.Pr], str | None]:
+        """Every PR stored open or in `numbers`, body omitted, plus the watermark
+        `prs_since` continues from: what a full ingest reconciles its open
+        listing against."""
+        from sqlalchemy import or_
+        c = schema.prs.c
+        return self._prs.since(None, omit_paths=[("meta", "body")],
+                               where=or_(c.state == "open", storekit.among(c.pr, numbers)))
+
     def prs_since(self, watermark: str | None) -> tuple[dict[int, model.Pr], str | None]:
         """PRs written at or after `watermark` (all when None), body omitted, plus
         the new watermark — the incremental refetch a cached reader runs to pick up
@@ -615,15 +624,15 @@ class Store:
             return conn.execute(select(schema.prs.c.pr, schema.prs.c.state)).all()
         return {r[0]: r[1] for r in storekit.read_retrying(self.engine, q) if r[1]}
 
-    def link_rows(self) -> list[dict]:
-        """Number, title, description, state and head of every open or merged PR
-        — what the alert and advisory linkers match on — projected server-side
-        and read in pages."""
+    def link_rows(self, states: Iterable[str] = ("open", "merged")) -> list[dict]:
+        """Number, title, description, state and head of every PR in `states`
+        — what the issue, alert and advisory linkers match on — projected
+        server-side and read in pages."""
         c = schema.prs.c
         rows = self._prs.rows(
             [c.state, c.head_sha, c.data[("meta", "title")].as_string(),
              c.data[("meta", "body")].as_string()],
-            where=c.state.in_(("open", "merged")))
+            where=c.state.in_(sorted(set(states))))
         return [{"number": r[0], "state": r[1], "head_sha": r[2],
                  "title": r[3] or "", "body": r[4] or ""} for r in rows]
 
@@ -640,7 +649,7 @@ class Store:
         if states is not None:
             where.append(c.state.in_(sorted(set(states))))
         if numbers is not None:
-            where.append(c.pr.in_(sorted({int(n) for n in numbers})))
+            where.append(storekit.among(c.pr, numbers))
         rows = self._prs.rows(
             [c.state, c.data[("meta", "title")].as_string(),
              c.data[("meta", "author")].as_string(), c.head_sha, c.updated_at,

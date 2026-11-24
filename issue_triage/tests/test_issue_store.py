@@ -194,3 +194,10 @@ def test_hunted_since_counts_the_hunter_s_requests_queued_since(tmp_path):
             "action": "solve", "status": "queued", "source": source, "queued_at": at}})
     st.save_issue({"issue": 5, "meta": dict(GOOD_META)})
     assert st.hunted_since("2026-10-27T00:00:00+00:00") == 2
+
+
+def test_reconciled_issues_are_the_stored_open_and_the_named(tmp_path):
+    st = issue_store.IssueStore(tmp_path)
+    for n, state in ((1, "open"), (2, "closed"), (3, "closed")):
+        st.create_issue(n, {**GOOD_META, "state": state})
+    assert set(st.reconciled_issues([3])) == {1, 3}

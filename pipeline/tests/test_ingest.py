@@ -574,14 +574,34 @@ class TestTargetedIngest:
         from issue_triage import issue_ingest
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR])
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
-        calls: list[list[str] | None] = []
-        monkeypatch.setattr(issue_ingest, "main", lambda argv=None: calls.append(argv))
+        calls: list[tuple[list[str] | None, list[dict] | None]] = []
+        monkeypatch.setattr(issue_ingest, "main",
+                            lambda argv=None, open_prs=None: calls.append((argv, open_prs)))
         assert ingest.main(["--store", str(tmp_path)]) == 0
-        assert calls == [[]]
+        row = ingest.open_link_row(GH_PR)
+        assert calls == [([], [row])]
         assert ingest.main(["--store", str(tmp_path), "--skip-issues"]) == 0
-        assert calls == [[]]
         assert ingest.main(["--new", "--store", str(tmp_path)]) == 0
-        assert calls == [[]]
+        assert ingest.main(["--store", str(tmp_path), "--max", "1"]) == 0
+        assert calls == [([], [row]), ([], None)]  # a capped listing is not the open corpus
+
+    def test_main_links_issues_against_every_pr_still_open(self, tmp_path, monkeypatch):
+        """A stored-open PR the listing missed joins the open link rows when it
+        reads back open; when one cannot be read back, the issue ingest reads the
+        store's open PRs instead."""
+        from issue_triage import issue_ingest
+        missed = dict(GH_PR, number=5002)
+        ingest.upsert_pr(Store(tmp_path), missed)
+        monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR])
+        monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
+        calls: list[list[dict] | None] = []
+        monkeypatch.setattr(issue_ingest, "main",
+                            lambda argv=None, open_prs=None: calls.append(open_prs))
+        monkeypatch.setattr(ingest, "fetch_pr", lambda n: missed)
+        assert ingest.main(["--store", str(tmp_path)]) == 0
+        monkeypatch.setattr(ingest, "fetch_pr", lambda n: None)
+        assert ingest.main(["--store", str(tmp_path)]) == 0
+        assert calls == [[ingest.open_link_row(GH_PR), ingest.open_link_row(missed)], None]
 
     def test_main_full_recomputes_reviewers_registry(self, tmp_path, monkeypatch):
         """A full ingest records each reviewer's latest activity over the open
@@ -625,20 +645,24 @@ class TestTargetedIngest:
         assert ingest.needs_conversation(pr, "h2", "t1") is True
         assert ingest.needs_conversation(pr, "h", "t2") is True
 
-    def test_main_full_loads_pr_corpus_once(self, tmp_path, monkeypatch):
-        ingest.upsert_pr(Store(tmp_path), GH_PR)
+    def test_main_full_reads_only_open_and_listed_prs(self, tmp_path, monkeypatch):
+        st = Store(tmp_path)
+        ingest.upsert_pr(st, GH_PR)
+        ingest.upsert_pr(st, dict(GH_PR, number=7000, state="closed"))
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR])
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
-        watermarks: list[str | None] = []
-        prs_since = Store.prs_since
+        monkeypatch.setattr(Store, "all_prs", lambda self: pytest.fail("ingest reads no closed history"))
+        read: list[set[int]] = []
+        reconciled = Store.reconciled_prs
 
-        def recording_prs_since(store, watermark):
-            watermarks.append(watermark)
-            return prs_since(store, watermark)
+        def recording(store, numbers):
+            got = reconciled(store, numbers)
+            read.append(set(got[0]))
+            return got
 
-        monkeypatch.setattr(Store, "prs_since", recording_prs_since)
+        monkeypatch.setattr(Store, "reconciled_prs", recording)
         assert ingest.main(["--store", str(tmp_path), "--skip-issues"]) == 0
-        assert watermarks.count(None) == 1
+        assert read == [{5001}]
 
     def test_main_full_reconciles_closure_from_loaded_snapshot(self, tmp_path, monkeypatch):
         store = Store(tmp_path)
