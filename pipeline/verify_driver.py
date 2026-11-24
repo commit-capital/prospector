@@ -271,12 +271,10 @@ def prefetch_store(src: Path, store: Path) -> None:
     The fetch runs inside the sandbox image, which is what makes the store readable by
     the build that consumes it. A lockfile gates optional dependencies on `os` and
     `cpu`, and a pnpm store is versioned by pnpm major, so fetching from the image
-    resolves both against the platform and the pnpm that will read the store. It
-    also keeps the pinned dependencies' lifecycle scripts off the host: they run
-    as the image's unprivileged `sandbox` user.
+    resolves both against the platform and the pnpm that will read the store.
 
-    This container has egress — fetching is the step that downloads. It is the
-    phase containers, running PR code, that are sealed.
+    This container has egress — fetching is the step that downloads — so it runs
+    no lifecycle scripts; the offline image build runs them.
 
     `pnpm fetch` leaves a node_modules in `src`, removed here in the same
     container that wrote it. The removal is load-bearing: pnpm reads an existing
@@ -287,7 +285,7 @@ def prefetch_store(src: Path, store: Path) -> None:
         ["docker", "run", "--rm",
          "-v", f"{src}:/work/src", "-v", f"{store}:/work/pnpm-store",
          sandbox_image(), "bash", "-lc",
-         "pnpm fetch --dir /work/src --store-dir /work/pnpm-store"
+         "pnpm fetch --ignore-scripts --dir /work/src --store-dir /work/pnpm-store"
          " && rm -rf /work/src/node_modules"],
         env=launcher_env())
 

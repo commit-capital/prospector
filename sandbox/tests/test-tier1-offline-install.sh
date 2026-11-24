@@ -4,13 +4,15 @@
 # build installs from it under --network none. This builds a real Tier 1 image
 # from a fixture that depends on `ms`, then runs a phase against it.
 #
-# One passing phase carries three proofs at once:
+# One passing phase carries four proofs at once:
 #   - corepack resolves the fixture's pnpm@9.15.4 pin from the image's build-time
 #     cache, with no egress (`pnpm -s test` runs at all),
 #   - `pnpm install --offline --frozen-lockfile` resolves every package from the
 #     host-prefetched store (`ms` is present),
 #   - pnpm's hardlinks into node_modules/.pnpm outlive `rm -rf /work/pnpm-store`
-#     in the same layer (`ms` is still readable after the store is gone).
+#     in the same layer (`ms` is still readable after the store is gone),
+#   - dependency lifecycle scripts run in that offline build, and a native one
+#     compiles there (`cpu-features` loads).
 #
 # The Tier 0 control at the end is what keeps that from passing vacuously.
 set -uo pipefail
