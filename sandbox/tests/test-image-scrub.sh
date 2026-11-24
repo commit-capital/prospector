@@ -10,7 +10,7 @@ CTX="$(mktemp -d "$SCRATCH/scrub.XXXXXX")"
 cleanup() { rm -rf "$CTX"; docker rmi -f pr-verify-base:scrubtest-t0 >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-mkdir -p "$CTX/src" "$CTX/pnpm-store" "$CTX/rust"
+base_context "$CTX"
 cat > "$CTX/src/package.json" <<'JSON'
 { "name": "fixture", "version": "0.0.0", "private": true, "scripts": { "test": "true" } }
 JSON

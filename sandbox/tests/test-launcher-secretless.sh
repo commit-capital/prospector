@@ -15,7 +15,7 @@ export GITHUB_TOKEN="ghp_POISON-should-not-leak"
 export DEPLOYMENT_PRIVATE_KEY="POISON-PRIVATE-KEY-should-not-leak"
 
 # Build a throwaway base image with the code under test baked in.
-mkdir -p "$CTX/src" "$CTX/pnpm-store" "$CTX/rust"
+base_context "$CTX"
 cat > "$CTX/src/package.json" <<'JSON'
 { "name": "envdump", "version": "0.0.0", "private": true, "scripts": { "test": "true" } }
 JSON

@@ -23,3 +23,7 @@ docker image inspect "$BASE_IMAGE" >/dev/null 2>&1 || {
   exit 1
 }
 echo "sandbox image: $BASE_IMAGE"
+
+# base_context DIR: the directories Dockerfile.base COPYs, which must exist at
+# every tier.
+base_context() { mkdir -p "$1/src" "$1/pnpm-store" "$1/rust" "$1/browsers"; }
