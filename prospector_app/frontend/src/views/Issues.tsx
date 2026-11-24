@@ -1,7 +1,7 @@
 import { AuthorReturnNote } from "../components/AuthorReturn";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
-import { api, type IssueRow, type IssueDupGroup, type IssuePR, type IssueExecResult, type IssueDisposition, type IssueTriageDisposition, type IssueFilterSpec, type IssueLikelyFixedItem } from "../api";
+import { api, type IssueRow, type IssueDupGroup, type IssuePR, type IssueExecResult, type IssueCloseItem, type IssueDisposition, type IssueTriageDisposition, type IssueFilterSpec, type IssueLikelyFixedItem } from "../api";
 import { PRLink } from "../components/PRLink";
 import { GitHubPRLink } from "../components/GitHubPRLink";
 import { SuggestedActions } from "../components/SuggestedActions";
@@ -168,18 +168,18 @@ function DupGroupCard({ g }: { g: IssueDupGroup }) {
   // Close-as-fixed also closes the canonical (it too is fixed by the merged PR);
   // close-as-dup keeps the canonical as the survivor.
   const targets = mode === "fixed" ? [g.canonical, ...dupTargets] : dupTargets;
-  const closeOne = async (n: number) => {
+  const close = async (ns: number[]) => {
     const c = comment.trim() || undefined;
-    const res = mode === "fixed" && fixer != null
-      ? await api.closeIssueFixed(n, fixer, dryRun, c)
-      : await api.closeIssueDup(n, g.canonical, dryRun, c);
-    setResults((r) => ({ ...r, [n]: res }));
-  };
-  const closeAll = async () => {
+    const items = ns.map((n): IssueCloseItem => mode === "fixed" && fixer != null
+      ? { issue: n, action: "close-fixed", fixed_by: fixer, comment: c }
+      : { issue: n, action: "close-dup", canonical: g.canonical, comment: c });
     setBusy(true);
     setMenuOpen(false);
-    for (const n of targets) await closeOne(n);
-    setBusy(false);
+    try {
+      await api.closeIssues(items, dryRun, (res) => setResults((r) => ({ ...r, [res.issue]: res })));
+    } finally {
+      setBusy(false);
+    }
   };
   const toggle = (n: number) =>
     setExcluded((s) => { const next = new Set(s); if (next.has(n)) next.delete(n); else next.add(n); return next; });
@@ -223,7 +223,7 @@ function DupGroupCard({ g }: { g: IssueDupGroup }) {
                 <td>
                   {res
                     ? <span className={`chip chip-${res.status === "executed" ? "green" : res.status === "error" ? "red" : "muted"}`} title={res.detail}>{res.status}</span>
-                    : <button className="link-btn" disabled={ex || busy} onClick={() => closeOne(d.number)}>close as {mode === "fixed" ? "fixed" : "dup"}</button>}
+                    : <button className="link-btn" disabled={ex || busy} onClick={() => close([d.number])}>close as {mode === "fixed" ? "fixed" : "dup"}</button>}
                 </td>
               </tr>
             );
@@ -238,7 +238,7 @@ function DupGroupCard({ g }: { g: IssueDupGroup }) {
 
       <div className="dup-card-actions">
         <div className="split-btn" ref={menuRef}>
-          <button className={`btn-primary sm ${!dryRun ? "btn-live" : ""}`} disabled={busy || targets.length === 0} onClick={closeAll}>
+          <button className={`btn-primary sm ${!dryRun ? "btn-live" : ""}`} disabled={busy || targets.length === 0} onClick={() => close(targets)}>
             {busy ? "Working…"
               : mode === "fixed"
                 ? `${dryRun ? "" : "● "}Close ${targets.length} as fixed by #${fixer}${dryRun ? " (dry-run)" : ` as ${botLogin}`}`

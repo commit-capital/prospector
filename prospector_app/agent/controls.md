@@ -132,11 +132,13 @@ doesn't fit. The issue-fix worker then does the work.
     for every operator.
   - **Bulk → Apply** (close, review, comment, merge, re-trigger, queue
     verification, run security or design reviews, post design findings to
-    authors): POST /api/execute/bulk, one PR at a time. Each PR passes its own
-    gates. To post the design findings already standing, filter on the Design
-    review check failing, select all, and apply in dry-run first.
-- **Issues** close-out cards and the bulk close bar: the issue close endpoints,
-  one issue at a time.
+    authors): POST /api/execute/bulk. Closes run a few at a time, every other
+    action one PR at a time. Each PR passes its own gates. To post the design
+    findings already standing, filter on the Design review check failing,
+    select all, and apply in dry-run first.
+- **Issues** close-out cards and the bulk close bar: POST
+  /api/execute/issues/close, a few issues at a time. Each item takes its
+  single-issue endpoint's executor path and gate.
 - **Cluster detail**: one action per member, previewed and then run via POST
   /api/execute/cluster. Each member passes its own gates. Re-run analysis
   starts triage-cluster.

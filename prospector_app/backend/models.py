@@ -106,6 +106,22 @@ class IssueCloseBody(BaseModel):
     canonical: int | None = None
 
 
+class IssueBulkCloseItem(BaseModel):
+    # `action` picks the executor path, and with it the gate: close-dup and
+    # close-fixed are the worklist's recorded-link closes, close the operator's.
+    issue: int
+    action: Literal["close", "close-dup", "close-fixed"] = "close"
+    disposition: Literal["not-planned", "completed", "fixed", "dup"] = "not-planned"
+    comment: str | None = None
+    fixed_by: int | None = None
+    canonical: int | None = None
+
+
+class IssueBulkCloseBody(BaseModel):
+    items: list[IssueBulkCloseItem] = []
+    dry_run: bool = True
+
+
 class IssueCommentBody(BaseModel):
     comment: str = ""
 

@@ -1,20 +1,21 @@
 # prospector_app/backend/bulk.py
-"""Apply one triage action to many PRs, streamed as SSE.
+"""Apply one triage action to many PRs, or close many issues, streamed as SSE.
 
-Bulk is pure orchestration: it loops the selected PR numbers through the same
-per-PR executor, queue, and allowlisted-job paths used elsewhere in the app.
+Bulk is pure orchestration: it loops the selected PR or issue numbers through
+the same per-item executor, queue, and allowlisted-job paths used elsewhere in
+the app.
 Upstream writes retain their per-PR gates and activity-log entries, and local
 verification/security work retains its normal queue and job controls. Each
 blocking call (a store write, an upstream write) runs on a worker
 thread, so the event loop keeps serving every other request and stream while a
-batch works. Closes run a few at a time and stream in the order they finish;
-every other action runs one PR at a time, in order.
+batch works. PR and issue closes run a few at a time and stream in the order
+they finish; every other action runs one PR at a time, in order.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from pipeline import bot_token
@@ -29,9 +30,9 @@ from pipeline import reviewers
 from prospector_app.backend import verify_queue
 
 CAP = 1000
-# Closes run this many at a time: about 40 writes a minute, under GitHub's
-# 80-a-minute content-creation limit. Its 500-an-hour limit still caps a batch
-# at about 250 closes.
+# A batch of PR or issue closes runs this many at a time: about 40 writes a
+# minute, under GitHub's 80-a-minute content-creation limit. Its 500-an-hour
+# limit still caps a batch at about 250 closes.
 _CLOSE_WIDTH = 4
 
 # Bulk actions that start one background job per PR.
@@ -81,36 +82,85 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
         yield {"event": "error", "data": f"batch of {len(prs)} exceeds cap of {CAP}"}
         return
 
-    summary: dict[str, int] = {}
-    bookkeeping_errors: list[str] = []
     closing = action in executor.CLOSE_ACTIONS
-    gate = asyncio.Semaphore(_CLOSE_WIDTH if closing else 1)
 
     async def one(n: int) -> dict[str, Any]:
         if closing:
             data.defer_refresh()  # this task's context only; the batch refreshes once
         pr_comment = (comments or {}).get(n) or comment
-        async with gate:
-            try:
-                if action in _JOB_ACTIONS:
-                    kind, noun = _JOB_ACTIONS[action]
-                    try:
-                        job = jobs.start_job(kind, pr=n)
-                        jobs.schedule_job(job)
-                        return {"pr": n, "action": action, "status": "queued",
-                                "job_id": job["id"],
-                                "detail": f"{noun} queued as background job #{job['id']}"}
-                    except ValueError as e:
-                        return {"pr": n, "action": action, "status": "skipped",
-                                "detail": str(e)}
-                return await asyncio.to_thread(
-                    _apply, n, action, comment=pr_comment, canonical=canonical,
-                    method=method, reason=reason, tags=tags, reviewer=reviewer,
-                    dry_run=dry_run)
-            except Exception as e:  # one PR's failure never aborts the batch
-                return {"pr": n, "action": action, "status": "error", "detail": str(e)[:200]}
+        try:
+            if action in _JOB_ACTIONS:
+                kind, noun = _JOB_ACTIONS[action]
+                try:
+                    job = jobs.start_job(kind, pr=n)
+                    jobs.schedule_job(job)
+                    return {"pr": n, "action": action, "status": "queued",
+                            "job_id": job["id"],
+                            "detail": f"{noun} queued as background job #{job['id']}"}
+                except ValueError as e:
+                    return {"pr": n, "action": action, "status": "skipped",
+                            "detail": str(e)}
+            return await asyncio.to_thread(
+                _apply, n, action, comment=pr_comment, canonical=canonical,
+                method=method, reason=reason, tags=tags, reviewer=reviewer,
+                dry_run=dry_run)
+        except Exception as e:  # one PR's failure never aborts the batch
+            return {"pr": n, "action": action, "status": "error", "detail": str(e)[:200]}
 
-    tasks = [asyncio.create_task(one(n)) for n in prs]
+    async for ev in _stream([lambda n=n: one(n) for n in prs],
+                            width=_CLOSE_WIDTH if closing else 1,
+                            finish=data.refresh if closing else None):
+        yield ev
+
+
+async def run_issue_closes(items: list[models.IssueBulkCloseItem], *,
+                           dry_run: bool = True) -> AsyncIterator[dict[str, Any]]:
+    """Yield one 'result' frame per issue close as it finishes, then 'done' with a
+    summary. A too-large batch yields a single 'error' and stops."""
+    if len(items) > CAP:
+        yield {"event": "error", "data": f"batch of {len(items)} exceeds cap of {CAP}"}
+        return
+
+    async def one(item: models.IssueBulkCloseItem) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(_close_issue, item, dry_run=dry_run)
+        except Exception as e:  # one issue's failure never aborts the batch
+            return {"issue": item.issue, "action": item.action, "status": "error",
+                    "detail": str(e)[:200]}
+
+    async for ev in _stream([lambda i=i: one(i) for i in items], width=_CLOSE_WIDTH):
+        yield ev
+
+
+def _close_issue(item: models.IssueBulkCloseItem, *, dry_run: bool) -> dict[str, Any]:
+    n, comment = item.issue, item.comment or None
+    if item.action == "close-dup":
+        return executor.close_issue(
+            n, models.IssueCloseDupBody(canonical=item.canonical, comment=comment),
+            dry_run=dry_run)
+    if item.action == "close-fixed":
+        return executor.close_issue_fixed(
+            n, models.IssueCloseFixedBody(fixed_by=item.fixed_by or 0, comment=comment),
+            dry_run=dry_run)
+    return executor.close_issue_with_comment(n, models.IssueCloseBody(
+        disposition=item.disposition, comment=item.comment,
+        fixed_by=item.fixed_by, canonical=item.canonical), dry_run=dry_run)
+
+
+async def _stream(work: list[Callable[[], Awaitable[dict[str, Any]]]], *, width: int,
+                  finish: Callable[[], None] | None = None) -> AsyncIterator[dict[str, Any]]:
+    """Run `work` `width` at a time, yielding a 'result' frame as each finishes,
+    then run `finish` and yield 'done' with the summary. Each item returns its
+    own error result rather than raising."""
+    gate = asyncio.Semaphore(width)
+
+    async def gated(run: Callable[[], Awaitable[dict[str, Any]]]) -> dict[str, Any]:
+        async with gate:
+            return await run()
+
+    summary: dict[str, int] = {}
+    bookkeeping_errors: list[str] = []
+    tasks = [asyncio.create_task(gated(run)) for run in work]
     try:
         for finished in asyncio.as_completed(tasks):
             res = await finished
@@ -122,8 +172,8 @@ async def run_bulk(prs: list[int], action: str, *, comment: str | None = None,
     finally:
         for t in tasks:
             t.cancel()
-    if closing:
-        await asyncio.to_thread(data.refresh)
+    if finish is not None:
+        await asyncio.to_thread(finish)
     done: dict[str, Any] = {"summary": summary}
     _warn_bookkeeping(done, bookkeeping_errors)
     yield {"event": "done", "data": json.dumps(done)}

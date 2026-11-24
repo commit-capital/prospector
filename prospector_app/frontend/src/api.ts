@@ -1419,6 +1419,32 @@ async function getJson<T>(url: string): Promise<T> {
   return r.json();
 }
 
+/** POST `body` to an SSE endpoint and hand each frame's event name and raw
+ *  data to `onEvent`, resolving when the stream ends. */
+async function postSse(url: string, body: unknown, onEvent: (event: string, data: string) => void): Promise<void> {
+  const resp = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!resp.ok || !resp.body) throw new HttpError(url, resp.status);
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    // sse_starlette frames are CRLF-delimited; normalize so the blank-line
+    // split works regardless of the server's line endings.
+    buf = (buf + dec.decode(value, { stream: true })).replace(/\r\n/g, "\n");
+    const frames = buf.split("\n\n");
+    buf = frames.pop() ?? "";
+    for (const f of frames) {
+      const ev = /event: (\w+)/.exec(f)?.[1];
+      const data = /data: (.*)/s.exec(f)?.[1];
+      if (ev && data) onEvent(ev, data);
+    }
+  }
+}
+
 export interface ActivityScopeParams {
   prAuthor?: string;
   operator?: string;
@@ -1980,6 +2006,11 @@ export interface IssueFixFollowup {
   checked_at?: string | null;
   revisions?: number | null;
 }
+// One item of a bulk issue close; `action` picks the executor path and its gate.
+export type IssueCloseItem =
+  | { issue: number; action: "close"; disposition: IssueDisposition; comment: string; fixed_by?: number; canonical?: number }
+  | { issue: number; action: "close-dup"; canonical: number; comment?: string }
+  | { issue: number; action: "close-fixed"; fixed_by: number; comment?: string };
 export interface IssueExecResult { issue: number; action: string; status: string; detail: string; canonical?: number | null; forced?: boolean }
 
 export type AlertSource = "code-scanning" | "dependabot" | "secret-scanning";
@@ -2500,6 +2531,24 @@ export const api = {
     });
     return r.json() as Promise<IssueExecResult>;
   },
+  // Results stream in the order the closes finish. Every item gets exactly one:
+  // an issue the server never answered for reads as an error.
+  closeIssues: async (items: IssueCloseItem[], dryRun: boolean, onResult: (r: IssueExecResult) => void) => {
+    const pending = new Set(items.map((i) => i.issue));
+    let detail = "no result from the server";
+    try {
+      await postSse("/api/execute/issues/close", { items, dry_run: dryRun }, (ev, data) => {
+        if (ev === "error") detail = data;
+        if (ev !== "result") return;
+        const r = JSON.parse(data) as IssueExecResult;
+        pending.delete(r.issue);
+        onResult(r);
+      });
+    } catch (e) {
+      detail = String(e);
+    }
+    for (const issue of pending) onResult({ issue, action: "CLOSE_ISSUE", status: "error", detail });
+  },
   commentIssue: async (n: number, comment: string, dryRun: boolean) => {
     const r = await fetch(`/api/execute/issue/${n}/comment?dry_run=${dryRun}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -2605,104 +2654,43 @@ export const api = {
     }).then((r) => r.json() as Promise<{ spec: FilterSpec; note: string }>),
 
   // Agentic Deep Search: judge `prs` against `query`, streaming progress; resolves
-  // with the final matched set. Mirrors executeBulk's SSE frame parsing.
+  // with the final matched set.
   deepSearch: async (
     query: string, prs: number[], onProgress: (p: DeepProgress) => void,
   ): Promise<DeepResult> => {
-    const resp = await fetch("/api/prs/deep-search", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, prs }),
-    });
-    const reader = resp.body!.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
     let result: DeepResult = { matches: [], total: 0, capped: false, judged: 0, from_cache: 0 };
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      buf = buf.replace(/\r\n/g, "\n");
-      const frames = buf.split("\n\n");
-      buf = frames.pop() ?? "";
-      for (const f of frames) {
-        const ev = /event: (\w+)/.exec(f)?.[1];
-        const data = /data: (.*)/s.exec(f)?.[1];
-        if (!data) continue;
-        if (ev === "progress") onProgress(JSON.parse(data) as DeepProgress);
-        else if (ev === "result") result = JSON.parse(data) as DeepResult;
-      }
-    }
+    await postSse("/api/prs/deep-search", { query, prs }, (ev, data) => {
+      if (ev === "progress") onProgress(JSON.parse(data) as DeepProgress);
+      else if (ev === "result") result = JSON.parse(data) as DeepResult;
+    });
     return result;
   },
 
-  executeBulk: async (
+  executeBulk: (
     body: { prs: number[]; action: string; comment?: string;
             comments?: Record<number, string>; canonical?: number;
             method?: string; reason?: string; tags?: string[]; reviewer?: string; dry_run: boolean },
     onResult: (r: BulkResult) => void,
     onDone: (summary: Record<string, number>) => void,
-  ) => {
-    const resp = await fetch("/api/execute/bulk", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
-    const reader = resp.body!.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      // sse_starlette frames are CRLF-delimited; normalize so the blank-line
-      // split works regardless of the server's line endings.
-      buf += dec.decode(value, { stream: true });
-      buf = buf.replace(/\r\n/g, "\n");
-      const frames = buf.split("\n\n");
-      buf = frames.pop() ?? "";
-      for (const f of frames) {
-        const ev = /event: (\w+)/.exec(f)?.[1];
-        const data = /data: (.*)/s.exec(f)?.[1];
-        if (!data) continue;
-        if (ev === "result") onResult(JSON.parse(data) as BulkResult);
-        else if (ev === "done") onDone(JSON.parse(data).summary as Record<string, number>);
-      }
-    }
-  },
+  ) => postSse("/api/execute/bulk", body, (ev, data) => {
+    if (ev === "result") onResult(JSON.parse(data) as BulkResult);
+    else if (ev === "done") onDone(JSON.parse(data).summary as Record<string, number>);
+  }),
 
-  executeCluster: async (
+  executeCluster: (
     items: Array<{ pr: number; action: string; comment?: string; reason?: string;
                    canonical?: number; method?: string; upstream_pr?: number;
                    upstream_commit?: string; upstream_date?: string; tags?: string[] }>,
     dryRun: boolean,
     onResult: (r: ExecResult) => void,
     onDone: (summary: Record<string, number>, aborted?: string | null) => void,
-  ) => {
-    const resp = await fetch("/api/execute/cluster", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, dry_run: dryRun }),
-    });
-    const reader = resp.body!.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      // sse_starlette frames are CRLF-delimited; normalize so the blank-line
-      // split works regardless of the server's line endings.
-      buf += dec.decode(value, { stream: true });
-      buf = buf.replace(/\r\n/g, "\n");
-      const frames = buf.split("\n\n");
-      buf = frames.pop() ?? "";
-      for (const f of frames) {
-        const ev = /event: (\w+)/.exec(f)?.[1];
-        const data = /data: (.*)/s.exec(f)?.[1];
-        if (!data) continue;
-        if (ev === "result") onResult(JSON.parse(data) as ExecResult);
-        else if (ev === "done") {
-          const d = JSON.parse(data) as { summary: Record<string, number>; aborted?: string | null };
-          onDone(d.summary, d.aborted);
-        }
-      }
+  ) => postSse("/api/execute/cluster", { items, dry_run: dryRun }, (ev, data) => {
+    if (ev === "result") onResult(JSON.parse(data) as ExecResult);
+    else if (ev === "done") {
+      const d = JSON.parse(data) as { summary: Record<string, number>; aborted?: string | null };
+      onDone(d.summary, d.aborted);
     }
-  },
+  }),
   diff: async (n: number): Promise<DiffResult> => {
     const r = await fetch(`/api/prs/${n}/diff`, { cache: "no-store" });
     if (!r.ok) return { diff: "", error: `HTTP ${r.status}`, note: null, file_count: 0, truncated: false, source: "" };

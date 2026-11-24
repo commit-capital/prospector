@@ -81,9 +81,12 @@ def reflect_issue_state(n: int, state: str, state_reason: str | None = None) -> 
     and mark this app's snapshot stale, so the next read of the Issues view or
     close-as-dup worklist reflects it. The issue-side analog of the PR executor's
     _reflect_state. A no-op when the issue has no store row."""
-    st = _store()
-    if st.load_issue(int(n)) is not None:
-        st.edit_issue(int(n)).record_live_state(state, state_reason)
+    try:
+        rec = _store().edit_issue(int(n))
+    except KeyError:
+        rec = None
+    if rec is not None:
+        rec.record_live_state(state, state_reason)
     issue_data.mark_stale()
 
 
