@@ -121,6 +121,17 @@ run_test_setup() {
   exit "$SENTINEL_SETUP_FAIL"
 }
 
+# The heap caps for a whole-repo command. NODE_OPTIONS bounds each node child.
+# A native Go compiler (TypeScript 7's tsc) ignores it and does not read the
+# container's memory limit, so GOMEMLIMIT tells its collector to work harder
+# before reaching that limit, keeping headroom for its sibling processes.
+cap_heaps() {
+  export NODE_OPTIONS="--max-old-space-size=4096"
+  local max
+  max="$(cat /sys/fs/cgroup/memory.max 2>/dev/null || true)"
+  case "$max" in ''|*[!0-9]*) ;; *) export GOMEMLIMIT="$(( max / 100 * 85 ))";; esac
+}
+
 case "$PHASE" in
   apply-check)
     apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
@@ -149,13 +160,11 @@ case "$PHASE" in
     # Merge-time compile preflight: the base tree is the current default-branch
     # HEAD and TEST_CMD is the profile's compile command — host-authored policy,
     # never agent text. The patch is the PR's full diff; a conflict means the PR
-    # does not apply onto that HEAD. The heap cap bounds each node child; a
-    # native compiler (TypeScript 7's tsc) ignores it and relies on the
-    # container's memory class alone. PRE_PATCH_FILE, when set, is the
-    # default branch's own diff from an older base image's commit to HEAD,
-    # applied first so the tree is HEAD's; it is upstream's history, not the
-    # PR, so a failure to apply it is the harness's and never a conflict.
-    export NODE_OPTIONS="--max-old-space-size=4096"
+    # does not apply onto that HEAD. PRE_PATCH_FILE, when set, is the default
+    # branch's own diff from an older base image's commit to HEAD, applied
+    # first so the tree is HEAD's; it is upstream's history, not the PR, so a
+    # failure to apply it is the harness's and never a conflict.
+    cap_heaps
     apply_pre_patch || exit "$SENTINEL_PATCH_UNREADABLE"
     apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
     run_test_cmd
@@ -164,8 +173,8 @@ case "$PHASE" in
   build)
     # Merge-gate build lane, sharing compile's contract: the profile's
     # whole-repo build command over the patched tree — host-authored policy,
-    # never agent text. The heap cap bounds each node child, as in compile.
-    export NODE_OPTIONS="--max-old-space-size=4096"
+    # never agent text.
+    cap_heaps
     apply_patch || exit "$SENTINEL_PATCH_CONFLICT"
     run_test_cmd
     [ $? -eq 0 ] && exit 0 || exit "$SENTINEL_TEST_FAIL"

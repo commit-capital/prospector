@@ -49,12 +49,23 @@ LANE_COMMAND_NAMES: dict[str, str] = {"compile": "type-check command",
                                       "build": "build command"}
 
 
+# A command killed from outside, which in the sandbox is the container's
+# memory limit: pnpm names the signal, other runners the 128+9 exit.
+_KILLED_RE = re.compile(r"SIGKILL|exit code 137")
+
+
 def base_fault_text(lane: str, base_fails: str) -> str:
     """The operator-facing sentence for a merge-gate lane whose command fails
     on the default branch itself, before any PR is applied: a fault in the
     branch or the sandbox, never evidence about the PR."""
     branch = settings.default_branch()
     what = LANE_COMMAND_NAMES.get(lane, f"{lane} command")
+    if _KILLED_RE.search(base_fails):
+        return (f"The repository's own {what} was killed before it finished on "
+                f"{branch} itself, most likely by the sandbox's memory limit, so this "
+                f"run could not judge the PR. That is a problem with this machine's "
+                f"sandbox, not with {branch} or this PR; verification re-runs once it "
+                f"passes. Output: {base_fails}")
     return (f"The repository's own {what} fails on {branch} itself, before this PR's "
             f"changes are applied, so this run could not judge the PR. That is a "
             f"problem with {branch} or the sandbox, not with this PR; verification "

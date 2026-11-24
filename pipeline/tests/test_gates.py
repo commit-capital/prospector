@@ -3143,6 +3143,19 @@ class TestLintBlock:
                                 "the fix") is not None
 
 
+class TestBaseFaultText:
+    def test_a_command_that_fails_names_the_branch(self):
+        text = gates.base_fault_text("compile", "exit 20: error TS2322")
+        assert "fails on" in text and "itself" in text and "error TS2322" in text
+
+    def test_a_killed_command_names_the_sandbox_memory_limit(self):
+        text = gates.base_fault_text(
+            "compile", "exit 20: /work/src/server: | ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  "
+            "Command was killed with SIGKILL (Forced termination): tsc --noEmit")
+        assert "memory limit" in text and "not with" in text and "SIGKILL" in text
+        assert "fails on" not in text
+
+
 def _e2e(**over) -> dict:
     # A clean in-app run by default: every baseline test passed first time.
     return dict({"ran": True, "baseline_tests": 200, "exit_first": 0, "exit_confirm": None,
