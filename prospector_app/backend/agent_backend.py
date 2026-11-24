@@ -1,5 +1,5 @@
-"""Provider boundary for the app's conversational agent: the commands a turn
-may run, which each provider renders in its own permission syntax, and the
+"""Provider boundary for the app's conversational agent: the commands and
+helpers a turn may run, which each provider grants its own way, and the
 process lifecycle both CLIs share."""
 from __future__ import annotations
 

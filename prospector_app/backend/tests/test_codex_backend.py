@@ -74,7 +74,8 @@ def _config_keys(command: list[str]) -> list[str]:
 
 
 def profile(tmp_path: Path, *, can_resubmit: bool = True) -> dict[str, str]:
-    fs = codex_backend._filesystem(tmp_path / "checkout", can_resubmit, tmp_path / "sandbox")
+    fs = codex_backend._filesystem(tmp_path / "checkout", can_resubmit,
+                                   tmp_path / "sandbox" / "bin", tmp_path / "sandbox" / "tmp")
     flags = codex_backend._flags(None, fs)
     assert config_value(flags, "default_permissions") == "chat"
     table = toml_value(flags, "permissions.chat.filesystem")
@@ -111,7 +112,7 @@ def test_the_profile_reads_the_checkout_and_denies_the_secrets_and_codex_homes(
 
 def test_a_session_names_no_sandbox_mode_beside_its_profile(tmp_path):
     # Codex refuses a command line that sets both.
-    fs = codex_backend._filesystem(tmp_path, True, tmp_path / "sandbox")
+    fs = codex_backend._filesystem(tmp_path, True, tmp_path / "bin", tmp_path / "tmp")
     assert not [key for key in _config_keys(codex_backend._flags(None, fs))
                 if key.startswith("sandbox_")]
 
@@ -199,8 +200,7 @@ def test_start_isolates_config_and_normalizes_jsonl_events(tmp_path, monkeypatch
     assert (isolated_home / "auth.json").is_symlink()
     assert not (isolated_home / "rules" / "default.rules").exists()
     assert child_env["PATH"] == f"{stand_ins}{os.pathsep}/usr/bin"
-    assert sorted(p.name for p in stand_ins.iterdir()) == sorted(
-        agent_backend.helpers(can_write=False, can_resubmit=True))
+    assert Path(child_env["TMPDIR"]).parent == stand_ins.parent
 
     assert events == [
         agent_backend.TextDelta("Checking now."),
@@ -251,9 +251,32 @@ def test_resume_uses_the_saved_thread_and_writable_policy(tmp_path, monkeypatch)
     assert config_value(command, "default_permissions") == "chat"
     child_env = captured["env"]
     assert isinstance(child_env, dict)
-    stand_ins = codex_backend._sandbox_dir("pr-12") / "bin"
-    assert sorted(p.name for p in stand_ins.iterdir()) == sorted(
-        agent_backend.helpers(can_write=True, can_resubmit=True))
+    instructions_named = codex_backend._sandbox_dir("pr-12") / "bin"
+    assert child_env["PATH"].startswith(f"{instructions_named}{os.pathsep}")
+
+
+def test_a_helper_the_turn_does_not_grant_is_refused_on_the_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex_backend, "CODEX_CACHE_ROOT", tmp_path / "cache")
+    proc = FakeProc([])
+
+    async def fake_spawn(command, **kwargs):
+        return proc
+
+    monkeypatch.setattr(codex_backend.subproc, "spawn", fake_spawn)
+
+    async def drive() -> subprocess.CompletedProcess[str]:
+        turn = await codex_backend.CodexBackend().start(request(tmp_path, can_write=False))
+        try:
+            stand_in = codex_backend._sandbox_dir("pr-12") / "bin" / "gh-write"
+            return await asyncio.to_thread(
+                subprocess.run, [str(stand_in), "pr", "comment", "1"],
+                capture_output=True, text=True, timeout=30)
+        finally:
+            await turn.close()
+
+    refused = asyncio.run(drive())
+    assert refused.returncode == 126
+    assert "not an allowed command" in refused.stdout
 
 
 def test_failed_commands_are_normalized_as_error_results(tmp_path, monkeypatch):
@@ -384,7 +407,8 @@ def test_the_host_runs_gh_reads_alone() -> None:
 @pytest.mark.skipif(shutil.which("codex") is None, reason="needs the codex CLI")
 @pytest.mark.parametrize("can_resubmit", [False, True])
 def test_the_installed_cli_accepts_the_flags_the_app_passes(can_resubmit: bool) -> None:
-    fs = codex_backend._filesystem(Path.cwd(), can_resubmit, codex_backend._sandbox_dir("probe"))
+    probe = codex_backend._sandbox_dir("probe")
+    fs = codex_backend._filesystem(Path.cwd(), can_resubmit, probe / "bin", probe / "tmp")
     flags = codex_backend._flags("probe", fs)
     assert codex_backend.config_complaint(flags) is None
 

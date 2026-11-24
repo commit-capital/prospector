@@ -27,7 +27,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 
 from pipeline import headless_codex
@@ -74,8 +74,8 @@ def _thread_home(thread_key: str) -> Path:
 
 
 def _sandbox_dir(thread_key: str) -> Path:
-    """The thread's stand-ins and temp directory, at a path its resumed turns
-    keep, since the first turn's instructions name the stand-ins."""
+    """The thread's stand-ins, at a path its resumed turns keep since the first
+    turn's instructions name them, and each turn's temp directory."""
     return _thread_home(thread_key).with_suffix(".sandbox")
 
 
@@ -100,15 +100,16 @@ def _prepare_home(request: agent_backend.AgentRequest) -> Path:
     return home
 
 
-def _filesystem(cwd: Path, can_resubmit: bool, sandbox: Path) -> dict[str, str]:
+def _filesystem(cwd: Path, can_resubmit: bool, stand_ins: Path,
+                tmp: Path) -> dict[str, str]:
     edits = ([str(agent_backend.RESUBMIT_ROOT), str(agent_backend.BODY_DIR)]
              if can_resubmit else [])
-    return headless_codex.filesystem([str(cwd)], edits, str(sandbox / "tmp"),
-                                     str(CODEX_CACHE_ROOT), str(sandbox / "bin"))
+    return headless_codex.filesystem([str(cwd)], edits, str(tmp), str(CODEX_CACHE_ROOT),
+                                     str(stand_ins))
 
 
 def _stand_in_prompt(text: str, stand_ins: Mapping[str, str]) -> str:
-    """`text` with each brokered helper's path, absolute or relative, naming its
+    """`text` with each helper's path, absolute or relative, naming its
     stand-in."""
     for tool, stand_in in stand_ins.items():
         if Path(tool).parent == agent_backend.AGENT_ROOT:
@@ -122,6 +123,10 @@ def _with_codex_context(system_prompt: str) -> str:
     if not output_heading:
         return system_prompt + _CODEX_CONTEXT
     return behavior + _CODEX_CONTEXT + output_heading + output
+
+
+def _refuse(args: list[str]) -> bool:
+    return False
 
 
 def _gh_read(args: list[str]) -> bool:
@@ -204,8 +209,10 @@ class CodexTurn(agent_backend.ProcessTurn):
     async def close(self) -> None:
         if self._closed:
             return
-        await super().close()
-        await asyncio.to_thread(self._broker.__exit__, None, None, None)
+        try:
+            await super().close()
+        finally:
+            await asyncio.to_thread(self._broker.__exit__, None, None, None)
 
     async def events(self) -> AsyncIterator[agent_backend.AgentEvent]:
         """Normalize Codex exec JSONL into provider-independent chat events."""
@@ -286,7 +293,8 @@ class CodexBackend(agent_backend.ProcessBackend):
         if not (_operator_home(os.environ) / "auth.json").is_file():
             return {"provider": self.provider, "ok": False,
                     "problem": "Codex authentication is not file-backed"}
-        fs = _filesystem(Path.cwd(), can_resubmit=True, sandbox=_sandbox_dir("probe"))
+        probe = _sandbox_dir("probe")
+        fs = _filesystem(Path.cwd(), True, probe / "bin", probe / "tmp")
         complaint = config_complaint(_flags(system_prompt="probe", fs=fs))
         if complaint is not None:
             return {"provider": self.provider, "ok": False,
@@ -300,25 +308,36 @@ class CodexBackend(agent_backend.ProcessBackend):
         home = _prepare_home(request)
         sandbox = _sandbox_dir(request.thread_key)
         shutil.rmtree(sandbox, ignore_errors=True)
-        (sandbox / "bin").mkdir(parents=True, mode=0o700)
-        (sandbox / "tmp").mkdir(mode=0o700)
+        stand_ins = sandbox / "bin"
+        stand_ins.mkdir(parents=True, mode=0o700)
+        # Fresh per turn: the agent writes it, so what it leaves is not reused.
+        tmp = Path(tempfile.mkdtemp(prefix="tmp-", dir=sandbox))
         gh = shutil.which("gh", path=request.env.get("PATH"))
-        helpers = [str(agent_backend.AGENT_ROOT / name) for name in
-                   agent_backend.helpers(request.can_write, request.can_resubmit)]
+        granted = agent_backend.helpers(request.can_write, request.can_resubmit)
+        admit: dict[str, Callable[[list[str]], bool]] = {
+            str(agent_backend.AGENT_ROOT / name): _refuse
+            for name in agent_backend.helpers(True, True) if name not in granted}
+        if gh:
+            admit[gh] = _gh_read
+        # Every helper gets a stand-in, so a thread's instructions name the same
+        # commands whatever a later turn grants; an ungranted one is refused.
         broker = headless_codex.Broker(
-            [*([gh] if gh else []), *helpers], sandbox / "bin", sandbox / "tmp",
-            env=request.env, cwd=str(request.cwd),
-            admit={gh: _gh_read} if gh else None,
-        ).__enter__()
-        fs = _filesystem(request.cwd, request.can_resubmit, sandbox)
-        if request.session_id:
-            command = [CODEX_BIN, "exec", "resume", *_flags(None, fs), request.session_id]
-        else:
-            system_prompt = _stand_in_prompt(request.system_prompt, broker.paths)
-            command = [CODEX_BIN, "exec", *_flags(system_prompt, fs)]
-        env = {**request.env, "CODEX_HOME": str(home), "TMPDIR": str(sandbox / "tmp"),
-               "PATH": f"{sandbox / 'bin'}{os.pathsep}{request.env.get('PATH', '')}"}
+            [*([gh] if gh else []),
+             *(str(agent_backend.AGENT_ROOT / name) for name in agent_backend.helpers(True, True))],
+            stand_ins, tmp, env=request.env, cwd=str(request.cwd), admit=admit,
+            output_bytes=None)
         try:
+            broker.__enter__()
+            fs = _filesystem(request.cwd, request.can_resubmit, stand_ins, tmp)
+            if request.session_id:
+                command = [CODEX_BIN, "exec", "resume", *_flags(None, fs), request.session_id]
+            else:
+                system_prompt = _stand_in_prompt(request.system_prompt, broker.paths)
+                command = [CODEX_BIN, "exec", *_flags(system_prompt, fs)]
+            # zsh writes a here-document under TMPPREFIX, not TMPDIR.
+            env = {**request.env, "CODEX_HOME": str(home), "TMPDIR": str(tmp),
+                   "TMPPREFIX": str(tmp / "zsh"),
+                   "PATH": f"{stand_ins}{os.pathsep}{request.env.get('PATH', '')}"}
             proc = await subproc.spawn(
                 [*command, _stand_in_prompt(request.prompt, broker.paths)],
                 cwd=request.cwd, stderr=asyncio.subprocess.STDOUT,

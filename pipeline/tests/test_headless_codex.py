@@ -97,6 +97,38 @@ def test_the_host_never_runs_arguments_a_tool_does_not_admit(tmp_path):
     assert admitted.returncode == 0 and marker.exists()
 
 
+def test_no_link_the_agent_plants_in_its_spool_reaches_the_host(tmp_path):
+    tool = tmp_path / "tool"
+    tool.write_text('#!/bin/sh\nprintf "%s" "$*"\n')
+    tool.chmod(0o755)
+    victim, secret = tmp_path / "victim", tmp_path / "secret"
+    victim.write_text("original")
+    secret.write_bytes(b"leaked\0")
+    for d in ("bin", "tmp", "elsewhere"):
+        (tmp_path / d).mkdir()
+    broker = headless_codex.Broker([str(tool)], tmp_path / "bin", tmp_path / "tmp",
+                                   env={"PATH": os.environ["PATH"]}, cwd=str(tmp_path))
+    spool, answers = tmp_path / "tmp" / "broker-0", tmp_path / "bin" / "answers-0"
+    for suffix in (".out", ".done", ".code"):
+        (spool / f"x{suffix}").symlink_to(victim)
+    (spool / "x.req").write_bytes(b"hello\0")
+    (spool / "y.req").symlink_to(secret)
+    try:
+        assert broker.serve_pending() == 1
+        # The agent swaps its spool for a link; the host keeps the spool it made.
+        shutil.rmtree(spool)
+        spool.symlink_to(tmp_path / "elsewhere")
+        (tmp_path / "elsewhere" / "z.req").write_bytes(b"z\0")
+        assert broker.serve_pending() == 0
+    finally:
+        broker.__exit__(None, None, None)
+    assert victim.read_text() == "original"
+    assert (answers / "x.out").read_text() == "hello"
+    assert (answers / "x.done").read_text() == "0"
+    assert not (answers / "y.out").exists()
+    assert (tmp_path / "elsewhere" / "z.req").exists()
+
+
 def _broker_running(tmp_path, monkeypatch, script: str):
     """A broker over a check `script`, the sweep of orphaned sandboxes it calls
     recorded, and a crash in its thread caught."""
