@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, type IssueDisposition, type IssueExecResult, type IssueRow } from "../../api";
+import { api, type IssueCloseItem, type IssueDisposition, type IssueExecResult, type IssueRow } from "../../api";
 import { useExec } from "../../ExecContext";
 import { BulkDialogFrame, BulkStatusChip } from "../shared/BulkRunDialog";
 import { countStatuses, summaryLine } from "../shared/bulkSummary";
@@ -49,24 +49,21 @@ export function IssueCloseConfirmDialog({ plan, selected: initialSelected, rows:
 
   const run = async () => {
     setRunning(true);
-    try {
-      for (const n of selected) {
-        if (skip.has(n)) {
-          record(n, { issue: n, action: "CLOSE_ISSUE", status: "skipped",
-            detail: `no ${disposition === "fixed" ? "merged fixer PR" : "canonical issue"} on its row` });
-          continue;
-        }
-        const body = {
-          disposition, comment,
+    const items: IssueCloseItem[] = [];
+    for (const n of selected) {
+      if (skip.has(n)) {
+        record(n, { issue: n, action: "CLOSE_ISSUE", status: "skipped",
+          detail: `no ${disposition === "fixed" ? "merged fixer PR" : "canonical issue"} on its row` });
+      } else {
+        items.push({
+          issue: n, action: "close", disposition, comment,
           ...(disposition === "fixed" ? { fixed_by: refs[n] } : {}),
           ...(disposition === "dup" ? { canonical: refs[n] } : {}),
-        };
-        try {
-          record(n, await api.closeIssue(n, body, dryRun));
-        } catch (e) {
-          record(n, { issue: n, action: "CLOSE_ISSUE", status: "error", detail: String(e) });
-        }
+        });
       }
+    }
+    try {
+      await api.closeIssues(items, dryRun, (res) => record(res.issue, res));
     } finally {
       setRunning(false);
       setFinished(true);

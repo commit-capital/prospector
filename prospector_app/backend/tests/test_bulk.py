@@ -1,6 +1,7 @@
 """bulk orchestration: run_bulk() applies one shared action to many PRs;
 run_cluster() applies each PR's own disposition (the cluster page's mixed
-'execute all'). Both stream one SSE result per PR and a summary. bulk adds no
+'execute all'); run_issue_closes() closes many issues. Each streams one SSE
+result per item and a summary. bulk adds no
 write path of its own, so the executor's public functions are faked and the
 tests hold what bulk itself decides: per-PR comments, the summary and its
 warnings, the batch cap, merges before their dependent closes, and an event
@@ -89,6 +90,79 @@ def test_merges_run_one_at_a_time_in_order(monkeypatch):
 
     assert [json.loads(e["data"])["pr"] for e in evs if e["event"] == "result"] == [1, 2, 3, 4]
     assert peak[0] == 1
+
+
+def _issue_item(n: int, action: str, **kw) -> models.IssueBulkCloseItem:
+    return models.IssueBulkCloseItem(issue=n, action=action, **kw)
+
+
+def test_each_issue_close_takes_its_own_endpoints_executor_path(monkeypatch):
+    seen: dict[int, tuple[str, object]] = {}
+    def fake(name):
+        def run(n, body, *, dry_run):
+            seen[n] = (name, body)
+            return {"issue": n, "status": "dry-run"}
+        return run
+    monkeypatch.setattr(executor, "close_issue", fake("dup"))
+    monkeypatch.setattr(executor, "close_issue_fixed", fake("fixed"))
+    monkeypatch.setattr(executor, "close_issue_with_comment", fake("operator"))
+
+    _drain(bulk.run_issue_closes([
+        _issue_item(1, "close-dup", canonical=9),
+        _issue_item(2, "close-fixed", fixed_by=50),
+        _issue_item(3, "close", disposition="fixed", fixed_by=51, comment="done"),
+    ]))
+
+    assert seen[1] == ("dup", models.IssueCloseDupBody(canonical=9))
+    assert seen[2] == ("fixed", models.IssueCloseFixedBody(fixed_by=50))
+    assert seen[3] == ("operator", models.IssueCloseBody(
+        disposition="fixed", fixed_by=51, comment="done"))
+
+
+def test_issue_closes_overlap_up_to_the_width_and_survive_a_failure(monkeypatch):
+    peak = [0]
+    body = _track_overlap(peak)
+    def fake(n, action, *, dry_run):
+        body()
+        if n == 3:
+            raise RuntimeError("boom")
+        return {"issue": n, "status": "executed"}
+    monkeypatch.setattr(executor, "close_issue_with_comment", fake)
+
+    evs = _drain(bulk.run_issue_closes(
+        [_issue_item(n, "close", comment="x") for n in range(1, 11)], dry_run=False))
+
+    results = {json.loads(e["data"])["issue"]: json.loads(e["data"])["status"]
+               for e in evs if e["event"] == "result"}
+    assert results == {n: "error" if n == 3 else "executed" for n in range(1, 11)}
+    assert peak[0] == bulk._CLOSE_WIDTH
+    assert done_summary(evs[-1]) == {"executed": 9, "error": 1}
+
+
+def test_issue_close_route_defaults_to_dry_run(monkeypatch):
+    from fastapi.testclient import TestClient
+    from prospector_app.backend import app as appmod
+    runs = []
+    def fake(n, action, *, dry_run):
+        runs.append(dry_run)
+        return {"issue": n, "status": "dry-run"}
+    monkeypatch.setattr(executor, "close_issue_with_comment", fake)
+
+    r = TestClient(appmod.app).post("/api/execute/issues/close",
+                                    json={"items": [{"issue": 1, "comment": "x"}]})
+
+    assert r.status_code == 200 and "done" in r.text
+    assert runs == [True]
+
+
+def test_a_close_fixed_item_without_a_fixer_is_refused():
+    from fastapi.testclient import TestClient
+    from prospector_app.backend import app as appmod
+
+    r = TestClient(appmod.app).post("/api/execute/issues/close",
+                                    json={"items": [{"issue": 1, "action": "close-fixed"}]})
+
+    assert r.status_code == 422
 
 
 def test_a_bulk_merge_goes_through_the_gated_merge(monkeypatch):

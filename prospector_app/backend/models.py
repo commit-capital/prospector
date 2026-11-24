@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class CloseAction(BaseModel):
@@ -104,6 +104,28 @@ class IssueCloseBody(BaseModel):
     comment: str | None = None
     fixed_by: int | None = None
     canonical: int | None = None
+
+
+class IssueBulkCloseItem(BaseModel):
+    # `action` picks the executor path, and with it the gate: close-dup and
+    # close-fixed are the worklist's recorded-link closes, close the operator's.
+    issue: int
+    action: Literal["close", "close-dup", "close-fixed"] = "close"
+    disposition: Literal["not-planned", "completed", "fixed", "dup"] = "not-planned"
+    comment: str | None = None
+    fixed_by: int | None = None
+    canonical: int | None = None
+
+    @model_validator(mode="after")
+    def _fixer_for_close_fixed(self) -> IssueBulkCloseItem:
+        if self.action == "close-fixed" and self.fixed_by is None:
+            raise ValueError("close-fixed needs fixed_by")
+        return self
+
+
+class IssueBulkCloseBody(BaseModel):
+    items: list[IssueBulkCloseItem] = []
+    dry_run: bool = True
 
 
 class IssueCommentBody(BaseModel):

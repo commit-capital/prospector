@@ -1503,6 +1503,16 @@ def close_issue(n: int, payload: models.IssueCloseBody = Body(default_factory=mo
     return executor.close_issue_with_comment(n, payload, dry_run=dry_run)
 
 
+@app.post("/api/execute/issues/close")
+async def close_issues(payload: models.IssueBulkCloseBody = Body(...)):
+    """Close many issues, streamed SSE. Each item goes through the same executor
+    path and gate as its single-issue endpoint (see bulk.run_issue_closes)."""
+    async def gen():
+        async for ev in bulk.run_issue_closes(payload.items, dry_run=payload.dry_run):
+            yield ev
+    return EventSourceResponse(gen())
+
+
 @app.post("/api/execute/issue/{n}/comment")
 def comment_issue(n: int, payload: models.IssueCommentBody = Body(default_factory=models.IssueCommentBody),
                   dry_run: bool = True):
