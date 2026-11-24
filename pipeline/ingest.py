@@ -10,9 +10,10 @@ record is history, not deleted). Brand-new closed PRs are not ingested —
 they're dupe/already-fixed *evidence*, consulted live during ANALYZE.
 
 Every automated reviewer's and scanner's feedback (pipeline.reviewers) is read
-alongside: the head's check runs arrive with the live facts on every run, and a
-PR's conversation (reviews, review threads, comments) is re-read only when GitHub's
-updatedAt or the head moved past the stored `reviews` section. The run ends by
+alongside: the head's check runs arrive with the live facts whenever its check
+basis moved (`live_prs`), and a PR's conversation (reviews, review threads,
+comments) is re-read only when GitHub's updatedAt or the head moved past the
+stored `reviews` section. The run ends by
 recomputing the `reviewers` registry of each bot's latest activity, which
 `review_policy` auto-detection reads.
 
@@ -120,13 +121,12 @@ def _build_signals(*, existing_signals: dict | None, ci_override: str | None,
                    mergeable_override: bool | None = None,
                    diffstat_override: dict | None = None,
                    has_tests_override: bool | None = None,
-                   head_moved: bool = False) -> dict | None:
-    """The PR's signals section for an upsert, or None when there's nothing to
-    write. Built when a refresh supplied a live override: a copy of the PR's
-    existing signals with those current-head facts overlaid.
-    Diff-derived fields are never carried into a newly stamped section: they are
-    replaced with values computed at the fetched head, or removed when that data
-    was unavailable. `ci_failures` is written with `ci`, and removed when the
+                   head: str | None = None) -> dict | None:
+    """The PR's signals section for an upsert at `head`, or None when there's
+    nothing to write. Built when a refresh supplied a live override: a copy of
+    the PR's existing signals with those facts overlaid. Existing facts are
+    carried only when they were stamped at `head`, since the section is
+    restamped there. `ci_failures` is written with `ci`, and removed when the
     caller has no failure facts for that verdict."""
     has_override = (ci_override is not None or mergeable_override is not None
                     or diffstat_override is not None
@@ -134,14 +134,9 @@ def _build_signals(*, existing_signals: dict | None, ci_override: str | None,
     if not has_override:
         return None
     sig = dict(existing_signals or {})
-    if head_moved:
-        sig.pop("ci", None)
-        sig.pop("ci_failures", None)
-        sig.pop("mergeable", None)
-    # These values describe one exact diff. Keeping them while `_stage_pr`
-    # stamps the whole section at a moved head would make stale data look fresh.
-    sig.pop("diffstat", None)
-    sig.pop("has_tests", None)
+    if sig.get("against_head_sha") != head:
+        for key in ("ci", "ci_failures", "mergeable", "diffstat", "has_tests"):
+            sig.pop(key, None)
     if ci_override is not None:
         sig["ci"] = ci_override
         if ci_failures_override is None:
@@ -198,13 +193,12 @@ def _stage_pr(store: Store, gh_pr: dict, existing: Pr | None,
     meta = meta_from_gh(gh_pr)
     if meta["maintainer_can_modify"] is None and existing is not None:
         meta["maintainer_can_modify"] = existing.maintainer_can_modify
-    head_moved = existing is not None and existing.head_sha != meta.get("head_sha")
     sig = _build_signals(
         existing_signals=existing.signals if existing is not None else None,
         ci_override=ci_override, ci_failures_override=ci_failures_override,
         mergeable_override=mergeable_override,
         diffstat_override=diffstat_override, has_tests_override=has_tests_override,
-        head_moved=head_moved)
+        head=meta.get("head_sha"))
     drift = drift_from_signals(sig) if sig is not None else None
     pr = existing if existing is not None else model.Pr(store, {"pr": n})
     pr.stage_facts(meta, signals=sig, drift=drift, issues=issues, reviews=reviews_override)
@@ -479,7 +473,7 @@ def _upsert_all(store: Store, prs: list[dict], issue_links: dict[int, list[dict]
         live_mergeable = _LIVE_MERGEABLE.get(current.get("mergeable") or "")
         existing = existing_prs.get(n)
         feed = feeds.get(n)
-        if feed is None and current:
+        if feed is None and "check_runs" in current:
             feed = PrFeed(pr=n, head_sha=head_sha, updated_at=current.get("updated_at"),
                           check_runs=current.get("check_runs") or [],
                           statuses=current.get("statuses") or [], conversation=False)
@@ -580,39 +574,42 @@ def main(argv: list[str] | None = None) -> int:
 
     print("fetching open PRs…", flush=True)
     gh_prs = fetch_open_prs(args.max)
-    live, _ = live_prs.fetch([int(pr["number"]) for pr in gh_prs],
-                              retry_waits=RATE_LIMIT_BACKOFF)
-    print("loading issue links from the issue store…", flush=True)
-    issue_links = load_issue_links(prs=gh_prs)
-    print(f"open PRs: {len(gh_prs)} | PRs with issue links: {len(issue_links)}")
+    with store.holding():
+        print("loading every stored PR to probe the fetch against…", flush=True)
+        live, _ = live_prs.fetch([int(pr["number"]) for pr in gh_prs], stored=store.all_prs(),
+                                  retry_waits=RATE_LIMIT_BACKOFF)
+        print("loading issue links from the issue store…", flush=True)
+        issue_links = load_issue_links(prs=gh_prs)
+        print(f"open PRs: {len(gh_prs)} | PRs with issue links: {len(issue_links)}")
 
-    transitions = 0
-    with store.batch():
-        print("loading every stored PR to reconcile against the fetch…", flush=True)
-        existing_prs = store.all_prs()
-        counts = _upsert_all(store, gh_prs, issue_links, existing_prs, live_facts=live)
-        upserted, drafts, open_now = counts["upserted"], counts["drafts"], counts["open_ids"]
-        staged_ids = {p.number for p in counts["staged"]}
-        corpus = counts["staged"] + [p for n, p in existing_prs.items() if n not in staged_ids]
-        print("recording each automated reviewer's latest activity…", flush=True)
-        store.save_reviewers(reviewers.seen_summary(corpus))
+        transitions = 0
+        with store.batch():
+            # A bulk save replaces whole rows, so the rows written during the fetch
+            # are re-read before staging onto them.
+            existing_prs = store.all_prs()
+            counts = _upsert_all(store, gh_prs, issue_links, existing_prs, live_facts=live)
+            upserted, drafts, open_now = counts["upserted"], counts["drafts"], counts["open_ids"]
+            staged_ids = {p.number for p in counts["staged"]}
+            corpus = counts["staged"] + [p for n, p in existing_prs.items() if n not in staged_ids]
+            print("recording each automated reviewer's latest activity…", flush=True)
+            store.save_reviewers(reviewers.seen_summary(corpus))
 
-        # PRs in the store that are no longer in the open list → closed or merged;
-        # refresh their meta so state transitions are recorded. The pre-upsert
-        # snapshot is also the closure-candidate corpus.
-        departed = [(n, rec) for n, rec in existing_prs.items()
-                    if n not in open_now and rec.state == "open"]
-        sweep = progress.Progress("checking", len(departed), "stored PRs that left the open list",
-                                  one="stored PR that left the open list")
-        for n, rec in departed:
-            gh_pr = fetch_pr(n)
-            if gh_pr is not None:
-                rec.set_meta(meta_from_gh(gh_pr))
-                transitions += 1
-            sweep.advance()
-        unreachable = len(departed) - transitions
-        sweep.finish(f"{transitions:,} refreshed"
-                     + (f", {unreachable:,} unreachable" if unreachable else ""))
+            # PRs in the store that are no longer in the open list → closed or merged;
+            # refresh their meta so state transitions are recorded. The pre-upsert
+            # snapshot is also the closure-candidate corpus.
+            departed = [(n, rec) for n, rec in existing_prs.items()
+                        if n not in open_now and rec.state == "open"]
+            sweep = progress.Progress("checking", len(departed), "stored PRs that left the open list",
+                                      one="stored PR that left the open list")
+            for n, rec in departed:
+                gh_pr = fetch_pr(n)
+                if gh_pr is not None:
+                    rec.set_meta(meta_from_gh(gh_pr))
+                    transitions += 1
+                sweep.advance()
+            unreachable = len(departed) - transitions
+            sweep.finish(f"{transitions:,} refreshed"
+                         + (f", {unreachable:,} unreachable" if unreachable else ""))
 
     stats = {"open_fetched": len(gh_prs), "upserted": upserted,
              "drafts": drafts, "state_transitions": transitions,

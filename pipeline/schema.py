@@ -151,7 +151,10 @@ _JSON = JSON().with_variant(JSONB, "postgresql")
 #      blocking feedback an abandoned close weighs; an older lane closes a PR
 #      held only by CI on an old base, and an older backlog sweep asks without
 #      stamping it.
-STORE_SCHEMA_VERSION = 48
+# 49 — a PR's `signals.ci_failures` carries the `basis` its verdict was judged
+#      from, which lets ingest skip the full read; an older sweep rewrites it
+#      without one on every PR, so every ingest reads the corpus in full.
+STORE_SCHEMA_VERSION = 49
 
 # saved_at is a microsecond-resolution ISO timestamp stamped on every save — when
 # the store row was last written (distinct from `updated_at`, which mirrors the

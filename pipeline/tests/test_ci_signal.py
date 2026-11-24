@@ -135,3 +135,19 @@ def test_any_failure_after_the_edit_or_without_a_start_keeps_ci_at_face_value():
             {"failures": failures, "body_edited_at": "2026-10-09T16:31:24Z"}) == []
     assert ci_signal.stale_failures({"failures": [early], "body_edited_at": None}) == []
     assert ci_signal.stale_failures(None) == []
+
+
+def test_basis_tallies_the_rollup_states_that_occur():
+    def node(rollup, suites=()):
+        return {"baseRefName": "main", "commits": {"nodes": [{"commit": {
+            "statusCheckRollup": rollup,
+            "checkSuites": {"nodes": [{"updatedAt": at} for at in suites]}}}]}}
+    rollup = {"state": "FAILURE", "contexts": {
+        "checkRunCountsByState": [{"state": "FAILURE", "count": 2}, {"state": "QUEUED", "count": 0}],
+        "statusContextCountsByState": [{"state": "SUCCESS", "count": 1}]}}
+    assert ci_signal.basis(node(rollup, ["2026-11-02T00:00:00Z", "2026-11-03T00:00:00Z"])) == {
+        "base": "main", "state": "FAILURE", "check_runs": {"FAILURE": 2},
+        "statuses": {"SUCCESS": 1}, "suites_updated_at": "2026-11-03T00:00:00Z"}
+    assert ci_signal.basis(node(None)) == {"base": "main", "state": None, "check_runs": {},
+                                           "statuses": {}, "suites_updated_at": None}
+    assert ci_signal.basis({"commits": {"nodes": []}}) is None
