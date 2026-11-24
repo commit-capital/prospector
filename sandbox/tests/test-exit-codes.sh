@@ -13,8 +13,7 @@ trap cleanup EXIT
 
 # A base image whose "test" is driven by a marker file the patch creates:
 # red (no patch) fails; green (patched) passes. Exactly the red->green shape.
-# pnpm-store and rust must exist even at Tier 0 — Dockerfile.base COPYs them unconditionally.
-mkdir -p "$CTX/src" "$CTX/pnpm-store" "$CTX/rust"
+base_context "$CTX"
 cat > "$CTX/src/package.json" <<'JSON'
 { "name": "fixture", "version": "0.0.0", "private": true,
   "scripts": {
