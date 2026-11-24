@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from issue_triage import config
@@ -121,16 +121,16 @@ def _swap_facts(store: IssueStore, raw: dict, summary: dict, repro: dict,
     return "lost"
 
 
-def ingest_records(store: IssueStore, raws: list[dict],
-                   prs: list[dict] | None) -> IngestCounts:
+def ingest_records(store: IssueStore, raws: list[dict], prs: list[dict] | None,
+                   stored: Mapping[int, issue_model.Issue] | None = None) -> IngestCounts:
     """Upsert each normalized issue raw whose facts changed: meta + summary +
     repro + links. meta/summary/repro are computed for every raw (cheap) and
     compared, along with the raw's GitHub closing references, to the store; only
     issues that differ are written, and the candidate links are recomputed only
     for those — so an unchanged re-ingest skips the per-issue upsert, which is
     the loop's dominant cost against a networked store. With `prs` None the
-    candidate links are not computed and each issue keeps the ones it has. The comparison reads a
-    corpus loaded once WITHOUT its candidate arrays (loading them all
+    candidate links are not computed and each issue keeps the ones it has. The comparison reads
+    `stored`, or a corpus loaded once, WITHOUT its candidate arrays (loading them all
     intermittently exceeds the store's statement timeout); each changed issue is
     then re-read in full and written over the record it read, under a
     compare-and-swap on that record's write-stamp, so a section another writer
@@ -144,15 +144,16 @@ def ingest_records(store: IssueStore, raws: list[dict],
     if not raws:
         return IngestCounts(0, 0)
     report = progress.enabled()
-    if report:
-        progress.say(f"  loading stored issues to compare the {len(raws):,} fetched ones against…")
-    existing = store.all_issues(omit_candidates=True, numbers=[raw["number"] for raw in raws])
+    if stored is None:
+        if report:
+            progress.say(f"  loading stored issues to compare the {len(raws):,} fetched ones against…")
+        stored = store.all_issues(omit_candidates=True, numbers=[raw["number"] for raw in raws])
     refs = link_prs.parse_refs(prs) if prs is not None else None  # each body parsed once
     # (raw, meta, summary, repro) for each raw whose facts differ from the store's.
     changed: list[tuple[dict, dict, dict, dict]] = []
     for raw in raws:
         n = raw["number"]
-        prev = existing.get(n)
+        prev = stored.get(n)
         meta = _meta(raw, prev)
         s = summarize_issues.summarize({"number": n, "title": meta["title"], "body": meta["body"]})
         summary = {"subsystem": s["subsystem"], "identifiers": s["identifiers"]}
@@ -190,10 +191,11 @@ def ingest_records(store: IssueStore, raws: list[dict],
     return IngestCounts(written, swap_lost)
 
 
-def reconcile_closures(store: IssueStore, open_now: set[int], prs: list[dict],
+def reconcile_closures(store: IssueStore, stored: Mapping[int, issue_model.Issue],
+                       open_now: set[int], prs: list[dict],
                        fetch_one: Callable[[int], dict | None] = fetch_issues.fetch_issue,
                        ) -> int:
-    """Issues in the store still marked open but absent from the open fetch have
+    """Issues `stored` still marked open but absent from the open fetch have
     closed upstream (or fell past fetch_all's pagination cap); refetch each one
     and upsert it through ingest_records, so its meta AND derived facts (summary,
     repro, candidate links) match the refetched content. The refetch is a partial
@@ -201,10 +203,7 @@ def reconcile_closures(store: IssueStore, open_now: set[int], prs: list[dict],
     issue is left untouched. Returns how many issues changed state. Where
     `progress` reports, the refetches are counted on stdout."""
     report = progress.enabled()
-    if report:
-        progress.say("  loading stored issues to find open ones the fetch did not return…")
-    missing = [row["issue"] for row, _ in store.issue_rows([], states=["open"])
-               if row["issue"] not in open_now]
+    missing = sorted(n for n, iss in stored.items() if iss.state == "open" and n not in open_now)
     if report and not missing:
         progress.say("  every issue the store holds open was in the open fetch")
     refetching = (progress.Progress("refetching", len(missing),
@@ -225,26 +224,31 @@ def reconcile_closures(store: IssueStore, open_now: set[int], prs: list[dict],
     if refetching is not None:
         refetching.finish(f"{transitions:,} changed state, "
                           f"{len(missing) - len(refetched):,} could not be fetched")
-    ingest_records(store, refetched, prs)
+    ingest_records(store, refetched, prs, stored)
     return transitions
 
 
-def _load_prs(pr_store: Store | None = None) -> list[dict]:
+def _load_prs(pr_store: Store | None = None, open_prs: list[dict] | None = None) -> list[dict]:
     """The PR corpus the issue<->PR linker matches against: every open or merged
-    PR in the SQL PR store (a merged fixer stays linked — the durable evidence an
-    issue is likely fixed), each carrying its `state` and tagged with the shared
-    subsystem taxonomy (so subsystem-match candidates work). Read as the store's
+    PR (a merged fixer stays linked — the durable evidence an issue is likely
+    fixed), each carrying its `state` and tagged with the shared subsystem
+    taxonomy (so subsystem-match candidates work). Read as the SQL PR store's
     projected link rows — number, title, description and state — because the
-    explicit `Fixes #N` parse reads the description and nothing else is needed."""
+    explicit `Fixes #N` parse reads the description and nothing else is needed.
+    Given every open PR's link row (`open_prs`), only merged PRs are read."""
     from pipeline.store import Store
     store = pr_store or Store()
+    rows = (store.link_rows(("merged",)) + open_prs if open_prs is not None
+            else store.link_rows(pr_index.LINKING_STATES))
     return [{"number": r["number"], "title": r["title"], "body": r["body"],
              "state": r["state"],
              "subsystem": summarize_issues.classify_subsystem(r["title"], r["body"])}
-            for r in store.link_rows() if r["state"] in pr_index.LINKING_STATES]
+            for r in rows]
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None, open_prs: list[dict] | None = None) -> None:
+    """`open_prs` is every open PR's link row (`Store.link_rows`), when a caller
+    already has them."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--store", default=None, help="store root override (tests/smoke)")
     ap.add_argument("--max", type=int, default=None,
@@ -261,16 +265,19 @@ def main(argv: list[str] | None = None) -> None:
           f"{progress.duration(time.monotonic() - clock)}", flush=True)
     print("loading open and merged PRs to link issues against…", flush=True)
     step = time.monotonic()
-    prs = _load_prs()
+    prs = _load_prs(open_prs=open_prs)
     print(f"  {len(prs):,} PRs loaded in {progress.duration(time.monotonic() - step)}",
           flush=True)
+    print("loading the stored open and fetched issues…", flush=True)
+    open_now = {r["number"] for r in raws}
+    stored = store.reconciled_issues(open_now)
     print(f"comparing {len(raws):,} open issues with the store; saving the new and "
           f"changed ones, linked against {len(prs):,} PRs…", flush=True)
-    counts = ingest_records(store, raws, prs)
+    counts = ingest_records(store, raws, prs, stored)
     transitions = 0
     if args.max is None:
         print("reconciling closures…", flush=True)
-        transitions = reconcile_closures(store, {r["number"] for r in raws}, prs)
+        transitions = reconcile_closures(store, stored, open_now, prs)
     phase = "ingest" if args.max is None else "ingest:smoke"
     # swap_lost counts the open-fetch pass's contended issues; the closure sweep
     # skips its own the same way, and the next run recomputes every one of them.

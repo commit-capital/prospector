@@ -104,6 +104,19 @@ class TestPRRoundTrip:
              "title": "fix: a bug", "body": ""},
         ]
 
+    def test_link_rows_project_only_the_named_states(self, store):
+        store.save_pr(_pr(1))
+        store.save_pr(_pr(2, meta=dict(_pr(2)["meta"], state="merged")))
+        assert [r["number"] for r in store.link_rows(("merged",))] == [2]
+
+    def test_reconciled_prs_are_the_stored_open_and_the_named(self, store):
+        for n, state in ((1, "open"), (2, "closed"), (3, "closed")):
+            store.save_pr(_pr(n, meta=dict(_pr(n)["meta"], state=state)))
+        prs, watermark = store.reconciled_prs([3])
+        assert set(prs) == {1, 3}
+        store.save_pr(_pr(2, meta=dict(_pr(2)["meta"], state="closed", title="later")))
+        assert set(store.prs_since(watermark)[0]) == {2}
+
     def test_load_diffs_reads_in_batches(self, store, monkeypatch):
         from pipeline import store as store_mod
         monkeypatch.setattr(store_mod, "LOAD_DIFFS_BATCH", 2)

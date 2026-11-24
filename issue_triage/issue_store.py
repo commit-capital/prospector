@@ -243,8 +243,16 @@ class IssueStore:
         """Every issue, or only those in `numbers`, filtered server-side."""
         omit = [("links", "candidates")] if omit_candidates else None
         where = (None if numbers is None
-                 else schema.issues.c.issue.in_(sorted({int(n) for n in numbers})))
+                 else storekit.among(schema.issues.c.issue, numbers))
         return self._issues.all(omit_paths=omit, where=where)
+
+    def reconciled_issues(self, numbers: Iterable[int]) -> dict[int, issue_model.Issue]:
+        """Every issue stored open or in `numbers`, candidates omitted: what an
+        ingest compares its open fetch with and sweeps for closures."""
+        from sqlalchemy import or_
+        c = schema.issues.c
+        return self._issues.all(omit_paths=[("links", "candidates")],
+                                where=or_(c.state == "open", storekit.among(c.issue, numbers)))
 
     def fix_issues(self) -> dict[int, issue_model.Issue]:
         """The issues holding a fix attempt, request or public record (candidates
@@ -300,7 +308,7 @@ class IssueStore:
         if states is not None:
             where.append(c.state.in_(sorted(set(states))))
         if numbers is not None:
-            where.append(c.issue.in_(sorted({int(n) for n in numbers})))
+            where.append(storekit.among(c.issue, numbers))
         rows = self._issues.rows(
             [c.state, c.data[("meta", "state_reason")].as_string(),
              c.data[("meta", "title")].as_string(), c.data[("meta", "author")].as_string(),

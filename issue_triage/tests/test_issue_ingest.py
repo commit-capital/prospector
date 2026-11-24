@@ -58,6 +58,18 @@ def test_load_prs_reads_open_and_merged_prs_from_sql_store(tmp_path):
     assert "subsystem" in prs[100]
 
 
+def test_load_prs_takes_open_prs_from_the_listing_and_merged_from_the_store(tmp_path):
+    from pipeline.store import Store
+    pr_store = Store(tmp_path)
+    pr_store.create_pr(100, {"title": "stale", "body": "", "state": "open", "head_sha": "a"})
+    pr_store.create_pr(200, {"title": "landed fix", "body": "Fixes #9", "state": "merged", "head_sha": "b"})
+    listed = [{"number": 101, "state": "open", "head_sha": "c", "title": "fix login",
+               "body": "Fixes #5"}]
+    prs = {p["number"]: p for p in issue_ingest._load_prs(pr_store, open_prs=listed)}
+    assert set(prs) == {101, 200}
+    assert prs[101]["state"] == "open" and prs[101]["body"] == "Fixes #5"
+
+
 def test_ingest_links_merged_explicit_fixer(tmp_path):
     """A merged PR whose body fixes the issue stays in the issue's links."""
     st = issue_store.IssueStore(tmp_path)
@@ -104,7 +116,7 @@ def test_reconcile_closures_marks_vanished_issue_closed(tmp_path):
     st = issue_store.IssueStore(tmp_path)
     issue_ingest.ingest_records(st, [RAW], prs=[])
     closed_raw = {**RAW, "state": "closed", "updated_at": "2026-06-10T00:00:00Z"}
-    n = issue_ingest.reconcile_closures(st, open_now=set(), prs=[], fetch_one=lambda _: closed_raw)
+    n = issue_ingest.reconcile_closures(st, st.all_issues(omit_candidates=True), open_now=set(), prs=[], fetch_one=lambda _: closed_raw)
     assert n == 1
     iss = st.load_issue(5)
     assert iss.state == "closed"
@@ -122,7 +134,7 @@ def test_reconcile_closures_skips_present_and_already_closed(tmp_path):
         calls.append(n)
         return None
 
-    assert issue_ingest.reconcile_closures(st, open_now={5}, prs=[], fetch_one=fetch_one) == 0
+    assert issue_ingest.reconcile_closures(st, st.all_issues(omit_candidates=True), open_now={5}, prs=[], fetch_one=fetch_one) == 0
     assert calls == []
 
 
@@ -131,7 +143,7 @@ def test_reconcile_closures_leaves_unfetchable_issue_untouched(tmp_path):
     record as-is."""
     st = issue_store.IssueStore(tmp_path)
     issue_ingest.ingest_records(st, [RAW], prs=[])
-    assert issue_ingest.reconcile_closures(st, open_now=set(), prs=[], fetch_one=lambda _: None) == 0
+    assert issue_ingest.reconcile_closures(st, st.all_issues(omit_candidates=True), open_now=set(), prs=[], fetch_one=lambda _: None) == 0
     assert st.load_issue(5).state == "open"
 
 
@@ -142,7 +154,7 @@ def test_reconcile_closures_still_open_is_refreshed_not_counted(tmp_path):
     st = issue_store.IssueStore(tmp_path)
     issue_ingest.ingest_records(st, [RAW], prs=[])
     bumped = {**RAW, "updated_at": "2026-06-11T00:00:00Z"}
-    assert issue_ingest.reconcile_closures(st, open_now=set(), prs=[], fetch_one=lambda _: bumped) == 0
+    assert issue_ingest.reconcile_closures(st, st.all_issues(omit_candidates=True), open_now=set(), prs=[], fetch_one=lambda _: bumped) == 0
     iss = st.load_issue(5)
     assert iss.state == "open"
     assert iss.updated_at == "2026-06-11T00:00:00Z"
@@ -450,7 +462,7 @@ def test_reconcile_closures_counts_its_refetches_where_progress_reports(tmp_path
     issue_ingest.ingest_records(st, [RAW, dict(RAW, number=6)], prs=[])
     monkeypatch.setenv(progress.ENV, "1")
     closed = {**RAW, "state": "closed"}
-    issue_ingest.reconcile_closures(st, open_now=set(), prs=[],
+    issue_ingest.reconcile_closures(st, st.all_issues(omit_candidates=True), open_now=set(), prs=[],
                                     fetch_one=lambda n: closed if n == 5 else None)
     out = capsys.readouterr().out
     assert "  refetching 2 stored-open issues missing from the open fetch…" in out

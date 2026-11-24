@@ -94,6 +94,13 @@ def meta_from_gh(pr: dict) -> dict:
     }
 
 
+def open_link_row(pr: dict) -> dict:
+    """An open PR from the REST listing as `Store.link_rows` projects it."""
+    meta = meta_from_gh(pr)
+    return {"number": int(pr["number"]), "state": "open", "head_sha": meta["head_sha"],
+            "title": meta["title"], "body": meta["body"] or ""}
+
+
 def drift_from_signals(signals: dict) -> dict:
     """Mechanical drift only. 'already-fixed' is a semantic judgment made by
     ANALYZE (with evidence); ingest can only see mergeability."""
@@ -574,42 +581,45 @@ def main(argv: list[str] | None = None) -> int:
 
     print("fetching open PRs…", flush=True)
     gh_prs = fetch_open_prs(args.max)
-    with store.holding():
-        print("loading every stored PR to probe the fetch against…", flush=True)
-        live, _ = live_prs.fetch([int(pr["number"]) for pr in gh_prs], stored=store.all_prs(),
-                                  retry_waits=RATE_LIMIT_BACKOFF)
-        print("loading issue links from the issue store…", flush=True)
-        issue_links = load_issue_links(prs=gh_prs)
-        print(f"open PRs: {len(gh_prs)} | PRs with issue links: {len(issue_links)}")
+    numbers = [int(pr["number"]) for pr in gh_prs]
+    print("loading the stored open and listed PRs to probe the fetch against…", flush=True)
+    stored, watermark = store.reconciled_prs(numbers)
+    live, _ = live_prs.fetch(numbers, stored=stored, retry_waits=RATE_LIMIT_BACKOFF)
+    print("loading issue links from the issue store…", flush=True)
+    issue_links = load_issue_links(prs=gh_prs)
+    print(f"open PRs: {len(gh_prs)} | PRs with issue links: {len(issue_links)}")
 
-        transitions = 0
-        with store.batch():
-            # A bulk save replaces whole rows, so the rows written during the fetch
-            # are re-read before staging onto them.
-            existing_prs = store.all_prs()
-            counts = _upsert_all(store, gh_prs, issue_links, existing_prs, live_facts=live)
-            upserted, drafts, open_now = counts["upserted"], counts["drafts"], counts["open_ids"]
-            staged_ids = {p.number for p in counts["staged"]}
-            corpus = counts["staged"] + [p for n, p in existing_prs.items() if n not in staged_ids]
-            print("recording each automated reviewer's latest activity…", flush=True)
-            store.save_reviewers(reviewers.seen_summary(corpus))
+    transitions = 0
+    with store.batch():
+        # A bulk save replaces whole rows, so the rows written during the fetch
+        # are re-read before staging onto them.
+        existing_prs = {**stored, **store.prs_since(watermark)[0]}
+        counts = _upsert_all(store, gh_prs, issue_links, existing_prs, live_facts=live)
+        upserted, drafts, open_now = counts["upserted"], counts["drafts"], counts["open_ids"]
+        staged_ids = {p.number for p in counts["staged"]}
+        corpus = counts["staged"] + [p for n, p in existing_prs.items() if n not in staged_ids]
+        print("recording each automated reviewer's latest activity…", flush=True)
+        store.save_reviewers(reviewers.seen_summary(corpus))
 
-            # PRs in the store that are no longer in the open list → closed or merged;
-            # refresh their meta so state transitions are recorded. The pre-upsert
-            # snapshot is also the closure-candidate corpus.
-            departed = [(n, rec) for n, rec in existing_prs.items()
-                        if n not in open_now and rec.state == "open"]
-            sweep = progress.Progress("checking", len(departed), "stored PRs that left the open list",
-                                      one="stored PR that left the open list")
-            for n, rec in departed:
-                gh_pr = fetch_pr(n)
-                if gh_pr is not None:
-                    rec.set_meta(meta_from_gh(gh_pr))
-                    transitions += 1
-                sweep.advance()
-            unreachable = len(departed) - transitions
-            sweep.finish(f"{transitions:,} refreshed"
-                         + (f", {unreachable:,} unreachable" if unreachable else ""))
+        # PRs in the store that are no longer in the open list → closed or merged;
+        # refresh their meta so state transitions are recorded. The pre-upsert
+        # snapshot is also the closure-candidate corpus.
+        departed = [(n, rec) for n, rec in existing_prs.items()
+                    if n not in open_now and rec.state == "open"]
+        sweep = progress.Progress("checking", len(departed), "stored PRs that left the open list",
+                                  one="stored PR that left the open list")
+        still_open: list[dict] = []
+        for n, rec in departed:
+            gh_pr = fetch_pr(n)
+            if gh_pr is not None:
+                rec.set_meta(meta_from_gh(gh_pr))
+                transitions += 1
+                if rec.state == "open":
+                    still_open.append(gh_pr)
+            sweep.advance()
+        unreachable = len(departed) - transitions
+        sweep.finish(f"{transitions:,} refreshed"
+                     + (f", {unreachable:,} unreachable" if unreachable else ""))
 
     stats = {"open_fetched": len(gh_prs), "upserted": upserted,
              "drafts": drafts, "state_transitions": transitions,
@@ -623,7 +633,11 @@ def main(argv: list[str] | None = None) -> int:
     if not args.skip_issues:
         print("running issue ingest…", flush=True)
         from issue_triage import issue_ingest
-        issue_ingest.main([])
+        # The listing is the open corpus only when uncapped and every stored-open
+        # PR it missed was read back.
+        complete = not args.max and not unreachable
+        issue_ingest.main([], open_prs=[open_link_row(pr) for pr in gh_prs + still_open]
+                          if complete else None)
     return 0
 
 

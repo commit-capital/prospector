@@ -610,6 +610,11 @@ def bound_read_retrying(engine: Engine, conn: Connection,
     return fn(_rebind(engine))
 
 
+def among(column: ColumnElement, numbers: Iterable[int]) -> ColumnElement[bool]:
+    """`column IN numbers`, each number sent once."""
+    return column.in_(sorted({int(n) for n in numbers}))
+
+
 def strip_json_paths(data_col: ColumnElement, dialect: str,
                      paths: list[tuple[str, ...]]) -> ColumnElement:
     """A SQL expression for `data_col` with each nested JSON path removed, so a
@@ -970,13 +975,14 @@ class Collection(Generic[T]):
         return {r[0]: self.view(r[1]) for r in rows}
 
     def since(self, watermark: str | None,
-              omit_paths: list[tuple[str, ...]] | None = None) -> tuple[dict[int, T], str | None]:
+              omit_paths: list[tuple[str, ...]] | None = None,
+              where: ColumnElement[bool] | None = None) -> tuple[dict[int, T], str | None]:
         """Records written strictly after `watermark` (everything when None), keyed
         by id, plus the reader's next watermark. Strict `>` so a one-shot backfill
         that stamps every row with one timestamp doesn't get refetched in full
         every check; nothing is missed because a save_many commits atomically, so
         rows sharing a microsecond are all visible together and a read never lands
-        between them. `omit_paths` matches `all()`.
+        between them. `omit_paths` and `where` match `all()`.
 
         An incremental read is one statement and its watermark is the max saved_at
         among the rows it returns. A full load reads in pages, and its watermark is
@@ -991,11 +997,11 @@ class Collection(Generic[T]):
             def hi(conn: Connection) -> str | None:
                 return conn.execute(select(func.max(sa))).scalar_one_or_none()
             high = self._read(hi)
-            rows = self._paged([data_col])
+            rows = self._paged([data_col], where)
             return {r[0]: self.view(r[1]) for r in rows}, high
         def q(conn: Connection):
-            return conn.execute(
-                select(self.pk, sa, data_col).where(sa > watermark)).all()
+            stmt = select(self.pk, sa, data_col).where(sa > watermark)
+            return conn.execute(stmt if where is None else stmt.where(where)).all()
         rows = self._read(q)
         records = {r[0]: self.view(r[2]) for r in rows}
         high = max((r[1] for r in rows if r[1] is not None), default=None)
