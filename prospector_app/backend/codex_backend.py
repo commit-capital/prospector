@@ -1,15 +1,21 @@
 """Codex CLI implementation of the conversational-agent boundary.
 
-Each chat thread gets an isolated Codex home containing its resume state and an
-execpolicy allowlist. Codex runs in a network-restricted, read-only sandbox; a
-session that grants resubmit runs a permissions profile that adds write access
-to the clones `resubmit prepare` makes, the body-file directory and the temp
-directories, so the agent can author the confirmed resubmit edit, and the
-bot-authenticated helpers ride separately on the session's bot-token grant.
-Only the same GitHub reads and curated helper commands exposed to Claude may
-run outside the sandbox. The operator's file-backed Codex login is linked into
-the isolated home, while user configuration and repository instructions stay
-out of the app agent's prompt.
+Every command the agent runs, and `apply_patch`, is confined by a permissions
+profile (`headless_codex.filesystem`): it reads the system directories and the
+checkout, writes a private temp directory and, in a session that grants
+resubmit, the clones `resubmit prepare` makes and the body-file directory, and
+reaches nothing under the operator's home, no credential the deployment names,
+no Codex home, and no network.
+
+No execpolicy rule allows a command: an allowed command would run outside the
+profile. The host runs the gh reads and the curated helpers a session grants
+for the agent instead, through `headless_codex.Broker`: `gh` on the sandbox's
+PATH and each helper's path in the prompt name stand-ins, and the host runs
+the real tool, holding `gh` to `agent_backend.GH_READS`.
+
+Each chat thread gets an isolated Codex home holding its resume state and the
+operator's file-backed login linked in. User configuration and repository
+instructions stay out of the prompt.
 """
 from __future__ import annotations
 
@@ -19,74 +25,29 @@ import json
 import os
 import shlex
 import shutil
-import signal
 import subprocess
 import tempfile
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 
+from pipeline import headless_codex
 from prospector_app.backend import agent_backend
 from prospector_app.backend import subproc
 
 CODEX_BIN = shutil.which("codex") or "codex"
 CODEX_CACHE_ROOT = Path(__file__).resolve().parents[1] / "cache" / "codex"
-AGENT_ROOT = Path(__file__).resolve().parents[1] / "agent"
-
-
-def _helper_prefixes(*names: str) -> tuple[tuple[str, ...], ...]:
-    return tuple(
-        prefix
-        for name in names
-        for prefix in (
-            (f"prospector_app/agent/{name}",),
-            (str(AGENT_ROOT / name),),
-        )
-    )
-
-_READ_ALLOW: tuple[tuple[str, ...], ...] = (
-    ("gh", "pr", "view"),
-    ("gh", "pr", "diff"),
-    ("gh", "pr", "list"),
-    ("gh", "pr", "checks"),
-    ("gh", "pr", "status"),
-    ("gh", "issue", "view"),
-    ("gh", "issue", "list"),
-    ("gh", "search", "prs"),
-    ("gh", "search", "issues"),
-    ("gh", "search", "commits"),
-    ("gh", "search", "repos"),
-    ("gh", "release", "view"),
-    ("gh", "release", "list"),
-    ("gh", "run", "view"),
-    ("gh", "run", "list"),
-    # Text filters. The bound on an allow-listed command is the rule, not the
-    # sandbox: a Codex `allow` decision can run the command outside the
-    # filesystem sandbox, so a filter here must grant no more than a read. Each
-    # kept one only reads its input and prints to stdout; filters whose grammar
-    # hides a write or an exec (`sed`, `awk`, `sort`, `uniq`) are left out.
-    ("head",), ("tail",), ("grep",), ("wc",), ("cut",), ("tr",), ("jq",),
-    *_helper_prefixes("gh-read", "remember", "uncluster", "store-read",
-                      "reingest", "file-issue"),
-)
-
-_WRITE_ALLOW = _helper_prefixes(
-    "gh-write", "close-pr", "reopen-pr", "submit-review", "close-issue",
-)
-
-_RESUBMIT_ALLOW = _helper_prefixes("resubmit")
 
 _PROFILE = "chat"
 
 _CODEX_CONTEXT = """
 
 ## Codex cockpit
-You run in the Codex CLI. Run the documented commands with the shell tool
-exactly as written; any other command runs in a network-disabled sandbox. That
-sandbox reads the whole filesystem, so the manual's read limits do not hold:
-never read `.env` or a private key. Write only where the manual says. Its
-`don't ask mode`, `/permissions`, and Claude Code modes do not apply: an
-approval or network denial means the action did not run, and there is no
-approval prompt to ask the operator for.
+You run in the Codex CLI. Your shell runs in a network-disabled sandbox that
+reads this checkout and the system's tools and writes only where the manual
+says; the host runs the documented `gh` reads and helpers for you, so run them
+with the shell tool exactly as written. The manual's `don't ask mode`,
+`/permissions`, and Claude Code modes do not apply: a denial means the action
+did not run, and there is no approval prompt to ask the operator for.
 """.rstrip()
 
 _OUTPUT_HEADING = "\n# Output\n"
@@ -97,15 +58,6 @@ _SHELL_EXCLUDES = [
     "*PASSWORD*",
     "ANTHROPIC_*",
 ]
-
-
-def isolation_rules(can_write: bool, can_resubmit: bool) -> str:
-    prefixes = (_READ_ALLOW + (_WRITE_ALLOW if can_write else ())
-                + (_RESUBMIT_ALLOW if can_resubmit else ()))
-    return "".join(
-        f"prefix_rule(pattern = {json.dumps(list(prefix))}, decision = \"allow\")\n"
-        for prefix in prefixes
-    )
 
 
 def _operator_home(env: Mapping[str, str]) -> Path:
@@ -119,6 +71,12 @@ def _operator_home(env: Mapping[str, str]) -> Path:
 def _thread_home(thread_key: str) -> Path:
     digest = hashlib.sha256(thread_key.encode()).hexdigest()[:24]
     return CODEX_CACHE_ROOT / digest
+
+
+def _sandbox_dir(thread_key: str) -> Path:
+    """The thread's stand-ins, at a path its resumed turns keep since the first
+    turn's instructions name them, and each turn's temp directory."""
+    return _thread_home(thread_key).with_suffix(".sandbox")
 
 
 def _prepare_home(request: agent_backend.AgentRequest) -> Path:
@@ -138,37 +96,26 @@ def _prepare_home(request: agent_backend.AgentRequest) -> Path:
     else:
         auth.symlink_to(source_auth.resolve())
 
-    rules_dir = home / "rules"
-    rules_dir.mkdir(mode=0o700, exist_ok=True)
-    rules_path = rules_dir / "default.rules"
-    with tempfile.NamedTemporaryFile("w", dir=rules_dir, delete=False) as tmp:
-        tmp.write(isolation_rules(request.can_write, request.can_resubmit))
-        staged = Path(tmp.name)
-    staged.chmod(0o600)
-    staged.replace(rules_path)
+    (home / "rules" / "default.rules").unlink(missing_ok=True)
     return home
 
 
-def _config(key: str, value: object) -> list[str]:
-    return ["-c", f"{key}={json.dumps(value)}"]
+def _filesystem(cwd: Path, can_resubmit: bool, stand_ins: Path,
+                tmp: Path) -> dict[str, str]:
+    edits = ([str(agent_backend.RESUBMIT_ROOT), str(agent_backend.BODY_DIR)]
+             if can_resubmit else [])
+    return headless_codex.filesystem([str(cwd)], edits, str(tmp), str(CODEX_CACHE_ROOT),
+                                     str(stand_ins))
 
 
-def _write_profile() -> list[str]:
-    """The permissions profile of a session that grants resubmit: read
-    everywhere, write to the clones `resubmit prepare` makes, the body-file
-    directory, and the temp directories a shell here-document needs. Codex
-    parses a `-c` value as TOML, so the table is rendered as one."""
-    filesystem = {
-        "/": "read",
-        os.path.realpath(agent_backend.RESUBMIT_ROOT): "write",
-        os.path.realpath(agent_backend.BODY_DIR): "write",
-        ":tmpdir": "write",
-        "/tmp": "write",
-    }
-    table = ", ".join(f"{json.dumps(path)} = {json.dumps(mode)}"
-                      for path, mode in filesystem.items())
-    return [*_config("default_permissions", _PROFILE),
-            "-c", f"permissions.{_PROFILE}.filesystem={{{table}}}"]
+def _stand_in_prompt(text: str, stand_ins: Mapping[str, str]) -> str:
+    """`text` with each helper's path, absolute or relative, naming its
+    stand-in."""
+    for tool, stand_in in stand_ins.items():
+        if Path(tool).parent == agent_backend.AGENT_ROOT:
+            text = text.replace(tool, stand_in).replace(
+                f"prospector_app/agent/{Path(tool).name}", stand_in)
+    return text
 
 
 def _with_codex_context(system_prompt: str) -> str:
@@ -178,35 +125,33 @@ def _with_codex_context(system_prompt: str) -> str:
     return behavior + _CODEX_CONTEXT + output_heading + output
 
 
-def _flags(system_prompt: str | None, can_resubmit: bool) -> list[str]:
+def _refuse(args: list[str]) -> bool:
+    return False
+
+
+def _gh_read(args: list[str]) -> bool:
+    return any(args[:len(read) - 1] == list(read[1:]) for read in agent_backend.GH_READS)
+
+
+def _flags(system_prompt: str | None, fs: Mapping[str, str]) -> list[str]:
+    config = headless_codex.config
     flags = [
         "--json",
         "--ignore-user-config",
         "--strict-config",
-        # Codex refuses `sandbox_mode` beside a permissions profile.
-        *(_write_profile() if can_resubmit else _config("sandbox_mode", "read-only")),
-        *_config("approval_policy", "never"),
-        *_config("project_doc_max_bytes", 0),
-        *_config("include_apps_instructions", False),
-        *_config("include_collaboration_mode_instructions", False),
-        *_config("include_environment_context", False),
-        *_config("include_permissions_instructions", False),
-        *_config("allow_login_shell", False),
-        *_config("check_for_update_on_startup", False),
-        *_config("web_search", "disabled"),
-        *_config("features.multi_agent", False),
-        *_config("features.apps", False),
-        *_config("features.plugins", False),
-        *_config("features.browser_use", False),
-        *_config("features.standalone_web_search", False),
-        *_config("shell_environment_policy.inherit", "all"),
-        *_config("shell_environment_policy.ignore_default_excludes", False),
-        *_config("shell_environment_policy.exclude", _SHELL_EXCLUDES),
+        *config("default_permissions", _PROFILE),
+        "-c", f"permissions.{_PROFILE}.filesystem={headless_codex.toml_table(fs)}",
+        *headless_codex.locked_down(),
+        *config("include_apps_instructions", False),
+        *config("include_collaboration_mode_instructions", False),
+        *config("include_environment_context", False),
+        *config("include_permissions_instructions", False),
+        *config("shell_environment_policy.ignore_default_excludes", False),
+        *config("shell_environment_policy.exclude", _SHELL_EXCLUDES),
     ]
     if system_prompt is not None:
-        flags += _config("developer_instructions", _with_codex_context(system_prompt))
+        flags += config("developer_instructions", _with_codex_context(system_prompt))
     return flags
-
 
 
 _CONFIG_ERROR = "Error loading config.toml"
@@ -245,30 +190,29 @@ def _inner_command(command: str) -> str:
     return command
 
 
-def _terminate(proc: asyncio.subprocess.Process) -> None:
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        try:
-            proc.terminate()
-        except ProcessLookupError:
-            pass
-
-
-class CodexTurn(agent_backend.AgentTurn):
+class CodexTurn(agent_backend.ProcessTurn):
     def __init__(self, backend: CodexBackend, request: agent_backend.AgentRequest,
-                 proc: asyncio.subprocess.Process) -> None:
-        self._backend = backend
-        self._request = request
-        self._proc = proc
-        self._closed = False
-        self._text_seen = False
-        self.session_id: str | None = None
-        self.completed = False
+                 proc: asyncio.subprocess.Process, broker: headless_codex.Broker) -> None:
+        super().__init__(backend, request, proc)
+        self._broker = broker
+        self._stand_ins = {stand_in: f"prospector_app/agent/{Path(tool).name}"
+                           for tool, stand_in in broker.paths.items()
+                           if Path(tool).parent == agent_backend.AGENT_ROOT}
 
-    @property
-    def stopped(self) -> bool:
-        return self._request.thread_key not in self._backend.running
+    def _command(self, command: str) -> str:
+        """The shell command as the manual names it."""
+        command = _inner_command(command)
+        for stand_in, helper in self._stand_ins.items():
+            command = command.replace(stand_in, helper)
+        return command
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        try:
+            await super().close()
+        finally:
+            await asyncio.to_thread(self._broker.__exit__, None, None, None)
 
     async def events(self) -> AsyncIterator[agent_backend.AgentEvent]:
         """Normalize Codex exec JSONL into provider-independent chat events."""
@@ -306,7 +250,7 @@ class CodexTurn(agent_backend.AgentTurn):
                     output = item.get("aggregated_output")
                     if isinstance(command, str):
                         yield agent_backend.ToolResult(
-                            command=_inner_command(command),
+                            command=self._command(command),
                             content=output if isinstance(output, str) else "",
                             is_error=(item.get("status") != "completed"
                                       or item.get("exit_code") != 0),
@@ -327,21 +271,9 @@ class CodexTurn(agent_backend.AgentTurn):
             prefix = "\n\n" if self._text_seen else ""
             yield agent_backend.TextDelta(f"{prefix}Codex failed: {diagnostic}")
 
-    async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._backend.running.pop(self._request.thread_key, None)
-        if self._proc.returncode is None:
-            _terminate(self._proc)
-        await self._proc.wait()
 
-
-class CodexBackend(agent_backend.AgentBackend):
+class CodexBackend(agent_backend.ProcessBackend):
     provider = "codex"
-
-    def __init__(self) -> None:
-        self.running: dict[str, asyncio.subprocess.Process] = {}
 
     def readiness(self) -> dict[str, object]:
         found = shutil.which("codex")
@@ -361,7 +293,9 @@ class CodexBackend(agent_backend.AgentBackend):
         if not (_operator_home(os.environ) / "auth.json").is_file():
             return {"provider": self.provider, "ok": False,
                     "problem": "Codex authentication is not file-backed"}
-        complaint = config_complaint(_flags(system_prompt="probe", can_resubmit=True))
+        probe = _sandbox_dir("probe")
+        fs = _filesystem(Path.cwd(), True, probe / "bin", probe / "tmp")
+        complaint = config_complaint(_flags(system_prompt="probe", fs=fs))
         if complaint is not None:
             return {"provider": self.provider, "ok": False,
                     "problem": f"Codex cannot start: {complaint}"}
@@ -372,38 +306,48 @@ class CodexBackend(agent_backend.AgentBackend):
 
     async def start(self, request: agent_backend.AgentRequest) -> CodexTurn:
         home = _prepare_home(request)
-        env = dict(request.env)
-        env["CODEX_HOME"] = str(home)
-        if request.session_id:
-            command = [
-                CODEX_BIN, "exec", "resume",
-                *_flags(system_prompt=None, can_resubmit=request.can_resubmit),
-                request.session_id,
-                request.prompt,
-            ]
-        else:
-            command = [
-                CODEX_BIN, "exec",
-                *_flags(system_prompt=request.system_prompt, can_resubmit=request.can_resubmit),
-                request.prompt,
-            ]
-        proc = await subproc.spawn(
-            command, cwd=request.cwd, stderr=asyncio.subprocess.STDOUT,
-            start_new_session=True, env=env,
-        )
+        sandbox = _sandbox_dir(request.thread_key)
+        shutil.rmtree(sandbox, ignore_errors=True)
+        stand_ins = sandbox / "bin"
+        stand_ins.mkdir(parents=True, mode=0o700)
+        # Fresh per turn: the agent writes it, so what it leaves is not reused.
+        tmp = Path(tempfile.mkdtemp(prefix="tmp-", dir=sandbox))
+        gh = shutil.which("gh", path=request.env.get("PATH"))
+        granted = agent_backend.helpers(request.can_write, request.can_resubmit)
+        admit: dict[str, Callable[[list[str]], bool]] = {
+            str(agent_backend.AGENT_ROOT / name): _refuse
+            for name in agent_backend.helpers(True, True) if name not in granted}
+        if gh:
+            admit[gh] = _gh_read
+        # Every helper gets a stand-in, so a thread's instructions name the same
+        # commands whatever a later turn grants; an ungranted one is refused.
+        broker = headless_codex.Broker(
+            [*([gh] if gh else []),
+             *(str(agent_backend.AGENT_ROOT / name) for name in agent_backend.helpers(True, True))],
+            stand_ins, tmp, env=request.env, cwd=str(request.cwd), admit=admit,
+            output_bytes=None)
+        try:
+            broker.__enter__()
+            fs = _filesystem(request.cwd, request.can_resubmit, stand_ins, tmp)
+            if request.session_id:
+                command = [CODEX_BIN, "exec", "resume", *_flags(None, fs), request.session_id]
+            else:
+                system_prompt = _stand_in_prompt(request.system_prompt, broker.paths)
+                command = [CODEX_BIN, "exec", *_flags(system_prompt, fs)]
+            # zsh writes a here-document under TMPPREFIX, not TMPDIR.
+            env = {**request.env, "CODEX_HOME": str(home), "TMPDIR": str(tmp),
+                   "TMPPREFIX": str(tmp / "zsh"),
+                   "PATH": f"{stand_ins}{os.pathsep}{request.env.get('PATH', '')}"}
+            proc = await subproc.spawn(
+                [*command, _stand_in_prompt(request.prompt, broker.paths)],
+                cwd=request.cwd, stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True, env=env,
+            )
+        except BaseException:
+            broker.__exit__(None, None, None)
+            raise
         self.running[request.thread_key] = proc
-        return CodexTurn(self, request, proc)
-
-    def stop(self, thread_key: str) -> bool:
-        proc = self.running.pop(thread_key, None)
-        if proc is None:
-            return False
-        if proc.returncode is None:
-            _terminate(proc)
-        return True
-
-    def is_running(self, thread_key: str) -> bool:
-        return thread_key in self.running
+        return CodexTurn(self, request, proc, broker)
 
 
 CODEX_BACKEND = CodexBackend()

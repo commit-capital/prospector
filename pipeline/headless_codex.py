@@ -9,7 +9,7 @@ is off, so no command leaves the profile; the runners that would execute the
 repository's code are forbidden outright. A host tool an `allow` rule names
 (`Bash(<tool>:*)`, the sandbox check) is run by the host for the agent: the
 prompt names a stand-in inside the profile that files its arguments in a spool
-directory, and `_Broker` runs the tool with them as an argument list and files
+directory, and `Broker` runs the tool with them as an argument list and files
 back its output and exit, which is the reach `Bash(<tool>:*)` grants Claude.
 Each run gets its own Codex home holding the operator's login and the rules
 and nothing else, and starts from no user configuration, no repository
@@ -22,10 +22,11 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,8 +43,6 @@ _PROFILE = "lane"
 _FORBIDDEN = ("node", "npx", "npm", "pnpm", "yarn", "bun", "deno", "tsx", "ts-node",
               "vitest", "jest", "python", "python3", "uv", "pip", "make", "docker",
               "git", "gh", "curl", "wget", "ssh", "scp")
-
-_KEY_FILE_VARS = ("TRIAGE_BOT_KEY_FILE", "TRIAGE_PUSH_SSH_KEY_FILE")
 
 _ALLOW_RE = re.compile(r"^Bash\((.+):\*\)$")
 
@@ -67,16 +66,19 @@ Your shell runs in a sandbox: it reads the worktree and the system's tools, writ
 
 _OUTPUT_HEADING = "\n# Output\n"
 
-# A stand-in for a host tool: it files its arguments, NUL-separated, and waits
-# for the host's answer.
+# A stand-in for a host tool: it files its arguments, NUL-separated, in a spool
+# the agent writes, and waits for the host's answer in one it only reads.
 _STAND_IN = """#!/bin/sh
 spool='__SPOOL__'
+answers='__ANSWERS__'
 id="$$-$(date +%s)"
 printf '%s\\0' "$@" > "$spool/$id.tmp" && mv "$spool/$id.tmp" "$spool/$id.req" || exit 1
-while [ ! -f "$spool/$id.done" ]; do sleep 1; done
-cat "$spool/$id.out"
-exit "$(cat "$spool/$id.done")"
+while [ ! -f "$answers/$id.done" ]; do sleep 1; done
+cat "$answers/$id.out"
+exit "$(cat "$answers/$id.done")"
 """
+_REQUEST_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_REQUEST_BYTES = 1_000_000
 
 _LIMIT = re.compile(r"usage limit|rate limit|hit your \w+ limit|quota", re.I)
 _UNAVAILABLE = re.compile(r"not logged in|log ?in|unauthori[sz]ed|401|"
@@ -90,27 +92,23 @@ def _real(path: str | Path) -> str:
 def _secrets() -> list[str]:
     """The deployment's credentials as resolved paths: the repo-root .env and
     each configured private key."""
-    paths = [_real(headless_agent.REPO_ROOT / ".env")]
-    for var in _KEY_FILE_VARS:
-        raw = os.environ.get(var, "").strip()
-        if raw:
-            paths.append(_real(raw))
-    return paths
+    return [_real(headless_agent.REPO_ROOT / ".env"), *settings.key_files()]
 
 
-def filesystem(read_roots: Sequence[str], edit_root: str | None, tmp: str,
+def filesystem(read_roots: Sequence[str], edit_roots: Sequence[str], tmp: str,
                codex_home: str, stand_ins: str | None = None) -> dict[str, str]:
     """The run's permissions profile, path to access. A more specific path's
     entry wins, so a root under the home it denies is still reachable."""
     fs = {"/": "read", _real(Path.home()): "none"}
     for root in read_roots:
         fs[_real(root)] = "read"
-    if edit_root:
-        fs[_real(edit_root)] = "write"
+    for root in edit_roots:
+        fs[_real(root)] = "write"
     fs[_real(tmp)] = "write"
     if stand_ins:
         fs[_real(stand_ins)] = "read"
-    for path in [*_secrets(), _real(codex_home), _real(Path.home() / ".codex")]:
+    homes = [codex_home, Path.home() / ".codex", os.environ.get("CODEX_HOME") or codex_home]
+    for path in [*_secrets(), *map(_real, homes)]:
         fs[path] = "none"
     return fs
 
@@ -134,31 +132,40 @@ def allowed_commands(allow: Sequence[str]) -> list[str]:
     return out
 
 
-def _config(key: str, value: object) -> list[str]:
+def config(key: str, value: object) -> list[str]:
     return ["-c", f"{key}={json.dumps(value)}"]
 
 
-def _toml_table(table: Mapping[str, str]) -> str:
+def toml_table(table: Mapping[str, str]) -> str:
     return "{" + ", ".join(f"{json.dumps(k)} = {json.dumps(v)}" for k, v in table.items()) + "}"
+
+
+def locked_down() -> list[str]:
+    """The settings every Codex run starts from: no approval prompt,
+    repository instructions, login shell, update check, web search or optional
+    feature, and the caller's environment."""
+    return [
+        *config("approval_policy", "never"),
+        *config("project_doc_max_bytes", 0),
+        *config("allow_login_shell", False),
+        *config("check_for_update_on_startup", False),
+        *config("web_search", "disabled"),
+        *config("features.multi_agent", False),
+        *config("features.apps", False),
+        *config("features.plugins", False),
+        *config("features.browser_use", False),
+        *config("features.standalone_web_search", False),
+        *config("shell_environment_policy.inherit", "all"),
+    ]
 
 
 def flags(fs: Mapping[str, str], cwd: str, model: str | None) -> list[str]:
     return [
         "exec", "--json", "--ignore-user-config", "--strict-config",
         "--skip-git-repo-check", "-C", cwd,
-        *_config("default_permissions", _PROFILE),
-        "-c", f"permissions.{_PROFILE}.filesystem={_toml_table(fs)}",
-        *_config("approval_policy", "never"),
-        *_config("project_doc_max_bytes", 0),
-        *_config("allow_login_shell", False),
-        *_config("check_for_update_on_startup", False),
-        *_config("web_search", "disabled"),
-        *_config("features.multi_agent", False),
-        *_config("features.apps", False),
-        *_config("features.plugins", False),
-        *_config("features.browser_use", False),
-        *_config("features.standalone_web_search", False),
-        *_config("shell_environment_policy.inherit", "all"),
+        *config("default_permissions", _PROFILE),
+        "-c", f"permissions.{_PROFILE}.filesystem={toml_table(fs)}",
+        *locked_down(),
         *(["-m", model] if model else []),
         "-",
     ]
@@ -188,28 +195,75 @@ def _prepare_home(home: Path) -> None:
     (home / "rules" / "default.rules").write_text(rules())
 
 
-class _Broker:
+def _stop_orphaned_checks() -> None:
+    """Remove the phase containers a stopped sandbox check leaves running."""
+    from pipeline import verify_driver
+    try:
+        verify_driver.stop_orphaned_sandboxes()
+    except Exception as e:
+        print(f"[codex] removing a stopped check's sandbox containers failed: {e}",
+              flush=True)
+
+
+def _open_dir(path: Path) -> int:
+    return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+
+def _read_request(spool: int, name: str) -> list[str] | None:
+    """The arguments a filed request names, or None unless it is a regular
+    file of at most _REQUEST_BYTES. The agent writes the spool, so nothing in
+    it is followed."""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=spool)
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data = f.read(_REQUEST_BYTES + 1)
+    if len(data) > _REQUEST_BYTES:
+        return None
+    return [a.decode("utf-8", "replace") for a in data.split(b"\0")[:-1]]
+
+
+def _reply(answers: int, name: str, output: bytes, code: int) -> None:
+    """File an answer the stand-in reads: the output, then the exit code,
+    renamed into place so it never reads one half-written."""
+    for file, data in ((f"{name}.out", output), (f"{name}.code", str(code).encode())):
+        fd = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644,
+                     dir_fd=answers)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    os.rename(f"{name}.code", f"{name}.done", src_dir_fd=answers, dst_dir_fd=answers)
+
+
+class Broker:
     """Runs host tools for a sandboxed agent. Each tool gets a stand-in in
-    `stand_ins` and a spool directory inside the agent's writable temp
-    directory; a request is the arguments the stand-in filed, run as
-    `[tool, *args]` under `env` in `cwd`, answered with the tool's output (its
-    last OUTPUT_BYTES) and exit code. When the agent's run ends, a tool still
-    running for it is stopped and left unanswered: nobody is waiting, and its
-    spool is about to be removed. The tool is the sandbox check, whose phase
-    container outlives it, so a stop sweeps the containers of dead checks."""
+    `stand_ins`, a request spool inside the agent's writable temp directory, and
+    an answer directory beside the stand-in that the agent only reads; a request
+    is the arguments the stand-in filed, run as `[tool, *args]` under `env` in
+    `cwd`, answered with the tool's output (its last `output_bytes`) and exit
+    code. A tool `admit` names runs only the arguments it admits. When the
+    agent's run ends, a tool still running for it is stopped, left unanswered
+    (nobody is waiting), and `on_stop` runs."""
 
     def __init__(self, tools: Sequence[str], stand_ins: Path, tmp: Path, *,
-                 env: Mapping[str, str], cwd: str) -> None:
+                 env: Mapping[str, str], cwd: str,
+                 admit: Mapping[str, Callable[[list[str]], bool]] | None = None,
+                 on_stop: Callable[[], None] | None = None,
+                 output_bytes: int | None = OUTPUT_BYTES) -> None:
         self.env, self.cwd = dict(env), cwd
-        self.spools: dict[Path, str] = {}
+        self._admit = dict(admit or {})
+        self._on_stop = on_stop
+        self._output_bytes = output_bytes
+        self._spools: list[tuple[int, int, str]] = []
         self.paths: dict[str, str] = {}
         for i, tool in enumerate(tools):
-            spool = tmp / f"broker-{i}"
+            spool, answers = tmp / f"broker-{i}", stand_ins / f"answers-{i}"
             spool.mkdir()
+            answers.mkdir()
             stand_in = stand_ins / Path(tool).name
-            stand_in.write_text(_STAND_IN.replace("__SPOOL__", str(spool)))
+            stand_in.write_text(_STAND_IN.replace("__SPOOL__", str(spool))
+                                .replace("__ANSWERS__", str(answers)))
             stand_in.chmod(0o755)
-            self.spools[spool] = tool
+            self._spools.append((_open_dir(spool), _open_dir(answers), tool))
             self.paths[tool] = str(stand_in)
         self._stop = threading.Event()
         # Held to start a tool and to signal it, so a stop never misses one starting.
@@ -217,8 +271,8 @@ class _Broker:
         self._running: subprocess.Popen[bytes] | None = None
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
-    def __enter__(self) -> _Broker:
-        if self.spools:
+    def __enter__(self) -> Broker:
+        if self._spools:
             self._thread.start()
         return self
 
@@ -232,13 +286,12 @@ class _Broker:
             with self._lock:
                 self._signal(signal.SIGKILL)
             self._thread.join(timeout=10)
-        if stopped:
-            from pipeline import verify_driver
-            try:
-                verify_driver.stop_orphaned_sandboxes()
-            except Exception as e:
-                print(f"[codex] removing a stopped check's sandbox containers failed: {e}",
-                      flush=True)
+        for fds in self._spools:
+            for fd in fds[:2]:
+                os.close(fd)
+        self._spools = []
+        if stopped and self._on_stop:
+            self._on_stop()
 
     def _signal(self, sig: signal.Signals) -> bool:
         """Send `sig` to the running tool's process group; whether one ran."""
@@ -259,40 +312,52 @@ class _Broker:
     def serve_pending(self) -> int:
         """Answer every filed request, returning how many there were."""
         served = 0
-        for spool, tool in self.spools.items():
-            for req in sorted(spool.glob("*.req")):
+        for spool, answers, tool in self._spools:
+            for entry in sorted(os.listdir(spool)):
+                name = entry.removesuffix(".req")
+                if name == entry or not _REQUEST_NAME.fullmatch(name):
+                    continue
                 if self._stop.is_set():
                     return served
-                name = req.name.removesuffix(".req")
-                taken = spool / f"{name}.taken"
                 try:
-                    req.rename(taken)
+                    os.rename(entry, f"{name}.taken", src_dir_fd=spool, dst_dir_fd=spool)
+                    args = _read_request(spool, f"{name}.taken")
                 except OSError:
                     continue
-                args = taken.read_bytes().split(b"\0")[:-1]
-                self._answer(spool, name, tool, [a.decode("utf-8", "replace") for a in args])
-                served += 1
+                if args is not None:
+                    self._answer(answers, name, tool, args)
+                    served += 1
         return served
 
-    def _answer(self, spool: Path, name: str, tool: str, args: list[str]) -> None:
+    def _answer(self, answers: int, name: str, tool: str, args: list[str]) -> None:
+        admit = self._admit.get(tool)
+        if admit and not admit(args):
+            output = f"{Path(tool).name} {' '.join(args)}: not an allowed command\n".encode()
+            code = 126
+        else:
+            try:
+                with self._lock:
+                    if self._stop.is_set():
+                        return
+                    self._running = proc = subprocess.Popen(
+                        [tool, *args], cwd=self.cwd, env=self.env, stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        start_new_session=True)
+                output = proc.communicate()[0]
+                if self._output_bytes is not None:
+                    output = output[-self._output_bytes:]
+                code = proc.returncode
+            except OSError as e:
+                output, code = f"the host could not run {Path(tool).name}: {e}\n".encode(), 127
+            finally:
+                with self._lock:
+                    self._running = None
+            if self._stop.is_set():
+                return
         try:
-            with self._lock:
-                if self._stop.is_set():
-                    return
-                self._running = proc = subprocess.Popen(
-                    [tool, *args], cwd=self.cwd, env=self.env, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
-            output = proc.communicate()[0][-OUTPUT_BYTES:]
-            code = proc.returncode
-        except OSError as e:
-            output, code = f"the host could not run the check: {e}\n".encode(), 127
-        finally:
-            with self._lock:
-                self._running = None
-        if self._stop.is_set():
+            _reply(answers, name, output, code)
+        except OSError:
             return
-        (spool / f"{name}.out").write_bytes(output)
-        (spool / f"{name}.done").write_text(str(code))
 
 
 def parse(lines: Sequence[str]) -> tuple[str, dict | None, str | None]:
@@ -345,9 +410,10 @@ def run(prompt: str, *, model: str | None, cwd: str, read_root: str | Sequence[s
     with tempfile.TemporaryDirectory(prefix="codex-home-") as home, \
             tempfile.TemporaryDirectory(prefix="codex-tmp-") as tmp, \
             tempfile.TemporaryDirectory(prefix="codex-bin-") as bin_dir, \
-            _Broker(tools, Path(bin_dir), Path(tmp), env=env, cwd=cwd) as broker:
+            Broker(tools, Path(bin_dir), Path(tmp), env=env, cwd=cwd,
+                   on_stop=_stop_orphaned_checks) as broker:
         _prepare_home(Path(home))
-        fs = filesystem(roots, edit_root, tmp, home, bin_dir)
+        fs = filesystem(roots, [edit_root] if edit_root else [], tmp, home, bin_dir)
         cmd = [CODEX_BIN, *flags(fs, _real(cwd), model)]
         try:
             proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
