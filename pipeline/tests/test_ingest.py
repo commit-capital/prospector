@@ -27,6 +27,9 @@ GH_PR = {
 }
 
 
+LIVE_FETCH = ingest.live_prs.fetch
+
+
 @pytest.fixture(autouse=True)
 def _no_live_network(monkeypatch):
     """Unit tests opt into live facts explicitly; ordinary ingest tests stay offline."""
@@ -237,10 +240,10 @@ class TestIssueLinks:
 
 
 class TestBuildSignals:
-    def test_override_copies_existing(self):
-        sig = ingest._build_signals(existing_signals={"mergeable": True},
-                                    ci_override="passing")
-        assert sig == {"mergeable": True, "ci": "passing"}
+    def test_override_copies_existing_at_the_same_head(self):
+        sig = ingest._build_signals(existing_signals={"mergeable": True, "against_head_sha": "h"},
+                                    ci_override="passing", head="h")
+        assert sig == {"mergeable": True, "against_head_sha": "h", "ci": "passing"}
 
     def test_no_override_is_none(self):
         assert ingest._build_signals(existing_signals=None, ci_override=None) is None
@@ -250,13 +253,11 @@ class TestBuildSignals:
         assert ingest._build_signals(existing_signals={"ci": "passing"},
                                      ci_override=None) is None
 
-    def test_refresh_drops_diff_fields_when_fresh_values_are_unavailable(self):
-        sig = ingest._build_signals(
-            existing_signals={"ci": "failing", "has_tests": False,
-                              "diffstat": {"additions": 1, "deletions": 0,
-                                           "changed_files": 1}},
-            ci_override="passing")
-        assert sig == {"ci": "passing"}
+    def test_facts_stamped_at_another_head_are_dropped(self):
+        existing = {"ci": "failing", "mergeable": False, "has_tests": False,
+                    "diffstat": {"additions": 1, "deletions": 0, "changed_files": 1}}
+        assert ingest._build_signals(existing_signals=existing, ci_override=None, mergeable_override=True,
+                                     head="new") == {"mergeable": True}
 
     def test_ci_failures_travel_with_ci(self):
         facts = {"failures": [{"name": "review", "started_at": "t"}], "body_edited_at": "u"}
@@ -406,6 +407,22 @@ class TestUpsertAll:
             ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs=st.all_prs())
         assert st.load_pr(5001).maintainer_can_modify is False
 
+    def test_probed_facts_keep_the_stored_signals_and_reviews(self, tmp_path):
+        st = Store(tmp_path)
+        diffstat = {"additions": 12, "deletions": 3, "changed_files": 4}
+        ingest.upsert_pr(st, GH_PR, ci_override="failing", mergeable_override=True,
+                         diffstat_override=diffstat, has_tests_override=True,
+                         reviews_override=_reviews())
+        facts = {5001: {"head": "deadbeef", "mergeable": "CONFLICTING",
+                        "updated_at": "2026-06-09T00:00:00Z"}}
+        with st.batch():
+            ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs=st.all_prs(),
+                               live_facts=facts)
+
+        rec = st.load_pr(5001)
+        assert (rec.ci, rec.mergeable, rec.greptile) == ("failing", False, 5)
+        assert rec.signals["diffstat"] == diffstat and rec.signals["has_tests"] is True
+
     def test_ignores_batched_facts_for_a_different_head(self, tmp_path):
         st = Store(tmp_path)
         facts = {
@@ -436,6 +453,34 @@ class TestUpsertAll:
         assert rec.mergeable is None
         assert rec.signals["diffstat"] == {"additions": 2, "deletions": 1,
                                            "changed_files": 1}
+
+
+def test_a_stored_full_read_lets_the_next_fetch_probe_alone(tmp_path, monkeypatch):
+    run = {"__typename": "CheckRun", "name": "Build", "status": "COMPLETED",
+           "conclusion": "SUCCESS", "checkSuite": {"app": {"slug": "github-actions"}}}
+    rollup = {"state": "SUCCESS", "contexts": {
+        "checkRunCountsByState": [{"state": "SUCCESS", "count": 1}],
+        "statusContextCountsByState": [], "pageInfo": {"hasNextPage": False}, "nodes": [run]}}
+    node = {"state": "OPEN", "headRefOid": "deadbeef", "mergeable": "MERGEABLE",
+            "additions": 1, "deletions": 0, "changedFiles": 1, "files": {"nodes": []},
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": rollup}}]}}
+    full_reads = []
+
+    def gh_graphql(query, **kw):
+        if "contexts(first: 0)" not in query:
+            full_reads.append(query)
+        return {"data": {"repository": {"p0": node}}}
+
+    monkeypatch.setattr(ingest.live_prs, "gh_graphql", gh_graphql)
+    monkeypatch.setattr(ingest.live_prs, "required_checks", lambda *a, **k: [])
+    st = Store(tmp_path)
+    facts, _ = LIVE_FETCH([5001], stored=st.all_prs())
+    with st.batch():
+        ingest._upsert_all(st, [GH_PR], issue_links={}, existing_prs=st.all_prs(),
+                           live_facts=facts)
+    facts, _ = LIVE_FETCH([5001], stored=st.all_prs())
+    assert len(full_reads) == 1
+    assert "ci" not in facts[5001] and st.load_pr(5001).ci == "passing"
 
 
 class TestTargetedIngest:
@@ -581,18 +626,19 @@ class TestTargetedIngest:
         assert ingest.needs_conversation(pr, "h", "t2") is True
 
     def test_main_full_loads_pr_corpus_once(self, tmp_path, monkeypatch):
+        ingest.upsert_pr(Store(tmp_path), GH_PR)
         monkeypatch.setattr(ingest, "fetch_open_prs", lambda mx=None: [GH_PR])
         monkeypatch.setattr(ingest, "load_issue_links", lambda **_: {})
-        loads: list[int] = []
-        all_prs = Store.all_prs
+        watermarks: list[str | None] = []
+        prs_since = Store.prs_since
 
-        def counting_all_prs(store):
-            loads.append(1)
-            return all_prs(store)
+        def recording_prs_since(store, watermark):
+            watermarks.append(watermark)
+            return prs_since(store, watermark)
 
-        monkeypatch.setattr(Store, "all_prs", counting_all_prs)
+        monkeypatch.setattr(Store, "prs_since", recording_prs_since)
         assert ingest.main(["--store", str(tmp_path), "--skip-issues"]) == 0
-        assert loads == [1]
+        assert watermarks.count(None) == 1
 
     def test_main_full_reconciles_closure_from_loaded_snapshot(self, tmp_path, monkeypatch):
         store = Store(tmp_path)

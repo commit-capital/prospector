@@ -25,12 +25,22 @@ CONTEXT_FIELDS = (
     "checkSuite { app { slug } createdAt workflowRun { workflow { databaseId } } } } "
     "... on StatusContext { context state } }")
 
+# GitHub's tally of the head's check runs and statuses by state (`basis`).
+_COUNT_FIELDS = "checkRunCountsByState { state count } statusContextCountsByState { state count }"
+
 # GraphQL pullRequest fields `from_graphql_pr` reads: the head's checks, plus
 # when the description was last edited.
 PR_FIELDS = (
     "baseRefName lastEditedAt commits(last: 1) { nodes { commit { "
-    "checkSuites(first: 50) { nodes { conclusion } } "
-    "statusCheckRollup { contexts(first: 100) { " + CONTEXT_FIELDS + " } } } } }")
+    "checkSuites(first: 50) { nodes { conclusion updatedAt } } "
+    "statusCheckRollup { state contexts(first: 100) { " + _COUNT_FIELDS + " "
+    + CONTEXT_FIELDS + " } } } } }")
+
+# The pullRequest fields `basis` reads without the checks themselves.
+BASIS_FIELDS = (
+    "baseRefName lastEditedAt commits(last: 1) { nodes { commit { "
+    "checkSuites(first: 50) { nodes { updatedAt } } statusCheckRollup { state "
+    "contexts(first: 0) { " + _COUNT_FIELDS + " } } } } }")
 
 # GraphQL Ref fields `required_contexts` reads: the checks a branch's rulesets
 # and branch protection require.
@@ -162,18 +172,42 @@ def from_graphql_contexts(nodes: list[dict]) -> tuple[list[dict], list[dict]]:
     return runs, statuses
 
 
+def _head_commit(node: dict) -> dict | None:
+    commits = (node.get("commits") or {}).get("nodes")
+    return (commits[0] or {}).get("commit") if commits else None
+
+
 def check_contexts(node: dict) -> dict | None:
-    commits = ((node.get("commits") or {}).get("nodes")) or [{}]
-    rollup = ((commits[0] or {}).get("commit") or {}).get("statusCheckRollup") or {}
-    return rollup.get("contexts")
+    return ((_head_commit(node) or {}).get("statusCheckRollup") or {}).get("contexts")
+
+
+def basis(node: dict) -> dict | None:
+    """What a CI verdict at the PR node's head was judged from: the base branch,
+    the rollup state, the count of check runs and statuses in each state, and the
+    latest check-suite update, which every re-run moves. None when the node
+    carries no head commit."""
+    commit = _head_commit(node)
+    if commit is None:
+        return None
+    rollup = commit.get("statusCheckRollup") or {}
+    contexts = rollup.get("contexts") or {}
+
+    def tally(key: str) -> dict[str, int]:
+        return {c["state"]: c["count"] for c in contexts.get(key) or [] if c.get("count")}
+
+    suites = (commit.get("checkSuites") or {}).get("nodes") or []
+    return {"base": node.get("baseRefName"), "state": rollup.get("state"),
+            "check_runs": tally("checkRunCountsByState"),
+            "statuses": tally("statusContextCountsByState"),
+            "suites_updated_at": max((s["updatedAt"] for s in suites if s and s.get("updatedAt")),
+                                     default=None)}
 
 
 def awaiting_approval(node: dict) -> bool:
     """Whether a check suite at the PR node's head waits on a maintainer's
     approval to run (GitHub's first-time-contributor hold), which leaves its
     workflows without a single check run."""
-    commits = ((node.get("commits") or {}).get("nodes")) or [{}]
-    suites = (((commits[0] or {}).get("commit") or {}).get("checkSuites") or {}).get("nodes") or []
+    suites = ((_head_commit(node) or {}).get("checkSuites") or {}).get("nodes") or []
     return any(isinstance(s, dict) and s.get("conclusion") == "ACTION_REQUIRED" for s in suites)
 
 

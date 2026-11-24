@@ -95,3 +95,15 @@ def currency_failure(pr: Pr, section: str, max_age_days: int | None = None,
 def stale_sections(pr: Pr) -> list[str]:
     """Sections present on the record but no longer current (head moved)."""
     return [s for s in SHA_BOUND if pr.section(s) and not is_current(pr, s)]
+
+
+def ci_confirmed(pr: Pr, head: str | None, basis: dict | None,
+                 body_edited_at: str | None) -> bool:
+    """Whether GitHub's live head, check basis (`ci_signal.basis`) and last
+    description edit confirm the PR's stored signals: current at that head, with
+    a resolved CI verdict judged from the same basis and edit."""
+    sig = pr.signals or {}
+    judged = sig.get("ci_failures") or {}
+    return (basis is not None and head == pr.head_sha and is_current(pr, "signals")
+            and sig.get("ci") not in (None, "unknown")
+            and judged.get("basis") == basis and judged.get("body_edited_at") == body_edited_at)

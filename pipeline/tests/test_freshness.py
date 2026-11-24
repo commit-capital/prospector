@@ -4,6 +4,7 @@ head_sha (and optionally within a max-age window)."""
 from pipeline.freshness import (
     UNINGESTED_PUSH,
     SECTION_SCHEMA_VERSION,
+    ci_confirmed,
     currency_failure,
     is_current,
     stale_sections,
@@ -204,3 +205,27 @@ class TestVerifyFreshness:
                                     "against_head_sha": "OLD",
                                     "checked_at": "2026-06-10T00:00:00+00:00"}),
                           "verify", today="2026-06-10") is False
+
+
+BASIS = {"state": "SUCCESS", "check_runs": {"SUCCESS": 3}, "statuses": {}}
+
+
+class TestCiConfirmed:
+    def _pr(self, ci="passing", basis=BASIS, sha="abc123"):
+        return _pr(signals=_section(sha=sha, ci=ci, ci_failures={
+            "failures": [], "body_edited_at": None, "basis": basis}))
+
+    def test_confirmed_by_the_same_head_basis_and_edit(self):
+        assert ci_confirmed(self._pr(), "abc123", BASIS, None)
+
+    def test_any_change_since_the_verdict_is_unconfirmed(self):
+        pr = self._pr()
+        assert not ci_confirmed(pr, "NEW999", BASIS, None)
+        assert not ci_confirmed(pr, "abc123", {**BASIS, "state": "PENDING"}, None)
+        assert not ci_confirmed(pr, "abc123", BASIS, "2026-06-11T00:00:00Z")
+        assert not ci_confirmed(pr, "abc123", None, None)
+
+    def test_stale_unresolved_or_unbased_signals_are_unconfirmed(self):
+        assert not ci_confirmed(self._pr(sha="old"), "abc123", BASIS, None)
+        assert not ci_confirmed(self._pr(ci="unknown"), "abc123", BASIS, None)
+        assert not ci_confirmed(self._pr(basis=None), "abc123", BASIS, None)

@@ -2,6 +2,7 @@
 snapshot and report divergences. The GraphQL fetch (live_states) is
 monkeypatched; we only test the comparison logic."""
 import logging
+import re
 
 import pytest
 
@@ -195,6 +196,39 @@ def test_live_states_rereads_a_failed_batch_in_smaller_batches(monkeypatch):
     facts, _ = freshness_live.live_states(list(range(1, 51)))
     assert sorted(facts) == list(range(1, 51))
     assert sizes == [20, 20, 10, 10, 10, 10, 10]
+
+
+def test_live_states_reads_in_full_only_what_the_probe_cannot_confirm(monkeypatch):
+    basis = {"base": None, "state": "SUCCESS", "check_runs": {"SUCCESS": 1}, "statuses": {},
+             "suites_updated_at": None}
+    rollup = {"state": "SUCCESS", "contexts": {
+        "checkRunCountsByState": [{"state": "SUCCESS", "count": 1}],
+        "statusContextCountsByState": [], "pageInfo": {"hasNextPage": False}, "nodes": []}}
+    full_reads = []
+
+    def gh_graphql(query, **kw):
+        numbers = [int(n) for n in re.findall(r"pullRequest\(number: (\d+)\)", query)]
+        if "contexts(first: 0)" not in query:
+            full_reads.append(numbers)
+        return {"data": {"repository": {f"p{i}": {
+            "state": "OPEN", "headRefOid": HEAD, "mergeable": "MERGEABLE",
+            "additions": 1, "deletions": 0, "changedFiles": 1, "files": {"nodes": []},
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": rollup}}]}}
+            for i in range(len(numbers))}}}
+
+    def stored(based_on):
+        pr = _store_pr()
+        pr.rec["signals"]["ci_failures"] = {"failures": [], "body_edited_at": None,
+                                            "basis": based_on}
+        return pr
+
+    monkeypatch.setattr(freshness_live.live_prs, "required_checks", lambda *a, **k: [])
+    monkeypatch.setattr(freshness_live.live_prs, "gh_graphql", gh_graphql)
+    facts, _ = freshness_live.live_states(
+        [1, 2, 3], {1: stored(basis), 2: stored({**basis, "state": "PENDING"})})
+    assert full_reads == [[2, 3]]
+    assert "ci" not in facts[1] and facts[1]["mergeable"] == "MERGEABLE"
+    assert facts[2]["ci_failures"]["basis"] == basis and "ci" in facts[3]
 
 
 def test_live_states_keeps_resolved_aliases_when_one_errors(monkeypatch, caplog):

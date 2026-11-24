@@ -35,7 +35,7 @@ def _wire(tmp_path, monkeypatch, seed, live):
     for rec in seed:
         st.save_pr(rec)
     monkeypatch.setattr(data, "_store", st)
-    monkeypatch.setattr(freshness_live, "live_states", lambda prs: (live, set()))
+    monkeypatch.setattr(freshness_live, "live_states", lambda prs, stored: (live, set()))
     data.refresh()
     return st
 
@@ -141,7 +141,7 @@ class TestObservedHeadIsPersisted:
                         "mergeable": "MERGEABLE", "ci": "passing"}})
         freshness_live.sweep()
         monkeypatch.setattr(freshness_live, "live_states",
-                            lambda prs: ({5: {"state": "open", "merged": False, "head": HEAD,
+                            lambda prs, stored: ({5: {"state": "open", "merged": False, "head": HEAD,
                                               "mergeable": "MERGEABLE", "ci": "passing"}}, set()))
         assert freshness_live.sweep()["changed"] == 1
         reloaded = st.load_pr(5)
@@ -173,7 +173,7 @@ def test_sweep_retries_missing_prs_before_marking_complete(tmp_path, monkeypatch
     st = _wire(tmp_path, monkeypatch, [_raw(5), _raw(6)], {})
     calls: list[list[int]] = []
 
-    def fetch(prs):
+    def fetch(prs, stored):
         calls.append(prs)
         if len(calls) == 1:
             return ({5: {"state": "open", "merged": False, "head": HEAD,
@@ -196,7 +196,7 @@ def test_partial_sweep_does_not_advance_completion_marker(tmp_path, monkeypatch)
     st.save_live_sweep({"swept_at": prior})
     monkeypatch.setattr(
         freshness_live, "live_states",
-        lambda prs: ({5: {"state": "open", "merged": False, "head": HEAD,
+        lambda prs, stored: ({5: {"state": "open", "merged": False, "head": HEAD,
                           "mergeable": "MERGEABLE"}} if 5 in prs else {}, set()))
 
     res = freshness_live.sweep()
@@ -340,7 +340,7 @@ def test_sweep_retires_scrubbed_pr(tmp_path, monkeypatch):
     """A number GitHub reports NOT_FOUND is gone upstream: the sweep closes it,
     marks it unresolvable, counts it handled (not failed), and still completes."""
     st = _wire(tmp_path, monkeypatch, [_raw(5, "open")], {})
-    monkeypatch.setattr(freshness_live, "live_states", lambda prs: ({}, {5}))
+    monkeypatch.setattr(freshness_live, "live_states", lambda prs, stored: ({}, {5}))
     res = freshness_live.sweep()
     rec = st.load_pr(5)
     assert rec.state == "closed"
@@ -356,7 +356,7 @@ def test_sweep_retires_scrubbed_closed_by_us_pr_without_reopening(tmp_path, monk
     from prospector_app.backend import activity
     st = _wire(tmp_path, monkeypatch, [_raw(8, "closed")], {})
     monkeypatch.setattr(activity, "closed_by_us_prs", lambda: [8])
-    monkeypatch.setattr(freshness_live, "live_states", lambda prs: ({}, set(prs)))
+    monkeypatch.setattr(freshness_live, "live_states", lambda prs, stored: ({}, set(prs)))
     res = freshness_live.sweep()
     rec = st.load_pr(8)
     assert rec.state == "closed" and rec.unresolvable is True
@@ -374,7 +374,7 @@ def test_sweep_excludes_retired_prs_from_targets(tmp_path, monkeypatch):
     calls: list[list[int]] = []
     monkeypatch.setattr(
         freshness_live, "live_states",
-        lambda prs: (calls.append(list(prs)) or (
+        lambda prs, stored: (calls.append(list(prs)) or (
             {5: {"state": "open", "merged": False, "head": HEAD,
                  "mergeable": "MERGEABLE"}}, set())))
     monkeypatch.setattr(activity, "closed_by_us_prs", lambda: [8])

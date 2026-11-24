@@ -23,6 +23,8 @@ from pipeline import reviewers
 from pipeline import storekit
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from pipeline.model import Pr
 
 _LIVE_MERGEABLE = {"MERGEABLE": True, "CONFLICTING": False}
@@ -34,11 +36,13 @@ def _live_state(lv: dict) -> str | None:
     return "merged" if lv.get("merged") else (lv.get("state") or None)
 
 
-def live_states(prs: list[int]) -> tuple[dict[int, dict], set[int]]:
+def live_states(prs: list[int], stored: Mapping[int, Pr] | None = None
+                ) -> tuple[dict[int, dict], set[int]]:
     """Batched live {state, merged, head, mergeable, ci, diffstat, has_tests} per
     PR via GraphQL, plus the set of requested numbers GitHub reports NOT_FOUND
-    (the PR was deleted upstream)."""
-    return live_prs.fetch(prs)
+    (the PR was deleted upstream). A PR in `stored` whose stored signals a probe
+    confirms carries no ci, diffstat or has_tests (`live_prs.fetch`)."""
+    return live_prs.fetch(prs, stored=stored)
 
 
 def check(prs: list[int]) -> dict:
@@ -204,12 +208,12 @@ def sweep(prs: list[int] | None = None) -> dict:
     else:
         targets = [int(n) for n in prs if int(n) in snapshot]
     target_set = set(targets)
-    fetched, nf = live_states(targets)
+    fetched, nf = live_states(targets, snapshot)
     live = {n: facts for n, facts in fetched.items() if n in target_set}
     not_found = nf & target_set
     missing = sorted(target_set - set(live) - not_found)
     if missing:
-        fetched, nf = live_states(missing)
+        fetched, nf = live_states(missing, snapshot)
         live.update({n: facts for n, facts in fetched.items() if n in target_set})
         not_found |= nf & target_set
     retired = retire_unresolvable(not_found, snapshot)
