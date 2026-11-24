@@ -44,7 +44,7 @@ def home(tmp_path, monkeypatch):
 
 def test_the_profile_denies_the_home_and_credentials_but_reaches_the_roots(home, tmp_path):
     diff = home["user"] / "scratch" / "pr.diff"
-    fs = headless_codex.filesystem([str(home["clone"]), str(diff)], str(home["clone"]),
+    fs = headless_codex.filesystem([str(home["clone"]), str(diff)], [str(home["clone"])],
                                    str(tmp_path / "t"), str(tmp_path / "h"))
     real = os.path.realpath
     assert fs["/"] == "read" and fs[real(home["user"])] == "none"
@@ -68,14 +68,33 @@ def test_the_host_runs_a_brokered_tool_with_the_stand_in_s_arguments(tmp_path):
     tool.chmod(0o755)
     (tmp_path / "bin").mkdir()
     (tmp_path / "tmp").mkdir()
-    with headless_codex._Broker([str(tool)], tmp_path / "bin", tmp_path / "tmp",
-                                env={"PIN": "7", "PATH": os.environ["PATH"]},
-                                cwd=str(tmp_path)) as broker:
+    with headless_codex.Broker([str(tool)], tmp_path / "bin", tmp_path / "tmp",
+                               env={"PIN": "7", "PATH": os.environ["PATH"]},
+                               cwd=str(tmp_path)) as broker:
         stand_in = broker.paths[str(tool)]
         done = subprocess.run([stand_in, "test", "a b.ts", "$(cat /etc/passwd)"],
                               capture_output=True, text=True, timeout=30)
     assert done.returncode == 3
     assert done.stdout == f"test|a b.ts|$(cat /etc/passwd)|cwd={tmp_path} pin=7\n"
+
+
+def test_the_host_never_runs_arguments_a_tool_does_not_admit(tmp_path):
+    marker = tmp_path / "ran"
+    tool = tmp_path / "gh"
+    tool.write_text(f'#!/bin/sh\ntouch {marker}\n')
+    tool.chmod(0o755)
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "tmp").mkdir()
+    with headless_codex.Broker([str(tool)], tmp_path / "bin", tmp_path / "tmp",
+                               env={"PATH": os.environ["PATH"]}, cwd=str(tmp_path),
+                               admit={str(tool): lambda args: args[:2] == ["pr", "view"]},
+                               ) as broker:
+        stand_in = broker.paths[str(tool)]
+        refused = subprocess.run([stand_in, "pr", "merge", "1"],
+                                 capture_output=True, text=True, timeout=30)
+        assert refused.returncode == 126 and not marker.exists()
+        admitted = subprocess.run([stand_in, "pr", "view", "1"], timeout=30)
+    assert admitted.returncode == 0 and marker.exists()
 
 
 def _broker_running(tmp_path, monkeypatch, script: str):
@@ -90,8 +109,9 @@ def _broker_running(tmp_path, monkeypatch, script: str):
     monkeypatch.setattr(verify_driver, "stop_orphaned_sandboxes", lambda: swept.append(True))
     crashed: list[BaseException | None] = []
     monkeypatch.setattr(threading, "excepthook", lambda args: crashed.append(args.exc_value))
-    broker = headless_codex._Broker([str(tool)], tmp_path / "bin", tmp_path / "tmp",
-                                    env={"PATH": os.environ["PATH"]}, cwd=str(tmp_path))
+    broker = headless_codex.Broker([str(tool)], tmp_path / "bin", tmp_path / "tmp",
+                                   env={"PATH": os.environ["PATH"]}, cwd=str(tmp_path),
+                                   on_stop=headless_codex._stop_orphaned_checks)
     return tool, broker, swept, crashed
 
 
@@ -386,7 +406,7 @@ def test_the_real_sandbox_holds_the_profile_s_walls(tmp_path):
     (clone / ".env").write_text("SECRET")
     (clone.parent / "sibling.txt").write_text("other")
     try:
-        fs = {**headless_codex.filesystem([str(clone)], str(clone), str(scratch),
+        fs = {**headless_codex.filesystem([str(clone)], [str(clone)], str(scratch),
                                           str(clone.parent / "codex-home")),
               str(clone / ".env"): "none"}
 
@@ -394,7 +414,7 @@ def test_the_real_sandbox_holds_the_profile_s_walls(tmp_path):
             return _sandboxed(fs, clone, *cmd).returncode == 0
 
         assert ok("cat", "a.txt") and ok("sh", "-c", "echo x > b.txt")
-        reviewer = headless_codex.filesystem([str(clone)], None, str(scratch),
+        reviewer = headless_codex.filesystem([str(clone)], [], str(scratch),
                                              str(clone.parent / "codex-home"))
         assert _sandboxed(reviewer, clone, "cat", "a.txt").returncode == 0
         assert _sandboxed(reviewer, clone, "sh", "-c", "echo x > c.txt").returncode != 0

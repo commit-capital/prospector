@@ -9,7 +9,7 @@ is off, so no command leaves the profile; the runners that would execute the
 repository's code are forbidden outright. A host tool an `allow` rule names
 (`Bash(<tool>:*)`, the sandbox check) is run by the host for the agent: the
 prompt names a stand-in inside the profile that files its arguments in a spool
-directory, and `_Broker` runs the tool with them as an argument list and files
+directory, and `Broker` runs the tool with them as an argument list and files
 back its output and exit, which is the reach `Bash(<tool>:*)` grants Claude.
 Each run gets its own Codex home holding the operator's login and the rules
 and nothing else, and starts from no user configuration, no repository
@@ -25,7 +25,7 @@ import signal
 import subprocess
 import tempfile
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -91,15 +91,15 @@ def _secrets() -> list[str]:
     return [_real(headless_agent.REPO_ROOT / ".env"), *settings.key_files()]
 
 
-def filesystem(read_roots: Sequence[str], edit_root: str | None, tmp: str,
+def filesystem(read_roots: Sequence[str], edit_roots: Sequence[str], tmp: str,
                codex_home: str, stand_ins: str | None = None) -> dict[str, str]:
     """The run's permissions profile, path to access. A more specific path's
     entry wins, so a root under the home it denies is still reachable."""
     fs = {"/": "read", _real(Path.home()): "none"}
     for root in read_roots:
         fs[_real(root)] = "read"
-    if edit_root:
-        fs[_real(edit_root)] = "write"
+    for root in edit_roots:
+        fs[_real(root)] = "write"
     fs[_real(tmp)] = "write"
     if stand_ins:
         fs[_real(stand_ins)] = "read"
@@ -190,19 +190,33 @@ def _prepare_home(home: Path) -> None:
     (home / "rules" / "default.rules").write_text(rules())
 
 
-class _Broker:
+def _stop_orphaned_checks() -> None:
+    """Remove the phase containers a stopped sandbox check leaves running."""
+    from pipeline import verify_driver
+    try:
+        verify_driver.stop_orphaned_sandboxes()
+    except Exception as e:
+        print(f"[codex] removing a stopped check's sandbox containers failed: {e}",
+              flush=True)
+
+
+class Broker:
     """Runs host tools for a sandboxed agent. Each tool gets a stand-in in
     `stand_ins` and a spool directory inside the agent's writable temp
     directory; a request is the arguments the stand-in filed, run as
     `[tool, *args]` under `env` in `cwd`, answered with the tool's output (its
-    last OUTPUT_BYTES) and exit code. When the agent's run ends, a tool still
-    running for it is stopped and left unanswered: nobody is waiting, and its
-    spool is about to be removed. The tool is the sandbox check, whose phase
-    container outlives it, so a stop sweeps the containers of dead checks."""
+    last OUTPUT_BYTES) and exit code. A tool `admit` names runs only the
+    arguments it admits. When the agent's run ends, a tool still running for it
+    is stopped, left unanswered (nobody is waiting, and its spool is about to
+    be removed), and `on_stop` runs."""
 
     def __init__(self, tools: Sequence[str], stand_ins: Path, tmp: Path, *,
-                 env: Mapping[str, str], cwd: str) -> None:
+                 env: Mapping[str, str], cwd: str,
+                 admit: Mapping[str, Callable[[list[str]], bool]] | None = None,
+                 on_stop: Callable[[], None] | None = None) -> None:
         self.env, self.cwd = dict(env), cwd
+        self._admit = dict(admit or {})
+        self._on_stop = on_stop
         self.spools: dict[Path, str] = {}
         self.paths: dict[str, str] = {}
         for i, tool in enumerate(tools):
@@ -219,7 +233,7 @@ class _Broker:
         self._running: subprocess.Popen[bytes] | None = None
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
-    def __enter__(self) -> _Broker:
+    def __enter__(self) -> Broker:
         if self.spools:
             self._thread.start()
         return self
@@ -234,13 +248,8 @@ class _Broker:
             with self._lock:
                 self._signal(signal.SIGKILL)
             self._thread.join(timeout=10)
-        if stopped:
-            from pipeline import verify_driver
-            try:
-                verify_driver.stop_orphaned_sandboxes()
-            except Exception as e:
-                print(f"[codex] removing a stopped check's sandbox containers failed: {e}",
-                      flush=True)
+        if stopped and self._on_stop:
+            self._on_stop()
 
     def _signal(self, sig: signal.Signals) -> bool:
         """Send `sig` to the running tool's process group; whether one ran."""
@@ -277,6 +286,12 @@ class _Broker:
         return served
 
     def _answer(self, spool: Path, name: str, tool: str, args: list[str]) -> None:
+        admit = self._admit.get(tool)
+        if admit and not admit(args):
+            (spool / f"{name}.out").write_bytes(
+                f"{Path(tool).name} {' '.join(args)}: not an allowed command\n".encode())
+            (spool / f"{name}.done").write_text("126")
+            return
         try:
             with self._lock:
                 if self._stop.is_set():
@@ -347,9 +362,10 @@ def run(prompt: str, *, model: str | None, cwd: str, read_root: str | Sequence[s
     with tempfile.TemporaryDirectory(prefix="codex-home-") as home, \
             tempfile.TemporaryDirectory(prefix="codex-tmp-") as tmp, \
             tempfile.TemporaryDirectory(prefix="codex-bin-") as bin_dir, \
-            _Broker(tools, Path(bin_dir), Path(tmp), env=env, cwd=cwd) as broker:
+            Broker(tools, Path(bin_dir), Path(tmp), env=env, cwd=cwd,
+                   on_stop=_stop_orphaned_checks) as broker:
         _prepare_home(Path(home))
-        fs = filesystem(roots, edit_root, tmp, home, bin_dir)
+        fs = filesystem(roots, [edit_root] if edit_root else [], tmp, home, bin_dir)
         cmd = [CODEX_BIN, *flags(fs, _real(cwd), model)]
         try:
             proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

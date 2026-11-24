@@ -73,40 +73,47 @@ def _config_keys(command: list[str]) -> list[str]:
             for index, arg in enumerate(command) if arg == "-c"]
 
 
-def test_a_resubmit_session_writes_to_clones_body_files_and_temp_alone():
-    flags = codex_backend._flags(system_prompt=None, can_resubmit=True)
+def profile(tmp_path: Path, *, can_resubmit: bool = True) -> dict[str, str]:
+    fs = codex_backend._filesystem(tmp_path / "checkout", can_resubmit, tmp_path / "sandbox")
+    flags = codex_backend._flags(None, fs)
     assert config_value(flags, "default_permissions") == "chat"
-    assert toml_value(flags, "permissions.chat.filesystem") == {
-        "/": "read",
-        os.path.realpath(agent_backend.RESUBMIT_ROOT): "write",
-        os.path.realpath(agent_backend.BODY_DIR): "write",
-        ":tmpdir": "write",
-        "/tmp": "write",
-    }
-
-
-def test_a_resubmit_session_names_no_sandbox_mode_beside_its_profile():
-    # Codex refuses a command line that sets both.
-    keys = _config_keys(codex_backend._flags(system_prompt=None, can_resubmit=True))
-    assert not [key for key in keys if key.startswith("sandbox_")]
-
-
-def test_a_session_without_the_resubmit_grant_is_read_only_with_no_profile():
-    flags = codex_backend._flags(system_prompt=None, can_resubmit=False)
-    assert config_value(flags, "sandbox_mode") == "read-only"
-    assert not [key for key in _config_keys(flags)
-                if key == "default_permissions" or key.startswith("permissions.")]
-
-
-def test_the_profile_grants_no_write_inside_the_checkout_but_its_two_directories():
-    table = toml_value(codex_backend._flags(system_prompt=None, can_resubmit=True),
-                       "permissions.chat.filesystem")
+    table = toml_value(flags, "permissions.chat.filesystem")
     assert isinstance(table, dict)
-    checkout = str(Path(codex_backend.__file__).resolve().parents[2])
-    written = [path for path, mode in table.items()
-               if mode == "write" and (path + "/").startswith(checkout + "/")]
-    assert sorted(written) == sorted([os.path.realpath(agent_backend.RESUBMIT_ROOT),
-                                      os.path.realpath(agent_backend.BODY_DIR)])
+    return table
+
+
+def test_a_resubmit_session_writes_to_clones_body_files_and_its_temp_alone(tmp_path):
+    table = profile(tmp_path)
+    assert sorted(path for path, mode in table.items() if mode == "write") == sorted([
+        os.path.realpath(agent_backend.RESUBMIT_ROOT),
+        os.path.realpath(agent_backend.BODY_DIR),
+        os.path.realpath(tmp_path / "sandbox" / "tmp"),
+    ])
+
+
+def test_a_session_without_the_resubmit_grant_writes_only_its_temp(tmp_path):
+    table = profile(tmp_path, can_resubmit=False)
+    assert [path for path, mode in table.items() if mode == "write"] == [
+        os.path.realpath(tmp_path / "sandbox" / "tmp")]
+
+
+def test_the_profile_reads_the_checkout_and_denies_the_secrets_and_codex_homes(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("TRIAGE_BOT_KEY_FILE", str(tmp_path / "bot.pem"))
+    table = profile(tmp_path)
+    real = os.path.realpath
+    assert table[real(tmp_path / "checkout")] == "read"
+    for denied in (Path.home(), Path.home() / ".codex", tmp_path / "bot.pem",
+                   codex_backend.CODEX_CACHE_ROOT):
+        assert table[real(denied)] == "none"
+    assert table[real(tmp_path / "sandbox" / "bin")] == "read"
+
+
+def test_a_session_names_no_sandbox_mode_beside_its_profile(tmp_path):
+    # Codex refuses a command line that sets both.
+    fs = codex_backend._filesystem(tmp_path, True, tmp_path / "sandbox")
+    assert not [key for key in _config_keys(codex_backend._flags(None, fs))
+                if key.startswith("sandbox_")]
 
 
 def test_codex_context_stays_inside_the_behavior_layer() -> None:
@@ -118,19 +125,6 @@ def test_codex_context_stays_inside_the_behavior_layer() -> None:
         rendered.index(heading) for heading in headings
     )
     assert rendered.count("# Output") == 1
-
-
-def test_read_only_rules_expose_only_curated_reads_and_local_helpers():
-    rules = codex_backend.isolation_rules(can_write=False, can_resubmit=False)
-
-    assert '["gh", "pr", "view"]' in rules
-    assert '["gh", "release", "list"]' in rules
-    assert '["gh", "run", "list"]' in rules
-    assert '["prospector_app/agent/store-read"]' in rules
-    assert json.dumps([str(agent_backend.AGENT_ROOT / "store-read")]) in rules
-    assert '["prospector_app/agent/file-issue"]' in rules
-    assert '["prospector_app/agent/gh-write"]' not in rules
-    assert '["prospector_app/agent/resubmit"]' not in rules
 
 
 def test_chat_registers_and_dispatches_the_codex_backend(monkeypatch):
@@ -145,32 +139,10 @@ def test_chat_registers_and_dispatches_the_codex_backend(monkeypatch):
     assert chat.readiness() == {"provider": "codex", "ok": True}
 
 
-def test_writable_rules_add_only_the_curated_write_helpers():
-    read_only = codex_backend.isolation_rules(can_write=False, can_resubmit=False)
-    writable = codex_backend.isolation_rules(can_write=True, can_resubmit=False)
-
-    assert writable.startswith(read_only)
-    for helper in ("gh-write", "close-pr", "reopen-pr", "submit-review", "close-issue"):
-        assert json.dumps([f"prospector_app/agent/{helper}"]) in writable
-    assert '["prospector_app/agent/resubmit"]' not in writable
-    assert '["gh", "pr", "merge"]' not in writable
-
-
-def test_resubmit_rules_ride_the_resubmit_grant_not_the_token():
-    rules = codex_backend.isolation_rules(can_write=False, can_resubmit=True)
-    assert '["prospector_app/agent/resubmit"]' in rules
-    assert '["prospector_app/agent/gh-write"]' not in rules
-
-
-def test_writable_rules_accept_resolved_absolute_helper_paths():
-    rules = codex_backend.isolation_rules(can_write=True, can_resubmit=True)
-    for helper in ("gh-write", "close-pr", "reopen-pr", "submit-review", "close-issue", "resubmit"):
-        assert json.dumps([str((agent_backend.AGENT_ROOT / helper).resolve())]) in rules
-
-
 def test_start_isolates_config_and_normalizes_jsonl_events(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_backend, "CODEX_BIN", "/usr/bin/codex")
     monkeypatch.setattr(codex_backend, "CODEX_CACHE_ROOT", tmp_path / "cache")
+    stand_ins = codex_backend._sandbox_dir("pr-12") / "bin"
     captured: dict[str, object] = {}
     proc = FakeProc([
         {"type": "thread.started", "thread_id": "codex-thread"},
@@ -179,7 +151,7 @@ def test_start_isolates_config_and_normalizes_jsonl_events(tmp_path, monkeypatch
         }},
         {"type": "item.completed", "item": {
             "id": "two", "type": "command_execution",
-            "command": "/bin/zsh -c 'prospector_app/agent/store-read pr 12'",
+            "command": f"/bin/zsh -c '{stand_ins}/store-read pr 12'",
             "aggregated_output": "{\"meta\": {}}\n", "exit_code": 0,
             "status": "completed",
         }},
@@ -212,12 +184,9 @@ def test_start_isolates_config_and_normalizes_jsonl_events(tmp_path, monkeypatch
     instructions = config_value(command, "developer_instructions")
     assert isinstance(instructions, str)
     assert "PROSPECTOR MANUAL" in instructions
+    assert "prospector_app/agent/store-read" not in instructions
     assert "## Codex cockpit" in instructions
-    # The default request grants resubmit, so the sandbox is the chat profile;
-    # withholding the grant is what keeps it read-only.
     assert config_value(command, "default_permissions") == "chat"
-    read_only = codex_backend._flags(system_prompt=None, can_resubmit=False)
-    assert config_value(read_only, "sandbox_mode") == "read-only"
     assert config_value(command, "approval_policy") == "never"
     assert config_value(command, "project_doc_max_bytes") == 0
     assert "--ignore-user-config" in command
@@ -228,9 +197,10 @@ def test_start_isolates_config_and_normalizes_jsonl_events(tmp_path, monkeypatch
     isolated_home = Path(child_env["CODEX_HOME"])
     assert isolated_home != Path(request(tmp_path).env["CODEX_HOME"])
     assert (isolated_home / "auth.json").is_symlink()
-    rules = (isolated_home / "rules" / "default.rules").read_text()
-    assert '["gh", "pr", "view"]' in rules
-    assert '["prospector_app/agent/gh-write"]' not in rules
+    assert not (isolated_home / "rules" / "default.rules").exists()
+    assert child_env["PATH"] == f"{stand_ins}{os.pathsep}/usr/bin"
+    assert sorted(p.name for p in stand_ins.iterdir()) == sorted(
+        agent_backend.helpers(can_write=False, can_resubmit=True))
 
     assert events == [
         agent_backend.TextDelta("Checking now."),
@@ -281,9 +251,9 @@ def test_resume_uses_the_saved_thread_and_writable_policy(tmp_path, monkeypatch)
     assert config_value(command, "default_permissions") == "chat"
     child_env = captured["env"]
     assert isinstance(child_env, dict)
-    rules = (Path(child_env["CODEX_HOME"]) / "rules" / "default.rules").read_text()
-    assert '["prospector_app/agent/gh-write"]' in rules
-    assert '["prospector_app/agent/resubmit"]' in rules
+    stand_ins = codex_backend._sandbox_dir("pr-12") / "bin"
+    assert sorted(p.name for p in stand_ins.iterdir()) == sorted(
+        agent_backend.helpers(can_write=True, can_resubmit=True))
 
 
 def test_failed_commands_are_normalized_as_error_results(tmp_path, monkeypatch):
@@ -403,40 +373,19 @@ def test_readiness_requires_a_binary_login_and_file_auth(tmp_path, monkeypatch):
     assert backend.readiness()["problem"] == "Codex authentication is not file-backed"
 
 
-@pytest.mark.parametrize("can_write", [False, True])
-@pytest.mark.parametrize("can_resubmit", [False, True])
-def test_no_rule_lets_git_run_outside_the_sandbox(can_write, can_resubmit):
-    rules = codex_backend.isolation_rules(can_write, can_resubmit)
-    assert '["git"' not in rules
-
-
-def test_read_only_rules_include_text_filters_and_repo_search():
-    rules = codex_backend.isolation_rules(can_write=False, can_resubmit=False)
-    for tool in ("head", "tail", "grep", "wc", "cut", "tr", "jq"):
-        assert json.dumps([tool]) in rules
-    assert '["gh", "search", "repos"]' in rules
-    assert '["python3"]' not in rules
-    assert '["gh", "auth", "status"]' not in rules
-
-
-@pytest.mark.parametrize("can_write", [False, True])
-@pytest.mark.parametrize("can_resubmit", [False, True])
-def test_no_write_or_exec_capable_filter_is_allow_listed(can_write, can_resubmit):
-    # An execpolicy `allow` decision can run the command outside the filesystem
-    # sandbox, and does whenever the permissions profile denies no reads — which
-    # is the profile `_flags` builds. So the rule, not the sandbox, is the bound
-    # on an allow-listed command. `sed`, `awk`, `sort`, and `uniq` each have a
-    # file-write or program-exec form, so none is granted; the filters that
-    # remain read and print only.
-    rules = codex_backend.isolation_rules(can_write, can_resubmit)
-    for tool in ("sed", "awk", "sort", "uniq"):
-        assert json.dumps([tool]) not in rules
+def test_the_host_runs_gh_reads_alone() -> None:
+    for read in agent_backend.GH_READS:
+        assert codex_backend._gh_read([*read[1:], "12", "--repo", "o/r"])
+    for refused in (["auth", "token"], ["api", "repos/o/r"], ["pr", "comment", "1"],
+                    ["issue", "close", "1"], ["pr"], ["--repo", "o/r", "pr", "view", "1"]):
+        assert not codex_backend._gh_read(refused)
 
 
 @pytest.mark.skipif(shutil.which("codex") is None, reason="needs the codex CLI")
 @pytest.mark.parametrize("can_resubmit", [False, True])
 def test_the_installed_cli_accepts_the_flags_the_app_passes(can_resubmit: bool) -> None:
-    flags = codex_backend._flags(system_prompt="probe", can_resubmit=can_resubmit)
+    fs = codex_backend._filesystem(Path.cwd(), can_resubmit, codex_backend._sandbox_dir("probe"))
+    flags = codex_backend._flags("probe", fs)
     assert codex_backend.config_complaint(flags) is None
 
 
@@ -468,8 +417,7 @@ def test_ignoring_user_config_keeps_a_codex_home_skill_out_of_the_prompt(tmp_pat
         return result.stdout + result.stderr
 
     assert "prospector-probe-skill" in prompt_input()
-    assert "--ignore-user-config" in codex_backend._flags(
-        system_prompt=None, can_resubmit=False)
+    assert "--ignore-user-config" in codex_backend._flags(None, {"/": "read"})
     assert "prospector-probe-skill" not in prompt_input("--ignore-user-config")
 
 
@@ -533,6 +481,5 @@ def test_ignoring_user_config_keeps_a_codex_home_mcp_server_unlaunched(tmp_path)
         return marker.exists()
 
     assert launched() is True
-    assert "--ignore-user-config" in codex_backend._flags(
-        system_prompt=None, can_resubmit=False)
+    assert "--ignore-user-config" in codex_backend._flags(None, {"/": "read"})
     assert launched("--ignore-user-config") is False

@@ -59,7 +59,9 @@ with `409 {"unconfigured": true}`.
   `prospector_app/agent/context.md`) writes upstream only through the curated
   helpers after the operator confirms. Its environment is
   `safety_guard.agent_env`, and its Claude read rules deny `.env` and the key
-  files (`claude_backend._secret_denies`).
+  files (`claude_backend._secret_denies`). On Codex no execpolicy rule allows
+  a command, so every command stays in a profile that denies them; the host
+  runs the granted `gh` reads and helpers for it (`codex_backend`).
 - **`.env` has two writers, each with an allowlist.**
   `worker_control.set_flags` writes only the settings `settings_registry` marks
   editable. `backend/onboarding.py` writes the wizard's keys step by step and

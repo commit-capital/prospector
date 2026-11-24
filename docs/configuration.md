@@ -80,11 +80,9 @@ Both providers run the same commands, helpers and grants. On Codex:
 
 - An answer arrives one message at a time; `codex exec` emits no token deltas.
 - Chats are titled from the first message's opening, not by a model.
-- Commands run in a sandbox that reads the whole filesystem, `.env` and the key
-  files included. The agent is told not to read them, and its environment
-  withholds the store URL and tokens, but no rule enforces it. Claude holds
-  reads to the checkout and denies those files by rule, so it is the stronger
-  boundary for a repository with outside contributors.
+- Every command runs in a sandbox that reads the checkout and the system's
+  tools, but not `.env`, the key files, or anything else under the operator's
+  home. The host runs the `gh` reads and the helpers for the agent.
 
 No minimum Codex version is pinned. The Setup readiness check runs the
 installed CLI against the app's flags and reports a refusal as "Codex cannot

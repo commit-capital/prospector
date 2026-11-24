@@ -19,7 +19,7 @@ _CACHE = Path(__file__).resolve().parents[1] / "cache"
 RESUBMIT_ROOT = _CACHE / "resubmit"
 BODY_DIR = _CACHE / "chat-bodies"
 
-_GH_READS: tuple[tuple[str, ...], ...] = tuple(
+GH_READS: tuple[tuple[str, ...], ...] = tuple(
     ("gh", *sub.split()) for sub in (
         "pr view", "pr diff", "pr list", "pr checks", "pr status",
         "issue view", "issue list", "search prs", "search issues",
@@ -45,19 +45,19 @@ _BOT_HELPERS = ("gh-write", "close-pr", "reopen-pr", "submit-review", "close-iss
 _RESUBMIT_HELPERS = ("resubmit",)
 
 
-def _helpers(names: tuple[str, ...]) -> list[tuple[str, ...]]:
-    return [prefix for name in names
-            for prefix in ((f"prospector_app/agent/{name}",), (str(AGENT_ROOT / name),))]
+def helpers(can_write: bool, can_resubmit: bool) -> tuple[str, ...]:
+    """The curated helpers a turn may run. `can_write` is the bot (a mintable
+    installation token); `can_resubmit` is the confirming operator."""
+    return (*_READ_HELPERS, *(_BOT_HELPERS if can_write else ()),
+            *(_RESUBMIT_HELPERS if can_resubmit else ()))
 
 
 def command_prefixes(can_write: bool, can_resubmit: bool) -> list[tuple[str, ...]]:
     """Every command prefix a turn may run: the gh reads, the text filters and
-    the curated helpers, by relative and absolute path. `can_write` is the bot
-    (a mintable installation token); `can_resubmit` is the confirming
-    operator."""
-    return [*_GH_READS, *((f,) for f in _FILTERS), *_helpers(_READ_HELPERS),
-            *(_helpers(_BOT_HELPERS) if can_write else ()),
-            *(_helpers(_RESUBMIT_HELPERS) if can_resubmit else ())]
+    the helpers, by relative and absolute path."""
+    return [*GH_READS, *((f,) for f in _FILTERS),
+            *(prefix for name in helpers(can_write, can_resubmit)
+              for prefix in ((f"prospector_app/agent/{name}",), (str(AGENT_ROOT / name),)))]
 
 
 @dataclass(frozen=True)
