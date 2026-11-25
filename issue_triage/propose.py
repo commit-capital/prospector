@@ -91,10 +91,9 @@ def fork_state() -> dict | None:
     return gh.gh_json(f"repos/{settings.push_login()}/{settings.repo().split('/', 1)[1]}")
 
 
-def assert_propose_target(fork: dict | None, origin_url: str, ref: str, issue: int,
-                          report8: str) -> None:
+def assert_push_fork(fork: dict | None, origin_url: str) -> None:
     """Raise ProposeRefused unless the push destination is the push user's own
-    fork of TRIAGE_REPO and `ref` is this issue's lane branch."""
+    fork of TRIAGE_REPO."""
     if not settings.push_login():
         raise ProposeRefused("no contributor-push login is configured")
     if origin_url != fork_url() or origin_url == upstream_url():
@@ -111,6 +110,13 @@ def assert_propose_target(fork: dict | None, origin_url: str, ref: str, issue: i
         raise ProposeRefused(f"the fork is owned by {owner!r}, not {settings.push_login()!r}")
     if fork.get("archived") or fork.get("private"):
         raise ProposeRefused("the fork is archived or private")
+
+
+def assert_propose_target(fork: dict | None, origin_url: str, ref: str, issue: int,
+                          report8: str) -> None:
+    """Raise ProposeRefused unless the push destination passes
+    `assert_push_fork` and `ref` is this issue's lane branch."""
+    assert_push_fork(fork, origin_url)
     if attempt_of(ref, issue, report8) is None:
         raise ProposeRefused(f"{ref!r} is not issue #{issue}'s lane branch")
 

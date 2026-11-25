@@ -14,7 +14,8 @@ Upstream writes go out only through the sanctioned bot paths below —
 `bot_run` (executor comments / closes / reopens / reviews), `chat_bot_run`
 (validated embedded-agent edits / comments / issue writes / workflow reruns),
 `alert_bot_run` (alert dismissals), `propose_bot_run` (an issue-fix pull request
-opened from the push user's lane branch), and `bot_merge_run` (squash-merge).
+opened from the push user's lane branch), `replace_bot_run` (a pull request
+replacing one on an unwritable fork), and `bot_merge_run` (squash-merge).
 Each fetches the bot's installation token (`pipeline.bot_token`) as it runs,
 refuses without one, requires a server checkout compatible with the shared
 store, and injects the token via GH_TOKEN for that one subprocess.
@@ -221,31 +222,51 @@ def assert_alert_bot_write(argv: list[str]) -> None:
 PROPOSE_KEYS = frozenset({"title", "body", "head", "base", "maintainer_can_modify"})
 _PROPOSE_HEAD_RE = re.compile(
     r"^([A-Za-z0-9-]+):prospector/issue-[1-9][0-9]{0,8}-[0-9a-f]{8}(?:-[2-9])?$")
+_REPLACE_HEAD_RE = re.compile(r"^([A-Za-z0-9-]+):prospector/replace-pr-[1-9][0-9]{0,8}-[0-9a-f]{8}$")
+
+
+def _assert_pull_write(payload: dict, head_re: re.Pattern[str], branch: str) -> None:
+    """Hold a pull request the bot opens to one shape: from the push user's
+    `branch` into TRIAGE_REPO's default branch, with nothing but a title and a
+    body, and maintainer edits explicitly declined: GitHub lets only the fork's
+    owner grant them, and grants them by default."""
+    if set(payload) != PROPOSE_KEYS:
+        raise WriteAttemptBlocked(f"a pull request carries exactly {sorted(PROPOSE_KEYS)}")
+    m = head_re.fullmatch(str(payload["head"]))
+    if not m or not settings.push_login() or m.group(1) != settings.push_login():
+        raise WriteAttemptBlocked(f"{payload['head']!r} is not the push user's {branch}")
+    if payload["base"] != settings.default_branch():
+        raise WriteAttemptBlocked(f"a pull request targets {settings.default_branch()!r}")
+    if payload["maintainer_can_modify"] is not False:
+        raise WriteAttemptBlocked("a pull request declines maintainer edits")
+    if not isinstance(payload["title"], str) or not isinstance(payload["body"], str):
+        raise WriteAttemptBlocked("a pull request's title and body are text")
 
 
 def assert_propose_write(payload: dict) -> None:
-    """Hold a proposed pull request to the one shape the issue-fix lane opens:
-    from the push user's lane branch into TRIAGE_REPO's default branch, with
-    nothing but a title and a body, and maintainer edits explicitly declined:
-    GitHub lets only the fork's owner grant them, and grants them by default."""
-    if set(payload) != PROPOSE_KEYS:
-        raise WriteAttemptBlocked(f"a proposal carries exactly {sorted(PROPOSE_KEYS)}")
-    m = _PROPOSE_HEAD_RE.fullmatch(str(payload["head"]))
-    if not m or not settings.push_login() or m.group(1) != settings.push_login():
-        raise WriteAttemptBlocked(f"{payload['head']!r} is not the push user's lane branch")
-    if payload["base"] != settings.default_branch():
-        raise WriteAttemptBlocked(f"a proposal targets {settings.default_branch()!r}")
-    if payload["maintainer_can_modify"] is not False:
-        raise WriteAttemptBlocked("a proposal declines maintainer edits")
-    if not isinstance(payload["title"], str) or not isinstance(payload["body"], str):
-        raise WriteAttemptBlocked("a proposal's title and body are text")
+    _assert_pull_write(payload, _PROPOSE_HEAD_RE, "lane branch")
+
+
+def assert_replace_write(payload: dict) -> None:
+    _assert_pull_write(payload, _REPLACE_HEAD_RE, "replacement branch")
+
+
+def _open_pull(payload: dict, timeout: int) -> subprocess.CompletedProcess:
+    argv = ["gh", "api", "--method", "POST", f"repos/{settings.repo()}/pulls", "--input", "-"]
+    return _run_as_bot("open a pull request", argv, input=json.dumps(payload), timeout=timeout)
 
 
 def propose_bot_run(payload: dict, *, timeout: int = 60) -> subprocess.CompletedProcess:
-    """Open a pull request on TRIAGE_REPO as the configured bot."""
+    """Open an issue-fix pull request on TRIAGE_REPO as the configured bot."""
     assert_propose_write(payload)
-    argv = ["gh", "api", "--method", "POST", f"repos/{settings.repo()}/pulls", "--input", "-"]
-    return _run_as_bot("open a pull request", argv, input=json.dumps(payload), timeout=timeout)
+    return _open_pull(payload, timeout)
+
+
+def replace_bot_run(payload: dict, *, timeout: int = 60) -> subprocess.CompletedProcess:
+    """Open, as the configured bot, the pull request that replaces one whose
+    fork branch nobody here can push to."""
+    assert_replace_write(payload)
+    return _open_pull(payload, timeout)
 
 
 LABEL_OPS = ("add", "remove", "create")

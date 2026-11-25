@@ -106,6 +106,40 @@ def test_bot_write_blocked_shape(argv):
         sg.assert_bot_write(argv)
 
 
+def _replacement(**over) -> dict:
+    return {"title": "t", "body": "b", "head": "pushbot:prospector/replace-pr-42-0123abcd",
+            "base": sg.settings.default_branch(), "maintainer_can_modify": False, **over}
+
+
+def test_the_guard_admits_a_replacement_from_the_push_users_branch(monkeypatch):
+    monkeypatch.setenv("TRIAGE_PUSH_LOGIN", "pushbot")
+    sg.assert_replace_write(_replacement())
+
+
+@pytest.mark.parametrize("over", [
+    {"head": "someone:prospector/replace-pr-42-0123abcd"},
+    {"head": "pushbot:main"},
+    {"head": "pushbot:prospector/issue-7-0123abcd"},
+    {"head": "pushbot:prospector/replace-pr-42-0123abcd-x"},
+    {"head": "pushbot:prospector/replace-pr-0-0123abcd"},
+    {"head": "pushbot:prospector/replace-pr-42-fix-the-thing"},
+    {"base": "release"},
+    {"maintainer_can_modify": True},
+    {"draft": False},
+    {"title": 3},
+])
+def test_the_guard_refuses_any_other_replacement(monkeypatch, over):
+    monkeypatch.setenv("TRIAGE_PUSH_LOGIN", "pushbot")
+    with pytest.raises(sg.WriteAttemptBlocked):
+        sg.assert_replace_write(_replacement(**over))
+
+
+def test_a_lane_branch_proposal_cannot_open_from_a_replacement_branch(monkeypatch):
+    monkeypatch.setenv("TRIAGE_PUSH_LOGIN", "pushbot")
+    with pytest.raises(sg.WriteAttemptBlocked):
+        sg.assert_propose_write(_replacement())
+
+
 @pytest.mark.parametrize("write", [
     lambda: sg.bot_run(["gh", "pr", "close", "123"]),
     lambda: sg.chat_bot_run(["gh", "pr", "edit", "123", "--title", "x"]),
@@ -115,6 +149,7 @@ def test_bot_write_blocked_shape(argv):
     lambda: sg.close_bot_run(12, "completed"),
     lambda: sg.propose_bot_run({"title": "t", "body": "b", "head": "pushbot:prospector/issue-7-0123abcd",
                                 "base": sg.settings.default_branch(), "maintainer_can_modify": False}),
+    lambda: sg.replace_bot_run(_replacement()),
 ])
 def test_every_bot_write_refuses_without_a_token(monkeypatch, write):
     # the load-bearing guarantee: no token → never write (would be default login)

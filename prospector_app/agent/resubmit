@@ -50,6 +50,13 @@ hardcodes a force-with-lease pinned to that head. A base that merely advanced is
 fine — that is the ordinary state of every open PR — but one rewritten out from
 under the pin refuses, since the commits the rebase was computed against are gone.
 
+An operator-confirmed `push` to a fork the operator cannot write — maintainer
+edits are off, or GitHub denies the push for permission — opens a replacement
+pull request (`prospector_app.backend.replacement_pr`) and leaves the original
+alone. Any other failed push opens nothing. `push` ends its output with one JSON
+line: {result: "in-place" | "replacement", original_pr, head_sha, dry_run,
+replacement_pr, replacement_url, ingest_error}.
+
 Stdlib only, so it runs under the sandbox's system python (like `remember` /
 `uncluster`). It reuses prospector_app.backend.activity for the audit hook — this
 is the chat-agent write path's first activity-log entry.
@@ -83,7 +90,10 @@ from prospector_app.backend.resubmit_identity import (  # noqa: E402
 WORKTREE_ROOT = REPO_ROOT / "prospector_app" / "cache" / "resubmit"
 # Fields we need off the PR to preflight and locate the fork's head branch.
 _PR_FIELDS = ("number,state,baseRefName,baseRefOid,headRefName,headRefOid,maintainerCanModify,"
-              "isCrossRepository,headRepository,headRepositoryOwner")
+              "isCrossRepository,headRepository,headRepositoryOwner,title,body,author")
+# GitHub's answer to a push from an account with no write access to the
+# repository. A key GitHub does not know gets "Permission denied (publickey)".
+_NO_WRITE_ACCESS = re.compile(r"Permission to \S+ denied to \S+")
 
 
 def assert_push_target(info: dict, branch: str) -> None:
@@ -156,6 +166,33 @@ def eligibility(info: dict) -> tuple[bool, str]:
         "maintainer (and no App) can push to the fork branch. Ask the author to "
         "enable it or to apply the change themselves."
     )
+
+
+def _may_replace(info: dict) -> tuple[bool, str]:
+    """Whether a push the operator cannot make to this PR's fork may open a
+    replacement pull request, and why not. The autofix worker never does."""
+    if uses_machine_user():
+        return False, "the autofix worker opens no replacement pull request"
+    from prospector_app.backend import replacement_pr
+    return replacement_pr.available(info)
+
+
+def push_route(info: dict) -> tuple[str | None, str]:
+    """How a finished change reaches upstream: "in-place" on the PR's own head
+    branch, "replacement" when maintainer edits are off and a replacement pull
+    request can be opened, or None. The second item is the reason."""
+    ok, reason = eligibility(info)
+    if ok:
+        return "in-place", reason
+    edits_off = ((info.get("state") or "").upper() == "OPEN" and info.get("isCrossRepository")
+                 and not info.get("maintainerCanModify"))
+    if not edits_off or uses_machine_user():
+        return None, reason
+    can, why = _may_replace(info)
+    if not can:
+        return None, f"{reason} No replacement pull request can be opened: {why}."
+    return "replacement", ("'Allow edits from maintainers' is off — push will open a "
+                           f"replacement pull request and leave #{info.get('number')} as it is.")
 
 
 def _worktree(pr: int) -> Path:
@@ -314,8 +351,8 @@ def _start_merge(pr: int, meta: dict, wt: Path) -> int:
 
 def cmd_prepare(pr: int, rebase: bool = False, merge: bool = False) -> int:
     info = _gh_json(pr)
-    ok, reason = eligibility(info)
-    if not ok:
+    route, reason = push_route(info)
+    if not route:
         print(f"resubmit: {reason}", file=sys.stderr)
         return 3
 
@@ -527,8 +564,8 @@ def _live_push_preflight(pr: int, meta: dict, *, check_base: bool,
     than reading the API's baseRefOid (that field is the base the PR was opened
     or last synced against, not where the branch points now)."""
     info = _gh_json(pr)
-    ok, reason = eligibility(info)
-    if not ok:
+    route, reason = push_route(info)
+    if not route:
         print(f"resubmit: {reason}", file=sys.stderr)
         return None, 3
     if info.get("headRefOid") != meta["head_sha"]:
@@ -559,6 +596,70 @@ def _live_push_preflight(pr: int, meta: dict, *, check_base: bool,
     return info, 0
 
 
+def _print_result(pr: int, head_sha: str, dry_run: bool, replacement: dict | None = None,
+                  ingest_error: str | None = None) -> None:
+    print(json.dumps({
+        "result": "replacement" if replacement else "in-place", "original_pr": pr,
+        "head_sha": head_sha, "dry_run": dry_run,
+        "replacement_pr": (replacement or {}).get("number"),
+        "replacement_url": (replacement or {}).get("url"), "ingest_error": ingest_error}))
+
+
+def _deliver(pr: int, meta: dict, info: dict, push_args: list[str], new_sha: str,
+             dry_run: bool) -> tuple[bool, int]:
+    """Push the worktree's HEAD to the PR's own branch, or open a replacement
+    pull request when the operator cannot write there. Returns (replaced, exit
+    code): a replacement is finished here, an in-place push is left for the
+    caller to log, and a dry-run in-place pushes nothing."""
+    wt = _worktree(pr)
+    if push_route(info)[0] == "in-place":
+        if dry_run:
+            return False, 0
+        push = _git(["push", *push_args], wt)
+        if push.returncode == 0:
+            return False, 0
+        print(f"resubmit: push to {meta['repo']} @ {meta['branch']} failed: "
+              f"{push.stderr.strip()}", file=sys.stderr)
+        if not _NO_WRITE_ACCESS.search(push.stderr):
+            return False, 7
+        can, why = _may_replace(info)
+        if not can:
+            print(f"resubmit: no replacement pull request can be opened: {why}.",
+                  file=sys.stderr)
+            return False, 7
+    return True, _replace(pr, meta, info, new_sha, dry_run)
+
+
+def _replace(pr: int, meta: dict, info: dict, new_sha: str, dry_run: bool) -> int:
+    from prospector_app.backend import replacement_pr
+    if dry_run:
+        _log_replace(pr, new_sha, None, "dry-run")
+        _cleanup(pr)
+        print(f"[dry-run] would open a replacement pull request for #{pr} at {new_sha[:8]}; "
+              "nothing pushed.")
+        _print_result(pr, new_sha, True)
+        return 0
+    try:
+        opened = replacement_pr.open_pr(info, _worktree(pr), new_sha)
+    except RuntimeError as e:
+        _log_replace(pr, new_sha, None, "error", detail=str(e))
+        print(f"resubmit: no replacement pull request for #{pr}: {e}", file=sys.stderr)
+        print(f"  the worktree is kept: rerun the same push to retry, or "
+              f"prospector_app/agent/resubmit {pr} abort", file=sys.stderr)
+        return 13
+    ingest_error = replacement_pr.ingest(opened["number"])
+    if ingest_error:
+        print(f"resubmit: warning — #{opened['number']} is open but was not ingested: "
+              f"{ingest_error}", file=sys.stderr)
+    _log_replace(pr, new_sha, opened, "executed")
+    _cleanup(pr)
+    print(f"opened #{opened['number']} to replace PR #{pr}, whose fork branch cannot be "
+          f"pushed to: {opened['url']}")
+    print(f"  PR #{pr} is untouched; closing or commenting on it is a separate action.")
+    _print_result(pr, new_sha, False, opened, ingest_error)
+    return 0
+
+
 def _push_rebase(pr: int, meta: dict, confirm_rewrite: str | None, dry_run: bool) -> int:
     wt = _worktree(pr)
     if meta.get("phase") != "ready" or _rebase_in_progress(wt):
@@ -579,8 +680,8 @@ def _push_rebase(pr: int, meta: dict, confirm_rewrite: str | None, dry_run: bool
               "including unreviewed edits in a rewrite.", file=sys.stderr)
         return 9
 
-    _, rc = _live_push_preflight(pr, meta, check_base=True, wt=wt)
-    if rc:
+    info, rc = _live_push_preflight(pr, meta, check_base=True, wt=wt)
+    if info is None:
         return rc
     new_sha = _git_text(["rev-parse", "HEAD"], wt)
     if new_sha != meta.get("new_head_sha"):
@@ -594,16 +695,14 @@ def _push_rebase(pr: int, meta: dict, confirm_rewrite: str | None, dry_run: bool
         return 9
 
     lease = f"--force-with-lease=refs/heads/{meta['branch']}:{meta['head_sha']}"
+    replaced, rc = _deliver(pr, meta, info, [lease, "origin", f"HEAD:{meta['branch']}"],
+                            new_sha, dry_run)
+    if replaced or rc:
+        return rc
     if dry_run:
         print(f"[dry-run] would rewrite {meta['repo']} @ {meta['branch']} with an exact lease:")
         print(f"  head: {meta['head_sha']} → {new_sha}")
         print(f"  commits: {meta['old_commit_count']} → {meta['new_commit_count']}")
-    else:
-        push = _git(["push", lease, "origin", f"HEAD:{meta['branch']}"], wt)
-        if push.returncode != 0:
-            print(f"resubmit: lease-protected push to {meta['repo']} @ {meta['branch']} "
-                  f"failed: {push.stderr.strip()}", file=sys.stderr)
-            return 7
 
     _log_rebase(pr, meta, new_sha, dry_run)
     _cleanup(pr)
@@ -614,6 +713,7 @@ def _push_rebase(pr: int, meta: dict, confirm_rewrite: str | None, dry_run: bool
         print(f"  head: {meta['head_sha']} → {new_sha}")
         print(f"  commits: {meta['old_commit_count']} → {meta['new_commit_count']}")
         print("  Greptile + CI re-run on the push.")
+    _print_result(pr, new_sha, dry_run)
     return 0
 
 
@@ -628,8 +728,8 @@ def _push_merge(pr: int, meta: dict, dry_run: bool) -> int:
         print("resubmit: merged worktree carries unreviewed edits; continue or abort "
               f"rather than pushing them: {', '.join(stray[:10])}", file=sys.stderr)
         return 9
-    _, rc = _live_push_preflight(pr, meta, check_base=True, wt=wt)
-    if rc:
+    info, rc = _live_push_preflight(pr, meta, check_base=True, wt=wt)
+    if info is None:
         return rc
     new_sha = _git_text(["rev-parse", "HEAD"], wt)
     if new_sha != meta.get("new_head_sha"):
@@ -643,15 +743,13 @@ def _push_merge(pr: int, meta: dict, dry_run: bool) -> int:
               file=sys.stderr)
         return 9
     lease = f"--force-with-lease=refs/heads/{meta['branch']}:{meta['head_sha']}"
+    replaced, rc = _deliver(pr, meta, info, [lease, "origin", f"HEAD:{meta['branch']}"],
+                            new_sha, dry_run)
+    if replaced or rc:
+        return rc
     if dry_run:
         print(f"[dry-run] would push merge commit {new_sha[:8]} to {meta['repo']} "
               f"@ {meta['branch']} (fast-forward from {meta['head_sha'][:8]})")
-    else:
-        push = _git(["push", lease, "origin", f"HEAD:{meta['branch']}"], wt)
-        if push.returncode != 0:
-            print(f"resubmit: lease-protected push to {meta['repo']} @ {meta['branch']} "
-                  f"failed: {push.stderr.strip()}", file=sys.stderr)
-            return 7
     _log_merge(pr, meta, new_sha, dry_run)
     _cleanup(pr)
     if dry_run:
@@ -661,6 +759,7 @@ def _push_merge(pr: int, meta: dict, dry_run: bool) -> int:
               f"{meta['base_branch']} into {meta['branch']} "
               f"({meta['head_sha'][:8]} → {new_sha[:8]}).")
         print("  Greptile + CI re-run on the push.")
+    _print_result(pr, new_sha, dry_run)
     return 0
 
 
@@ -761,37 +860,41 @@ def cmd_push(pr: int, message: str | None, dry_run: bool,
     if status.returncode != 0:
         print(f"resubmit: git status failed: {status.stderr.strip()}", file=sys.stderr)
         return 4
-    if not status.stdout.strip():
+    # A push that committed and then failed to open its replacement pull
+    # request left that commit as HEAD; a rerun delivers it.
+    committed = _git_text(["rev-parse", "HEAD"], wt) == meta.get("committed_sha")
+    if not status.stdout.strip() and not committed:
         print(f"resubmit: no changes in {wt} — author the edits before pushing.", file=sys.stderr)
         return 5
 
     # Re-preflight against the live PR: refuse if it closed, lost maintainer-edit
     # permission, or the contributor pushed since prepare (our clone is now stale,
     # and pushing would either fail non-fast-forward or clobber their work).
-    _, rc = _live_push_preflight(pr, meta, check_base=False)
-    if rc:
+    info, rc = _live_push_preflight(pr, meta, check_base=False)
+    if info is None:
         return rc
 
-    # Stage everything (add -A) so a newly-created file is committed too, not just
-    # edits to tracked files — the porcelain check above counts untracked changes.
-    add = _git(["add", "-A"], wt)
-    if add.returncode != 0:
-        print(f"resubmit: git add failed: {add.stderr.strip()}", file=sys.stderr)
-        return 4
-    commit = _git(["commit", "-m", message], wt)
-    if commit.returncode != 0:
-        print(f"resubmit: commit failed: {commit.stderr.strip()}", file=sys.stderr)
-        return 4
+    if status.stdout.strip():
+        # Stage everything (add -A) so a newly-created file is committed too, not just
+        # edits to tracked files — the porcelain check above counts untracked changes.
+        add = _git(["add", "-A"], wt)
+        if add.returncode != 0:
+            print(f"resubmit: git add failed: {add.stderr.strip()}", file=sys.stderr)
+            return 4
+        commit = _git(["commit", "-m", message], wt)
+        if commit.returncode != 0:
+            print(f"resubmit: commit failed: {commit.stderr.strip()}", file=sys.stderr)
+            return 4
     new_sha = _git(["rev-parse", "HEAD"], wt).stdout.strip()
+    meta["committed_sha"] = new_sha
+    _write_meta(pr, meta)
 
+    replaced, rc = _deliver(pr, meta, info, ["origin", f"HEAD:{branch}"], new_sha, dry_run)
+    if replaced or rc:
+        return rc
     if dry_run:
         print(f"[dry-run] would push {new_sha[:8]} to {meta['repo']} @ {branch} "
               f"(as {actor_label()})")
-    else:
-        push = _git(["push", "origin", f"HEAD:{branch}"], wt)
-        if push.returncode != 0:
-            print(f"resubmit: push to {meta['repo']} @ {branch} failed: {push.stderr.strip()}", file=sys.stderr)
-            return 7
 
     _log(pr, meta, new_sha, message, dry_run)
     _cleanup(pr)
@@ -803,6 +906,7 @@ def cmd_push(pr: int, message: str | None, dry_run: bool,
         print(f"resubmitted PR #{pr}: pushed {new_sha[:8]} to {where} as {actor_label()}.")
         print(f"resubmit: head is now {new_sha}")
         print("  Greptile + CI re-run on the push.")
+    _print_result(pr, new_sha, dry_run)
     return 0
 
 
@@ -1204,6 +1308,21 @@ def _log_merge(pr: int, meta: dict, new_sha: str, dry_run: bool) -> None:
                         status="dry-run" if dry_run else "executed")
     except Exception as e:  # noqa: BLE001 — never let audit logging break the push
         print(f"resubmit: warning — merge activity log failed: {e}", file=sys.stderr)
+
+
+def _log_replace(pr: int, new_sha: str, opened: dict | None, status: str,
+                 detail: str | None = None) -> None:
+    """Append a replacement pull request, or a failed attempt at one, to the
+    original PR's activity."""
+    try:
+        from prospector_app.backend import activity
+        activity.record("resubmit", pr=pr, action="REPLACE", head_sha=new_sha,
+                        replacement_pr=(opened or {}).get("number"),
+                        url=(opened or {}).get("url"), branch=(opened or {}).get("ref"),
+                        detail=detail, dry_run=status == "dry-run", initiator=initiator(),
+                        status=status)
+    except Exception as e:  # noqa: BLE001 — never let audit logging break the write
+        print(f"resubmit: warning — replacement activity log failed: {e}", file=sys.stderr)
 
 
 def _log_update(pr: int, info: dict, from_sha: str, to_sha: str | None, dry_run: bool) -> None:

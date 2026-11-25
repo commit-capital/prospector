@@ -165,7 +165,7 @@ branch. It runs as the confirming operator (an App cannot push to a fork),
 needs no bot token, and puts code on someone else's branch: the highest-stakes
 write you have.
 
-    prospector_app/agent/resubmit <pr> prepare           # clone the head; refuses if closed or maintainer edits are off
+    prospector_app/agent/resubmit <pr> prepare           # clone the head; refuses if closed
     #   edit only the agreed change, inside the printed worktree
     prospector_app/agent/resubmit <pr> diff              # your edits (plain git can't see the clone)
     prospector_app/agent/resubmit <pr> push -m "<msg>"   # refuses if the head moved or nothing changed
@@ -174,7 +174,17 @@ write you have.
     prospector_app/agent/resubmit <pr> abort             # discard the worktree, push nothing
 
 Push only after the operator has seen the `diff` and confirmed again, then
-`reingest`. If maintainer edits are off, offer a bot comment asking the author.
+`reingest`.
+
+If maintainer edits are off, `prepare` says the push will open a replacement PR,
+and a push GitHub denies for permission does the same. Tell the operator before
+they confirm. `push` ends with one JSON line: `result` is `in-place` or
+`replacement`, with `replacement_pr`, `replacement_url` and `ingest_error`.
+Report the new PR and any `ingest_error` (then `reingest` it). The original PR
+is untouched: offer to comment on or close it as a separate confirmed write.
+Exit 13 means the PR could not be opened; rerun the same `push` to retry. If
+`prepare` says no replacement can be opened, offer a bot comment asking the
+author.
 
 ### Conflicts
 Never change the shape or style of a fix to dodge a conflict (a second export,

@@ -92,6 +92,7 @@ _ACTION_KIND = {
     "REBASE": "resubmit",
     "UPDATE_BRANCH": "resubmit",
     "RESOLVE_CONFLICTS": "resubmit",
+    "REPLACE": "resubmit",
     "RERUN": "issue-fix-rerun",
     "COMMENT_ISSUE": "issue-comment",
 }
@@ -180,7 +181,8 @@ def canonical_kind(event: dict) -> str:
 _REVIEW_VERB = {"APPROVE": "approved", "REQUEST-CHANGES": "requested changes",
                 "REQUEST_CHANGES": "requested changes"}
 _RESUBMIT_VERB = {"REBASE": "rebased", "UPDATE_BRANCH": "merged the base",
-                  "RESOLVE_CONFLICTS": "resolved conflicts"}
+                  "RESOLVE_CONFLICTS": "resolved conflicts",
+                  "REPLACE": "opened a replacement PR"}
 _PROPOSE_VERB = {"PROPOSE": "opened a fix PR", "UPDATE": "updated the fix PR"}
 _FIX_VERB = {"FIX_SOLVE": "asked for a fix", "FIX_SEND_BACK": "sent the fix back",
              "FIX_ANSWER": "answered the fix's question", "FIX_ASK_REPORTER": "asked the reporter",
