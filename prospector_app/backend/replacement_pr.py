@@ -19,7 +19,8 @@ import subprocess
 from pathlib import Path
 
 from issue_triage import propose
-from pipeline import bot_token, gh, settings
+from pipeline import bot_token, gh, settings, threats
+from pipeline.store import Store
 from prospector_app.backend import resubmit_identity, safety_guard
 
 # GitHub caps a pull request body at 65536 characters.
@@ -32,7 +33,10 @@ def branch_ref(pr: int, head_sha: str) -> str:
 
 def available(info: dict) -> tuple[bool, str]:
     """Whether pull request `info` can be replaced from this machine, and why
-    not."""
+    not. Only an open pull request from a fork has a branch to replace; any
+    other gets no reason."""
+    if (info.get("state") or "").upper() != "OPEN" or not info.get("isCrossRepository"):
+        return False, ""
     if not settings.push_identity_configured():
         return False, "this machine has no contributor-push identity"
     if not bot_token.available():
@@ -41,6 +45,9 @@ def available(info: dict) -> tuple[bool, str]:
         return False, f"it does not target {settings.default_branch()}"
     if (info.get("headRepositoryOwner") or {}).get("login") == settings.push_login():
         return False, "its branch is already on the push user's fork"
+    # The bot opens the replacement, so the author the blocklist keys on is gone.
+    if threats.is_blocked_actor(Store().load_threats(), (info.get("author") or {}).get("login")):
+        return False, "its author is on the actor blocklist"
     return True, ""
 
 
@@ -106,7 +113,6 @@ def ingest(number: int) -> str | None:
     """Store pull request `number`, returning why that failed or None."""
     try:
         from pipeline import ingest as pr_ingest
-        from pipeline.store import Store
         pr_ingest.refresh_prs(Store(), [number])
     except Exception as e:  # noqa: BLE001 — the pull request is open either way
         return f"{type(e).__name__}: {e}"

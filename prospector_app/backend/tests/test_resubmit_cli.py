@@ -1273,7 +1273,8 @@ def test_the_worker_never_opens_a_replacement(monkeypatch, tmp_path, capsys):
     assert seen["payloads"] == []
 
 
-@pytest.mark.parametrize("missing", ["push identity", "bot token", "default base"])
+@pytest.mark.parametrize("missing", ["push identity", "bot token", "default base",
+                                     "unblocked author"])
 def test_no_replacement_without_what_it_needs(monkeypatch, tmp_path, capsys, missing):
     from pipeline import bot_token
     repos = _make_rebase_repos(tmp_path, conflict=False)
@@ -1283,10 +1284,13 @@ def test_no_replacement_without_what_it_needs(monkeypatch, tmp_path, capsys, mis
             monkeypatch.delenv(k)
     elif missing == "bot token":
         monkeypatch.setattr(bot_token, "available", lambda: False)
+    elif missing == "unblocked author":
+        monkeypatch.setattr(replacement_pr.Store, "load_threats",
+                            lambda self: {"actors": {"contrib": {"reason": "spam"}}})
     else:
         monkeypatch.setattr(resubmit.settings, "default_branch", lambda: "release")
     assert resubmit.cmd_prepare(42) == 3
-    assert "No replacement pull request" in capsys.readouterr().err
+    assert not resubmit._worktree(42).exists()
 
 
 def test_a_failed_pull_request_keeps_the_worktree_and_a_rerun_opens_it(
@@ -1358,6 +1362,7 @@ def test_a_dry_run_opens_no_replacement(monkeypatch, tmp_path, capsys):
     (resubmit._worktree(42) / "feature.txt").write_text("edit\n")
     assert resubmit.cmd_push(42, "Adjust feature", True) == 0
     result = _result(capsys)
+    assert result["result"] == "replacement"
     assert result["dry_run"] is True and result["replacement_pr"] is None
     assert seen["payloads"] == [] and seen["events"][-1]["status"] == "dry-run"
     assert not _git(seen["push_fork"], "branch", "--list", "prospector/*").stdout.strip()

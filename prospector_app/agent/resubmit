@@ -70,6 +70,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Literal
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Run under a bare python3 (the agent's shell): put the repo root on the path for
@@ -170,27 +171,25 @@ def eligibility(info: dict) -> tuple[bool, str]:
 
 def _may_replace(info: dict) -> tuple[bool, str]:
     """Whether a push the operator cannot make to this PR's fork may open a
-    replacement pull request, and why not. The autofix worker never does."""
+    replacement pull request, and why not when the PR's own state is not the
+    reason. The autofix worker never does."""
     if uses_machine_user():
-        return False, "the autofix worker opens no replacement pull request"
+        return False, ""
     from prospector_app.backend import replacement_pr
     return replacement_pr.available(info)
 
 
-def push_route(info: dict) -> tuple[str | None, str]:
+def push_route(info: dict) -> tuple[Literal["in-place", "replacement"] | None, str]:
     """How a finished change reaches upstream: "in-place" on the PR's own head
-    branch, "replacement" when maintainer edits are off and a replacement pull
-    request can be opened, or None. The second item is the reason."""
+    branch, "replacement" when the operator cannot push there and a replacement
+    pull request can be opened, or None. The second item is the reason."""
     ok, reason = eligibility(info)
     if ok:
         return "in-place", reason
-    edits_off = ((info.get("state") or "").upper() == "OPEN" and info.get("isCrossRepository")
-                 and not info.get("maintainerCanModify"))
-    if not edits_off or uses_machine_user():
-        return None, reason
     can, why = _may_replace(info)
     if not can:
-        return None, f"{reason} No replacement pull request can be opened: {why}."
+        return None, reason + (f" No replacement pull request can be opened: {why}." if why
+                               else "")
     return "replacement", ("'Allow edits from maintainers' is off — push will open a "
                            f"replacement pull request and leave #{info.get('number')} as it is.")
 
@@ -596,11 +595,11 @@ def _live_push_preflight(pr: int, meta: dict, *, check_base: bool,
     return info, 0
 
 
-def _print_result(pr: int, head_sha: str, dry_run: bool, replacement: dict | None = None,
+def _print_result(result: Literal["in-place", "replacement"], pr: int, head_sha: str,
+                  dry_run: bool, replacement: dict | None = None,
                   ingest_error: str | None = None) -> None:
     print(json.dumps({
-        "result": "replacement" if replacement else "in-place", "original_pr": pr,
-        "head_sha": head_sha, "dry_run": dry_run,
+        "result": result, "original_pr": pr, "head_sha": head_sha, "dry_run": dry_run,
         "replacement_pr": (replacement or {}).get("number"),
         "replacement_url": (replacement or {}).get("url"), "ingest_error": ingest_error}))
 
@@ -624,8 +623,9 @@ def _deliver(pr: int, meta: dict, info: dict, push_args: list[str], new_sha: str
             return False, 7
         can, why = _may_replace(info)
         if not can:
-            print(f"resubmit: no replacement pull request can be opened: {why}.",
-                  file=sys.stderr)
+            if why:
+                print(f"resubmit: no replacement pull request can be opened: {why}.",
+                      file=sys.stderr)
             return False, 7
     return True, _replace(pr, meta, info, new_sha, dry_run)
 
@@ -637,14 +637,14 @@ def _replace(pr: int, meta: dict, info: dict, new_sha: str, dry_run: bool) -> in
         _cleanup(pr)
         print(f"[dry-run] would open a replacement pull request for #{pr} at {new_sha[:8]}; "
               "nothing pushed.")
-        _print_result(pr, new_sha, True)
+        _print_result("replacement", pr, new_sha, True)
         return 0
     try:
         opened = replacement_pr.open_pr(info, _worktree(pr), new_sha)
-    except RuntimeError as e:
+    except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as e:
         _log_replace(pr, new_sha, None, "error", detail=str(e))
         print(f"resubmit: no replacement pull request for #{pr}: {e}", file=sys.stderr)
-        print(f"  the worktree is kept: rerun the same push to retry, or "
+        print(f"  the worktree is kept: rerun the same push once that is fixed, or "
               f"prospector_app/agent/resubmit {pr} abort", file=sys.stderr)
         return 13
     new_sha = opened["head_sha"]
@@ -657,7 +657,7 @@ def _replace(pr: int, meta: dict, info: dict, new_sha: str, dry_run: bool) -> in
     print(f"opened #{opened['number']} to replace PR #{pr}, whose fork branch cannot be "
           f"pushed to: {opened['url']}")
     print(f"  PR #{pr} is untouched; closing or commenting on it is a separate action.")
-    _print_result(pr, new_sha, False, opened, ingest_error)
+    _print_result("replacement", pr, new_sha, False, opened, ingest_error)
     return 0
 
 
@@ -714,7 +714,7 @@ def _push_rebase(pr: int, meta: dict, confirm_rewrite: str | None, dry_run: bool
         print(f"  head: {meta['head_sha']} → {new_sha}")
         print(f"  commits: {meta['old_commit_count']} → {meta['new_commit_count']}")
         print("  Greptile + CI re-run on the push.")
-    _print_result(pr, new_sha, dry_run)
+    _print_result("in-place", pr, new_sha, dry_run)
     return 0
 
 
@@ -760,7 +760,7 @@ def _push_merge(pr: int, meta: dict, dry_run: bool) -> int:
               f"{meta['base_branch']} into {meta['branch']} "
               f"({meta['head_sha'][:8]} → {new_sha[:8]}).")
         print("  Greptile + CI re-run on the push.")
-    _print_result(pr, new_sha, dry_run)
+    _print_result("in-place", pr, new_sha, dry_run)
     return 0
 
 
@@ -868,9 +868,9 @@ def cmd_push(pr: int, message: str | None, dry_run: bool,
         print(f"resubmit: no changes in {wt} — author the edits before pushing.", file=sys.stderr)
         return 5
 
-    # Re-preflight against the live PR: refuse if it closed, lost maintainer-edit
-    # permission, or the contributor pushed since prepare (our clone is now stale,
-    # and pushing would either fail non-fast-forward or clobber their work).
+    # Re-preflight against the live PR: refuse if it closed or the contributor
+    # pushed since prepare (our clone is now stale, and pushing would either
+    # fail non-fast-forward or clobber their work).
     info, rc = _live_push_preflight(pr, meta, check_base=False)
     if info is None:
         return rc
@@ -907,7 +907,7 @@ def cmd_push(pr: int, message: str | None, dry_run: bool,
         print(f"resubmitted PR #{pr}: pushed {new_sha[:8]} to {where} as {actor_label()}.")
         print(f"resubmit: head is now {new_sha}")
         print("  Greptile + CI re-run on the push.")
-    _print_result(pr, new_sha, dry_run)
+    _print_result("in-place", pr, new_sha, dry_run)
     return 0
 
 
