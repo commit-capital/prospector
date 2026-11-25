@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from prospector_app.backend import activity
+from prospector_app.backend import replacement_pr
 from prospector_app.backend import resubmit_identity
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -34,6 +35,7 @@ def _load():
 
 resubmit = _load()
 _REAL_ACCOUNT_ID = resubmit_identity._account_id
+_REAL_INGEST = replacement_pr.ingest
 
 
 @pytest.fixture(autouse=True)
@@ -1122,3 +1124,297 @@ def test_a_second_commit_on_a_kept_merge_is_refused(monkeypatch, tmp_path):
     assert resubmit.cmd_commit(42, "first") == 0
     (wt / "more.txt").write_text("more\n")
     assert resubmit.cmd_commit(42, "second") == 2
+
+
+# --- replacement pull request: the fallback for a fork the operator cannot write ---
+
+_DENIED = ("ERROR: Permission to contrib/test-repo.git denied to operator.\n"
+           "fatal: Could not read from remote repository.")
+
+
+def _wire_replacement(monkeypatch, tmp_path: Path, repos: dict, **pr_over) -> dict:
+    """An interactive session over local repos, with the push user's fork a
+    bare repository and the bot's pull-request write recorded in `seen`."""
+    from issue_triage import propose
+    from pipeline import bot_token
+    from prospector_app.backend import safety_guard
+    _wire_rebase(monkeypatch, tmp_path, repos)
+    monkeypatch.delenv(resubmit_identity.MACHINE_USER_ENV)
+    monkeypatch.setattr(resubmit.settings, "default_branch", lambda: "master")
+    monkeypatch.setattr(resubmit, "_gh_json", lambda pr: _pr(
+        headRefOid=repos["old_head"], title="Fix the thing", body="Closes #9",
+        author={"login": "contrib"}, **pr_over))
+    push_fork = tmp_path / "push-fork.git"
+    _git(tmp_path, "clone", "--bare", str(repos["upstream"]), str(push_fork))
+    monkeypatch.setattr(propose, "fork_url", lambda: push_fork.as_uri())
+    monkeypatch.setattr(propose, "fork_state", lambda: {
+        "full_name": "test-push-bot/test-repo", "fork": True,
+        "parent": {"full_name": resubmit.settings.repo()},
+        "owner": {"login": "test-push-bot"}})
+    monkeypatch.setattr(resubmit_identity, "push_env", lambda base=None: dict(os.environ))
+    monkeypatch.setattr(bot_token, "available", lambda: True)
+    seen: dict = {"payloads": [], "ingested": [], "events": [], "push_fork": push_fork}
+
+    def opened(payload, **kw):
+        safety_guard.assert_replace_write(payload)
+        seen["payloads"].append(payload)
+        return subprocess.CompletedProcess([], 0, json.dumps(
+            {"number": 77, "html_url": "https://github.test/pull/77"}), "")
+
+    monkeypatch.setattr(safety_guard, "replace_bot_run", opened)
+    monkeypatch.setattr(replacement_pr, "ingest",
+                        lambda n: seen["ingested"].append(n))
+    monkeypatch.setattr(activity, "record", lambda kind, **f: seen["events"].append(f))
+    return seen
+
+
+def _deny_pushes(monkeypatch, stderr: str) -> None:
+    real = resubmit._git
+
+    def git(args, cwd, timeout=300, extra_env=None):
+        if args[0] == "push":
+            return subprocess.CompletedProcess(args, 1, "", stderr)
+        return real(args, cwd, timeout, extra_env)
+
+    monkeypatch.setattr(resubmit, "_git", git)
+
+
+def _result(capsys) -> dict:
+    return json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+
+def _replacement_head(seen: dict) -> str:
+    ref = f"refs/heads/prospector/replace-pr-42-{seen['old_head'][:8]}"
+    return _git(seen["push_fork"], "rev-parse", ref).stdout.strip()
+
+
+def _edit_and_push(monkeypatch, tmp_path, capsys, *, denied: str | None = None,
+                   **pr_over) -> tuple[int, dict, dict]:
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    seen = _wire_replacement(monkeypatch, tmp_path, repos, **pr_over)
+    seen["old_head"] = repos["old_head"]
+    seen["fork"] = repos["fork"]
+    assert resubmit.cmd_prepare(42) == 0
+    (resubmit._worktree(42) / "feature.txt").write_text("feature with maintainer edit\n")
+    if denied is not None:
+        _deny_pushes(monkeypatch, denied)
+    capsys.readouterr()
+    rc = resubmit.cmd_push(42, "Adjust feature", False)
+    return rc, seen, repos
+
+
+def test_a_writable_fork_is_pushed_in_place_and_says_so(monkeypatch, tmp_path, capsys):
+    rc, seen, repos = _edit_and_push(monkeypatch, tmp_path, capsys)
+    assert rc == 0
+    pushed = _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip()
+    assert _result(capsys) == {
+        "result": "in-place", "original_pr": 42, "head_sha": pushed, "dry_run": False,
+        "replacement_pr": None, "replacement_url": None, "ingest_error": None}
+    assert seen["payloads"] == [] and seen["ingested"] == []
+
+
+@pytest.mark.parametrize("how", ["edits-off", "push-denied"])
+def test_an_unwritable_fork_gets_a_replacement_pull_request(monkeypatch, tmp_path, capsys, how):
+    rc, seen, repos = _edit_and_push(
+        monkeypatch, tmp_path, capsys,
+        **({"maintainerCanModify": False} if how == "edits-off" else {"denied": _DENIED}))
+    assert rc == 0
+    result = _result(capsys)
+    assert result["result"] == "replacement" and result["original_pr"] == 42
+    assert result["replacement_pr"] == 77
+    assert result["replacement_url"] == "https://github.test/pull/77"
+    assert result["ingest_error"] is None
+    # The original branch is where the author left it.
+    assert _git(repos["fork"], "rev-parse", "refs/heads/fix").stdout.strip() == repos["old_head"]
+    # The replacement carries the author's commit with the edit on top.
+    head = _replacement_head(seen)
+    assert head == result["head_sha"]
+    assert _git(seen["push_fork"], "rev-parse", f"{head}^").stdout.strip() == repos["old_head"]
+    [payload] = seen["payloads"]
+    assert payload["head"] == f"test-push-bot:prospector/replace-pr-42-{repos['old_head'][:8]}"
+    assert payload["base"] == "master" and payload["title"] == "Fix the thing"
+    assert "#42" in payload["body"] and "@contrib" in payload["body"]
+    assert "Closes #9" in payload["body"]
+    assert seen["ingested"] == [77]
+    [event] = seen["events"]
+    assert (event["action"], event["pr"], event["replacement_pr"], event["status"]) == (
+        "REPLACE", 42, 77, "executed")
+    assert not resubmit._worktree(42).exists()
+
+
+@pytest.mark.parametrize("stderr", [
+    "! [rejected] HEAD -> fix (stale info)\nerror: failed to push some refs",
+    "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
+    "ssh: connect to host github.com port 22: Network is unreachable",
+])
+def test_a_push_that_fails_for_another_reason_opens_nothing(monkeypatch, tmp_path, capsys, stderr):
+    rc, seen, _ = _edit_and_push(monkeypatch, tmp_path, capsys, denied=stderr)
+    assert rc == 7
+    assert seen["payloads"] == [] and seen["events"] == []
+    assert not _git(seen["push_fork"], "branch", "--list", "prospector/*").stdout.strip()
+
+
+def test_a_moved_head_opens_nothing(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    seen = _wire_replacement(monkeypatch, tmp_path, repos, maintainerCanModify=False)
+    assert resubmit.cmd_prepare(42) == 0
+    (resubmit._worktree(42) / "feature.txt").write_text("edit\n")
+    monkeypatch.setattr(resubmit, "_gh_json",
+                        lambda pr: _pr(headRefOid="b" * 40, maintainerCanModify=False))
+    assert resubmit.cmd_push(42, "Adjust feature", False) == 6
+    assert seen["payloads"] == []
+
+
+def test_the_worker_never_opens_a_replacement(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    seen = _wire_replacement(monkeypatch, tmp_path, repos, maintainerCanModify=False)
+    monkeypatch.setenv(resubmit_identity.MACHINE_USER_ENV, "1")
+    assert resubmit.cmd_prepare(42) == 3
+    assert seen["payloads"] == []
+
+
+@pytest.mark.parametrize("missing", ["push identity", "bot token", "default base",
+                                     "unblocked author"])
+def test_no_replacement_without_what_it_needs(monkeypatch, tmp_path, capsys, missing):
+    from pipeline import bot_token
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    _wire_replacement(monkeypatch, tmp_path, repos, maintainerCanModify=False)
+    if missing == "push identity":
+        for k in ("TRIAGE_PUSH_LOGIN", "TRIAGE_PUSH_EMAIL", "TRIAGE_PUSH_SSH_KEY_FILE"):
+            monkeypatch.delenv(k)
+    elif missing == "bot token":
+        monkeypatch.setattr(bot_token, "available", lambda: False)
+    elif missing == "unblocked author":
+        monkeypatch.setattr(replacement_pr.Store, "load_threats",
+                            lambda self: {"actors": {"contrib": {"reason": "spam"}}})
+    else:
+        monkeypatch.setattr(resubmit.settings, "default_branch", lambda: "release")
+    assert resubmit.cmd_prepare(42) == 3
+    assert not resubmit._worktree(42).exists()
+
+
+def test_a_failed_pull_request_keeps_the_worktree_and_a_rerun_opens_it(
+        monkeypatch, tmp_path, capsys):
+    from prospector_app.backend import safety_guard
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    seen = _wire_replacement(monkeypatch, tmp_path, repos, maintainerCanModify=False)
+    seen["old_head"] = repos["old_head"]
+    works = safety_guard.replace_bot_run
+    monkeypatch.setattr(safety_guard, "replace_bot_run", lambda payload, **kw:
+                        subprocess.CompletedProcess([], 1, "", "gh: Validation Failed (HTTP 422)"))
+    assert resubmit.cmd_prepare(42) == 0
+    (resubmit._worktree(42) / "feature.txt").write_text("feature with maintainer edit\n")
+    assert resubmit.cmd_push(42, "Adjust feature", False) == 13
+    assert "Validation Failed" in capsys.readouterr().err
+    assert seen["events"][-1]["status"] == "error" and seen["ingested"] == []
+    pushed = _replacement_head(seen)
+
+    monkeypatch.setattr(safety_guard, "replace_bot_run", works)
+    monkeypatch.setattr("pipeline.gh.gh_list", lambda path, **kw: [])
+    assert resubmit.cmd_push(42, "Adjust feature", False) == 0
+    result = _result(capsys)
+    assert result["replacement_pr"] == 77 and result["head_sha"] == pushed
+    assert _replacement_head(seen) == pushed
+
+
+def test_an_ingest_failure_is_reported_on_an_opened_replacement(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    seen = _wire_replacement(monkeypatch, tmp_path, repos, maintainerCanModify=False)
+    monkeypatch.setattr("pipeline.ingest.refresh_prs",
+                        lambda store, numbers: (_ for _ in ()).throw(RuntimeError("store down")))
+    monkeypatch.setattr("pipeline.store.Store", lambda: None)
+    monkeypatch.setattr(replacement_pr, "ingest", _REAL_INGEST)
+    assert resubmit.cmd_prepare(42) == 0
+    (resubmit._worktree(42) / "feature.txt").write_text("feature with maintainer edit\n")
+    assert resubmit.cmd_push(42, "Adjust feature", False) == 0
+    result = _result(capsys)
+    assert result["result"] == "replacement" and result["replacement_pr"] == 77
+    assert "store down" in result["ingest_error"]
+    assert seen["events"][-1]["status"] == "executed"
+
+
+def test_a_resolved_merge_reaches_an_unwritable_fork_as_a_replacement(
+        monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path)
+    # A real merge clone is partial, so the push to a third remote fetches the
+    # blobs it lacks from the contributor's fork.
+    for bare in (repos["fork"], repos["upstream"]):
+        _git(bare, "config", "uploadpack.allowFilter", "true")
+        _git(bare, "config", "uploadpack.allowAnySHA1InWant", "true")
+    seen = _wire_replacement(monkeypatch, tmp_path, repos, maintainerCanModify=False)
+    seen["old_head"] = repos["old_head"]
+    assert resubmit.cmd_prepare(42, merge=True) == 0
+    assert _git(resubmit._worktree(42), "config", "remote.origin.promisor").stdout.strip() == "true"
+    (resubmit._worktree(42) / "one.txt").write_text("resolved one\n")
+    assert resubmit.cmd_continue(42) == 0
+    capsys.readouterr()
+    assert resubmit.cmd_push(42, None, False) == 0
+    assert _result(capsys)["result"] == "replacement"
+    head = _replacement_head(seen)
+    parents = _git(seen["push_fork"], "rev-list", "--parents", "-n", "1", head).stdout.split()[1:]
+    assert parents == [repos["old_head"], repos["base_head"]]
+
+
+def test_a_dry_run_opens_no_replacement(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    seen = _wire_replacement(monkeypatch, tmp_path, repos, maintainerCanModify=False)
+    assert resubmit.cmd_prepare(42) == 0
+    (resubmit._worktree(42) / "feature.txt").write_text("edit\n")
+    assert resubmit.cmd_push(42, "Adjust feature", True) == 0
+    result = _result(capsys)
+    assert result["result"] == "replacement"
+    assert result["dry_run"] is True and result["replacement_pr"] is None
+    assert seen["payloads"] == [] and seen["events"][-1]["status"] == "dry-run"
+    assert not _git(seen["push_fork"], "branch", "--list", "prospector/*").stdout.strip()
+
+
+def test_a_replacement_is_pushed_only_to_the_push_users_own_fork(monkeypatch, tmp_path, capsys):
+    from issue_triage import propose
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    seen = _wire_replacement(monkeypatch, tmp_path, repos, maintainerCanModify=False)
+    monkeypatch.setattr(propose, "fork_state", lambda: {
+        "full_name": "someone/test-repo", "fork": True,
+        "parent": {"full_name": resubmit.settings.repo()}, "owner": {"login": "someone"}})
+    assert resubmit.cmd_prepare(42) == 0
+    (resubmit._worktree(42) / "feature.txt").write_text("edit\n")
+    assert resubmit.cmd_push(42, "Adjust feature", False) == 13
+    assert seen["payloads"] == []
+    assert not _git(seen["push_fork"], "branch", "--list", "prospector/*").stdout.strip()
+
+
+def test_a_worker_push_denied_for_permission_opens_nothing(monkeypatch, tmp_path, capsys):
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    seen = _wire_replacement(monkeypatch, tmp_path, repos)
+    monkeypatch.setenv(resubmit_identity.MACHINE_USER_ENV, "1")
+    assert resubmit.cmd_prepare(42) == 0
+    (resubmit._worktree(42) / "feature.txt").write_text("edit\n")
+    _deny_pushes(monkeypatch, _DENIED)
+    assert resubmit.cmd_push(42, "Adjust feature", False) == 7
+    assert seen["payloads"] == [] and seen["events"] == []
+    assert not _git(seen["push_fork"], "branch", "--list", "prospector/*").stdout.strip()
+
+
+def test_the_same_change_prepared_again_reuses_its_pushed_branch(monkeypatch, tmp_path, capsys):
+    from prospector_app.backend import safety_guard
+    repos = _make_rebase_repos(tmp_path, conflict=False)
+    seen = _wire_replacement(monkeypatch, tmp_path, repos, maintainerCanModify=False)
+    seen["old_head"] = repos["old_head"]
+    works = safety_guard.replace_bot_run
+    monkeypatch.setattr(safety_guard, "replace_bot_run", lambda payload, **kw:
+                        subprocess.CompletedProcess([], 1, "", "gh: Server Error (HTTP 502)"))
+    monkeypatch.setattr("pipeline.gh.gh_list", lambda path, **kw: [])
+
+    def attempt(text: str, message: str) -> int:
+        assert resubmit.cmd_prepare(42) == 0
+        (resubmit._worktree(42) / "feature.txt").write_text(text)
+        return resubmit.cmd_push(42, message, False)
+
+    assert attempt("same edit\n", "First wording") == 13
+    pushed = _replacement_head(seen)
+    assert resubmit.cmd_abort(42) == 0
+    monkeypatch.setattr(safety_guard, "replace_bot_run", works)
+    assert attempt("another edit\n", "First wording") == 13
+    assert resubmit.cmd_abort(42) == 0
+    capsys.readouterr()
+    assert attempt("same edit\n", "Second wording") == 0
+    assert _result(capsys)["head_sha"] == pushed == _replacement_head(seen)

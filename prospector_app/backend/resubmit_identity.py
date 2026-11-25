@@ -9,6 +9,8 @@ performs the push:
 
 Keeping that choice in the environment (rather than a helper CLI flag) prevents
 the allowlisted chat command from selecting the worker credential for itself.
+The one interactive use of that credential is `replacement_pr.open_pr`, which
+pushes a new branch to the push user's own fork.
 """
 from __future__ import annotations
 

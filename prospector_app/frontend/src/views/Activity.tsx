@@ -12,7 +12,7 @@ import { SkeletonRows } from "../components/SkeletonRows";
 
 const KIND_ICON: Record<string, string> = {
   merge: "🔀", close: "📮", comment: "💬", review: "📝", "line-comment": "💬", "review-retrigger": "🔁",
-  "design-findings": "💬", "design-approve": "✅", "security-approve": "✅", "verify-approve": "✅", "pr-edit": "✏️", resubmit: "🔄", reopen: "↩", undo: "⤺", handoff: "📤", reconcile: "♻️", "issue-close": "🎫",
+  "design-findings": "💬", "design-approve": "✅", "security-approve": "✅", "verify-approve": "✅", "pr-edit": "✏️", resubmit: "🔄", "pr-replace": "🔄", reopen: "↩", undo: "⤺", handoff: "📤", reconcile: "♻️", "issue-close": "🎫",
   "issue-fix-rerun": "🔁", "issue-fix": "🛠️",
 };
 const KIND_TIP: Record<string, string> = {
@@ -31,6 +31,7 @@ const KIND_TIP: Record<string, string> = {
   "issue-fix-rerun": "The failed CI jobs on an issue-fix PR were re-run as {bot}.",
   "issue-fix": "An operator directed an issue's fix — asked for one, sent it back, answered, approved, chose another PR, or cancelled. Recorded in Prospector; nothing posted upstream.",
   resubmit: "A contributor PR branch was pushed to (a fix, a rebase, a base merge, or a conflict resolution) through the guarded resubmit flow.",
+  "pr-replace": "A replacement PR was opened as {bot} for a PR whose fork branch could not be pushed to. The original PR was left as it was.",
   reopen: "A closed PR was reopened and the bot's closing comment removed.",
   undo: "A prior action was reversed.",
   handoff: "A batch of approved actions was emitted in one handoff.",

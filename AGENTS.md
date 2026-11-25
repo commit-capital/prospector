@@ -23,7 +23,7 @@ with `409 {"unconfigured": true}`.
   as the GitHub App named by `TRIAGE_BOT_LOGIN`, using a token
   `pipeline/get-bot-token.sh` mints from `TRIAGE_BOT_KEY_FILE`. Each write path
   there (`bot_run`, `bot_merge_run`, `chat_bot_run`, `alert_bot_run`,
-  `propose_bot_run`, `label_bot_run`, `close_bot_run`) has its own allowlist. Every path refuses an
+  `propose_bot_run`, `replace_bot_run`, `label_bot_run`, `close_bot_run`) has its own allowlist. Every path refuses an
   empty token or an empty bot login and never falls back to the operator's login.
   A machine that cannot mint a token does all executor writes as dry-runs
   (`executor.live_possible`). Executor writes, dry-runs included, go to the
@@ -49,6 +49,9 @@ with `409 {"unconfigured": true}`.
   Interactive pushes run as the confirming operator. Unattended pushes run as
   `TRIAGE_PUSH_LOGIN` with its SSH key alone, and refuse when that is unset.
   Commits are authored as the App's bot (`resubmit_identity.commit_identity`).
+  An interactive push to a fork the operator cannot write instead opens a
+  replacement PR (`backend/replacement_pr.py`): the push user pushes a new
+  branch to its own fork, and the bot opens the PR through `replace_bot_run`.
 - **Agents that read outsiders' text are locked down.** A headless agent
   (`pipeline/headless_agent.run_agent`) reads only the roots it is handed, gets
   only the environment variables its caller names, has no `git` rule beyond

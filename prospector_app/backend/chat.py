@@ -23,8 +23,9 @@ different identity
 instead, each through a helper script that drops the bot token: "resubmit",
 which authors a change on a contributor's fork branch and
 pushes it over the confirming OPERATOR's ssh identity — a GitHub App can't push
-to a fork (#210) — and merges the base branch into a stale PR's head
-(`resubmit <pr> update`); and "file-issue", opening a
+to a fork (#210) — or, when the operator cannot write that fork, opens a
+replacement PR from the push user's fork as the bot — and merges the base
+branch into a stale PR's head (`resubmit <pr> update`); and "file-issue", opening a
 triager bug on the meta-repo, which lies outside the bot's app installation.
 
 Each provider backend isolates this Q&A assistant from the operator's development

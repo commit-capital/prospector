@@ -14,7 +14,7 @@ Every event carries a semantic top-level ``kind`` (#40) so aggregation is a
 ``Counter`` over one field, not a string-parse of ``action``:
 
     merge | close | comment | review | line-comment | review-retrigger | pr-edit
-      | resubmit | reopen | undo | handoff | reconcile | issue-close | issue-reopen
+      | resubmit | pr-replace | reopen | undo | handoff | reconcile | issue-close | issue-reopen
       | issue-comment | issue-fix-rerun | issue-fix | …
 
 PR kinds and issue kinds are disjoint, so ``summarize`` never mixes the two —
@@ -75,7 +75,7 @@ def _engine() -> storekit.Engine:
 KINDS = ("merge", "close", "comment", "review", "line-comment", "review-retrigger",
          "design-findings", "design-approve", "security-approve",
          "verify-approve", "pr-edit",
-         "resubmit", "reopen", "undo", "handoff", "reconcile",
+         "resubmit", "pr-replace", "reopen", "undo", "handoff", "reconcile",
          "issue-close", "issue-reopen", "issue-comment", "alert-dismiss", "issue-propose",
          "issue-question", "issue-fix-label", "issue-fix-comment", "issue-fix-rerun", "issue-fix")
 
@@ -92,6 +92,7 @@ _ACTION_KIND = {
     "REBASE": "resubmit",
     "UPDATE_BRANCH": "resubmit",
     "RESOLVE_CONFLICTS": "resubmit",
+    "REPLACE": "pr-replace",
     "RERUN": "issue-fix-rerun",
     "COMMENT_ISSUE": "issue-comment",
 }
@@ -195,7 +196,8 @@ _VERB = {
     "security-approve": "approved the YELLOW security verdict",
     "verify-approve": "approved the escalated verification",
     "pr-edit": "rewrote the description",
-    "resubmit": "pushed a fix", "issue-close": "closed", "issue-reopen": "reopened",
+    "resubmit": "pushed a fix", "pr-replace": "opened a replacement PR",
+    "issue-close": "closed", "issue-reopen": "reopened",
     "issue-comment": "commented", "alert-dismiss": "dismissed the alert",
     "issue-question": "asked a question", "issue-fix-label": "labelled",
     "issue-fix-comment": "commented", "issue-fix-rerun": "re-ran CI",
