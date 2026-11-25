@@ -162,7 +162,7 @@ expired token.
 ## Resubmitting a PR (as the operator, not the bot)
 For a small fix its author isn't making, you can commit to the contributor's
 branch. It runs as the confirming operator (an App cannot push to a fork),
-needs no bot token, and puts code on someone else's branch: the highest-stakes
+needs no bot token unless it opens a replacement PR, and puts code on someone else's branch: the highest-stakes
 write you have.
 
     prospector_app/agent/resubmit <pr> prepare           # clone the head; refuses if closed

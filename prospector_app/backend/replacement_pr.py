@@ -7,8 +7,9 @@ the contributor's own commits, goes to
 (`propose.assert_push_fork`), and the bot opens the pull request from it
 (`safety_guard.replace_bot_run`). Nothing in the branch name comes from
 contributor text, because a `pull_request_target` workflow upstream receives
-it. A branch is never overwritten: one that already holds this same head is
-reused, so a pull request whose opening failed after its push can be retried.
+it. A branch is never overwritten: one that already holds this same change on
+the same parents is reused, so a pull request whose opening failed after its
+push can be retried.
 The original pull request is not touched.
 """
 from __future__ import annotations
@@ -61,9 +62,9 @@ def _git(wt: Path, *args: str, env: dict[str, str]) -> str:
 
 def open_pr(info: dict, wt: Path, sha: str) -> dict:
     """Push commit `sha` of clone `wt` to the replacement branch and open the
-    pull request, returning its {number, url, ref}. An open pull request the
-    branch already has is returned as it is. Raises RuntimeError at the first
-    step that fails."""
+    pull request, returning its {number, url, ref, head_sha}. An open pull
+    request the branch already has is returned as it is. Raises RuntimeError at
+    the first step that fails."""
     ref = branch_ref(int(info["number"]), info["headRefOid"])
     head = f"{settings.push_login()}:{ref}"
     env = resubmit_identity.push_env()
@@ -72,17 +73,21 @@ def open_pr(info: dict, wt: Path, sha: str) -> dict:
     if _git(wt, "rev-parse", "--is-shallow-repository", env=env).strip() == "true":
         _git(wt, "fetch", "--quiet", "--unshallow", "origin",
              env=resubmit_identity.operator_env())
-    on_fork = _git(wt, "ls-remote", url, f"refs/heads/{ref}", env=env).split()
-    if on_fork and on_fork[0] != sha:
-        raise RuntimeError(f"{ref} already exists on the fork with other content")
-    if on_fork:
+    if _git(wt, "ls-remote", url, f"refs/heads/{ref}", env=env).strip():
+        _git(wt, "fetch", "--quiet", url, f"refs/heads/{ref}", env=env)
+        shape = [_git(wt, "rev-parse", f"{rev}^{{tree}}", f"{rev}^@", env=env)
+                 for rev in ("FETCH_HEAD", sha)]
+        if shape[0] != shape[1]:
+            raise RuntimeError(f"{ref} already exists on the fork with other content")
+        sha = _git(wt, "rev-parse", "FETCH_HEAD", env=env).strip()
         pulls = gh.gh_list(f"repos/{settings.repo()}/pulls?head={head}&state=all")
         if pulls is None:
             raise RuntimeError(f"the pull requests from {ref} cannot be read")
         for pull in pulls:
             if pull.get("state") != "open":
                 raise RuntimeError(f"#{pull['number']} from {ref} was already closed")
-            return {"number": int(pull["number"]), "url": pull.get("html_url"), "ref": ref}
+            return {"number": int(pull["number"]), "url": pull.get("html_url"), "ref": ref,
+                    "head_sha": sha}
     else:
         _git(wt, "push", "--quiet", f"--force-with-lease=refs/heads/{ref}:", url,
              f"{sha}:refs/heads/{ref}", env=env)
@@ -93,7 +98,8 @@ def open_pr(info: dict, wt: Path, sha: str) -> dict:
         raise RuntimeError(f"pushed {ref}, but opening the pull request failed: "
                            f"{(r.stderr or r.stdout).strip()[-300:]}")
     pull = json.loads(r.stdout)
-    return {"number": int(pull["number"]), "url": pull.get("html_url"), "ref": ref}
+    return {"number": int(pull["number"]), "url": pull.get("html_url"), "ref": ref,
+            "head_sha": sha}
 
 
 def ingest(number: int) -> str | None:

@@ -57,8 +57,8 @@ alone. Any other failed push opens nothing. `push` ends its output with one JSON
 line: {result: "in-place" | "replacement", original_pr, head_sha, dry_run,
 replacement_pr, replacement_url, ingest_error}.
 
-Stdlib only, so it runs under the sandbox's system python (like `remember` /
-`uncluster`). It reuses prospector_app.backend.activity for the audit hook — this
+Stdlib only outside the replacement path, so it runs under the sandbox's
+system python (like `remember` / `uncluster`). It reuses prospector_app.backend.activity for the audit hook — this
 is the chat-agent write path's first activity-log entry.
 """
 from __future__ import annotations
@@ -647,6 +647,7 @@ def _replace(pr: int, meta: dict, info: dict, new_sha: str, dry_run: bool) -> in
         print(f"  the worktree is kept: rerun the same push to retry, or "
               f"prospector_app/agent/resubmit {pr} abort", file=sys.stderr)
         return 13
+    new_sha = opened["head_sha"]
     ingest_error = replacement_pr.ingest(opened["number"])
     if ingest_error:
         print(f"resubmit: warning — #{opened['number']} is open but was not ingested: "
@@ -1316,7 +1317,7 @@ def _log_replace(pr: int, new_sha: str, opened: dict | None, status: str,
     original PR's activity."""
     try:
         from prospector_app.backend import activity
-        activity.record("resubmit", pr=pr, action="REPLACE", head_sha=new_sha,
+        activity.record("pr-replace", pr=pr, action="REPLACE", head_sha=new_sha,
                         replacement_pr=(opened or {}).get("number"),
                         url=(opened or {}).get("url"), branch=(opened or {}).get("ref"),
                         detail=detail, dry_run=status == "dry-run", initiator=initiator(),
